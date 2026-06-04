@@ -123,6 +123,8 @@ docker compose pull && docker compose up -d
 ```
 
 Tag immagine: `latest` (solo sul branch di default), nome del branch e SHA breve.
+L'immagine è **multi-arch** (`linux/amd64` + `linux/arm64`): Docker tira automaticamente la
+variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 
 ---
 

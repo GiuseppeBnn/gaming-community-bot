@@ -743,7 +743,8 @@ Tre workflow in `.github/workflows/`:
 - **`docker-image.yml`** — push che tocca `src/**`/`requirements.txt`/`Dockerfile`: job `test`
   (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`, tag
   `latest` solo sul branch di default + branch + sha; cache `gha`, `packages: write`). L'immagine
-  si pubblica **solo se i test passano**.
+  si pubblica **solo se i test passano**. Build **multi-arch** `linux/amd64,linux/arm64` (via
+  `setup-qemu-action` + `platforms:` su `build-push-action`).
 - **`compose-artifact.yml`** — push che tocca `docker-compose.yml`: valida (`docker compose config`)
   e pubblica `docker-compose.yml` + `.env.example` come **artifact** (nessuna immagine).
 
