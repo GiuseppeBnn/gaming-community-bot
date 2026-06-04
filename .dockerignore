@@ -1,0 +1,43 @@
+# Keep the build context small and prevent secrets/dev cruft from entering the image.
+.git
+.github
+.gitignore
+.dockerignore
+
+# Secrets — never bake .env into an image (keep the example for reference).
+.env
+.env.*
+!.env.example
+
+# Python / tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Tests are not needed at runtime
+tests/
+
+# Local data, logs, editor/tool config
+data/
+*.log
+logs
+.claude/
+.vscode/
+.idea/
+opencode.json
+.DS_Store
+
+# Docs / compose are not part of the image
+README.md
+STEERING.md
+docker-compose.yml

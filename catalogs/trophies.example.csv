@@ -1,0 +1,10 @@
+slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value
+first_steps,Primi Passi,Entra a far parte della community.,🚀,onboarding,bronze,50,onboarding,1
+generous,Generoso,Trasferisci Aldueuri a un altro membro.,🎁,economia,bronze,50,transfers_made,1
+rich_1k,Benestante,Raggiungi 1.000 🪙 nel saldo.,💰,economia,silver,100,balance,1000
+streak_7,Costanza,Riscuoti il daily reward per 7 giorni di fila.,📅,daily,silver,75,daily_streak,7
+bet_winner,Scommettitore,Vinci la tua prima scommessa.,🎰,scommesse,silver,100,bets_won,1
+xp_500,Esperto,Raggiungi 500 XP di esperienza.,⭐,esperienza,gold,0,xp,500
+rich_10k,Milionario,Raggiungi 10.000 🪙 nel saldo.,🤑,economia,gold,250,balance,10000
+streak_30,Dedicato,Riscuoti il daily reward per 30 giorni di fila.,🔥,daily,gold,300,daily_streak,30
+xp_2000,Leggenda,Raggiungi 2.000 XP: sei nell'olimpo.,🏆,esperienza,platinum,0,xp,2000

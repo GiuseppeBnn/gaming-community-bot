@@ -1,0 +1,59 @@
+# ---------------------------------------------------------------------------
+# Secrets — NEVER commit real credentials. .env.example is the tracked template.
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ---------------------------------------------------------------------------
+# Testing / coverage
+# ---------------------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Runtime data & logs (the data/ dir itself is kept via data/.gitkeep).
+# The admin's customised catalog CSVs live in data/ (data/trophies.csv, etc.)
+# and are intentionally ignored — the tracked templates are in catalogs/*.example.csv.
+# ---------------------------------------------------------------------------
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.log
+logs
+
+# ---------------------------------------------------------------------------
+# Editor / tooling / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+.claude/
+opencode.json
+.DS_Store
+Thumbs.db

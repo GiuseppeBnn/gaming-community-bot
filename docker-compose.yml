@@ -1,0 +1,68 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: gamingbot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bot_network
+    # 💡 OTTIMIZZAZIONE POSTGRES: Riduciamo l'uso di RAM interno di Postgres
+    command: postgres -c shared_buffers=32MB -c max_connections=20 -c work_mem=2MB
+    deploy:
+      resources:
+        limits:
+          memory: 256M # 🔒 Massimo 256MB di RAM a Postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d gamingbot"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    networks:
+      - bot_network
+    # 💡 OTTIMIZZAZIONE REDIS: Metti un tetto massimo alla cache
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 128M # 🔒 Massimo 128MB di RAM a Redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+
+  bot:
+    build: .
+    # Tag used by `docker compose build` and pulled by `docker compose pull`.
+    # Override BOT_IMAGE to point at your GHCR image (built by CI):
+    #   BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:latest
+    image: ${BOT_IMAGE:-gaming-community-bot:local}
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - bot_network
+    volumes:
+      - ./data:/app/data
+    deploy:
+      resources:
+        limits:
+          memory: 300M # 🔒 Massimo 300MB di RAM al Bot Python
+
+networks:
+  bot_network:
+    driver: bridge
+
+volumes:
+  postgres_data:

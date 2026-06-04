@@ -1,0 +1,44 @@
+name: Tests
+
+# Runs on EVERY push and PR (the source must always pass the suite), and is
+# reusable (workflow_call) so the image build can gate on it before publishing.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_call:
+
+jobs:
+  test:
+    name: Run test suite
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests with coverage
+        env:
+          # Minimal env required by pydantic-settings (no real token needed in CI)
+          BOT_TOKEN: "1234567890:AAFtesttoken_github_actions"
+          DAILY_REWARD_COINS: "100"
+          DB_URL: "sqlite+aiosqlite:///:memory:"
+        run: pytest --cov=src --cov-report=xml --cov-report=term-missing
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+        # Optional: set CODECOV_TOKEN in repo secrets for private repos

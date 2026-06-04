@@ -1,0 +1,35 @@
+name: Compose artifact
+
+# A change to the deployment compose file does NOT rebuild the image — it just
+# validates the compose and publishes it (plus the env template) as a separate,
+# downloadable artifact for deployers.
+on:
+  push:
+    paths:
+      - "docker-compose.yml"
+      - ".github/workflows/compose-artifact.yml"
+
+jobs:
+  package:
+    name: Validate & package compose
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate compose syntax
+        # A throwaway .env satisfies `env_file:` during validation only; it is
+        # NOT included in the artifact.
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.yml config -q
+          rm -f .env
+
+      - name: Upload compose bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-compose-${{ github.sha }}
+          path: |
+            docker-compose.yml
+            .env.example
+          if-no-files-found: error
