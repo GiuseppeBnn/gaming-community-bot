@@ -3,11 +3,16 @@ General-purpose handlers: /start (with deep-link dispatch), /profilo, /help.
 
 Deep-link payloads routed through /start:
   create_bet            → opens the bet-creation FSM in private chat
+  create_poll           → opens the poll-creation FSM in private chat (admin only)
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   help                  → shows the help message
   shop_<group_id>       → opens the shop catalog for the given group
   backup / esporta      → runs the chat archive / state export (admin only)
+
+Every admin entry point re-checks ``is_admin`` here: this router is public, so the
+deep-link landing must not trust that the caller passed the originating command's
+admin filter (a non-admin could craft the ?start=… link directly).
 """
 
 from aiogram import Router
@@ -92,6 +97,15 @@ async def cmd_start(
     if payload.startswith("quiz_") and payload[5:].isdigit():
         from handlers.quiz import start_quiz_session
         await start_quiz_session(message, db_session, int(payload[5:]))
+        return
+
+    # Deep-link: create_poll (admin poll creation FSM, redirected from the group)
+    if payload == "create_poll":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.events import start_poll_creation
+            await start_poll_creation(message, state)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
         return
 
     # Deep-link: programma (admin scheduling FSM)

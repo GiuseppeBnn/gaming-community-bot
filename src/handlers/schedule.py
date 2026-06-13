@@ -239,6 +239,22 @@ async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
 
 @router.message(Command("sondaggio"), IsAdminFilter())
 async def cmd_sondaggio(message: Message, state: FSMContext) -> None:
+    # The whole creation flow must happen in private chat — never in the group,
+    # where anyone could read the prompts or interfere with the FSM. Same pattern
+    # as /crea_quiz and /crea_scommessa: in a group, hand back a deep-link button
+    # that re-opens (and re-checks admin) in private (STEERING §16).
+    if message.chat.type != ChatType.PRIVATE:
+        bot_info = await message.bot.get_me()
+        await message.reply(
+            "📊 Crea il sondaggio in chat privata:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="➡️ Crea sondaggio",
+                    url=f"https://t.me/{bot_info.username}?start=create_poll",
+                )
+            ]]),
+        )
+        return
     if not await cooldown.guard(
         message, "event_create", settings.event_create_cooldown_seconds, exempt_admin=False
     ):

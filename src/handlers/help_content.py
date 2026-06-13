@@ -229,9 +229,10 @@ _COMMANDS: list[CommandDoc] = [
                usage="/chiudi_quiz <id>", admin_only=True),
     CommandDoc("sondaggio", "Crea un sondaggio", "🎬 Eventi",
                usage="/sondaggio", admin_only=True,
-               details="Crea un sondaggio (domanda + opzioni). Come quiz e scommesse, "
-                       "viene <b>salvato</b> e poi scegli se <b>avviarlo subito</b> nel "
-                       "gruppo o <b>programmarlo</b> — non viene pubblicato all'istante."),
+               details="Crea un sondaggio (domanda + opzioni) <b>in chat privata</b>. "
+                       "Come quiz e scommesse, viene <b>salvato</b> e poi scegli se "
+                       "<b>avviarlo subito</b> nel gruppo o <b>programmarlo</b> — non "
+                       "viene pubblicato all'istante."),
     CommandDoc("programma", "Programma un evento (quiz/sondaggio/scommessa)", "🎬 Eventi",
                usage="/programma", admin_only=True),
     CommandDoc("programmati", "Elenca/annulla gli eventi programmati", "🎬 Eventi",

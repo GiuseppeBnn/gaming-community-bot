@@ -253,6 +253,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `manage_bets` | `common.cmd_start` | Apre pannello admin scommesse (`admin_betting._show_event_list`) |
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
+| `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
 | `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo negozio |
@@ -269,6 +270,14 @@ I comandi che mostrano **dati personali** (`/saldo`, `/storico`, `/profilo`, `/t
 `/negozio`) nel gruppo **non rispondono in chiaro**: usano `handlers/_privacy.redirect_to_private`
 che invia un bottone deep-link verso il privato. `/daily` invece riscuote subito in gruppo con un
 **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best-effort**.
+
+I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
+comandi (`/crea_quiz`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
+avviano la FSM lì (mai prompt/input nel gruppo dove chiunque può leggere o interferire). Poiché
+`common.router` è **pubblico**, **ogni** landing deep-link admin in `cmd_start` (`admin`, `eventi`,
+`create_quiz`, `create_poll`, `programma`, `manage_bets`, `backup`/`esporta`) **ri-verifica
+`is_admin`**: il filtro del comando d'origine non si propaga al deep-link, che un non-admin potrebbe
+costruire a mano. (`create_bet` resta pubblico per design, §16.)
 
 ---
 
@@ -711,7 +720,8 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   `quiz` → `quiz.open_quiz` (annuncia + apre); `poll` → `bot.send_poll` (regolare) nel gruppo.
 - Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
-  pubblicato all'istante; riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
+  pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
+  riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
   `schedule.router` monta `IsAdminFilter`/`IsAdminCallbackFilter` alla radice, così ogni handler
   (anche quelli guidati solo dallo stato FSM) richiede l'admin.
 - I `ScheduledTask` sono **persistiti** → sopravvivono al restart.
