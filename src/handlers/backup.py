@@ -20,7 +20,7 @@ from aiogram.types import FSInputFile, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
-from filters.admin_filter import IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers._privacy import redirect_to_private
 from services import admin_service, group_registry
 from services.backup import chat_archive, state_export
@@ -29,6 +29,9 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# 100%-admin router: gate every message/callback at the root (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 # Telegram caps bot file uploads at 50 MB; stay safely under it.
 _TG_UPLOAD_LIMIT = 49 * 1024 * 1024

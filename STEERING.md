@@ -225,6 +225,15 @@ bot-admin senza doverli elencare in `ADMIN_IDS`. Usare sempre `is_admin` per i c
 `handlers/group_events.py` chiamano `invalidate_admin_cache()` su promozioni/retrocessioni
 (`chat_member`/`my_chat_member`) e migrazioni.
 
+**Guardia "Tutti i membri sono amministratori".** Nei *gruppi base* legacy con quell'opzione attiva,
+`get_chat_administrators` restituisce **ogni** membro come amministratore → senza difesa, *ogni*
+utente diventerebbe bot-admin. `_telegram_admin_ids` confronta il numero di admin con
+`get_chat_member_count`: se la lista admin copre **l'intero gruppo** (`≥3` membri e `admin ≥ totale`)
+la lista è priva di autorità → viene **scartata**, restano admin **solo gli `ADMIN_IDS`** dell'.env
+(con un `log.warning`). No-op per i gruppi normali, dove gli admin sono sempre un sottoinsieme
+stretto. Fix per supergruppi: nessun impatto; per gruppi base: convertire in supergruppo o
+disattivare l'opzione per riconoscere gli admin del gruppo.
+
 **Gating a livello di router (obbligatorio per i router 100% admin).** I router interamente
 admin — `schedule`, `events`, `admin`, `admin_dashboard`, `admin_betting`, `backup` — montano il
 filtro alla radice del router, non solo sui singoli handler:

@@ -39,6 +39,10 @@ from services import badge_service, bet_service
 from utils.text import esc
 
 router = Router()
+# 100%-admin router: gate every message/callback at the root (STEERING §8). The
+# per-handler filters + `admin_bet:` deny catch-all stay as defense in depth.
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _STATUS_LABEL = {
     "open": "🟢 Aperta",

@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import TransactionType
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
-from filters.admin_filter import IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers._privacy import redirect_to_private
 from handlers._targeting import ResolvedTarget, resolve_target
 
@@ -36,6 +36,12 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# 100%-admin router: gate every message/callback at the root, so no handler can
+# ever be reached by a non-admin even if a per-handler filter is forgotten. The
+# only authority is is_admin = env owner (admin_ids) OR current Telegram group
+# admin/creator; everyone else is denied (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
 

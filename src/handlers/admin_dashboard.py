@@ -65,6 +65,10 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# 100%-admin router: gate every message/callback at the root (STEERING §8). The
+# per-handler filters + `adm:` deny catch-all stay as defense in depth.
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _MAX_AMOUNT = 10_000_000
 _STATUS_MAP = {
