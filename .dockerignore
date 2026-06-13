@@ -27,8 +27,11 @@ env/
 # Tests are not needed at runtime
 tests/
 
-# Local data, logs, editor/tool config
+# Local data, backups, logs, editor/tool config
 data/
+backups/
+*.session
+*.session-journal
 *.log
 logs
 .claude/

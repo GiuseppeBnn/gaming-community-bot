@@ -7,6 +7,7 @@ Deep-link payloads routed through /start:
   bet_<event_id>        → opens event detail in private chat
   help                  → shows the help message
   shop_<group_id>       → opens the shop catalog for the given group
+  backup / esporta      → runs the chat archive / state export (admin only)
 """
 
 from aiogram import Router
@@ -184,6 +185,18 @@ async def cmd_start(
     if payload == "traguardi":
         from handlers.badges import show_traguardi
         await show_traguardi(message, db_session)
+        return
+
+    # Deep-links: admin backup / state export (redirected from the group)
+    if payload in ("backup", "esporta"):
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.backup import run_backup_now, run_export_now
+            if payload == "backup":
+                await run_backup_now(message, db_session)
+            else:
+                await run_export_now(message, db_session)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
         return
 
     # Deep-link: create_bet

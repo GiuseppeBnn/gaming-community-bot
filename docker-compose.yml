@@ -55,6 +55,8 @@ services:
       - bot_network
     volumes:
       - ./data:/app/data
+      # Backup snapshots + chat archive (§25) — persisted across restarts.
+      - ./backups:/app/backups
     deploy:
       resources:
         limits:

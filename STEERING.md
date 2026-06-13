@@ -62,6 +62,7 @@ Campi importanti:
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
 - **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP farmabili/giorno); `xp_per_daily_claim: int` (default 10); `xp_per_bet_won: int` (default 15)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
+- **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
 ---
 
@@ -472,6 +473,7 @@ illimitata con tanti utenti).
 - **Info & dashboard**: `/info`, `/cerca`, `/classifica`, `/stats`, `/audit`, `/admin` (UI a bottoni — §18.1)
 - **Quiz**: `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>`
 - **Eventi/scheduling**: `/sondaggio`, `/programma`, `/programmati`
+- **Backup** (§25): `/backup` (estende l'archivio chat MTProto + DM del file), `/esporta` (snapshot dello stato totale + DM). Entrambi redirect dal gruppo al privato; ogni run è in `log_action`
 
 ---
 
@@ -681,7 +683,15 @@ DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
+# Backup & export (§25) — tutto opzionale. Senza i 3 TELEGRAM_* l'archivio chat
+# è disattivato (lo state export funziona comunque, non serve Telegram).
+# TELEGRAM_API_ID=1234567               # da my.telegram.org
+# TELEGRAM_API_HASH=...
+# TELEGRAM_SESSION=...                  # StringSession da scripts/login_telethon.py (SENSIBILE)
 ```
+
+Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restart;
+`backups/` e `*.session` sono in `.gitignore`/`.dockerignore`.
 
 ---
 
@@ -710,6 +720,7 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI r
 21. **Mai `settings.group_id` a runtime**: usare **`group_registry.get_group_id()`** (id effettivo, §13). Solo `config.py`, lo startup in `main()` e `group_registry` stesso toccano il setting.
 22. **Mutazioni denaro/XP/bet lockano le righe** con `with_for_update` (no-op su SQLite, reale su Postgres). Ordine di lock canonico **Event → User → Wallet**; tra due wallet, `tg_id` crescente (anti-deadlock). `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
+24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 
 ---
 
@@ -738,6 +749,8 @@ tests/
 │   ├── test_keyboards.py     # keyboard builder (incl. shop cosmetici: affordable/owned/callback)
 │   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura)
 │   ├── test_fun_ai_hardening.py # clip_source / _prune_cooldowns / output parse_mode=None + wrapper CONTENUTO
+│   ├── test_atomic_io.py       # scrittura atomica, sha256, troncatura, append membri gzip + rollback
+│   ├── test_chat_archive.py    # build_record/classify_media, _archive_range (dedup/append/no-op), _recover
 │   └── test_admin_dashboard_kb.py # tastiere dashboard (grammatica callback, paginazione)
 └── integration/
     ├── test_economy_service.py  # credit / debit / transfer / daily / history
@@ -753,7 +766,8 @@ tests/
     ├── test_admin_service.py    # set_balance / mass_credit / warn / dossier / stats / audit / list_users
     ├── test_quiz_service.py     # create/add_question / record_answer / podium / award_prizes (legacy + per-rango + consolazione)
     ├── test_admin_dashboard.py  # apply_warning (audit + escalation) / render_user_detail / user picker
-    └── test_schedule_service.py # schedule / due_tasks / mark_done|failed / cancel
+    ├── test_schedule_service.py # schedule / due_tasks / mark_done|failed / cancel
+    └── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
 ```
 
 ### Eseguire i test
@@ -823,7 +837,7 @@ Regola: **sorgente cambia ⇒ immagine GHCR** (gated dai test) · **compose camb
 
 ## 24. Checklist prima di ogni PR
 
-- [ ] `pytest` passa (360+ test verdi)
+- [ ] `pytest` passa (380+ test verdi)
 - [ ] `python src/main.py` importa senza errori (o `PYTHONPATH=src python -c "import main"`)
 - [ ] Tutti i nuovi handler usano `db_session: AsyncSession`
 - [ ] Service non committano (salvo eccezioni documentate)
@@ -838,3 +852,48 @@ Regola: **sorgente cambia ⇒ immagine GHCR** (gated dai test) · **compose camb
 - [ ] Nuovi service method coperti da integration test
 - [ ] Azioni admin mutanti loggate via `log_action` + guard self/bot-target; nuovi comandi AI con cap di lunghezza, input clippato, output `parse_mode=None`, nessun filtro moderazione nel payload
 - [ ] Nuovi check admin via `is_admin`; nuovi `ScheduledTask` con esecuzione in `execute_task`; quiz: handler `poll_answer` registrato
+- [ ] **Backup/export** (§25): nuove tabelle ⇒ entrano automaticamente nell'export (`Base.metadata.sorted_tables`); IO file solo via `utils.atomic_io`; nessuna nuova lettura non-streaming su tabelle grandi; archivio chat resta opt-in e non bloccante
+
+---
+
+## 25. Backup & esportazione stato
+
+Due sottosistemi **opt-in, non bloccanti, additivi** (se non configurati restano inerti).
+**File:** `utils/atomic_io.py` (primitive crash-safe), `services/backup/{state_export,chat_archive,loop}.py`,
+`handlers/backup.py`, `scripts/{export_state,import_state,login_telethon}.py`.
+
+**Principi (host a 300 MB):** streaming end-to-end (cursore server-side / iterazione messaggio-per-messaggio,
+nessun dataset in RAM); scritture **atomiche** (`atomic_write_bytes`: tmp→fsync→`os.replace`); loop di
+background in `try/except` totale (come `scheduler_loop`); compressione gzip streaming; un `asyncio.Lock`
+serializza i run sull'archivio chat.
+
+### 25.1 Esportazione stato (`state_export`)
+
+Dump **logico engine-agnostico** (SQLite↔Postgres) di **tutte** le tabelle (`Base.metadata.sorted_tables`,
+ordine FK-safe) in **JSONL gzip**: header (`schema_version`, `created_at`, dialect, conteggi) + una riga
+`{"t","r"}` per riga DB. Solo `datetime/date` hanno (de)serializzazione speciale; tutto il resto è
+JSON-native. Snapshot pubblicati **atomicamente** + ruotati (`backup_state_keep`) + `state-latest.jsonl.gz`
+(hardlink, swap atomico) + sidecar `.sha256`. `import_state(session, src, mode)`: verifica sha256 + schema,
+`mode="empty"` (rifiuta DB non vuoto, caso migrazione) o `mode="replace"` (svuota, distruttivo). **No-commit**
+(§5): il caller (CLI/handler) committa. Le **nuove tabelle entrano nell'export automaticamente** — nessun
+elenco da mantenere.
+
+### 25.2 Archivio chat (`chat_archive`, MTProto/Telethon)
+
+La **Bot API non legge la cronologia** → si usa una sessione **utente** Telethon (`StringSession`, credenziale
+sensibile, `scripts/login_telethon.py`). **Un solo** file `chat-archive.jsonl.gz` = sequenza di **membri gzip
+concatenati** (uno per range) + `chat-archive.manifest.json` (`committed_offset`, `last_message_id`,
+`anchor_ts`, `sha256`). **Prima esecuzione**: tutto fino ad `anchor_ts` (= ora del primo backup); **successive**:
+solo i messaggi dopo `last_message_id` fino al nuovo cutoff → file che cresce per range. **Recovery**: se un
+crash lascia un membro parziale, il run successivo tronca a `committed_offset` (mai rotto). **Foto/audio/media
+non scaricati** (solo label `media` + caption). Client **connect-on-demand → disconnect** a fine run (nessuna
+2ª connessione persistente). Il core puro (`build_record`/`classify_media`/`_archive_range`/`_recover`) è
+Telethon-agnostico e unit-testato con fake.
+
+### 25.3 Loop & comandi
+
+`services/backup/loop.backup_loop()` avviato in `main()` (accanto a `scheduler_loop`): valuta la due-ness dagli
+artefatti su disco (mtime snapshot / `updated_at` manifest), esegue `export_state` e/o `run_chat_backup` quando
+dovuti. `/backup` (archivio chat) e `/esporta` (stato) — admin, redirect-to-private, DM del file se ≤ 50 MB,
+audit `log_action`; deep-link `backup`/`esporta` in `common.cmd_start`. Restore = **solo CLI**
+(`scripts/import_state.py`), mai bottone Telegram distruttivo.

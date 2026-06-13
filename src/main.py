@@ -13,6 +13,7 @@ from handlers import (
     admin,
     admin_betting,
     admin_dashboard,
+    backup,
     badges,
     betting,
     common,
@@ -30,6 +31,7 @@ from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 from services import badge_service, catalog_loader, group_registry
+from services.backup.loop import backup_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -130,6 +132,7 @@ async def main() -> None:
     dp.include_router(admin_dashboard.router)
     dp.include_router(quiz.router)
     dp.include_router(schedule.router)
+    dp.include_router(backup.router)
     dp.include_router(fun_ai.router)
     dp.include_router(common.router)
 
@@ -138,12 +141,14 @@ async def main() -> None:
     logger.info("Comandi bot registrati.")
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot))
+    backup_task = asyncio.create_task(backup_loop())
 
     logger.info("Bot avviato — polling in corso.")
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler_task.cancel()
+        backup_task.cancel()
         await bot.session.close()
         logger.info("Bot fermato.")
 

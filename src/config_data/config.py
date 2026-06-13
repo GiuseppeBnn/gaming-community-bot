@@ -61,6 +61,21 @@ class Settings(BaseSettings):
     scheduler_timezone: str = "Europe/Rome"
     scheduler_poll_interval: int = 20  # seconds between due-task checks
 
+    # Backup & state export (see §25). All optional: with the Telethon creds
+    # empty the chat archive stays disabled and the bot runs normally; the DB
+    # state export needs no Telegram access and always works.
+    backup_dir: str = "backups"                 # dir for snapshots + chat archive
+    backup_state_interval_hours: int = 24       # how often the loop exports DB state
+    backup_state_keep: int = 5                  # rotated state snapshots to retain
+    backup_chat_interval_hours: int = 168       # how often the loop extends the archive
+    backup_max_message_chars: int = 4096        # per-message text cap in the archive
+    # MTProto (Telethon) — reads the group history the Bot API cannot. The
+    # session string is a SENSITIVE full-account credential: keep it in the .env
+    # only, generate it once with scripts/login_telethon.py.
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+    telegram_session: str = ""
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def parse_admin_ids(cls, v: object) -> list[int]:
