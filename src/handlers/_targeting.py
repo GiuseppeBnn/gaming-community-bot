@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User
+from utils.text import esc
 
 
 @dataclass
@@ -33,10 +34,11 @@ class ResolvedTarget:
 
 
 def _display(user: User | None, tg_id: int | None, fallback: str | None = None) -> str:
+    # display_name is always interpolated into HTML replies → escape here once.
     if user is not None:
-        return f"@{user.username}" if user.username else user.full_name
+        return f"@{esc(user.username)}" if user.username else esc(user.full_name)
     if fallback:
-        return fallback
+        return esc(fallback)
     return f"ID {tg_id}" if tg_id is not None else "utente"
 
 

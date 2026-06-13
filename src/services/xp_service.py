@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import select
@@ -71,8 +71,13 @@ def _apply_rank(user: User, old_xp: int) -> Rank | None:
     return new_rank if promoted else None
 
 
-async def _get_user(session: AsyncSession, tg_id: int) -> User | None:
-    result = await session.execute(select(User).where(User.tg_id == tg_id))
+async def _get_user(
+    session: AsyncSession, tg_id: int, *, for_update: bool = False
+) -> User | None:
+    stmt = select(User).where(User.tg_id == tg_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -90,7 +95,10 @@ async def grant_xp(
     if amount <= 0:
         return XpGrantResult(granted=0, capped=False, new_rank=None)
 
-    user = await _get_user(session, tg_id)
+    # Only the capped path does a read-modify-write on the daily counter that
+    # needs serializing; uncapped grants skip the lock (keeps the quiz
+    # award_prizes wallet→xp ordering deadlock-free).
+    user = await _get_user(session, tg_id, for_update=capped)
     if user is None:
         return XpGrantResult(granted=0, capped=False, new_rank=None)
 
@@ -98,7 +106,7 @@ async def grant_xp(
     granted = amount
 
     if capped:
-        today = date.today().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         if user.xp_today_date != today:
             user.xp_today = 0
             user.xp_today_date = today

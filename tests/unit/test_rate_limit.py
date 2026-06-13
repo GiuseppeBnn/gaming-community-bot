@@ -126,6 +126,43 @@ class TestWindowExpiry:
 
 
 # ---------------------------------------------------------------------------
+# Memory hygiene — the per-user dict must not grow without bound
+# ---------------------------------------------------------------------------
+
+class TestPruning:
+    def test_evict_pops_emptied_key(self):
+        mw = RateLimitMiddleware()
+        now = time.monotonic()
+        mw._timestamps[7] = [now - WINDOW_SECONDS - 1.0]  # only an expired stamp
+        kept = mw._evict(7, now)
+        assert kept == []
+        assert 7 not in mw._timestamps
+
+    def test_evict_keeps_live_timestamps(self):
+        mw = RateLimitMiddleware()
+        now = time.monotonic()
+        mw._timestamps[7] = [now - 1.0, now]  # both within the window
+        kept = mw._evict(7, now)
+        assert len(kept) == 2
+        assert 7 in mw._timestamps
+
+    async def test_sweep_reclaims_stale_keys(self):
+        mw = RateLimitMiddleware()
+        handler = AsyncMock(return_value="ok")
+
+        old_ts = time.monotonic() - WINDOW_SECONDS - 1.0
+        for uid in range(2000, 2050):
+            mw._timestamps[uid] = [old_ts]
+        # Force the periodic sweep on the next call.
+        mw._op_count = 511
+        await _call(mw, handler, user_id=1)
+
+        # All stale entries reclaimed; only the live caller remains.
+        assert all(uid not in mw._timestamps for uid in range(2000, 2050))
+        assert 1 in mw._timestamps
+
+
+# ---------------------------------------------------------------------------
 # MAX_CALLS constant sanity check
 # ---------------------------------------------------------------------------
 

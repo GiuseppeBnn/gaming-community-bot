@@ -45,6 +45,7 @@ from keyboards.betting_kb import (
     get_options_keyboard,
 )
 from services import badge_service, bet_service
+from utils.text import esc
 
 router = Router()
 
@@ -157,7 +158,7 @@ async def fsm_bet_title(message: Message, state: FSMContext) -> None:
     await state.update_data(title=title)
     await state.set_state(BetCreationStates.waiting_for_description)
     await message.answer(
-        f"✅ Titolo: <b>{title}</b>\n\n"
+        f"✅ Titolo: <b>{esc(title)}</b>\n\n"
         "<b>Step 2/3</b> — Invia una breve descrizione (max 500 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )
@@ -209,11 +210,11 @@ async def fsm_bet_options(
     await db_session.commit()
     await state.clear()
 
-    opts_text = "\n".join(f"• {o}" for o in options)
+    opts_text = "\n".join(f"• {esc(o)}" for o in options)
     await message.answer(
         f"✅ <b>Scommessa creata!</b>\n\n"
-        f"<b>#{event.id} {title}</b>\n"
-        f"{description}\n\n"
+        f"<b>#{event.id} {esc(title)}</b>\n"
+        f"{esc(description)}\n\n"
         f"<b>Opzioni:</b>\n{opts_text}\n\n"
         f"Usa /scommesse per vederla."
     )
@@ -251,8 +252,8 @@ async def start_bet_view(
     await _clear_active_bet_msg(message.bot, message.chat.id, state)
     total = sum(o.total_wagered for o in event.options)
     sent = await message.answer(
-        f"🎲 <b>#{event.id} {event.title}</b>\n\n"
-        f"<i>{event.description}</i>\n\n"
+        f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"<i>{esc(event.description)}</i>\n\n"
         f"💰 Pool totale: <b>{total} 🪙</b>\n\n"
         "Scegli un'opzione:",
         reply_markup=get_options_keyboard(event_id, event.options),
@@ -296,7 +297,7 @@ async def cb_event_view(callback: CallbackQuery, db_session: AsyncSession, state
         return
     if event.status != "open":
         await callback.message.edit_text(
-            f"🔒 <b>#{event.id} {event.title}</b>\n\n"
+            f"🔒 <b>#{event.id} {esc(event.title)}</b>\n\n"
             f"<i>Questa scommessa non accetta più puntate.</i>"
         )
         await callback.answer()
@@ -304,8 +305,8 @@ async def cb_event_view(callback: CallbackQuery, db_session: AsyncSession, state
 
     total = sum(o.total_wagered for o in event.options)
     await callback.message.edit_text(
-        f"🎲 <b>#{event.id} {event.title}</b>\n\n"
-        f"<i>{event.description}</i>\n\n"
+        f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"<i>{esc(event.description)}</i>\n\n"
         f"💰 Pool totale: <b>{total} 🪙</b>\n\n"
         "Scegli un'opzione:",
         reply_markup=get_options_keyboard(event_id, event.options),
@@ -350,8 +351,8 @@ async def cb_bet_option(
         return
 
     await callback.message.edit_text(
-        f"🎲 <b>#{event.id} {event.title}</b>\n\n"
-        f"✅ Opzione scelta: <b>{option.label}</b>\n"
+        f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"✅ Opzione scelta: <b>{esc(option.label)}</b>\n"
         f"💰 Pool su questa opzione: <b>{option.total_wagered} 🪙</b>\n\n"
         f"🪙 Il tuo saldo: <b>{balance} 🪙</b>\n\n"
         "Quanto vuoi puntare?",
@@ -415,8 +416,8 @@ async def _show_confirm(
     )
 
     await callback.message.edit_text(
-        f"🎲 <b>#{event.id} {event.title}</b>\n\n"
-        f"✅ Opzione: <b>{option.label}</b>\n"
+        f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"✅ Opzione: <b>{esc(option.label)}</b>\n"
         f"💸 Puntata: <b>{amount} 🪙</b>\n\n"
         f"📈 Stima payout attuale: ~<b>{estimated} 🪙</b>\n"
         f"<i>Il payout finale dipende da quanti altri scommettono (stile Twitch).</i>\n\n"
@@ -498,8 +499,8 @@ async def fsm_custom_amount(
     estimated = int((amount / winning_pool_after) * total_pool) if winning_pool_after > 0 else 0
 
     sent = await message.answer(
-        f"🎲 <b>#{event.id} {event.title}</b>\n\n"
-        f"✅ Opzione: <b>{option.label}</b>\n"
+        f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"✅ Opzione: <b>{esc(option.label)}</b>\n"
         f"💸 Puntata: <b>{amount} 🪙</b>\n\n"
         f"📈 Stima payout attuale: ~<b>{estimated} 🪙</b>\n"
         f"<i>Il payout finale dipende da quanti altri scommettono (stile Twitch).</i>\n\n"
@@ -561,7 +562,7 @@ async def cb_bet_confirm(
         f"<i>Ti notificheremo quando l'evento viene risolto.</i>"
     )
     if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {b.name}" for b in newly_earned)
+        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
         text += f"\n\n🏅 <b>Badge sbloccato:</b> {badges_text}!"
 
     await callback.message.edit_text(text)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -62,10 +62,13 @@ async def place_bet(
     option_id: int,
     amount: int,
 ) -> UserBet:
+    # Lock the event row so its status can't flip to locked/resolved between the
+    # check below and the debit (no betting on an event that's being closed).
     event_result = await session.execute(
         select(BettingEvent)
         .where(BettingEvent.id == event_id)
         .options(selectinload(BettingEvent.options))
+        .with_for_update()
     )
     event = event_result.scalar_one_or_none()
     if event is None:
@@ -86,7 +89,12 @@ async def place_bet(
         reference_id=event_id,
     )
 
-    option.total_wagered += amount
+    # Atomic increment so concurrent bets on the same option can't lose updates.
+    await session.execute(
+        update(BettingOption)
+        .where(BettingOption.id == option_id)
+        .values(total_wagered=BettingOption.total_wagered + amount)
+    )
     # potential_win is a snapshot at bet-time; actual payout uses proportional distribution.
     potential_win = int(amount * option.odds_multiplier)
 
@@ -111,7 +119,7 @@ async def place_bet(
 
 async def lock_event(session: AsyncSession, event_id: int) -> BettingEvent:
     result = await session.execute(
-        select(BettingEvent).where(BettingEvent.id == event_id)
+        select(BettingEvent).where(BettingEvent.id == event_id).with_for_update()
     )
     event = result.scalar_one_or_none()
     if event is None:
@@ -146,6 +154,7 @@ async def resolve_event(
             selectinload(BettingEvent.options),
             selectinload(BettingEvent.user_bets),
         )
+        .with_for_update()
     )
     event = result.scalar_one_or_none()
     if event is None:
@@ -190,6 +199,19 @@ async def resolve_event(
         bet.settled_at = now
         if bet.option_id == winning_option_id:
             bet.status = BetStatus.won.value
+            # Lock the user row and grant XP (User lock) BEFORE crediting the
+            # wallet (Wallet lock) to keep the canonical User → Wallet lock order.
+            user_result = await session.execute(
+                select(User).where(User.tg_id == bet.user_tg_id).with_for_update()
+            )
+            winner_user = user_result.scalar_one_or_none()
+            if winner_user is not None:
+                winner_user.bets_won += 1
+            # Capped participation XP for a winning bet (anti-farm via daily cap).
+            await xp_service.grant_xp(
+                session, bet.user_tg_id, settings.xp_per_bet_won,
+                XpSource.bet_won, capped=True,
+            )
             payout = payout_map.get(bet.id, 0)
             if payout > 0:
                 await economy_service.credit(
@@ -200,18 +222,6 @@ async def resolve_event(
                     f"Vittoria scommessa #{event_id}: {event.title}",
                     reference_id=event_id,
                 )
-            # Increment bets_won counter for badge tracking
-            user_result = await session.execute(
-                select(User).where(User.tg_id == bet.user_tg_id)
-            )
-            winner_user = user_result.scalar_one_or_none()
-            if winner_user is not None:
-                winner_user.bets_won += 1
-            # Capped participation XP for a winning bet (anti-farm via daily cap).
-            await xp_service.grant_xp(
-                session, bet.user_tg_id, settings.xp_per_bet_won,
-                XpSource.bet_won, capped=True,
-            )
             winners_data.append({
                 "tg_id": bet.user_tg_id,
                 "bet_amount": bet.amount,
@@ -237,6 +247,7 @@ async def cancel_event(session: AsyncSession, event_id: int) -> dict:
         select(BettingEvent)
         .where(BettingEvent.id == event_id)
         .options(selectinload(BettingEvent.user_bets))
+        .with_for_update()
     )
     event = result.scalar_one_or_none()
     if event is None:

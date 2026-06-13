@@ -31,7 +31,6 @@ from aiogram.types import (
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from config_data.config import settings
 from database.models import TransactionType, Wallet
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
@@ -53,8 +52,16 @@ from keyboards.admin_dashboard_kb import (
     user_detail_kb,
     users_kb,
 )
-from services import admin_service, economy_service, moderation_service, quiz_service, xp_service
+from services import (
+    admin_service,
+    economy_service,
+    group_registry,
+    moderation_service,
+    quiz_service,
+    xp_service,
+)
 from services.xp_service import XpSource
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -183,7 +190,7 @@ async def _render_quiz_hub(message: Message, db_session: AsyncSession) -> None:
         for q in quizzes:
             status = {"ready": "🟡 pronto", "running": "🟢 in corso"}.get(q.status, q.status)
             lines.append(
-                f"#{q.id} <b>{q.title}</b> — {status} · {len(q.questions)} dom.\n"
+                f"#{q.id} <b>{esc(q.title)}</b> — {status} · {len(q.questions)} dom.\n"
                 f"   💰 {quiz_service.format_prize_summary(q)}"
             )
         text = "\n".join(lines)
@@ -342,7 +349,7 @@ async def fsm_search(message: Message, state: FSMContext, db_session: AsyncSessi
         return
     users = await admin_service.search_users(db_session, query)
     if not users:
-        await message.answer(f"🔍 Nessun utente trovato per «{query}».", reply_markup=back_home_kb())
+        await message.answer(f"🔍 Nessun utente trovato per «{esc(query)}».", reply_markup=back_home_kb())
         return
     ids = [u.tg_id for u in users]
     coins = dict(
@@ -350,7 +357,7 @@ async def fsm_search(message: Message, state: FSMContext, db_session: AsyncSessi
     )
     rows = [(u, coins.get(u.tg_id, 0)) for u in users]
     await message.answer(
-        f"🔍 <b>Risultati per «{query}»: {len(rows)}</b>",
+        f"🔍 <b>Risultati per «{esc(query)}»: {len(rows)}</b>",
         reply_markup=users_kb(rows, page=0, has_next=False),
     )
 
@@ -371,9 +378,11 @@ async def cb_user(callback: CallbackQuery, state: FSMContext, db_session: AsyncS
 async def cb_act(callback: CallbackQuery, state: FSMContext) -> None:
     _, _, action, raw = callback.data.split(":")
     tg_id = int(raw)
-    if action in ("mute", "warn") and settings.group_id == 0:
-        await callback.answer("⚠️ GROUP_ID non configurato.", show_alert=True)
-        return
+    if action in ("mute", "warn"):
+        guard = _mod_guard(callback.from_user.id, tg_id, callback.bot.id)
+        if guard:
+            await callback.answer(guard, show_alert=True)
+            return
     await state.update_data(action=action, target_tg_id=tg_id)
     if action in ("credit", "debit", "setbal"):
         prompts = {
@@ -411,7 +420,7 @@ async def cb_act(callback: CallbackQuery, state: FSMContext) -> None:
 async def cb_ask(callback: CallbackQuery) -> None:
     _, _, action, raw = callback.data.split(":")
     tg_id = int(raw)
-    guard = _mod_guard(callback.from_user.id, tg_id)
+    guard = _mod_guard(callback.from_user.id, tg_id, callback.bot.id)
     if guard:
         await callback.answer(guard, show_alert=True)
         return
@@ -428,11 +437,12 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
     await state.clear()
     _, _, action, raw = callback.data.split(":")
     tg_id = int(raw)
-    bot, admin_id, chat_id = callback.bot, callback.from_user.id, settings.group_id
+    bot, admin_id, chat_id = callback.bot, callback.from_user.id, group_registry.get_group_id()
 
     if action == "warn":  # warn with no reason (from the «Senza motivo» button)
-        if chat_id == 0:
-            await callback.answer("⚠️ GROUP_ID non configurato.", show_alert=True)
+        guard = _mod_guard(admin_id, tg_id, bot.id)
+        if guard:
+            await callback.answer(guard, show_alert=True)
             return
         count, _esc = await apply_warning(bot, db_session, admin_id, tg_id, chat_id, None)
         await db_session.commit()
@@ -440,12 +450,11 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         await _show_detail_cb(callback, db_session, tg_id)
         return
 
-    if action != "unwarn" and chat_id == 0:
-        await callback.answer("⚠️ GROUP_ID non configurato.", show_alert=True)
-        return
-    if action in ("ban", "kick") and tg_id == admin_id:
-        await callback.answer("⚠️ Non puoi moderare te stesso.", show_alert=True)
-        return
+    if action != "unwarn":
+        guard = _mod_guard(admin_id, tg_id, bot.id)
+        if guard:
+            await callback.answer(guard, show_alert=True)
+            return
 
     success = True
     if action == "ban":
@@ -555,6 +564,11 @@ async def fsm_amount(message: Message, state: FSMContext, db_session: AsyncSessi
 async def fsm_duration(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     data = await state.get_data()
     tg_id = data["target_tg_id"]
+    guard = _mod_guard(message.from_user.id, tg_id, message.bot.id)
+    if guard:
+        await state.clear()
+        await _show_detail_msg(message, db_session, tg_id, prefix=guard)
+        return
     token = (message.text or "").strip()
     if not moderation_service.looks_like_duration(token):
         await message.answer(
@@ -563,7 +577,7 @@ async def fsm_duration(message: Message, state: FSMContext, db_session: AsyncSes
         )
         return
     duration = moderation_service.parse_duration(token)
-    chat_id = settings.group_id
+    chat_id = group_registry.get_group_id()
     ok, err = await moderation_service.mute(message.bot, chat_id, tg_id, duration)
     if ok:
         await admin_service.log_action(
@@ -582,8 +596,13 @@ async def fsm_duration(message: Message, state: FSMContext, db_session: AsyncSes
 async def fsm_reason(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     data = await state.get_data()
     tg_id = data["target_tg_id"]
+    guard = _mod_guard(message.from_user.id, tg_id, message.bot.id)
+    if guard:
+        await state.clear()
+        await _show_detail_msg(message, db_session, tg_id, prefix=guard)
+        return
     reason = (message.text or "").strip()[:256]
-    chat_id = settings.group_id
+    chat_id = group_registry.get_group_id()
     count, escalation = await apply_warning(
         message.bot, db_session, message.from_user.id, tg_id, chat_id, reason or None
     )
@@ -604,11 +623,13 @@ def _parse_amount(text: str | None) -> int | None:
         return None
 
 
-def _mod_guard(admin_id: int, tg_id: int) -> str | None:
-    if settings.group_id == 0:
+def _mod_guard(admin_id: int, tg_id: int, bot_id: int | None = None) -> str | None:
+    if group_registry.get_group_id() == 0:
         return "⚠️ GROUP_ID non configurato."
     if tg_id == admin_id:
         return "⚠️ Non puoi moderare te stesso."
+    if bot_id is not None and tg_id == bot_id:
+        return "⚠️ Non posso moderare me stesso. 🤖"
     return None
 
 
@@ -618,19 +639,20 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
     if dossier is None:
         return None
     u = dossier.user
-    username = f"@{u.username}" if u.username else "N/D"
+    username = f"@{esc(u.username)}" if u.username else "N/D"
     status_line = ""
-    if settings.group_id != 0:
+    group_id = group_registry.get_group_id()
+    if group_id != 0:
         try:
-            member = await bot.get_chat_member(settings.group_id, tg_id)
+            member = await bot.get_chat_member(group_id, tg_id)
             status_line = f"\n👥 Stato gruppo: {_STATUS_MAP.get(member.status, member.status)}"
         except Exception:  # noqa: BLE001
             pass
     rank = xp_service.rank_for_xp(u.xp)
-    rank_str = f"{rank.emoji} {rank.name}" if rank else "—"
-    tag_line = f"\n🏷️ Tag: {u.cosmetic_tag}" if u.cosmetic_tag else ""
+    rank_str = f"{rank.emoji} {esc(rank.name)}" if rank else "—"
+    tag_line = f"\n🏷️ Tag: {esc(u.cosmetic_tag)}" if u.cosmetic_tag else ""
     text = (
-        f"🪪 <b>{u.full_name}</b>\n\n"
+        f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 {username}\n"
         f"🆔 <code>{u.tg_id}</code>\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
@@ -641,7 +663,7 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
         f"{status_line}\n\n"
         "Scegli un'azione:"
     )
-    return text, user_detail_kb(tg_id, settings.group_id != 0)
+    return text, user_detail_kb(tg_id, group_id != 0)
 
 
 async def _show_detail_cb(callback: CallbackQuery, db_session: AsyncSession, tg_id: int) -> None:

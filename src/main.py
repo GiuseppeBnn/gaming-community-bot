@@ -18,6 +18,7 @@ from handlers import (
     common,
     economy,
     fun_ai,
+    group_events,
     leaderboard,
     onboarding,
     quiz,
@@ -28,7 +29,7 @@ from handlers.schedule import scheduler_loop
 from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
-from services import badge_service, catalog_loader
+from services import badge_service, catalog_loader, group_registry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,10 +92,13 @@ async def main() -> None:
     # falling back to built-in defaults if the files are absent/invalid.
     async with async_session_maker() as session:
         n_trophies = await badge_service.sync_trophies(session)
+        # Restore the effective group id (may differ from settings.group_id after
+        # a chat migration) before any handler runs.
+        effective_group = await group_registry.load(session)
     counts = catalog_loader.init_registries()
     logger.info(
-        "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici.",
-        n_trophies, counts["ranks"], counts["cosmetics"],
+        "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici. Group id effettivo: %s",
+        n_trophies, counts["ranks"], counts["cosmetics"], effective_group,
     )
 
     storage = _build_storage()
@@ -114,6 +118,7 @@ async def main() -> None:
     # Router order matters: admin_betting MUST precede betting so that
     # admin_bet:* callbacks are matched before the catch-all deny at the
     # bottom of admin_betting.router.
+    dp.include_router(group_events.router)
     dp.include_router(onboarding.router)
     dp.include_router(economy.router)
     dp.include_router(admin_betting.router)

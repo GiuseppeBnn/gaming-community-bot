@@ -18,9 +18,13 @@ from exceptions.economy import (
     SelfTransferError,
     WalletNotFoundError,
 )
+from aiogram.enums import ChatType
+
 from filters.admin_filter import IsAdminFilter
+from handlers._privacy import redirect_to_private
 from services import badge_service, economy_service, xp_service
 from services.xp_service import XpSource
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -41,8 +45,9 @@ _TX_LABELS = {
 }
 
 
-@router.message(Command("saldo"))
-async def cmd_saldo(message: Message, db_session: AsyncSession) -> None:
+async def show_saldo(message: Message, db_session: AsyncSession) -> None:
+    """Render the caller's balance. Reused by the /saldo command and the
+    ``?start=saldo`` deep-link (private chat only)."""
     try:
         balance = await economy_service.get_balance(db_session, message.from_user.id)
     except WalletNotFoundError:
@@ -51,8 +56,15 @@ async def cmd_saldo(message: Message, db_session: AsyncSession) -> None:
     await message.answer(f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>")
 
 
-@router.message(Command("storico"))
-async def cmd_storico(message: Message, db_session: AsyncSession) -> None:
+@router.message(Command("saldo"))
+async def cmd_saldo(message: Message, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "saldo", "🪙 Vedi il tuo saldo"):
+        return
+    await show_saldo(message, db_session)
+
+
+async def show_storico(message: Message, db_session: AsyncSession) -> None:
+    """Render the caller's transaction history (private chat only)."""
     entries = await economy_service.get_history(db_session, message.from_user.id)
     if not entries:
         await message.answer("📋 Nessuna transazione ancora.")
@@ -71,19 +83,26 @@ async def cmd_storico(message: Message, db_session: AsyncSession) -> None:
     await message.answer("\n".join(lines))
 
 
+@router.message(Command("storico"))
+async def cmd_storico(message: Message, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "storico", "📋 Vedi lo storico"):
+        return
+    await show_storico(message, db_session)
+
+
 @router.message(Command("daily"))
 async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     try:
         reward, streak = await economy_service.claim_daily(db_session, message.from_user.id)
         await db_session.commit()
     except DailyAlreadyClaimedError as e:
-        await message.answer(
+        await message.reply(
             f"⏰ Hai già riscosso il premio oggi.\n"
             f"Riprova tra <b>{e.hours_remaining:.1f} ore</b>."
         )
         return
     except WalletNotFoundError:
-        await message.answer("⚠️ Wallet non trovato. Usa /start per registrarti.")
+        await message.reply("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
 
     # Capped participation XP + milestone check, committed together.
@@ -105,13 +124,31 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     text += "🪙 Usa /saldo per vedere il tuo saldo."
     if xp_res.new_rank is not None:
         text += (
-            f"\n\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {xp_res.new_rank.name}!"
+            f"\n\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
         )
     if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {b.name}" for b in newly_earned)
+        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
         text += f"\n\n🏅 <b>Trofeo sbloccato:</b> {badges_text}!"
 
-    await message.answer(text)
+    # In private: show everything. In group: claim succeeded, but the streak/XP/
+    # rank details are personal → minimal public ack + best-effort DM of the rest.
+    if message.chat.type == ChatType.PRIVATE:
+        await message.answer(text)
+        return
+
+    dm_ok = True
+    try:
+        await message.bot.send_message(message.from_user.id, text)
+    except Exception:  # noqa: BLE001 — user may have never opened the bot
+        dm_ok = False
+    if dm_ok:
+        await message.reply("✅ Premio giornaliero riscosso! Ti ho mandato i dettagli in privato. 📩")
+    else:
+        bot_info = await message.bot.get_me()
+        await message.reply(
+            "✅ Premio giornaliero riscosso! Apri la chat privata col bot per i dettagli: "
+            f"https://t.me/{bot_info.username}?start=daily"
+        )
 
 
 @router.message(Command("trasferisci"))
@@ -171,7 +208,7 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ Wallet non trovato.")
         return
 
-    target_name = f"@{target.username}" if target.username else target.full_name
+    target_name = f"@{esc(target.username)}" if target.username else esc(target.full_name)
     newly_earned = await badge_service.check_and_award_milestones(
         db_session, message.from_user.id
     )
@@ -180,7 +217,7 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
 
     text = f"✅ Trasferiti <b>{amount:,} 🪙</b> a {target_name}!"
     if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {b.name}" for b in newly_earned)
+        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
         text += f"\n\n🏅 <b>Badge sbloccato:</b> {badges_text}!"
     await message.answer(text)
 
@@ -228,7 +265,7 @@ async def cmd_credita(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ Operazione fallita.")
         return
 
-    target_name = f"@{target.username}" if target.username else target.full_name
+    target_name = f"@{esc(target.username)}" if target.username else esc(target.full_name)
     await message.answer(
         f"✅ Accreditati <b>{amount:,} 🪙</b> a {target_name} (ID: <code>{target.tg_id}</code>)."
     )

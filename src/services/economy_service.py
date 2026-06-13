@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,8 +19,15 @@ _MIN_TRANSFER = 1
 _MAX_TRANSFER = 1_000_000
 
 
-async def _get_wallet(session: AsyncSession, tg_id: int) -> Wallet:
-    result = await session.execute(select(Wallet).where(Wallet.tg_id == tg_id))
+async def _get_wallet(
+    session: AsyncSession, tg_id: int, *, for_update: bool = False
+) -> Wallet:
+    stmt = select(Wallet).where(Wallet.tg_id == tg_id)
+    if for_update:
+        # Row-level lock so concurrent debits/credits serialize on Postgres and
+        # can't double-spend. No-op on SQLite (dev/tests), real on Postgres (prod).
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     wallet = result.scalar_one_or_none()
     if wallet is None:
         raise WalletNotFoundError(tg_id)
@@ -39,7 +45,9 @@ async def credit(
     """Add `amount` coins to `tg_id`'s wallet and record a ledger entry.
     Does NOT commit — caller is responsible for the commit.
     """
-    wallet = await _get_wallet(session, tg_id)
+    if amount <= 0:
+        raise ValueError("L'importo da accreditare deve essere positivo.")
+    wallet = await _get_wallet(session, tg_id, for_update=True)
     wallet.coins += amount
     session.add(
         LedgerEntry(
@@ -64,7 +72,9 @@ async def debit(
     Raises InsufficientFundsError if balance is too low.
     Does NOT commit — caller is responsible for the commit.
     """
-    wallet = await _get_wallet(session, tg_id)
+    if amount <= 0:
+        raise ValueError("L'importo da addebitare deve essere positivo.")
+    wallet = await _get_wallet(session, tg_id, for_update=True)
     if wallet.coins < amount:
         raise InsufficientFundsError(balance=wallet.coins, required=amount)
     wallet.coins -= amount
@@ -101,8 +111,13 @@ async def transfer(
             f"Importo non valido (min {_MIN_TRANSFER}, max {_MAX_TRANSFER:,})."
         )
 
-    from_wallet = await _get_wallet(session, from_tg_id)
-    await _get_wallet(session, to_tg_id)  # existence check
+    # Pre-lock both wallets in a deterministic order (ascending tg_id) so two
+    # opposite transfers on the same pair can't deadlock. The debit/credit below
+    # re-select FOR UPDATE, but the locks are already held by this transaction.
+    first, second = sorted((from_tg_id, to_tg_id))
+    w_first = await _get_wallet(session, first, for_update=True)
+    w_second = await _get_wallet(session, second, for_update=True)
+    from_wallet = w_first if first == from_tg_id else w_second
 
     if from_wallet.coins < amount:
         raise InsufficientFundsError(balance=from_wallet.coins, required=amount)
@@ -118,8 +133,11 @@ async def transfer(
         f"Trasferimento da {from_tg_id}",
     )
 
-    # Increment transfers_made counter for badge tracking
-    from_user_result = await session.execute(select(User).where(User.tg_id == from_tg_id))
+    # Increment transfers_made counter for badge tracking (lock the row so the
+    # counter can't be lost under concurrent transfers from the same sender).
+    from_user_result = await session.execute(
+        select(User).where(User.tg_id == from_tg_id).with_for_update()
+    )
     from_user = from_user_result.scalar_one_or_none()
     if from_user is not None:
         from_user.transfers_made += 1
@@ -133,7 +151,11 @@ async def claim_daily(
     Raises DailyAlreadyClaimedError if called within the cooldown window.
     Does NOT commit — caller is responsible for the commit.
     """
-    result = await session.execute(select(User).where(User.tg_id == tg_id))
+    # Lock the user row: the read-check-write on last_daily_claim must be atomic
+    # or two concurrent /daily calls could both pass the cooldown check.
+    result = await session.execute(
+        select(User).where(User.tg_id == tg_id).with_for_update()
+    )
     user = result.scalar_one_or_none()
     if user is None:
         raise WalletNotFoundError(tg_id)

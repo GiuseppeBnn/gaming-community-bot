@@ -33,7 +33,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import User
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
-from services import quiz_service
+from services import group_registry, quiz_service
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -203,7 +204,7 @@ async def cb_quiz_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 async def _prompt_title(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_title)
     current = (await state.get_data()).get("title")
-    hint = f"\n<i>Attuale: {current}</i>" if current else ""
+    hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
         "🧠 <b>Crea un nuovo quiz</b>\n\n"
         "<b>Step 1/3</b> — Invia il <b>titolo</b> del quiz (max 256 caratteri):" + hint,
@@ -214,7 +215,7 @@ async def _prompt_title(message: Message, state: FSMContext) -> None:
 async def _prompt_description(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_description)
     current = (await state.get_data()).get("description")
-    hint = f"\n<i>Attuale: {current}</i>" if current else ""
+    hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
         "<b>Step 2/3</b> — Invia una breve <b>descrizione</b> (o «-» per saltare):" + hint,
         reply_markup=_back_cancel_kb(),
@@ -268,7 +269,7 @@ async def _prompt_question_text(message: Message, state: FSMContext, first: bool
 async def _prompt_question_options(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_question_options)
     current = (await state.get_data()).get("q_options")
-    hint = f"\n<i>Attuali: {', '.join(current)}</i>" if current else ""
+    hint = f"\n<i>Attuali: {esc(', '.join(current))}</i>" if current else ""
     await message.answer(
         f"Invia le <b>opzioni</b>, una per riga (min {_MIN_OPTIONS}, max {_MAX_OPTIONS}):\n\n"
         "<i>Esempio:\n<code>Roma\nMilano\nNapoli</code></i>" + hint,
@@ -294,13 +295,13 @@ async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncS
     await state.set_state(QuizCreationStates.reviewing)
     data = await state.get_data()
     quiz = await quiz_service.get_quiz(db_session, data["quiz_id"])
-    lines = ["🧠 <b>Riepilogo quiz</b>\n", f"📌 <b>{quiz.title}</b>"]
+    lines = ["🧠 <b>Riepilogo quiz</b>\n", f"📌 <b>{esc(quiz.title)}</b>"]
     if quiz.description:
-        lines.append(f"<i>{quiz.description}</i>")
+        lines.append(f"<i>{esc(quiz.description)}</i>")
     lines.append(f"💰 Premi: {quiz_service.format_prize_summary(quiz)}")
     lines.append(f"\n❓ <b>Domande ({len(quiz.questions)}):</b>")
     for i, q in enumerate(quiz.questions, 1):
-        lines.append(f"{i}. {q.text[:50]}")
+        lines.append(f"{i}. {esc(q.text[:50])}")
     lines.append("\nAggiungi altre domande, rimuovi l'ultima, oppure pubblica. ✅")
     await message.answer("\n".join(lines), reply_markup=_review_kb(len(quiz.questions)))
 
@@ -550,7 +551,7 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: Asy
     await state.clear()
     await callback.message.answer(
         f"🎉 <b>Quiz pronto!</b>\n\n"
-        f"🧠 <b>#{quiz.id} {quiz.title}</b>\n"
+        f"🧠 <b>#{quiz.id} {esc(quiz.title)}</b>\n"
         f"❓ Domande: <b>{len(quiz.questions)}</b>\n"
         f"💰 Premi: {quiz_service.format_prize_summary(quiz)}\n\n"
         f"Avvialo nel gruppo con <code>/avvia_quiz {quiz.id}</code> o <code>/quiz</code>, "
@@ -582,7 +583,8 @@ _BACK_PROMPTERS = {
 
 async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, str]:
     """Set a quiz running and announce it in the group. Caller commits."""
-    if settings.group_id == 0:
+    group_id = group_registry.get_group_id()
+    if group_id == 0:
         return False, "GROUP_ID non configurato."
     quiz = await quiz_service.get_quiz(db_session, quiz_id)
     if quiz is None or not quiz.questions:
@@ -596,9 +598,9 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
     # leave the quiz as `ready` rather than marking it running with no announcement.
     try:
         bot_info = await bot.get_me()
-        await bot.send_message(
-            settings.group_id,
-            f"🧠 <b>QUIZ: {quiz.title}</b>\n"
+        await group_registry.send_group_message(
+            bot, db_session,
+            f"🧠 <b>QUIZ: {esc(quiz.title)}</b>\n"
             f"❓ {len(quiz.questions)} domande · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ne azzecca di più — "
             "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁",
@@ -624,6 +626,7 @@ async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
         return
     b = InlineKeyboardBuilder()
     for q in quizzes:
+        # Button text is not HTML-parsed → raw title is fine here.
         b.button(
             text=f"▶️ #{q.id} {q.title[:30]} ({len(q.questions)} dom.)",
             callback_data=f"quiz:open:{q.id}",
@@ -674,9 +677,9 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     await db_session.commit()
 
     text = await _podium_text(db_session, quiz.title, ranked, awards)
-    if settings.group_id != 0:
+    if group_registry.get_group_id() != 0:
         try:
-            await bot.send_message(settings.group_id, text)
+            await group_registry.send_group_message(bot, db_session, text)
         except Exception:  # noqa: BLE001
             log.warning("Impossibile annunciare il podio nel gruppo.")
         return True, "🏁 Quiz chiuso. Podio pubblicato nel gruppo."
@@ -695,10 +698,10 @@ async def cmd_chiudi_quiz(message: Message, command: CommandObject, db_session: 
 
 async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> str:
     if not ranked:
-        return f"🏁 <b>{title}</b> — chiuso!\n\n<i>Nessun partecipante ha completato il quiz.</i>"
+        return f"🏁 <b>{esc(title)}</b> — chiuso!\n\n<i>Nessun partecipante ha completato il quiz.</i>"
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
-    lines = [f"🏁 <b>{title} — PODIO</b>\n"]
+    lines = [f"🏁 <b>{esc(title)} — PODIO</b>\n"]
     for i, row in enumerate(ranked[:10]):
         rank = medals[i] if i < 3 else f"{i + 1}."
         name = await _display_name(db_session, row.user_tg_id)
@@ -716,8 +719,8 @@ async def _display_name(db_session: AsyncSession, tg_id: int) -> str:
     if user is None:
         return f"<a href=\"tg://user?id={tg_id}\">giocatore</a>"
     if user.username:
-        return f"@{user.username}"
-    return f"<a href=\"tg://user?id={tg_id}\">{user.full_name}</a>"
+        return f"@{esc(user.username)}"
+    return f"<a href=\"tg://user?id={tg_id}\">{esc(user.full_name)}</a>"
 
 
 # ---------------------------------------------------------------------------
@@ -742,13 +745,13 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
     if done >= total:
         correct = await quiz_service.correct_count(db_session, quiz_id, message.from_user.id)
         await message.answer(
-            f"✅ Hai già completato <b>{quiz.title}</b>: <b>{correct}/{total}</b> corrette.\n"
+            f"✅ Hai già completato <b>{esc(quiz.title)}</b>: <b>{correct}/{total}</b> corrette.\n"
             "Aspetta la chiusura per vedere il podio! 🏁"
         )
         return
 
     await message.answer(
-        f"🧠 <b>{quiz.title}</b>\n<i>Rispondi alle domande. Nessun limite di tempo, "
+        f"🧠 <b>{esc(quiz.title)}</b>\n<i>Rispondi alle domande. Nessun limite di tempo, "
         "ma chi finisce prima sale sul podio a parità di risposte!</i>"
     )
     await _send_question(message, quiz, done)
@@ -758,7 +761,7 @@ async def _send_question(message: Message, quiz, index: int) -> None:
     question = quiz.questions[index]
     options = quiz_service.question_options(question)
     await message.answer(
-        f"❓ <b>Domanda {index + 1}/{len(quiz.questions)}</b>\n\n{question.text}",
+        f"❓ <b>Domanda {index + 1}/{len(quiz.questions)}</b>\n\n{esc(question.text)}",
         reply_markup=_question_kb(quiz.id, question.id, options),
     )
 
@@ -808,17 +811,17 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
     await db_session.commit()
 
     # Feedback on the answered message (buttons removed).
-    chosen = options[opt_idx]
+    chosen = esc(options[opt_idx])
     if outcome.is_correct:
         feedback = f"✅ <b>Esatto!</b> — {chosen}"
     else:
-        correct_label = options[outcome.correct_option_id]
+        correct_label = esc(options[outcome.correct_option_id])
         feedback = f"❌ <b>Sbagliato.</b> Hai scelto: {chosen}\n✅ Giusta: <b>{correct_label}</b>"
     if question.explanation:
-        feedback += f"\n\n💡 <i>{question.explanation}</i>"
+        feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
     try:
         await callback.message.edit_text(
-            f"❓ {question.text}\n\n{feedback}"
+            f"❓ {esc(question.text)}\n\n{feedback}"
         )
     except Exception:  # noqa: BLE001 — editing may fail if message is too old
         await callback.message.answer(feedback)

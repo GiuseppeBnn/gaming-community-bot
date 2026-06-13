@@ -44,6 +44,10 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_today_date VARCHAR(10)",
     # badges → trophies: PlayStation-style rarity tier
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS rarity VARCHAR(16) NOT NULL DEFAULT 'bronze'",
+    # wallets/ledger: balances can exceed int32 (airdrops/payouts accumulate).
+    # ALTER TYPE to the same type is a no-op → idempotent like the entries above.
+    "ALTER TABLE wallets ALTER COLUMN coins TYPE BIGINT",
+    "ALTER TABLE ledger ALTER COLUMN amount TYPE BIGINT",
 ]
 
 

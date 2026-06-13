@@ -22,6 +22,7 @@ from sqlalchemy.orm import selectinload
 from database.models import User
 from filters.admin_filter import is_admin as is_bot_admin
 from handlers.onboarding import show_rules_prompt
+from utils.text import esc
 
 router = Router()
 
@@ -168,6 +169,23 @@ async def cmd_start(
         await start_shop_private(message, state, group_id, db_session)
         return
 
+    # Deep-links for personal data redirected from the group (privacy).
+    if payload in ("saldo", "daily"):
+        from handlers.economy import show_saldo
+        await show_saldo(message, db_session)
+        return
+    if payload == "storico":
+        from handlers.economy import show_storico
+        await show_storico(message, db_session)
+        return
+    if payload == "profilo":
+        await show_profilo(message, db_session)
+        return
+    if payload == "traguardi":
+        from handlers.badges import show_traguardi
+        await show_traguardi(message, db_session)
+        return
+
     # Deep-link: create_bet
     if payload == "create_bet":
         from handlers.betting import start_bet_creation
@@ -195,8 +213,8 @@ async def cmd_start(
         return
 
     # Default: main menu
-    name = message.from_user.first_name
-    username_str = f" (@{message.from_user.username})" if message.from_user.username else ""
+    name = esc(message.from_user.first_name)
+    username_str = f" (@{esc(message.from_user.username)})" if message.from_user.username else ""
     await message.answer(
         f"🎮 <b>Bentornato, {name}{username_str}!</b>\n\n"
         f"/profilo — Il tuo profilo\n"
@@ -210,6 +228,14 @@ async def cmd_start(
 
 @router.message(Command("profilo"))
 async def cmd_profilo(message: Message, db_session: AsyncSession) -> None:
+    from handlers._privacy import redirect_to_private
+    if await redirect_to_private(message, "profilo", "🎮 Vedi il tuo profilo"):
+        return
+    await show_profilo(message, db_session)
+
+
+async def show_profilo(message: Message, db_session: AsyncSession) -> None:
+    """Render the caller's profile (private chat only)."""
     result = await db_session.execute(
         select(User)
         .where(User.tg_id == message.from_user.id)
@@ -224,17 +250,17 @@ async def cmd_profilo(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ Profilo non trovato. Usa /start per registrarti.")
         return
 
-    username_display = f"@{user.username}" if user.username else "N/D"
+    username_display = f"@{esc(user.username)}" if user.username else "N/D"
     badge_count = len(user.badges)
     member_since = user.created_at.strftime("%d/%m/%Y")
 
     from services import xp_service
     rank = xp_service.rank_for_xp(user.xp)
-    rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {rank.name}\n" if rank else ""
-    tag_line = f"🏷️ <b>Tag:</b> {user.cosmetic_tag}\n" if user.cosmetic_tag else ""
-    title = f"{user.full_name}"
+    rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {esc(rank.name)}\n" if rank else ""
+    tag_line = f"🏷️ <b>Tag:</b> {esc(user.cosmetic_tag)}\n" if user.cosmetic_tag else ""
+    title = esc(user.full_name)
     if user.cosmetic_tag:
-        title = f"{user.cosmetic_tag} · {title}"
+        title = f"{esc(user.cosmetic_tag)} · {title}"
 
     await message.answer(
         f"🎮 <b>{title}</b>\n\n"

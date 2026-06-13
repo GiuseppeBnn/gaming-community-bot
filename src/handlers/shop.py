@@ -28,19 +28,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import TransactionType, Wallet
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
+from handlers._privacy import redirect_to_private
 from keyboards.shop_kb import get_shop_catalog_kb, get_shop_confirm_kb
 from services import economy_service, shop_service
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
 
 
 # ---------------------------------------------------------------------------
-# /negozio command (opens anywhere)
+# /negozio command (private only — the catalog shows the caller's balance)
 # ---------------------------------------------------------------------------
 
 @router.message(Command("negozio"))
 async def cmd_negozio(message: Message, db_session: AsyncSession) -> None:
+    # In a group the catalog would leak the opener's balance to everyone, and
+    # the inline buttons act on whoever clicks → send a private deep-link instead.
+    if await redirect_to_private(message, f"shop_{message.chat.id}", "🛒 Apri il negozio"):
+        return
     await _show_catalog(message, db_session)
 
 
@@ -137,8 +143,8 @@ async def cb_shop_buy(callback: CallbackQuery, db_session: AsyncSession) -> None
         return
 
     await callback.message.edit_text(
-        f"🛒 <b>{item.name}</b>\n\n"
-        f"Tag mostrato sul profilo: <b>{shop_service.format_tag(item)}</b>\n\n"
+        f"🛒 <b>{esc(item.name)}</b>\n\n"
+        f"Tag mostrato sul profilo: <b>{esc(shop_service.format_tag(item))}</b>\n\n"
         f"💸 Costo: <b>{item.price:,} 🪙</b>\n"
         f"💰 Saldo: <b>{balance:,} 🪙</b>\n\n"
         f"Confermi l'acquisto?",
@@ -157,12 +163,15 @@ async def cb_shop_execute(callback: CallbackQuery, db_session: AsyncSession) -> 
 
     tg_id = callback.from_user.id
 
-    # Idempotency: never charge twice / never double-apply.
+    # Fast-path idempotency check (no lock). The authoritative re-check happens
+    # under the wallet lock below to close the double-purchase race.
     if await shop_service.has_cosmetic(db_session, tg_id, item_key):
         await callback.answer("🎁 Possiedi già questa personalizzazione.", show_alert=True)
         return
 
     try:
+        # Debit FIRST: this takes the wallet row lock, serializing concurrent
+        # purchases of the same user.
         await economy_service.debit(
             db_session,
             tg_id,
@@ -170,6 +179,12 @@ async def cb_shop_execute(callback: CallbackQuery, db_session: AsyncSession) -> 
             TransactionType.shop_purchase,
             f"Acquisto negozio: {item.name}",
         )
+        # Re-check ownership under the lock: if a concurrent purchase already
+        # applied this cosmetic, undo this debit and bail (never charge twice).
+        if await shop_service.has_cosmetic(db_session, tg_id, item_key):
+            await db_session.rollback()
+            await callback.answer("🎁 Possiedi già questa personalizzazione.", show_alert=True)
+            return
         await shop_service.record_purchase(db_session, tg_id, item_key, item.price)
         await shop_service.apply_cosmetic(db_session, tg_id, item)
         await db_session.commit()
@@ -185,7 +200,7 @@ async def cb_shop_execute(callback: CallbackQuery, db_session: AsyncSession) -> 
 
     await callback.message.edit_text(
         f"✅ <b>Acquistato!</b>\n\n"
-        f"🏷️ Il tuo nuovo tag: <b>{shop_service.format_tag(item)}</b>\n"
+        f"🏷️ Il tuo nuovo tag: <b>{esc(shop_service.format_tag(item))}</b>\n"
         f"💸 Hai speso <b>{item.price:,} 🪙</b>.\n\n"
         f"Lo vedi sul tuo /profilo."
     )

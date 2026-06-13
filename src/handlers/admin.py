@@ -25,8 +25,9 @@ from database.models import TransactionType
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from filters.admin_filter import IsAdminFilter
 from handlers._targeting import ResolvedTarget, resolve_target
-from services import admin_service, economy_service, moderation_service, xp_service
+from services import admin_service, economy_service, group_registry, moderation_service, xp_service
 from services.xp_service import XpSource
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -59,10 +60,10 @@ _XP_AUDIT = ("xp_grant", "xp_set", "xp_airdrop")
 # ---------------------------------------------------------------------------
 
 def _mod_chat_id(message: Message) -> int | None:
-    """The chat to moderate: the current group, or the configured GROUP_ID."""
+    """The chat to moderate: the current group, or the effective GROUP_ID."""
     if message.chat.type in _GROUP_TYPES:
         return message.chat.id
-    return settings.group_id or None
+    return group_registry.get_group_id() or None
 
 
 async def _notify(message: Message, tg_id: int, text: str) -> None:
@@ -185,7 +186,7 @@ async def cmd_dai_xp(message: Message, command: CommandObject, db_session: Async
         db_session, message.from_user.id, "xp_grant", target_tg_id=target.tg_id, amount=amount
     )
     await db_session.commit()
-    extra = f" (nuovo rango: {res.new_rank.name})" if res.new_rank else ""
+    extra = f" (nuovo rango: {esc(res.new_rank.name)})" if res.new_rank else ""
     await message.reply(f"⚡ Assegnati <b>+{res.granted:,} XP</b> a {target.display_name}{extra}.")
 
 
@@ -252,8 +253,7 @@ async def _guard_mod_target(message: Message, target: ResolvedTarget) -> int | N
     if target.tg_id == message.from_user.id:
         await message.reply("⚠️ Non puoi usare questo comando su te stesso.")
         return None
-    me = await message.bot.get_me()
-    if target.tg_id == me.id:
+    if target.tg_id == message.bot.id:
         await message.reply("⚠️ Non posso moderare me stesso. 🤖")
         return None
     chat_id = _mod_chat_id(message)
@@ -284,7 +284,7 @@ async def cmd_ban(message: Message, command: CommandObject, db_session: AsyncSes
     )
     await db_session.commit()
     await _notify(message, target.tg_id, "⛔ Sei stato bannato dal gruppo.")
-    suffix = f"\n📝 Motivo: <i>{reason}</i>" if reason else ""
+    suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
     await message.reply(f"⛔ {target.display_name} bannato.{suffix}")
 
 
@@ -436,9 +436,8 @@ async def cmd_warn(message: Message, command: CommandObject, db_session: AsyncSe
     target = await _resolve_or_warn(message, db_session, command)
     if target is None:
         return
-    chat_id = _mod_chat_id(message)
+    chat_id = await _guard_mod_target(message, target)
     if chat_id is None:
-        await message.reply("⚠️ GROUP_ID non configurato: usa il comando nel gruppo.")
         return
 
     reason = target.remainder.strip()
@@ -447,7 +446,7 @@ async def cmd_warn(message: Message, command: CommandObject, db_session: AsyncSe
     )
 
     await db_session.commit()
-    suffix = f"\n📝 Motivo: <i>{reason}</i>" if reason else ""
+    suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
     await _notify(
         message, target.tg_id,
         f"⚠️ Hai ricevuto un warn ({count}/{settings.warn_ban_threshold}).{suffix}",
@@ -469,7 +468,7 @@ async def cmd_warns(message: Message, command: CommandObject, db_session: AsyncS
     lines = [f"⚠️ <b>Warn attivi di {target.display_name}: {len(warns)}</b>\n"]
     for i, w in enumerate(warns, 1):
         when = w.created_at.strftime("%d/%m %H:%M")
-        reason = f" — <i>{w.reason}</i>" if w.reason else ""
+        reason = f" — <i>{esc(w.reason)}</i>" if w.reason else ""
         lines.append(f"{i}. {when}{reason}")
     await message.reply("\n".join(lines))
 
@@ -506,7 +505,7 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
         return
 
     u = dossier.user
-    username = f"@{u.username}" if u.username else "N/D"
+    username = f"@{esc(u.username)}" if u.username else "N/D"
     member_since = u.created_at.strftime("%d/%m/%Y")
 
     # Live group status (best-effort)
@@ -525,7 +524,7 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
             pass
 
     await message.reply(
-        f"🪪 <b>{u.full_name}</b>\n\n"
+        f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 Username: {username}\n"
         f"🆔 ID: <code>{u.tg_id}</code>\n"
         f"📅 Dal: {member_since}\n"
@@ -547,12 +546,12 @@ async def cmd_cerca(message: Message, command: CommandObject, db_session: AsyncS
         return
     users = await admin_service.search_users(db_session, query)
     if not users:
-        await message.reply(f"🔍 Nessun utente trovato per «{query}».")
+        await message.reply(f"🔍 Nessun utente trovato per «{esc(query)}».")
         return
-    lines = [f"🔍 <b>Risultati per «{query}»: {len(users)}</b>\n"]
+    lines = [f"🔍 <b>Risultati per «{esc(query)}»: {len(users)}</b>\n"]
     for u in users:
-        username = f"@{u.username}" if u.username else "—"
-        lines.append(f"• {u.full_name} ({username}) · <code>{u.tg_id}</code>")
+        username = f"@{esc(u.username)}" if u.username else "—"
+        lines.append(f"• {esc(u.full_name)} ({username}) · <code>{u.tg_id}</code>")
     await message.reply("\n".join(lines))
 
 
@@ -597,7 +596,7 @@ async def render_leaderboard(db_session: AsyncSession) -> str:
     lines = ["🏆 <b>Classifica ricchezza</b>\n"]
     for i, (user, coins) in enumerate(rows):
         rank = medals[i] if i < 3 else f"{i + 1}."
-        name = f"@{user.username}" if user.username else user.full_name
+        name = f"@{esc(user.username)}" if user.username else esc(user.full_name)
         lines.append(f"{rank} {name} — <b>{coins:,} 🪙</b>")
     return "\n".join(lines)
 
@@ -620,7 +619,7 @@ async def render_audit(db_session: AsyncSession, target_tg_id: int | None = None
         else:
             amt = ""
         tgt = f" → <code>{a.target_tg_id}</code>" if a.target_tg_id else ""
-        detail = f" <i>{a.detail}</i>" if a.detail else ""
+        detail = f" <i>{esc(a.detail)}</i>" if a.detail else ""
         lines.append(f"{label}{tgt}{amt} · {when}{detail}")
     return "\n".join(lines)
 

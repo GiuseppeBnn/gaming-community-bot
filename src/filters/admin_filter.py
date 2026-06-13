@@ -16,6 +16,7 @@ from aiogram.filters import Filter
 from aiogram.types import CallbackQuery, Message
 
 from config_data.config import settings
+from services import group_registry
 
 _ADMIN_CACHE_TTL = 300  # seconds
 _cache: dict[int, tuple[set[int], float]] = {}
@@ -40,9 +41,10 @@ async def _telegram_admin_ids(bot: Bot, group_id: int) -> set[int]:
 async def is_admin(bot: Bot, user_id: int) -> bool:
     if user_id in settings.admin_ids:
         return True
-    if settings.group_id == 0:
+    group_id = group_registry.get_group_id()
+    if group_id == 0:
         return False
-    return user_id in await _telegram_admin_ids(bot, settings.group_id)
+    return user_id in await _telegram_admin_ids(bot, group_id)
 
 
 def invalidate_admin_cache(group_id: int | None = None) -> None:

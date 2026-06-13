@@ -17,11 +17,30 @@ from aiogram.types import CallbackQuery, Message, TelegramObject, User
 
 MAX_CALLS = 12
 WINDOW_SECONDS = 10.0
+# Sweep the whole dict every N calls so idle users' (now-empty) entries are
+# reclaimed — otherwise the dict grows once per unique user, forever.
+_CLEANUP_EVERY = 512
 
 
 class RateLimitMiddleware(BaseMiddleware):
     def __init__(self) -> None:
         self._timestamps: dict[int, list[float]] = defaultdict(list)
+        self._op_count = 0
+
+    def _evict(self, user_id: int, now: float) -> list[float]:
+        """Drop this user's timestamps outside the window; remove the key entirely
+        when it empties so inactive users don't linger in the dict."""
+        kept = [t for t in self._timestamps[user_id] if now - t < WINDOW_SECONDS]
+        if kept:
+            self._timestamps[user_id] = kept
+        else:
+            self._timestamps.pop(user_id, None)
+        return kept
+
+    def _sweep(self, now: float) -> None:
+        for uid in list(self._timestamps):
+            if not [t for t in self._timestamps[uid] if now - t < WINDOW_SECONDS]:
+                self._timestamps.pop(uid, None)
 
     async def __call__(
         self,
@@ -34,12 +53,14 @@ class RateLimitMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         now = time.monotonic()
-        # Evict timestamps outside the window
-        self._timestamps[tg_user.id] = [
-            t for t in self._timestamps[tg_user.id] if now - t < WINDOW_SECONDS
-        ]
+        self._op_count += 1
+        if self._op_count >= _CLEANUP_EVERY:
+            self._op_count = 0
+            self._sweep(now)
 
-        if len(self._timestamps[tg_user.id]) >= MAX_CALLS:
+        kept = self._evict(tg_user.id, now)
+
+        if len(kept) >= MAX_CALLS:
             if isinstance(event, Message):
                 await event.answer("⚠️ Stai inviando troppi comandi. Aspetta qualche secondo.")
             elif isinstance(event, CallbackQuery):

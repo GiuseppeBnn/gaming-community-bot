@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import User
 from keyboards.onboarding_kb import get_rules_keyboard
 from services import badge_service
+from utils.text import esc
 
 router = Router()
 
@@ -32,7 +33,7 @@ _COMMUNITY_RULES = (
 
 async def show_rules_prompt(message: Message) -> None:
     """Entry point called from cmd_start when onboarding is not yet completed."""
-    name = message.from_user.first_name
+    name = esc(message.from_user.first_name)
     await message.answer(
         f"🎮 <b>Ciao {name}, benvenuto nell'Arena!</b>\n\n"
         f"{_COMMUNITY_RULES}",
@@ -62,7 +63,7 @@ async def cb_accept_rules(
         "\n\n🏅 <b>Badge sbloccato:</b> 🚀 <i>Primi Passi</i> (+50 XP)" if is_new else ""
     )
 
-    name = callback.from_user.first_name
+    name = esc(callback.from_user.first_name)
     await callback.message.edit_text(
         f"🎉 <b>Bentornato nella community, {name}!</b>\n\n"
         f"Sei ora un membro a pieno titolo.\n\n"

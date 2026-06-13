@@ -1,5 +1,7 @@
+from typing import Annotated
+
 from pydantic import field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -16,7 +18,9 @@ class Settings(BaseSettings):
     # 0 = not configured → GroupMemberMiddleware skips the check.
     group_id: int = 0
 
-    admin_ids: list[int] = []
+    # NoDecode: keep pydantic-settings from JSON-decoding the env value, so the
+    # CSV format (ADMIN_IDS=123,456) reaches parse_admin_ids as a plain string.
+    admin_ids: Annotated[list[int], NoDecode] = []
 
     daily_reward_coins: int = 100
 

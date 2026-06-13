@@ -91,7 +91,7 @@ class Wallet(Base):
     tg_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("users.tg_id", ondelete="CASCADE"), unique=True, nullable=False
     )
-    coins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    coins: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="wallet")
 
@@ -102,7 +102,7 @@ class LedgerEntry(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     from_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     to_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    amount: Mapped[int] = mapped_column(Integer, nullable=False)
+    amount: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tx_type: Mapped[str] = mapped_column(String(32), nullable=False)
     description: Mapped[str] = mapped_column(String(512), nullable=False)
     reference_id: Mapped[Optional[int]] = mapped_column(
@@ -319,6 +319,16 @@ class QuizAnswer(Base):
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class BotState(Base):
+    """Small key-value store for runtime state that must survive restarts
+    (e.g. the effective group id after a Telegram chat migration)."""
+
+    __tablename__ = "bot_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(256), nullable=False)
 
 
 class ScheduledTask(Base):

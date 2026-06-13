@@ -36,6 +36,7 @@ from keyboards.admin_betting_kb import (
     get_admin_resolve_options_keyboard,
 )
 from services import badge_service, bet_service
+from utils.text import esc
 
 router = Router()
 
@@ -114,14 +115,14 @@ async def _show_event_menu(
     pending_count = sum(1 for b in event.user_bets if b.status == "pending")
     total_pool = sum(o.total_wagered for o in event.options)
     opts_text = "\n".join(
-        f"  {'🔹' if i == 0 else '🔸'} <b>{o.label}</b> — {o.total_wagered} 🪙"
+        f"  {'🔹' if i == 0 else '🔸'} <b>{esc(o.label)}</b> — {o.total_wagered} 🪙"
         for i, o in enumerate(event.options)
     )
     status_label = _STATUS_LABEL.get(event.status, event.status)
 
     await callback.message.edit_text(
-        f"🎯 <b>#{event.id} {event.title}</b>\n\n"
-        f"<i>{event.description}</i>\n\n"
+        f"🎯 <b>#{event.id} {esc(event.title)}</b>\n\n"
+        f"<i>{esc(event.description)}</i>\n\n"
         f"<b>Stato:</b> {status_label}\n"
         f"<b>Opzioni:</b>\n{opts_text}\n\n"
         f"💰 <b>Pool totale:</b> {total_pool} 🪙\n"
@@ -160,7 +161,7 @@ async def cb_admin_lock(callback: CallbackQuery, db_session: AsyncSession) -> No
     pending_count = sum(1 for b in event.user_bets if b.status == "pending")
 
     await callback.message.edit_text(
-        f"🔒 <b>Blocca scommesse — #{event.id} {event.title}</b>\n\n"
+        f"🔒 <b>Blocca scommesse — #{event.id} {esc(event.title)}</b>\n\n"
         f"🎫 Scommesse attive: <b>{pending_count}</b>\n\n"
         f"Bloccando l'evento non sarà più possibile piazzare nuove scommesse. "
         f"Le scommesse già piazzate restano valide.\n\n"
@@ -214,7 +215,7 @@ async def cb_admin_resolve(callback: CallbackQuery, db_session: AsyncSession) ->
     total_pool = sum(o.total_wagered for o in event.options)
 
     await callback.message.edit_text(
-        f"🏁 <b>Dichiara vincitore — #{event.id} {event.title}</b>\n\n"
+        f"🏁 <b>Dichiara vincitore — #{event.id} {esc(event.title)}</b>\n\n"
         f"💰 <b>Pool totale:</b> {total_pool} 🪙\n\n"
         f"Seleziona l'opzione vincente.\n"
         f"<i>Il pool intero sarà distribuito ai vincitori in proporzione al loro bet (stile Twitch).</i>",
@@ -261,7 +262,7 @@ async def cb_admin_pick_winner(callback: CallbackQuery, db_session: AsyncSession
 
     await callback.message.edit_text(
         f"📊 <b>Anteprima distribuzione</b>\n\n"
-        f"🏆 Opzione vincente: <b>{winning_option.label}</b>\n"
+        f"🏆 Opzione vincente: <b>{esc(winning_option.label)}</b>\n"
         f"💰 Pool totale: <b>{total_pot} 🪙</b>\n\n"
         f"✅ Vincitori: {winning_count} scommesse ({winning_pool} 🪙 puntati)\n"
         f"❌ Perdenti: {losing_count} scommesse ({losing_pool} 🪙 persi)\n\n"
@@ -319,8 +320,8 @@ async def cb_admin_confirm_resolve(
                     await callback.bot.send_message(
                         bet.user_tg_id,
                         f"🏆 <b>Hai vinto!</b>\n\n"
-                        f"🎯 <b>{event.title}</b>\n"
-                        f"✅ Opzione vincente: <b>{summary['winning_option']}</b>\n"
+                        f"🎯 <b>{esc(event.title)}</b>\n"
+                        f"✅ Opzione vincente: <b>{esc(summary['winning_option'])}</b>\n"
                         f"💸 Hai scommesso: <b>{bet.amount} 🪙</b>\n"
                         f"🎉 <b>Payout ricevuto: {payout} 🪙</b>",
                     )
@@ -331,8 +332,8 @@ async def cb_admin_confirm_resolve(
                     await callback.bot.send_message(
                         bet.user_tg_id,
                         f"❌ <b>Scommessa persa.</b>\n\n"
-                        f"🎯 <b>{event.title}</b>\n"
-                        f"✅ Opzione vincente: <b>{summary['winning_option']}</b>\n"
+                        f"🎯 <b>{esc(event.title)}</b>\n"
+                        f"✅ Opzione vincente: <b>{esc(summary['winning_option'])}</b>\n"
                         f"💸 Hai perso: <b>{bet.amount} 🪙</b>",
                     )
                 except Exception:
@@ -340,7 +341,7 @@ async def cb_admin_confirm_resolve(
 
     await callback.message.edit_text(
         f"🏁 <b>Evento #{event_id} risolto!</b>\n\n"
-        f"✅ Opzione vincente: <b>{summary['winning_option']}</b>\n"
+        f"✅ Opzione vincente: <b>{esc(summary['winning_option'])}</b>\n"
         f"💰 Pool totale: <b>{summary['total_pot']} 🪙</b>\n"
         f"🏆 Vincitori: <b>{summary['winners']}</b>\n"
         f"💸 Aldueuri distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
@@ -370,7 +371,7 @@ async def cb_admin_cancel(callback: CallbackQuery, db_session: AsyncSession) -> 
     total_to_refund = sum(b.amount for b in event.user_bets if b.status == "pending")
 
     await callback.message.edit_text(
-        f"❌ <b>Annulla scommessa — #{event.id} {event.title}</b>\n\n"
+        f"❌ <b>Annulla scommessa — #{event.id} {esc(event.title)}</b>\n\n"
         f"🎫 Scommesse da rimborsare: <b>{pending_count}</b>\n"
         f"💰 Totale rimborso: <b>{total_to_refund} 🪙</b>\n\n"
         f"⚠️ <b>Attenzione:</b> questa operazione è irreversibile. "
@@ -407,7 +408,7 @@ async def cb_admin_confirm_cancel(
             await callback.bot.send_message(
                 r["tg_id"],
                 f"↩️ <b>Scommessa rimborsata.</b>\n\n"
-                f"🎯 <b>{result['title']}</b> è stata annullata dall'admin.\n"
+                f"🎯 <b>{esc(result['title'])}</b> è stata annullata dall'admin.\n"
                 f"💰 <b>Rimborso: {r['amount']} 🪙</b> accreditati sul tuo saldo.",
             )
         except Exception:

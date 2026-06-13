@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services import admin_service, badge_service, xp_service
+from utils.text import esc
 
 router = Router()
 
@@ -23,7 +24,7 @@ _TABS = (("💰 Ricchezza", "coins"), ("⚡ XP", "xp"), ("🏆 Trofei", "trofei"
 
 
 def _name(user) -> str:
-    return f"@{user.username}" if user.username else user.full_name
+    return f"@{esc(user.username)}" if user.username else esc(user.full_name)
 
 
 def _kb(active: str):

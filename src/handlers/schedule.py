@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
@@ -24,7 +25,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminFilter
-from services import bet_service, quiz_service, schedule_service
+from services import bet_service, group_registry, quiz_service, schedule_service
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -132,7 +134,7 @@ async def fsm_quiz_runat(message: Message, state: FSMContext, db_session) -> Non
         return
     data = await state.get_data()
     task = await schedule_service.schedule_task(
-        db_session, "quiz", run_at, message.from_user.id, settings.group_id or None,
+        db_session, "quiz", run_at, message.from_user.id, group_registry.get_group_id() or None,
         ref_id=data["quiz_id"],
     )
     await db_session.commit()
@@ -184,7 +186,7 @@ async def fsm_poll_runat(message: Message, state: FSMContext, db_session) -> Non
         return
     data = await state.get_data()
     task = await schedule_service.schedule_task(
-        db_session, "poll", run_at, message.from_user.id, settings.group_id or None,
+        db_session, "poll", run_at, message.from_user.id, group_registry.get_group_id() or None,
         payload={"question": data["poll_question"], "options": data["poll_options"]},
     )
     await db_session.commit()
@@ -246,7 +248,7 @@ async def fsm_bet_runat(message: Message, state: FSMContext, db_session) -> None
         return
     data = await state.get_data()
     task = await schedule_service.schedule_task(
-        db_session, "bet", run_at, message.from_user.id, settings.group_id or None,
+        db_session, "bet", run_at, message.from_user.id, group_registry.get_group_id() or None,
         payload={
             "title": data["bet_title"],
             "description": data.get("bet_description", ""),
@@ -325,7 +327,7 @@ async def fsm_sondaggio_opts(message: Message, state: FSMContext) -> None:
         return
     data = await state.get_data()
     await state.clear()
-    target = settings.group_id or message.chat.id
+    target = group_registry.get_group_id() or message.chat.id
     await message.bot.send_poll(
         chat_id=target, question=data["question"], options=options, is_anonymous=False
     )
@@ -370,7 +372,9 @@ async def _confirm(message: Message, task) -> None:
 
 async def execute_task(bot, session, task) -> None:
     """Execute a single due task. Raises on failure (caller marks failed)."""
-    group_id = task.group_id or settings.group_id
+    # Prefer the live effective group id (the task's stored id may be stale after
+    # a migration); fall back to the task's own group_id if none is configured.
+    group_id = group_registry.get_group_id() or task.group_id
     if not group_id:
         raise RuntimeError("GROUP_ID non configurato")
 
@@ -398,10 +402,10 @@ async def execute_task(bot, session, task) -> None:
         )
         await session.flush()
         bot_info = await bot.get_me()
-        await bot.send_message(
-            group_id,
+        await group_registry.send_group_message(
+            bot, session,
             f"🎲 <b>Nuova scommessa aperta!</b>\n\n"
-            f"<b>{event.title}</b>\n{payload.get('description', '')}",
+            f"<b>{esc(event.title)}</b>\n{esc(payload.get('description', ''))}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text="🎯 Scommetti", url=f"https://t.me/{bot_info.username}?start=bet_{event.id}"
