@@ -15,10 +15,17 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 
 async def redirect_to_private(
-    message: Message, payload: str, button_text: str = "🔓 Apri in privato"
+    message: Message,
+    payload: str,
+    button_text: str = "🔓 Apri in privato",
+    *,
+    notice: str = "🔒 Questo comando mostra dati personali: continua in chat privata.",
 ) -> bool:
     """If `message` is not in a private chat, reply with a t.me deep-link button
     and return True (the caller must then return). In private chat: return False.
+
+    `notice` overrides the default reply text (e.g. for admin-only commands that
+    aren't about personal data but must still stay out of the group).
     """
     if message.chat.type == ChatType.PRIVATE:
         return False
@@ -29,8 +36,5 @@ async def redirect_to_private(
             url=f"https://t.me/{bot_info.username}?start={payload}",
         )
     ]])
-    await message.reply(
-        "🔒 Questo comando mostra dati personali: continua in chat privata.",
-        reply_markup=kb,
-    )
+    await message.reply(notice, reply_markup=kb)
     return True

@@ -20,6 +20,7 @@ from config_data.config import settings
 from database.connection import async_session_maker
 from services import group_registry
 from services.backup import chat_archive, state_export
+from utils import atomic_io
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,18 @@ def _chat_last_run(backup_dir: str) -> datetime | None:
 async def run_due_backups() -> None:
     """Run whichever backups are due. Each is independently guarded."""
     backup_dir = settings.backup_dir
+
+    # Pre-flight: a mis-mounted/non-writable backup volume would otherwise blow up
+    # on every write with an EACCES stack trace. Degrade to one clear warning and
+    # skip this tick (the loop retries on the next cadence).
+    reason = atomic_io.probe_writable(backup_dir)
+    if reason is not None:
+        log.warning(
+            "Backup saltato: cartella «%s» non scrivibile — %s. "
+            "Controlla i permessi del volume montato su /app/%s (vedi STEERING §25).",
+            backup_dir, reason, backup_dir,
+        )
+        return
 
     if _due_since(_state_last_run(backup_dir), settings.backup_state_interval_hours):
         try:

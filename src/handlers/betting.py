@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from database.models import BettingEvent, Wallet
+from database.models import BettingEvent, EventStatus, Wallet
 from exceptions.economy import (
     AlreadyBetError,
     BettingClosedError,
@@ -44,7 +44,10 @@ from keyboards.betting_kb import (
     get_group_events_keyboard,
     get_options_keyboard,
 )
+from config_data.config import settings
+from keyboards.common_kb import confirm_cancel_kb
 from services import badge_service, bet_service
+from utils import cooldown
 from utils.text import esc
 
 router = Router()
@@ -133,6 +136,10 @@ async def cmd_crea_scommessa(message: Message, state: FSMContext) -> None:
         )
         return
 
+    if not await cooldown.guard(
+        message, "event_create", settings.event_create_cooldown_seconds, exempt_admin=False
+    ):
+        return
     await state.clear()
     await state.set_state(BetCreationStates.waiting_for_title)
     await message.answer(
@@ -144,8 +151,26 @@ async def cmd_crea_scommessa(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "bet:cancel_creation")
 async def cb_cancel_creation(callback: CallbackQuery, state: FSMContext) -> None:
+    if await state.get_state() is None:
+        await callback.answer()
+        return
+    await callback.message.answer(
+        "⚠️ Sicuro di voler annullare la creazione della scommessa? I dati inseriti andranno persi.",
+        reply_markup=confirm_cancel_kb("bet:cancel_yes", "bet:cancel_no"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bet:cancel_yes")
+async def cb_cancel_creation_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Creazione scommessa annullata.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "bet:cancel_no")
+async def cb_cancel_creation_no(callback: CallbackQuery) -> None:
+    await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
     await callback.answer()
 
 
@@ -199,6 +224,7 @@ async def fsm_bet_options(
     data = await state.get_data()
     title = data["title"]
     description = data["description"]
+    as_draft = bool(data.get("bet_as_draft", False))
 
     event = await bet_service.create_event(
         db_session,
@@ -206,30 +232,48 @@ async def fsm_bet_options(
         title=title,
         description=description,
         options=[{"label": o} for o in options],
+        status=EventStatus.draft.value if as_draft else EventStatus.open.value,
     )
     await db_session.commit()
     await state.clear()
 
     opts_text = "\n".join(f"• {esc(o)}" for o in options)
-    await message.answer(
-        f"✅ <b>Scommessa creata!</b>\n\n"
-        f"<b>#{event.id} {esc(title)}</b>\n"
-        f"{esc(description)}\n\n"
-        f"<b>Opzioni:</b>\n{opts_text}\n\n"
-        f"Usa /scommesse per vederla."
-    )
+    if as_draft:
+        await message.answer(
+            f"✅ <b>Scommessa creata in bozza!</b>\n\n"
+            f"<b>#{event.id} {esc(title)}</b>\n"
+            f"{esc(description)}\n\n"
+            f"<b>Opzioni:</b>\n{opts_text}\n\n"
+            f"Avviala subito o programmala dagli 🎬 Eventi (/admin → Eventi → Scommesse)."
+        )
+    else:
+        await message.answer(
+            f"✅ <b>Scommessa creata!</b>\n\n"
+            f"<b>#{event.id} {esc(title)}</b>\n"
+            f"{esc(description)}\n\n"
+            f"<b>Opzioni:</b>\n{opts_text}\n\n"
+            f"Usa /scommesse per vederla."
+        )
 
 
 # ---------------------------------------------------------------------------
 # Entry-points from deep-links
 # ---------------------------------------------------------------------------
 
-async def start_bet_creation(message: Message, state: FSMContext) -> None:
-    """Called from common.cmd_start with payload=create_bet."""
+async def start_bet_creation(
+    message: Message, state: FSMContext, as_draft: bool = False
+) -> None:
+    """Start the bet-creation FSM. ``as_draft`` (Events hub) creates a draft to be
+    activated/scheduled later; otherwise (deep-link/community) it opens directly."""
     await state.clear()
+    await state.update_data(bet_as_draft=as_draft)
     await state.set_state(BetCreationStates.waiting_for_title)
+    intro = (
+        "🎲 <b>Crea una scommessa</b> <i>(bozza, da avviare o programmare)</i>"
+        if as_draft else "🎲 <b>Crea una nuova scommessa</b>"
+    )
     await message.answer(
-        "🎲 <b>Crea una nuova scommessa</b>\n\n"
+        f"{intro}\n\n"
         "<b>Step 1/3</b> — Invia il titolo dell'evento (max 200 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )

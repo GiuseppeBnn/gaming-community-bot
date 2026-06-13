@@ -24,14 +24,13 @@ def home_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📊 Statistiche", callback_data="adm:stats")
     b.button(text="🏆 Classifica", callback_data="adm:lead")
-    b.button(text="🧠 Quiz", callback_data="adm:quiz")
-    b.button(text="🎲 Scommesse", callback_data="adm:bets")
+    b.button(text="🎬 Eventi", callback_data="ev:home")
     b.button(text="👥 Utenti", callback_data="adm:users:0")
     b.button(text="💰 Economia", callback_data="adm:econ")
     b.button(text="🧾 Audit", callback_data="adm:audit")
     b.button(text="❓ Comandi", callback_data="adm:help")
     b.button(text="✖ Chiudi", callback_data="adm:close")
-    b.adjust(2, 2, 2, 2, 1)
+    b.adjust(2, 1, 2, 2, 1)
     return b.as_markup()
 
 

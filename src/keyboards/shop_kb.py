@@ -23,6 +23,23 @@ def get_shop_catalog_kb(
                 text=f"{mark} {item.emoji} {item.name} — {item.price} 🪙",
                 callback_data=f"shop:buy:{item.key}",
             )
+    builder.button(text="🎨 I miei tag", callback_data="shop:tags")
+    builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def get_tag_switcher_kb(
+    items: list[tuple[str, str, bool]], max_active: int
+) -> InlineKeyboardMarkup:
+    """Toggle keyboard for owned tags. `items` = (key, label, is_active)."""
+    builder = InlineKeyboardBuilder()
+    for key, label, active in items:
+        builder.button(
+            text=f"{'✅' if active else '⭕'} {label}",
+            callback_data=f"shop:tag:{key}",
+        )
+    builder.button(text="🛒 Negozio", callback_data="shop:list")
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     builder.adjust(1)
     return builder.as_markup()

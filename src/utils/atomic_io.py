@@ -20,12 +20,38 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
+log = logging.getLogger(__name__)
+
 _TMP_SUFFIX = ".tmp"
 _SHA_CHUNK = 1 << 20  # 1 MiB streaming read — constant memory regardless of size
+
+
+def probe_writable(directory: str | os.PathLike[str]) -> str | None:
+    """Check that `directory` exists (creating it) and is writable.
+
+    Returns ``None`` when writable, else a short human-readable reason suitable
+    for logging. Never raises — used as a cheap pre-flight so a mis-mounted volume
+    degrades to a clear warning instead of a stack trace on every backup tick.
+    """
+    d = Path(directory)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return f"impossibile creare {d}: {e}"
+    probe = d / f".write-probe.{os.getpid()}"
+    try:
+        with open(probe, "wb") as f:
+            f.write(b"ok")
+        probe.unlink(missing_ok=True)
+    except OSError as e:
+        uid = os.getuid() if hasattr(os, "getuid") else "?"
+        return f"scrittura non consentita in {d} (uid={uid}): {e}"
+    return None
 
 
 def _fsync_dir(path: Path) -> None:
@@ -51,15 +77,18 @@ def _tmp_path(path: Path) -> Path:
 def atomic_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
     """Write `data` to `path` atomically (tmp + fsync + replace)."""
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = _tmp_path(path)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, path)
         _fsync_dir(path.parent)
+    except OSError as e:
+        log.error("Scrittura atomica fallita su %s: %s", path, e)
+        raise
     finally:
         if tmp.exists():
             tmp.unlink(missing_ok=True)
@@ -125,9 +154,13 @@ class GzipMemberWriter:
         self._gz: gzip.GzipFile | None = None
 
     def open(self) -> "GzipMemberWriter":
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.start_offset = self.path.stat().st_size if self.path.exists() else 0
-        self._fileobj = open(self.path, "ab")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.start_offset = self.path.stat().st_size if self.path.exists() else 0
+            self._fileobj = open(self.path, "ab")
+        except OSError as e:
+            log.error("Apertura archivio backup fallita su %s: %s", self.path, e)
+            raise
         # mtime=0 → deterministic header (no wall-clock in the gzip stream).
         self._gz = gzip.GzipFile(fileobj=self._fileobj, mode="wb", mtime=0)
         return self

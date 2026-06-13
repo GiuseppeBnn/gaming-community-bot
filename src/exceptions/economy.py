@@ -17,10 +17,15 @@ class WalletNotFoundError(Exception):
 
 
 class DailyAlreadyClaimedError(Exception):
-    def __init__(self, hours_remaining: float) -> None:
-        self.hours_remaining = hours_remaining
+    def __init__(self, seconds_remaining: int) -> None:
+        from utils.text import format_duration
+
+        self.seconds_remaining = max(0, int(seconds_remaining))
+        # Back-compat for callers/tests that still read hours.
+        self.hours_remaining = self.seconds_remaining / 3600
         super().__init__(
-            f"Premio giornaliero già riscosso. Riprova tra {hours_remaining:.1f} ore."
+            "Premio giornaliero già riscosso. "
+            f"Riprova tra {format_duration(self.seconds_remaining)}."
         )
 
 

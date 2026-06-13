@@ -20,77 +20,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from config_data.config import settings
 from database.models import User
 from filters.admin_filter import is_admin as is_bot_admin
+from handlers._privacy import redirect_to_private
+from handlers.help_content import render_command, render_legend, suggestions
 from handlers.onboarding import show_rules_prompt
+from utils import cooldown
 from utils.text import esc
 
 router = Router()
 
 
-def _build_help_text(is_admin: bool = False) -> str:
-    user_section = (
-        "📖 <b>Comandi disponibili</b>\n\n"
-        "👤 <b>Profilo & Economia</b>\n"
-        "/start — Menu principale\n"
-        "/profilo — Il tuo profilo (XP, saldo, badge)\n"
-        "/saldo — Saldo e ultime transazioni\n"
-        "/storico — Cronologia completa movimenti\n"
-        "/daily — Premio giornaliero (ogni 20h)\n"
-        "/trasferisci — Trasferisci Aldueuri a un utente\n"
-        "\n"
-        "🎲 <b>Scommesse</b>\n"
-        "/scommesse — Vedi le scommesse aperte\n"
-        "/crea_scommessa — Crea una nuova scommessa\n"
-        "\n"
-        "🏆 <b>Progressione</b>\n"
-        "/traguardi — I tuoi trofei (per rarità) + rango\n"
-        "/catalogo_badge — Tutti i trofei disponibili\n"
-        "/classifiche — Classifiche: ricchezza · XP · trofei\n"
-        "\n"
-        "🛒 <b>Negozio</b>\n"
-        "/negozio — Compra personalizzazioni (tag) con gli Aldueuri\n"
-        "\n"
-        "🤖 <b>Intrattenimento AI</b> <i>(nel gruppo, in risposta a un messaggio)</i>\n"
-        "/maestro — Trasforma uno sfogo in filosofia aulica\n"
-        "/complotto — Genera una teoria del complotto sul messaggio\n"
-        "/difendi — Un avvocato senza scrupoli difende il messaggio\n"
-        "/accusa — Un inquisitore condanna il messaggio\n"
-        "/drama — Riscrive il messaggio come un climax anime drammatico\n"
-        "/dialetto — Traduce il messaggio in siciliano grezzo\n"
-        "/insulta @utente — Blasta senza pietà l'utente taggato\n"
-        "\n"
-        "❓ <b>Aiuto</b>\n"
-        "/help — Questo messaggio"
-    )
-    if not is_admin:
-        return user_section
-
-    admin_section = (
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔐 <b>Comandi Admin</b>\n\n"
-        "/admin — Pannello admin (stats · classifica · audit)\n"
-        "/gestisci_scommesse — Pannello gestione scommesse\n\n"
-        "💰 <b>Valuta</b>\n"
-        "/credita · /addebita @u &lt;n&gt; · /setsaldo @u &lt;n&gt;\n"
-        "/airdrop &lt;n&gt; · /saldo_di @u\n\n"
-        "⚡ <b>XP</b>\n"
-        "/dai_xp @u &lt;n&gt; · /set_xp @u &lt;n&gt;\n\n"
-        "🛡️ <b>Moderazione</b> (reply o @u/ID)\n"
-        "/ban · /sban · /kick · /mute [10m] · /unmute\n"
-        "/warn [motivo] · /warns · /unwarn\n\n"
-        "📊 <b>Info</b>\n"
-        "/info · /cerca &lt;testo&gt; · /classifica · /stats · /audit\n\n"
-        "🧠 <b>Quiz & Eventi</b>\n"
-        "/crea_quiz · /quiz · /avvia_quiz &lt;id&gt; · /chiudi_quiz &lt;id&gt;\n"
-        "/sondaggio · /programma · /programmati"
-    )
-    return user_section + admin_section
-
-
 async def _show_help(message: Message, is_admin: bool) -> None:
-    await message.answer(_build_help_text(is_admin))
+    # The legend lives in help_content (single source of truth shared with
+    # /spiega_comando), so the two never drift apart.
+    await message.answer(render_legend(is_admin))
 
 
 @router.message(CommandStart())
@@ -121,6 +66,15 @@ async def cmd_start(
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.admin_dashboard import show_dashboard_home
             await show_dashboard_home(message, db_session)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
+    # Deep-link: eventi (admin events hub)
+    if payload == "eventi":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.events import show_hub
+            await show_hub(message)
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return
@@ -185,6 +139,10 @@ async def cmd_start(
     if payload == "traguardi":
         from handlers.badges import show_traguardi
         await show_traguardi(message, db_session)
+        return
+    if payload == "classifiche":
+        from handlers.leaderboard import show_board_private
+        await show_board_private(message, db_session)
         return
 
     # Deep-links: admin backup / state export (redirected from the group)
@@ -268,12 +226,14 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     member_since = user.created_at.strftime("%d/%m/%Y")
 
     from services import xp_service
+    from services.shop_service import render_active_tags
     rank = xp_service.rank_for_xp(user.xp)
     rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {esc(rank.name)}\n" if rank else ""
-    tag_line = f"🏷️ <b>Tag:</b> {esc(user.cosmetic_tag)}\n" if user.cosmetic_tag else ""
+    tags = render_active_tags(user)
+    tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""
     title = esc(user.full_name)
-    if user.cosmetic_tag:
-        title = f"{esc(user.cosmetic_tag)} · {title}"
+    if tags:
+        title = f"{esc(tags)} · {title}"
 
     await message.answer(
         f"🎮 <b>{title}</b>\n\n"
@@ -288,7 +248,8 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     )
 
 
-@router.message(Command("help"))
+# /comandi is the canonical name; /help is kept as a hidden back-compat alias.
+@router.message(Command("comandi", "help"))
 async def cmd_help(message: Message) -> None:
     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
         bot_info = await message.bot.get_me()
@@ -307,3 +268,39 @@ async def cmd_help(message: Message) -> None:
         return
 
     await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
+
+
+@router.message(Command("spiega_comando"))
+async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
+    # Detailed per-command manual — private only (keeps the group uncluttered and
+    # never reveals the admin command set there).
+    if await redirect_to_private(
+        message, "comandi", "📖 Apri la guida",
+        notice="📖 La guida dettagliata si apre in chat privata.",
+    ):
+        return
+    if not await cooldown.guard(message, "spiega", settings.command_cooldown_seconds):
+        return
+
+    is_admin = await is_bot_admin(message.bot, message.from_user.id)
+    arg = (command.args or "").strip()
+    if not arg:
+        await message.answer(
+            "📘 <b>Spiega comando</b>\n\n"
+            "Uso: <code>/spiega_comando &lt;comando&gt;</code>\n"
+            "Esempio: <code>/spiega_comando daily</code>.\n\n"
+            "Per l'elenco completo usa /comandi."
+        )
+        return
+
+    page = render_command(arg, is_admin)
+    if page is None:
+        hint = ""
+        near = [s for s in suggestions(arg) if render_command(s, is_admin)]
+        if near:
+            hint = "\n\nForse cercavi: " + " · ".join(f"<code>/{s}</code>" for s in near)
+        await message.answer(
+            f"❓ Comando «{esc(arg, 32)}» non trovato. Usa /comandi per l'elenco.{hint}"
+        )
+        return
+    await message.answer(page)

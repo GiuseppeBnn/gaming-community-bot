@@ -44,8 +44,11 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
     header = f"🏆 <b>I tuoi Trofei</b> ({len(earned_ids)}/{len(all_badges)})"
     if rank is not None:
         header += f"\n{rank.emoji} <b>Rango:</b> {esc(rank.name)} · ⚡ <b>{xp} XP</b>"
-    if user and user.cosmetic_tag:
-        header += f"\n🏷️ <b>Tag:</b> {esc(user.cosmetic_tag)}"
+    if user:
+        from services.shop_service import render_active_tags
+        tags = render_active_tags(user)
+        if tags:
+            header += f"\n🏷️ <b>Tag:</b> {esc(tags)}"
     lines = [header]
 
     # Group by rarity tier (platinum → bronze for prestige first).

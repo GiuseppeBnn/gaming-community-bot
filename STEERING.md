@@ -302,6 +302,20 @@ Il re-check di `has_cosmetic` **dopo** il debit (che prende il lock di riga del 
 race di doppio acquisto concorrente: se nel frattempo un altro exec ha già applicato il cosmetico,
 `rollback()` + alert (mai doppio addebito).
 
+### Tag multipli (switch + combina)
+
+Un utente può tenere **più tag attivi insieme** (cambiare tra i posseduti e combinarli), fino a
+`settings.max_active_tags` (default 3, alzabile). Modello: `User.active_tags_json` = lista JSON
+ordinata di `item_key`; `User.cosmetic_tag` resta come **fallback legacy** single-tag tenuto in sync.
+
+- `shop_service.toggle_tag(session, uid, key, max_active)` → `activated`/`deactivated`/`cap`/`notowned`
+  (verifica possesso + rispetta il cap, no-commit).
+- `shop_service.render_active_tags(user)` → stringa flair (chiavi risolte via catalogo, concatenate);
+  fallback al `cosmetic_tag` legacy se la lista attiva è vuota. **Tutto il rendering** (profilo §,
+  traguardi, dossier admin, **classifiche**) passa di qui.
+- `ensure_active_seeded` migra al volo il vecchio `cosmetic_tag` nella lista attiva alla prima apertura
+  dello switcher (`shop:tags` → toggle `shop:tag:<key>`). Nessuna migrazione DDL di backfill richiesta.
+
 ### Invarianti di sicurezza shop (anti-grief / anti-escalation)
 
 - Il tag è **solo cosmetico** (`User.cosmetic_tag`, mostrato sul profilo) → **nessun permesso Telegram**, nessuna escalation.
@@ -452,15 +466,23 @@ illimitata con tanti utenti).
 ## 16. Comandi registrati
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/negozio`, `/help`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/negozio`, `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/traguardi`, `/classifiche`, `/negozio`, `/help`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/traguardi`, `/classifiche`, `/negozio`, `/comandi`
 
-> **Privacy (§9):** in gruppo `/saldo` · `/storico` · `/profilo` · `/traguardi` · `/negozio` **non
-> rispondono in chiaro** ma mandano un bottone deep-link verso il privato (mostrano dati personali).
-> `/daily` riscuote in gruppo con ack minimale + DM dei dettagli. `/classifiche` resta in gruppo
-> (dato di community). I comandi restano in `_GROUP_COMMANDS` (funzionano: reindirizzano).
+> **`/help` → `/comandi`**: il comando canonico è ora `/comandi` (`/help` resta come alias nascosto +
+> deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
+> condividono il registro unico in `handlers/help_content.py` (zero drift legenda↔dettaglio).
+
+> **Privacy (§9):** in gruppo `/saldo` · `/storico` · `/profilo` · `/traguardi` · `/negozio` · `/classifiche`
+> **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
+> switcher + tasto Chiudi → chiunque poteva chiuderla, ora è privata). `/daily` riscuote in gruppo con
+> ack minimale + DM dei dettagli. I comandi restano in `_GROUP_COMMANDS` (funzionano: reindirizzano).
+
+> **Anti-spam (§3 nota):** oltre al rate-limit globale (12/10s, `middlewares/rate_limit.py`) c'è un
+> cooldown per-comando riusabile (`utils/cooldown.py`, admin-exempt) su comandi pesanti e sull'avvio
+> dei flussi di creazione eventi (`settings.command_cooldown_seconds` / `event_create_cooldown_seconds`).
 
 **Intrattenimento AI** (gruppo): `/maestro`, `/complotto`, `/difendi`, `/accusa`, `/drama`, `/dialetto`, `/insulta`
 
@@ -470,9 +492,11 @@ illimitata con tanti utenti).
 - **XP**: `/dai_xp @u <n>` (grant, uncapped), `/set_xp @u <n>` (assoluto) — gestione XP solo admin (§12.1)
 - **Moderazione**: `/ban`, `/sban`, `/kick`, `/mute [durata]`, `/unmute`
 - **Warn**: `/warn [motivo]`, `/warns`, `/unwarn`
-- **Info & dashboard**: `/info`, `/cerca`, `/classifica`, `/stats`, `/audit`, `/admin` (UI a bottoni — §18.1)
-- **Quiz**: `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>`
-- **Eventi/scheduling**: `/sondaggio`, `/programma`, `/programmati`
+- **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/admin` (UI a bottoni — §18.1)
+- **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
+- **Visibilità menù "/":** gli admin vedono i comandi admin nel menù grazie a uno scope dedicato
+  (`BotCommandScopeChat` per ogni `settings.admin_ids` in privato + `BotCommandScopeChatAdministrators`
+  sul gruppo) — i comandi restano fuori dalle liste pubbliche (§18 regola 11).
 - **Backup** (§25): `/backup` (estende l'archivio chat MTProto + DM del file), `/esporta` (snapshot dello stato totale + DM). Entrambi redirect dal gruppo al privato; ogni run è in `log_action`
 
 ---
@@ -551,7 +575,8 @@ Wrapper su Bot API che ritornano **`(success: bool, reason: str)`** con errori m
 UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto senza digitare comandi**.
 
 - **Entry**: `/admin` (redirect privato via deep-link `?start=admin`) → `show_dashboard_home`. Home:
-  Statistiche · Classifica · 🧠 Quiz · 🎲 Scommesse · 👥 Utenti · 💰 Economia · 🧾 Audit · ❓ Comandi.
+  Statistiche · Classifica · **🎬 Eventi** · 👥 Utenti · 💰 Economia · 🧾 Audit · ❓ Comandi.
+  (Quiz e Scommesse non sono più voci separate: confluiscono nell'hub **Eventi** — §18.2.)
 - **Riuso, zero logica duplicata**: le viste riusano i renderer **pubblici** di `handlers/admin.py`
   (`render_stats`/`render_leaderboard`/`render_audit`/`render_panel_help`); quiz → `open_quiz`/`close_quiz`/`start_quiz_creation`;
   scommesse → `admin_betting._show_event_list`. Le azioni passano dagli **stessi service + `log_action`** dei comandi.
@@ -568,9 +593,30 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   `adm:ask:<ban|kick>:<tg>`, `adm:do:<…>:<tg>`.
 - Il vecchio pannello read-only `admin_panel:*` + `keyboards/admin_panel_kb.py` è **rimosso** (assorbito dalla dashboard).
 
+### 18.2 Hub Eventi (macro-categoria, namespace `ev:*`)
+
+`handlers/events.py` (router incluso dopo `admin_dashboard`, prima di `quiz`). Unifica **quiz ·
+sondaggi · scommesse** sotto un modello unico: ogni evento si **pre-crea**, poi si **avvia subito**
+nel gruppo *oppure* si **programma** — come già facevano i quiz. Entry: `/admin → 🎬 Eventi`,
+`/eventi`, o deep-link `?start=eventi`.
+
+- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<quiz|poll|bet>`, `ev:item:<type>:<id>` (schermata
+  «Avvia ora / Programma»), `ev:start:<type>:<id>`, `ev:sched:<type>:<id>`, `ev:close:quiz:<id>`,
+  `ev:new:<type>`, `ev:pt:cancel[_yes|_no]`.
+- **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
+  (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
+  community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
+  e `bet_service.activate_event` fa `draft→open`). `get_open_events`/`get_all_active_events` escludono i draft.
+- **Avvia ora**: quiz→`open_quiz`; poll→`send_poll` + `mark_used`; bet→`activate_event` + annuncio gruppo.
+- **Programma**: `handlers.schedule.start_schedule_for(type, ref_id, label)` → stato unico
+  `ScheduleStates.event_runat` → `schedule_task(type, ref_id)`. `execute_task` gestisce **`ref_id`**
+  (nuovo: carica PollTemplate / attiva draft) con **fallback al `payload`** legacy (task già schedulati).
+- **`/programma`** ora fa scegliere **elementi già creati** per tutti e 3 i tipi (niente più creazione
+  inline). Conferma «Sicuro di voler annullare?» (§ cancel) prima di scartare un flusso a metà.
+
 ### Regole
 
-- Il namespace `adm:*` (dashboard) non collide con `admin_bet:*` né con gli altri → ordine router indifferente, ma `admin_dashboard.router` va dopo `admin.router` e comunque prima di `common.router`.
+- Il namespace `adm:*` (dashboard) non collide con `admin_bet:*` né con `ev:*` né con gli altri → ordine router indifferente, ma `admin_dashboard.router` va dopo `admin.router` e comunque prima di `common.router`.
 - Tutte le azioni che modificano valuta/moderazione **devono** chiamare `log_action` prima del commit (vale per comandi **e** dashboard).
 - I comandi admin **non** vanno nelle command list pubbliche (`_PRIVATE/_GROUP_COMMANDS`), ma vanno documentati nella sezione admin di `/help`.
 
@@ -908,3 +954,13 @@ artefatti su disco (mtime snapshot / `updated_at` manifest), esegue `export_stat
 dovuti. `/backup` (archivio chat) e `/esporta` (stato) — admin, redirect-to-private, DM del file se ≤ 50 MB,
 audit `log_action`; deep-link `backup`/`esporta` in `common.cmd_start`. Restore = **solo CLI**
 (`scripts/import_state.py`), mai bottone Telegram distruttivo.
+
+### 25.4 Permessi di scrittura (Docker)
+
+`/app/backups` è un **named volume `bot_backups`**, *non* un bind mount `./backups`: alla prima creazione
+il volume eredita l'ownership della dir nell'immagine (`botuser`, UID 1001, vedi `Dockerfile`), così il
+processo non-root **scrive sempre** — un bind mount sarebbe di proprietà dell'host → `EACCES`. Difese nel
+codice: `atomic_io.probe_writable(dir)` (pre-flight `write+unlink`, mai solleva) chiamato all'avvio
+(`main`, warning non bloccante) e a ogni tick (`backup/loop`, salta il giro con un warning chiaro invece di
+uno stack trace `EACCES`); `atomic_write_bytes`/`GzipMemberWriter.open` loggano il path su `OSError`. I
+backup si recuperano via DM `/backup`·/`esporta` o `docker cp`.

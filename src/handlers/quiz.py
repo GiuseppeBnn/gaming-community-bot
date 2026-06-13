@@ -33,13 +33,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import User
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers._privacy import redirect_to_private
+from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, quiz_service
-from utils.text import esc
+from utils import cooldown
+from utils.text import esc, format_seconds_short
 
 log = logging.getLogger(__name__)
 router = Router()
 
 _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
+# Quiz management (list/start/close) is admin-only AND private-only: in a group it
+# redirects to the private dashboard. Creation already redirects via /crea_quiz.
+_QUIZ_PRIVATE_NOTICE = "🧠 Gestisci i quiz in chat privata col bot."
 
 
 class QuizCreationStates(StatesGroup):
@@ -187,13 +193,37 @@ async def cmd_crea_quiz(message: Message, state: FSMContext) -> None:
             ]]),
         )
         return
+    if not await cooldown.guard(
+        message, "event_create", settings.event_create_cooldown_seconds, exempt_admin=False
+    ):
+        return
     await start_quiz_creation(message, state)
 
 
 @router.callback_query(F.data == "quiz_new:cancel", IsAdminCallbackFilter())
 async def cb_quiz_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    # Confirm before discarding — the in-progress prompt above stays intact, so
+    # "No" simply lets the admin keep going.
+    if await state.get_state() is None:
+        await callback.answer()
+        return
+    await callback.message.answer(
+        "⚠️ Sicuro di voler annullare la creazione del quiz? I dati inseriti andranno persi.",
+        reply_markup=confirm_cancel_kb("quiz_new:cancel_yes", "quiz_new:cancel_no"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "quiz_new:cancel_yes", IsAdminCallbackFilter())
+async def cb_quiz_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.answer("❌ Creazione quiz annullata.")
+    await callback.message.edit_text("❌ Creazione quiz annullata.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "quiz_new:cancel_no", IsAdminCallbackFilter())
+async def cb_quiz_cancel_no(callback: CallbackQuery) -> None:
+    await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
     await callback.answer()
 
 
@@ -620,6 +650,8 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
 
 @router.message(Command("quiz"), IsAdminFilter())
 async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
+        return
     quizzes = [q for q in await quiz_service.list_ready(db_session) if q.status == "ready"]
     if not quizzes:
         await message.reply("🧠 Nessun quiz pronto. Creane uno con /crea_quiz.")
@@ -647,6 +679,8 @@ async def cb_quiz_open(callback: CallbackQuery, db_session: AsyncSession) -> Non
 
 @router.message(Command("avvia_quiz"), IsAdminFilter())
 async def cmd_avvia_quiz(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
+        return
     raw = (command.args or "").strip()
     if not raw.isdigit():
         await message.reply("ℹ️ Uso: <code>/avvia_quiz &lt;id&gt;</code>")
@@ -688,6 +722,8 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
 
 @router.message(Command("chiudi_quiz"), IsAdminFilter())
 async def cmd_chiudi_quiz(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
+        return
     raw = (command.args or "").strip()
     if not raw.isdigit():
         await message.reply("ℹ️ Uso: <code>/chiudi_quiz &lt;id&gt;</code>")
@@ -710,7 +746,10 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
         if award and award.coins:
             icon = "🎖️" if award.kind == "consolation" else "🏆"
             prize_txt = f" — {icon} <b>+{award.coins} 🪙 Aldueuri</b>"
-        lines.append(f"{rank} {name} — {row.correct} ✅{prize_txt}")
+        time_txt = ""
+        if row.completion_seconds is not None:
+            time_txt = f" · ⏱️ {format_seconds_short(row.completion_seconds)}"
+        lines.append(f"{rank} {name} — {row.correct} ✅{time_txt}{prize_txt}")
     return "\n".join(lines)
 
 
@@ -833,9 +872,16 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
         await _send_question(callback.message, quiz, done)
     else:
         correct = await quiz_service.correct_count(db_session, quiz_id, callback.from_user.id)
+        time_line = ""
+        if quiz.started_at is not None:
+            fin = await quiz_service.user_finished_at(db_session, quiz_id, callback.from_user.id)
+            if fin is not None:
+                secs = max(0, int((fin - quiz.started_at).total_seconds()))
+                time_line = f"⏱️ Tempo impiegato: <b>{format_seconds_short(secs)}</b>\n"
         await callback.message.answer(
             f"🏁 <b>Quiz completato!</b>\n\n"
             f"Hai totalizzato <b>{correct}/{total}</b> risposte corrette.\n"
+            f"{time_line}"
             "Aspetta la chiusura per scoprire il podio! 🏆"
         )
     await callback.answer()

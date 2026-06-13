@@ -34,12 +34,16 @@ async def create_event(
     title: str,
     description: str,
     options: list[dict],
+    status: str = EventStatus.open.value,
 ) -> BettingEvent:
+    """Create a betting event. Defaults to ``open`` (the community flow); pass
+    ``status=EventStatus.draft.value`` to pre-create one for the Events hub, to be
+    activated/scheduled later."""
     event = BettingEvent(
         title=title,
         description=description,
         creator_tg_id=creator_tg_id,
-        status=EventStatus.open.value,
+        status=status,
     )
     session.add(event)
     await session.flush()
@@ -53,6 +57,33 @@ async def create_event(
             )
         )
     return event
+
+
+async def activate_event(session: AsyncSession, event_id: int) -> BettingEvent:
+    """Transition a ``draft`` event to ``open`` so members can bet. Idempotent for
+    an already-open event; raises if it was locked/resolved/cancelled."""
+    event = (
+        await session.execute(select(BettingEvent).where(BettingEvent.id == event_id))
+    ).scalar_one_or_none()
+    if event is None:
+        raise EventNotFoundError(event_id)
+    if event.status == EventStatus.open.value:
+        return event
+    if event.status != EventStatus.draft.value:
+        raise EventAlreadySettledError(event_id, event.status)
+    event.status = EventStatus.open.value
+    return event
+
+
+async def list_drafts(session: AsyncSession) -> list[BettingEvent]:
+    """Pre-created (not yet opened) events, for the Events hub."""
+    result = await session.execute(
+        select(BettingEvent)
+        .where(BettingEvent.status == EventStatus.draft.value)
+        .options(selectinload(BettingEvent.options))
+        .order_by(BettingEvent.created_at.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def place_bet(

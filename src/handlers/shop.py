@@ -26,11 +26,13 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from database.models import TransactionType, Wallet
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from handlers._privacy import redirect_to_private
-from keyboards.shop_kb import get_shop_catalog_kb, get_shop_confirm_kb
+from keyboards.shop_kb import get_shop_catalog_kb, get_shop_confirm_kb, get_tag_switcher_kb
 from services import economy_service, shop_service
+from utils import cooldown
 from utils.text import esc
 
 log = logging.getLogger(__name__)
@@ -46,6 +48,8 @@ async def cmd_negozio(message: Message, db_session: AsyncSession) -> None:
     # In a group the catalog would leak the opener's balance to everyone, and
     # the inline buttons act on whoever clicks → send a private deep-link instead.
     if await redirect_to_private(message, f"shop_{message.chat.id}", "🛒 Apri il negozio"):
+        return
+    if not await cooldown.guard(message, "negozio", settings.command_cooldown_seconds):
         return
     await _show_catalog(message, db_session)
 
@@ -205,6 +209,67 @@ async def cb_shop_execute(callback: CallbackQuery, db_session: AsyncSession) -> 
         f"Lo vedi sul tuo /profilo."
     )
     await callback.answer("🎉 Tag applicato!")
+
+
+# ---------------------------------------------------------------------------
+# Tag switcher — activate/deactivate & combine owned tags
+# ---------------------------------------------------------------------------
+
+async def _show_tag_switcher(message: Message, db_session: AsyncSession, tg_id: int, *, edit: bool) -> None:
+    # Lazily migrate a legacy single tag into the active list so the toggles
+    # reflect what the user is actually wearing.
+    await shop_service.ensure_active_seeded(db_session, tg_id)
+    await db_session.commit()
+
+    cats = shop_service.get_cosmetics()
+    owned = await shop_service.owned_tag_keys(db_session, tg_id)
+    active = set(await shop_service.get_active_keys(db_session, tg_id))
+    items = [(k, shop_service.format_tag(cats[k]), k in active) for k in owned if k in cats]
+
+    if not owned:
+        text = (
+            "🎨 <b>I tuoi tag</b>\n\n"
+            "<i>Non possiedi ancora nessun tag. Compra una personalizzazione dal negozio!</i>"
+        )
+    else:
+        text = (
+            "🎨 <b>I tuoi tag</b>\n\n"
+            f"Attiva o disattiva i tag posseduti — puoi <b>combinarne fino a {settings.max_active_tags}</b> "
+            "insieme. ✅ = attivo, ⭕ = spento."
+        )
+    kb = get_tag_switcher_kb(items, settings.max_active_tags)
+    if edit:
+        try:
+            await message.edit_text(text, reply_markup=kb)
+        except Exception:  # noqa: BLE001
+            await message.answer(text, reply_markup=kb)
+    else:
+        await message.answer(text, reply_markup=kb)
+
+
+@router.callback_query(F.data == "shop:tags")
+async def cb_shop_tags(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    await _show_tag_switcher(callback.message, db_session, callback.from_user.id, edit=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("shop:tag:"))
+async def cb_shop_toggle_tag(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    item_key = callback.data[len("shop:tag:"):]
+    result = await shop_service.toggle_tag(
+        db_session, callback.from_user.id, item_key, settings.max_active_tags
+    )
+    await db_session.commit()
+    if result == "cap":
+        await callback.answer(
+            f"⚠️ Massimo {settings.max_active_tags} tag attivi insieme. Disattivane uno prima.",
+            show_alert=True,
+        )
+    elif result == "notowned":
+        await callback.answer("⚠️ Non possiedi questo tag.", show_alert=True)
+    else:
+        await callback.answer("✅ Tag attivato!" if result == "activated" else "⭕ Tag disattivato.")
+    await _show_tag_switcher(callback.message, db_session, callback.from_user.id, edit=True)
 
 
 @router.callback_query(F.data == "shop:close")

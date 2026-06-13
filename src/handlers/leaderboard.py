@@ -13,7 +13,9 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from services import admin_service, badge_service, xp_service
+from utils import cooldown
 from utils.text import esc
 
 router = Router()
@@ -24,7 +26,10 @@ _TABS = (("💰 Ricchezza", "coins"), ("⚡ XP", "xp"), ("🏆 Trofei", "trofei"
 
 
 def _name(user) -> str:
-    return f"@{esc(user.username)}" if user.username else esc(user.full_name)
+    from services.shop_service import render_active_tags
+    base = f"@{esc(user.username)}" if user.username else esc(user.full_name)
+    tags = render_active_tags(user)
+    return f"{esc(tags)} {base}" if tags else base
 
 
 def _kb(active: str):
@@ -57,10 +62,23 @@ async def render_board(db_session: AsyncSession, board: str) -> str:
     return "\n".join(lines)
 
 
-@router.message(Command("classifiche"))
-async def cmd_classifiche(message: Message, db_session: AsyncSession) -> None:
+async def show_board_private(message: Message, db_session: AsyncSession) -> None:
+    """Render the leaderboard with its inline switcher (used in private chat and
+    from the ``?start=classifiche`` deep-link)."""
+    if not await cooldown.guard(message, "classifiche", settings.command_cooldown_seconds):
+        return
     text = await render_board(db_session, "coins")
     await message.answer(text, reply_markup=_kb("coins"))
+
+
+@router.message(Command("classifiche"))
+async def cmd_classifiche(message: Message, db_session: AsyncSession) -> None:
+    # Interactive switcher + close button: in a group everyone sees it and anyone
+    # could close it → always show it privately (deep-link from the group).
+    from handlers._privacy import redirect_to_private
+    if await redirect_to_private(message, "classifiche", "📊 Vedi le classifiche"):
+        return
+    await show_board_private(message, db_session)
 
 
 @router.callback_query(F.data.startswith("lead:"))

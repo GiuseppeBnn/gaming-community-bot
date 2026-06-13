@@ -166,8 +166,8 @@ async def claim_daily(
         last = user.last_daily_claim
         elapsed = now - last
         if elapsed < _DAILY_COOLDOWN:
-            remaining = (_DAILY_COOLDOWN - elapsed).total_seconds() / 3600
-            raise DailyAlreadyClaimedError(hours_remaining=remaining)
+            remaining_seconds = int((_DAILY_COOLDOWN - elapsed).total_seconds())
+            raise DailyAlreadyClaimedError(seconds_remaining=remaining_seconds)
 
     # Determine new streak before updating last_daily_claim
     if user.last_daily_claim is not None and (now - user.last_daily_claim) < timedelta(hours=48):

@@ -284,13 +284,20 @@ class PodiumRow:
     user_tg_id: int
     correct: int
     finished_at: datetime
+    completion_seconds: int | None = None  # finished_at - quiz.started_at
 
 
 async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
-    """Finishers (answered every question) ranked by correct DESC, finish time ASC."""
+    """Finishers (answered every question) ranked by correct DESC, finish time ASC.
+
+    Each row carries ``completion_seconds`` (time from quiz start to the player's
+    last answer) when the quiz's ``started_at`` is known.
+    """
     total = await total_questions(session, quiz_id)
     if total == 0:
         return []
+    quiz = await get_quiz(session, quiz_id)
+    started_at = quiz.started_at if quiz else None
     result = await session.execute(
         select(
             QuizAnswer.user_tg_id,
@@ -301,13 +308,33 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
         .where(QuizAnswer.quiz_id == quiz_id)
         .group_by(QuizAnswer.user_tg_id)
     )
-    rows = [
-        PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0), finished_at=r[3])
-        for r in result.all()
-        if int(r[2] or 0) >= total
-    ]
+    rows: list[PodiumRow] = []
+    for r in result.all():
+        if int(r[2] or 0) < total:
+            continue
+        finished_at = r[3]
+        secs: int | None = None
+        if started_at is not None and finished_at is not None:
+            secs = max(0, int((finished_at - started_at).total_seconds()))
+        rows.append(
+            PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0),
+                      finished_at=finished_at, completion_seconds=secs)
+        )
     rows.sort(key=lambda r: (-r.correct, r.finished_at))
     return rows
+
+
+async def user_finished_at(
+    session: AsyncSession, quiz_id: int, user_tg_id: int
+) -> datetime | None:
+    """Timestamp of the player's last answer in a quiz (None if they never played)."""
+    return (
+        await session.execute(
+            select(func.max(QuizAnswer.answered_at)).where(
+                QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == user_tg_id
+            )
+        )
+    ).scalar_one_or_none()
 
 
 @dataclass

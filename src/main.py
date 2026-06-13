@@ -5,7 +5,13 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
+from aiogram.types import (
+    BotCommand,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeChat,
+    BotCommandScopeChatAdministrators,
+)
 
 from config_data.config import settings
 from database.connection import async_session_maker, create_tables, run_migrations
@@ -18,6 +24,7 @@ from handlers import (
     betting,
     common,
     economy,
+    events,
     fun_ai,
     group_events,
     leaderboard,
@@ -32,6 +39,7 @@ from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 from services import badge_service, catalog_loader, group_registry
 from services.backup.loop import backup_loop
+from utils.atomic_io import probe_writable
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +60,8 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="catalogo_badge", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
     BotCommand(command="negozio", description="Personalizzazioni (tag)"),
-    BotCommand(command="help", description="Comandi disponibili"),
+    BotCommand(command="comandi", description="Guida ai comandi"),
+    BotCommand(command="spiega_comando", description="Spiegazione di un comando"),
 ]
 
 _GROUP_COMMANDS = [
@@ -71,8 +80,32 @@ _GROUP_COMMANDS = [
     BotCommand(command="drama", description="Versione anime drammatica"),
     BotCommand(command="dialetto", description="Traduce in siciliano grezzo"),
     BotCommand(command="insulta", description="Blasta un utente taggato"),
-    BotCommand(command="help", description="Comandi disponibili"),
+    BotCommand(command="comandi", description="Guida ai comandi"),
 ]
+
+# Admins additionally see their tools in the "/" menu. Shown only to admins via
+# the per-chat / chat-administrators scopes (never in the public lists, §18).
+_ADMIN_EXTRA_COMMANDS = [
+    BotCommand(command="admin", description="🔧 Pannello admin"),
+    BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
+    BotCommand(command="eventi", description="🎬 Hub eventi"),
+    BotCommand(command="crea_quiz", description="🎬 Crea un quiz"),
+    BotCommand(command="quiz", description="🎬 Quiz pronti / avvia"),
+    BotCommand(command="sondaggio", description="🎬 Crea un sondaggio"),
+    BotCommand(command="programma", description="🎬 Programma un evento"),
+    BotCommand(command="programmati", description="🎬 Eventi programmati"),
+    BotCommand(command="info", description="📊 Dossier utente"),
+    BotCommand(command="cerca", description="📊 Cerca utenti"),
+    BotCommand(command="stats", description="📊 Statistiche community"),
+    BotCommand(command="audit", description="📊 Registro azioni admin"),
+    BotCommand(command="airdrop", description="💰 Airdrop Aldueuri"),
+    BotCommand(command="credita", description="💰 Accredita Aldueuri"),
+    BotCommand(command="addebita", description="💰 Addebita Aldueuri"),
+    BotCommand(command="warn", description="🛡️ Ammonisci un utente"),
+    BotCommand(command="ban", description="🛡️ Banna un utente"),
+    BotCommand(command="mute", description="🛡️ Silenzia un utente"),
+]
+_ADMIN_COMMANDS = _PRIVATE_COMMANDS + _ADMIN_EXTRA_COMMANDS
 
 
 def _build_storage():
@@ -89,6 +122,16 @@ async def main() -> None:
     await create_tables()
     await run_migrations()
     logger.info("Tabelle DB pronte.")
+
+    # Early visibility on a mis-mounted/non-writable backup volume: warn loudly at
+    # boot (the backup loop also re-checks each tick) but never block startup.
+    _backup_probe = probe_writable(settings.backup_dir)
+    if _backup_probe is not None:
+        logger.warning(
+            "Cartella backup «%s» non scrivibile (%s): i backup verranno saltati. "
+            "Verifica il volume montato su /app/%s.",
+            settings.backup_dir, _backup_probe, settings.backup_dir,
+        )
 
     # Load the customizable CSV catalogs (trophies → DB, ranks/cosmetics → memory),
     # falling back to built-in defaults if the files are absent/invalid.
@@ -130,6 +173,7 @@ async def main() -> None:
     dp.include_router(shop.router)
     dp.include_router(admin.router)
     dp.include_router(admin_dashboard.router)
+    dp.include_router(events.router)
     dp.include_router(quiz.router)
     dp.include_router(schedule.router)
     dp.include_router(backup.router)
@@ -138,6 +182,26 @@ async def main() -> None:
 
     await bot.set_my_commands(_PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(_GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
+
+    # Admin tools in the "/" menu, scoped so only admins see them:
+    #  • each configured super-admin's private chat (best-effort: needs them to
+    #    have started the bot, else Telegram errors → we just skip),
+    #  • the configured group's administrators.
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.set_my_commands(
+                _ADMIN_COMMANDS, scope=BotCommandScopeChat(chat_id=admin_id)
+            )
+        except Exception:  # noqa: BLE001 — chat may not exist yet; non-fatal
+            logger.warning("Comandi admin non registrati per %s (chat non avviata?)", admin_id)
+    group_id = group_registry.get_group_id()
+    if group_id:
+        try:
+            await bot.set_my_commands(
+                _ADMIN_COMMANDS, scope=BotCommandScopeChatAdministrators(chat_id=group_id)
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("Comandi admin di gruppo non registrati (group_id=%s)", group_id)
     logger.info("Comandi bot registrati.")
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot))

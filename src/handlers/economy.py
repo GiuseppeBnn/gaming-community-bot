@@ -24,7 +24,7 @@ from filters.admin_filter import IsAdminFilter
 from handlers._privacy import redirect_to_private
 from services import badge_service, economy_service, xp_service
 from services.xp_service import XpSource
-from utils.text import esc
+from utils.text import esc, format_duration
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -98,7 +98,7 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     except DailyAlreadyClaimedError as e:
         await message.reply(
             f"⏰ Hai già riscosso il premio oggi.\n"
-            f"Riprova tra <b>{e.hours_remaining:.1f} ore</b>."
+            f"Riprova tra <b>{format_duration(e.seconds_remaining)}</b>."
         )
         return
     except WalletNotFoundError:

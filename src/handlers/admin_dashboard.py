@@ -650,7 +650,9 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
             pass
     rank = xp_service.rank_for_xp(u.xp)
     rank_str = f"{rank.emoji} {esc(rank.name)}" if rank else "—"
-    tag_line = f"\n🏷️ Tag: {esc(u.cosmetic_tag)}" if u.cosmetic_tag else ""
+    from services.shop_service import render_active_tags
+    _tags = render_active_tags(u)
+    tag_line = f"\n🏷️ Tag: {esc(_tags)}" if _tags else ""
     text = (
         f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 {username}\n"

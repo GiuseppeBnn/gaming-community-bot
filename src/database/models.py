@@ -38,6 +38,7 @@ class TransactionType(str, Enum):
 
 
 class EventStatus(str, Enum):
+    draft = "draft"        # pre-created by an admin, not yet announced/open
     open = "open"
     locked = "locked"
     resolved = "resolved"
@@ -68,6 +69,9 @@ class User(Base):
     # rank_slug: last XP-rank seen, used to detect & announce rank-ups.
     # xp_today / xp_today_date: server-side daily cap on farmable participation XP.
     cosmetic_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Multiple simultaneously-active shop tags (JSON list of catalog item keys,
+    # ordered). cosmetic_tag is kept in sync as a legacy single-tag fallback.
+    active_tags_json: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     rank_slug: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     xp_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     xp_today_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
@@ -319,6 +323,25 @@ class QuizAnswer(Base):
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class PollTemplate(Base):
+    """A pre-created poll (question + options) that an admin can later start in
+    the group immediately or schedule — mirroring how quizzes are pre-created.
+
+    Status: ``ready`` (usable) → ``used`` (already sent). One-shot, like a quiz run.
+    """
+
+    __tablename__ = "poll_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    question: Mapped[str] = mapped_column(String(300), nullable=False)
+    options_json: Mapped[str] = mapped_column(String(2048), nullable=False)  # JSON list[str]
+    creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class BotState(Base):

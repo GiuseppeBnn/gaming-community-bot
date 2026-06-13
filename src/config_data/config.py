@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
+    # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
+    command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
+    event_create_cooldown_seconds: int = 5   # starting a quiz/poll/bet creation flow
 
     # Warn/strike system (admin moderation)
     warn_mute_threshold: int = 3       # active warnings → auto-mute
@@ -56,6 +59,10 @@ class Settings(BaseSettings):
     # Guaranteed floor for the last finisher = max(floor_min, round(consolation * floor_ratio))
     quiz_participation_floor_ratio: float = 0.2
     quiz_participation_floor_min: int = 1
+
+    # Shop cosmetics: how many purchased tags a user can keep active at once
+    # (they can switch among owned tags and combine several). Raise to allow more.
+    max_active_tags: int = 3
 
     # Scheduler (programmed quiz/poll/bet)
     scheduler_timezone: str = "Europe/Rome"

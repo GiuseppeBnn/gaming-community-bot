@@ -58,7 +58,11 @@ services:
     volumes:
       - ./data:/app/data
       # Backup snapshots + chat archive (§25) — persisted across restarts.
-      - ./backups:/app/backups
+      # NOTE: a *named* volume (not a ./backups bind mount) so Docker initializes
+      # it with the image dir's ownership (botuser, UID 1001). A host bind mount
+      # would be owned by the host UID → the non-root botuser gets EACCES on write.
+      # Backups are retrievable via the /backup·/esporta DM and `docker cp`.
+      - bot_backups:/app/backups
     deploy:
       resources:
         limits:
@@ -70,3 +74,4 @@ networks:
 
 volumes:
   postgres_data:
+  bot_backups:

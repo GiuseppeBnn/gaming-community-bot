@@ -251,6 +251,11 @@ async def clear_warnings(
     to_clear = warns if count is None else warns[:count]
     for w in to_clear:
         w.active = False
+    # Flush so a subsequent active_warning_count() in the same session sees the
+    # deactivation: the session is autoflush=False, so without this the count
+    # query would still read the pre-clear rows (e.g. "restano 2" after removing
+    # 1 of 2). Mirrors add_warning()'s flush-before-count.
+    await session.flush()
     return len(to_clear)
 
 

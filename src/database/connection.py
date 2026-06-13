@@ -39,6 +39,7 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_min INTEGER NOT NULL DEFAULT 0",
     # users: progression / cosmetics + daily-XP cap bookkeeping (added after initial deploy)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS cosmetic_tag VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_tags_json VARCHAR(512)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS rank_slug VARCHAR(64)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_today INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_today_date VARCHAR(10)",

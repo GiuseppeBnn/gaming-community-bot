@@ -24,7 +24,12 @@ from config_data.config import settings
 from database.models import TransactionType
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from filters.admin_filter import IsAdminFilter
+from handlers._privacy import redirect_to_private
 from handlers._targeting import ResolvedTarget, resolve_target
+
+# Admin commands that must never answer in the group (data exposure / noise):
+# in a group they redirect the admin to the private dashboard.
+_ADMIN_PRIVATE_NOTICE = "🔒 Comando riservato agli admin: usalo in chat privata col bot."
 from services import admin_service, economy_service, group_registry, moderation_service, xp_service
 from services.xp_service import XpSource
 from utils.text import esc
@@ -527,7 +532,7 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
         f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 Username: {username}\n"
         f"🆔 ID: <code>{u.tg_id}</code>\n"
-        f"📅 Dal: {member_since}\n"
+        f"📅 Membro dal: {member_since}\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
         f"⚡ XP: {u.xp}\n"
         f"🎖️ Badge: {dossier.badge_count}\n"
@@ -540,6 +545,8 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
 
 @router.message(Command("cerca"), IsAdminFilter())
 async def cmd_cerca(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_ADMIN_PRIVATE_NOTICE):
+        return
     query = (command.args or "").strip()
     if len(query) < 2:
         await message.reply("ℹ️ Uso: <code>/cerca &lt;testo&gt;</code> (almeno 2 caratteri).")
@@ -567,6 +574,8 @@ async def cmd_stats(message: Message, db_session: AsyncSession) -> None:
 
 @router.message(Command("audit"), IsAdminFilter())
 async def cmd_audit(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_ADMIN_PRIVATE_NOTICE):
+        return
     target = await resolve_target(message, db_session, command.args)
     target_tg_id = target.tg_id if target else None
     await message.reply(await render_audit(db_session, target_tg_id))
