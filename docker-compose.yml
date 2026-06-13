@@ -41,7 +41,9 @@ services:
     build: .
     # Tag used by `docker compose build` and pulled by `docker compose pull`.
     # Override BOT_IMAGE to point at your GHCR image (built by CI):
-    #   BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:latest
+    #   prod    →  BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:latest      (HEAD di main)
+    #   release →  BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:1.2.3       (versione immutabile)
+    #   staging →  BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:latest-test (HEAD di test)
     image: ${BOT_IMAGE:-gaming-community-bot:local}
     restart: unless-stopped
     env_file:

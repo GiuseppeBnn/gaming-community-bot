@@ -669,7 +669,8 @@ volumes:  { postgres_data }         #   (sono referenziate dai service)
 ```
 
 - `image:` sul service `bot` usa `${BOT_IMAGE}` → in produzione punta all'immagine GHCR pubblicata da CI
-  (`docker compose pull`); in dev resta `build: .`.
+  (`docker compose pull`); in dev resta `build: .`. Tag: `:latest` (HEAD main) o `:1.2.3` (release
+  immutabile) in prod, `:latest-test` (HEAD test) in staging — vedi §23 (CI/CD a due branch).
 - `networks`/`volumes` **devono** essere dichiarati a top-level: i service li referenziano, senza
   dichiarazione `docker compose config` fallisce.
 
@@ -822,16 +823,26 @@ Tre workflow in `.github/workflows/`:
 
 - **`tests.yml`** — push + PR su qualsiasi branch; `pytest --cov=src`; opzionale Codecov
   (`CODECOV_TOKEN` nei secrets). È anche `workflow_call` (riusabile come gate).
-- **`docker-image.yml`** — push che tocca `src/**`/`requirements.txt`/`Dockerfile`: job `test`
-  (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`, tag
-  `latest` solo sul branch di default + branch + sha; cache `gha`, `packages: write`). L'immagine
+- **`docker-image.yml`** — push su `main`/`test` o di un git tag `v*.*.*`: job `test`
+  (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`). L'immagine
   si pubblica **solo se i test passano**. Build **multi-arch** `linux/amd64,linux/arm64` (via
-  `setup-qemu-action` + `platforms:` su `build-push-action`).
+  `setup-qemu-action` + `platforms:` su `build-push-action`); cache `gha`, `packages: write`;
+  `concurrency` per-ref (un push supera il precedente sullo stesso branch).
+  **Modello di release a due branch (versioning):**
+  - **`test`** (staging) ⇒ ogni tag col suffisso **`-test`**: `latest-test` (rolling) + `sha-<short>-test` (pinned).
+  - **`main`** (prod) ⇒ ogni merge pubblica `latest` (rolling) + `sha-<short>` (pinned), **senza** suffisso.
+  - **git tag `vX.Y.Z`** (su un commit di main) ⇒ release **immutabile** semver: `X.Y.Z` + `X.Y` + `X`.
+  `latest` segue **sempre** la HEAD di main; i numeri di versione sono snapshot immutabili. Il suffisso
+  `-test` è applicato via `flavor: suffix=…,onlatest=true` condizionato a `github.ref`; i tag per-branch
+  sono gated da `enable=${{ github.ref == … }}`; i tag semver da `type=semver` (solo su ref tag).
+  **Tagliare una release:** merge su `main` → `git tag v1.2.3 && git push origin v1.2.3`.
+  *Niente filtro `paths`*: ogni push a un branch di release pubblica (così "ogni merge su main rilascia"),
+  la build cache rende economiche le ricostruzioni ed evita il footgun "tags + paths".
 - **`compose-artifact.yml`** — push che tocca `docker-compose.yml`: valida (`docker compose config`)
   e pubblica `docker-compose.yml` + `.env.example` come **artifact** (nessuna immagine).
 
-Regola: **sorgente cambia ⇒ immagine GHCR** (gated dai test) · **compose cambia ⇒ solo artifact** ·
-**ogni push ⇒ i test girano**.
+Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, suffisso/versione per ref) ·
+**compose cambia ⇒ solo artifact** · **ogni push ⇒ i test girano**.
 
 ---
 

@@ -1,20 +1,38 @@
 name: Build & publish bot image
 
-# Every push that changes the application source (or how it's built/packaged)
-# produces a new container image on GHCR — but only after the test suite passes.
+# Two-branch release model (gated by the test suite):
+#
+#   • push su `test`        → immagini di STAGING, ogni tag col suffisso "-test":
+#                               latest-test (rolling) + sha-<short>-test (pinned)
+#   • push/merge su `main`  → immagini di PRODUZIONE, senza suffisso:
+#                               latest (rolling) + sha-<short> (pinned)
+#   • push di un git tag    → release IMMUTABILE versionata (semver):
+#       vX.Y.Z (su main)        X.Y.Z + X.Y + X
+#
+# `latest` segue sempre la HEAD di main; i numeri di versione sono snapshot
+# immutabili. Per tagliare una release: merge su main, poi
+#   git tag v1.2.3 && git push origin v1.2.3
+#
+# Nessun filtro `paths`: ogni push a un branch di release pubblica un'immagine
+# ("ad ogni merge su main si rilascia"). La build cache (gha) rende le ricostruzioni
+# ridondanti economiche, ed evita il footgun "tags + paths" che salta le build dei tag.
 on:
   push:
-    paths:
-      - "src/**"
-      - "requirements.txt"
-      - "Dockerfile"
-      - ".dockerignore"
-      - ".github/workflows/docker-image.yml"
-      - ".github/workflows/tests.yml"
+    branches:
+      - main
+      - test
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: read
   packages: write
+
+# Una build per ref alla volta: un nuovo push supera quello in corso sullo stesso
+# branch. I tag hanno ref univoci → nessuna cancellazione tra release diverse.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Gate: the image is built only from source that passes the suite.
@@ -41,10 +59,22 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # Su `test` ogni tag prende il suffisso "-test" (incl. latest → latest-test).
+          # Su `main` / version-tag i tag restano puliti (suffisso vuoto).
+          flavor: |
+            latest=false
+            suffix=${{ github.ref == 'refs/heads/test' && '-test' || '' }},onlatest=true
           tags: |
-            type=sha,format=short
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            # --- branch test (staging): rolling + pinned, suffissati -test dal flavor ---
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/test' }}
+            type=sha,format=short,enable=${{ github.ref == 'refs/heads/test' }}
+            # --- branch main (prod): rolling latest + pinned sha ---
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            # --- git tag vX.Y.Z (release immutabile): scaletta semver ---
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
 
       - name: Set up QEMU (cross-build per arm64)
         uses: docker/setup-qemu-action@v3
@@ -63,3 +93,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Summary (published tags)
+        run: |
+          {
+            echo "### 🐳 Immagini pubblicate su GHCR"
+            echo ""
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
