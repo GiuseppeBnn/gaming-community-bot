@@ -24,7 +24,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config_data.config import settings
 from database.connection import async_session_maker
-from filters.admin_filter import IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from keyboards.common_kb import confirm_cancel_kb
 from services import bet_service, group_registry, poll_service, quiz_service, schedule_service
 from utils import cooldown
@@ -32,18 +32,17 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
-
-_MIN_OPTIONS, _MAX_OPTIONS = 2, 10
+# Admin-only router: gate every message/callback handler. Several flows here are
+# FSM-state driven (run-at input, pickers); without a router-level admin gate a
+# user who started a flow while admin and then lost admin could still drive it to
+# completion — FSM state has no TTL (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 
 class ScheduleStates(StatesGroup):
     # Unified flow: pick a pre-created quiz/poll/bet, then send the run-at time.
     event_runat = State()
-
-
-class SondaggioStates(StatesGroup):
-    question = State()
-    options = State()
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
@@ -224,7 +223,7 @@ async def cmd_programmati(message: Message, db_session) -> None:
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
 
 
-@router.callback_query(F.data.startswith("sched:del:"), IsAdminFilter())
+@router.callback_query(F.data.startswith("sched:del:"))
 async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
     task_id = int(callback.data.split(":")[2])
     ok = await schedule_service.cancel(db_session, task_id)
@@ -235,7 +234,7 @@ async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /sondaggio — post a poll to the group right now
+# /sondaggio — create a poll (stored), then choose: start now or schedule
 # ---------------------------------------------------------------------------
 
 @router.message(Command("sondaggio"), IsAdminFilter())
@@ -244,55 +243,17 @@ async def cmd_sondaggio(message: Message, state: FSMContext) -> None:
         message, "event_create", settings.event_create_cooldown_seconds, exempt_admin=False
     ):
         return
-    await state.clear()
-    await state.set_state(SondaggioStates.question)
-    await message.reply("📊 Invia la <b>domanda</b> del sondaggio:", reply_markup=_cancel_kb())
+    # Like quiz/scommesse: a poll is created and stored, then the admin chooses to
+    # start it now or schedule it. Reuse the canonical poll-creation flow (no
+    # immediate publish, no duplicated FSM). Lazy import avoids a circular import.
+    from handlers.events import start_poll_creation
 
-
-@router.message(SondaggioStates.question, ~F.text.startswith("/"))
-async def fsm_sondaggio_q(message: Message, state: FSMContext) -> None:
-    q = (message.text or "").strip()[:300]
-    if len(q) < 3:
-        await message.answer("⚠️ Domanda troppo corta.", reply_markup=_cancel_kb())
-        return
-    await state.update_data(question=q)
-    await state.set_state(SondaggioStates.options)
-    await message.answer(
-        f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
-        reply_markup=_cancel_kb(),
-    )
-
-
-@router.message(SondaggioStates.options, ~F.text.startswith("/"))
-async def fsm_sondaggio_opts(message: Message, state: FSMContext) -> None:
-    options = _parse_options(message.text)
-    if options is None:
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga).",
-            reply_markup=_cancel_kb(),
-        )
-        return
-    data = await state.get_data()
-    await state.clear()
-    target = group_registry.get_group_id() or message.chat.id
-    await message.bot.send_poll(
-        chat_id=target, question=data["question"], options=options, is_anonymous=False
-    )
-    await message.answer("✅ Sondaggio pubblicato nel gruppo!")
+    await start_poll_creation(message, state)
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-def _parse_options(text: str | None) -> list[str] | None:
-    options = [o.strip() for o in (text or "").splitlines() if o.strip()]
-    if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
-        return None
-    if any(len(o) > 100 for o in options):
-        return None
-    return options
-
 
 async def _parse_or_reprompt(message: Message) -> datetime | None:
     try:

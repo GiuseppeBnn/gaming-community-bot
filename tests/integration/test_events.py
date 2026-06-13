@@ -2,11 +2,42 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.base import StorageKey
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import InlineKeyboardMarkup
 
 from database.models import EventStatus
 from exceptions.economy import EventAlreadySettledError, EventNotFoundError
 from services import bet_service, poll_service
+
+
+class _FakeBot:
+    """Records send_poll so a test can assert a poll was NOT published."""
+
+    def __init__(self):
+        self.polls = []
+
+    async def send_poll(self, **kwargs):
+        self.polls.append(kwargs)
+
+
+class _FakeMessage:
+    def __init__(self, text, bot, user_id=1):
+        self.text = text
+        self.bot = bot
+        self.from_user = SimpleNamespace(id=user_id)
+        self.replies = []
+
+    async def answer(self, text, reply_markup=None):
+        self.replies.append((text, reply_markup))
+
+
+def _fresh_state() -> FSMContext:
+    return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
 
 
 class TestDraftBets:
@@ -82,3 +113,51 @@ class TestPollTemplates:
         used = await poll_service.get(session, poll.id)
         assert used.status == "used" and used.used_at is not None
         assert await poll_service.list_ready(session) == []
+
+
+class TestPollCreationFlow:
+    """A poll must be created → stored → and only then started/scheduled by an
+    explicit admin choice — never auto-published on creation (like quiz/scommesse)."""
+
+    async def test_finishing_creation_stores_template_without_publishing(self, session):
+        from handlers.events import PollTemplateStates, fsm_pt_options
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.options)
+        await state.update_data(pt_question="Best game?")
+        bot = _FakeBot()
+        message = _FakeMessage("A\nB\nC", bot)
+
+        await fsm_pt_options(message, state, session)
+
+        # Stored as a ready (pre-created) template...
+        polls = await poll_service.list_ready(session)
+        assert len(polls) == 1
+        assert polls[0].question == "Best game?"
+        assert poll_service.options_of(polls[0]) == ["A", "B", "C"]
+        # ...and NOT posted to the group.
+        assert bot.polls == []
+        # The admin is offered the explicit choice (Avvia ora / Programma).
+        assert message.replies
+        _text, kb = message.replies[-1]
+        assert isinstance(kb, InlineKeyboardMarkup)
+        callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
+        assert f"ev:start:poll:{polls[0].id}" in callbacks
+        assert f"ev:sched:poll:{polls[0].id}" in callbacks
+        # Flow is finished.
+        assert await state.get_state() is None
+
+    async def test_sondaggio_entry_starts_creation_without_publishing(self):
+        """/sondaggio reuses the canonical creation flow: it prompts for the
+        question and posts nothing (no immediate publish)."""
+        from handlers.events import PollTemplateStates, start_poll_creation
+
+        state = _fresh_state()
+        bot = _FakeBot()
+        message = _FakeMessage("ignored", bot)
+
+        await start_poll_creation(message, state)
+
+        assert await state.get_state() == PollTemplateStates.question.state
+        assert bot.polls == []  # nothing published
+        assert message.replies  # prompted for the question

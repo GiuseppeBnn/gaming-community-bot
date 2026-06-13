@@ -42,6 +42,10 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# Admin-only router: gate every message/callback handler so no FSM-state-only
+# handler can be driven by a user who has lost admin (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
 _TYPE_LABEL = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
@@ -321,13 +325,20 @@ def _parse_options(text: str | None) -> list[str] | None:
     return options
 
 
-@router.callback_query(F.data == "ev:new:poll", IsAdminCallbackFilter())
-async def cb_new_poll(callback: CallbackQuery, state: FSMContext) -> None:
+async def start_poll_creation(message: Message, state: FSMContext) -> None:
+    """Enter the poll-template creation FSM (question → options). Shared by the
+    Events hub «➕ Crea sondaggio» and the /sondaggio command — single canonical
+    flow, no duplicated FSM."""
     await state.clear()
     await state.set_state(PollTemplateStates.question)
-    await callback.message.answer(
+    await message.answer(
         "📊 <b>Nuovo sondaggio</b>\n\nInvia la <b>domanda</b>:", reply_markup=_pt_cancel_kb()
     )
+
+
+@router.callback_query(F.data == "ev:new:poll", IsAdminCallbackFilter())
+async def cb_new_poll(callback: CallbackQuery, state: FSMContext) -> None:
+    await start_poll_creation(callback.message, state)
     await callback.answer()
 
 
@@ -364,7 +375,8 @@ async def fsm_pt_options(message: Message, state: FSMContext, db_session: AsyncS
     await message.answer(
         f"✅ <b>Sondaggio #{poll.id} creato!</b>\n\n"
         f"❓ {esc(poll.question)}\n\n"
-        "Avvialo subito o programmalo dagli 🎬 Eventi."
+        "Avvialo subito nel gruppo oppure programmalo:",
+        reply_markup=_item_kb("poll", poll.id),
     )
 
 

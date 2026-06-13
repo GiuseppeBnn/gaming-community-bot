@@ -225,6 +225,22 @@ bot-admin senza doverli elencare in `ADMIN_IDS`. Usare sempre `is_admin` per i c
 `handlers/group_events.py` chiamano `invalidate_admin_cache()` su promozioni/retrocessioni
 (`chat_member`/`my_chat_member`) e migrazioni.
 
+**Gating a livello di router (obbligatorio per i router 100% admin).** I router interamente
+admin — `schedule`, `events`, `admin`, `admin_dashboard`, `admin_betting`, `backup` — montano il
+filtro alla radice del router, non solo sui singoli handler:
+
+```python
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
+```
+
+Motivo: gli handler guidati **solo dallo stato FSM** (input di un wizard, picker, run-at) non
+ri-controllerebbero `is_admin`, e lo stato FSM **non ha TTL** (sopravvive in Redis/Memory). Senza
+il gate di router, un admin che entra in un flusso e poi **perde i diritti** potrebbe portarlo a
+termine (privilege escalation). Il gate di router chiude l'intera classe. I router **misti**
+(`betting` con `/crea_scommessa` community, `quiz` con `quiz_ans:*` pubblico) **non** possono
+montarlo: lì ogni handler admin va gated singolarmente.
+
 ---
 
 ## 9. Deep-link pattern
@@ -458,8 +474,8 @@ illimitata con tanti utenti).
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > Il negozio non usa più una FSM: i cosmetici si applicano al volo (§11), nessun `ShopState`.
-| `ScheduleStates.*` | `handlers/schedule.py` | programmazione quiz/poll/bet (config + orario) |
-| `SondaggioStates.*` | `handlers/schedule.py` | `/sondaggio` (domanda + opzioni) |
+| `ScheduleStates.*` | `handlers/schedule.py` | programmazione quiz/poll/bet (scelta orario run-at) |
+| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
 
 ---
 
@@ -675,7 +691,7 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 ### Regole
 
 - Stati quiz: `draft → ready → running → finished`.
-- Play in **privato** (i poll di gruppo non sono usati per i quiz; `send_poll` resta solo per `/sondaggio`).
+- Play in **privato** (i poll di gruppo non sono usati per i quiz; `send_poll` serve solo per avviare/programmare un sondaggio, mai per i quiz).
 - Service no-commit (§5): commit negli handler. `open_quiz` annuncia prima di flippare lo stato.
 
 ---
@@ -693,8 +709,11 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` per tipo: `bet` → `bet_service.create_event` (open) da payload + annuncio gruppo;
   `quiz` → `quiz.open_quiz` (annuncia + apre); `poll` → `bot.send_poll` (regolare) nel gruppo.
-- Comandi: `/programma` (FSM scelta tipo → config → orario), `/programmati` (lista + annulla),
-  `/sondaggio` (poll subito nel gruppo). Tutti `IsAdminFilter`.
+- Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
+  `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
+  pubblicato all'istante; riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
+  `schedule.router` monta `IsAdminFilter`/`IsAdminCallbackFilter` alla radice, così ogni handler
+  (anche quelli guidati solo dallo stato FSM) richiede l'admin.
 - I `ScheduledTask` sono **persistiti** → sopravvivono al restart.
 
 ---
