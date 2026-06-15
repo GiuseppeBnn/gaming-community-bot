@@ -75,6 +75,26 @@ async def guard(
     return True
 
 
+async def ready(
+    message: Message,
+    bucket: str,
+    seconds: float,
+    *,
+    exempt_admin: bool = True,
+) -> bool:
+    """Silent variant of ``guard``: True (and records the use) if the user may
+    proceed, False if still cooling down — **without** replying. For static group
+    commands where a 'slow down' notice would itself be flood noise (the fresh
+    reply is already there). Admins bypass by default."""
+    uid = message.from_user.id if message.from_user else 0
+    if exempt_admin and uid and await is_admin(message.bot, uid):
+        return True
+    if remaining(bucket, uid, seconds) > 0:
+        return False
+    mark(bucket, uid)
+    return True
+
+
 def reset() -> None:
     """Clear all cooldowns — test helper."""
     _store.clear()

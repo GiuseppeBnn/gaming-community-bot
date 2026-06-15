@@ -34,6 +34,7 @@ from handlers import (
     shop,
 )
 from handlers.schedule import scheduler_loop
+from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
@@ -56,6 +57,7 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="trasferisci", description="Trasferisci Aldueuri"),
     BotCommand(command="scommesse", description="Scommesse aperte"),
     BotCommand(command="crea_scommessa", description="Crea una scommessa"),
+    BotCommand(command="quiz", description="🧠 Quiz: gioca o gestisci"),
     BotCommand(command="traguardi", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_badge", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
@@ -70,6 +72,7 @@ _GROUP_COMMANDS = [
     BotCommand(command="daily", description="Premio giornaliero"),
     BotCommand(command="saldo", description="Il tuo saldo"),
     BotCommand(command="profilo", description="Il tuo profilo"),
+    BotCommand(command="quiz", description="🧠 Quiz attivo da giocare"),
     BotCommand(command="traguardi", description="I tuoi trofei e rango"),
     BotCommand(command="classifiche", description="Classifiche della community"),
     BotCommand(command="negozio", description="Personalizzazioni (tag)"),
@@ -90,7 +93,6 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
     BotCommand(command="eventi", description="🎬 Hub eventi"),
     BotCommand(command="crea_quiz", description="🎬 Crea un quiz"),
-    BotCommand(command="quiz", description="🎬 Quiz pronti / avvia"),
     BotCommand(command="sondaggio", description="🎬 Crea un sondaggio"),
     BotCommand(command="programma", description="🎬 Programma un evento"),
     BotCommand(command="programmati", description="🎬 Eventi programmati"),
@@ -155,9 +157,12 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=storage)
 
-    # Middleware order matters: rate-limit first, then DB session, then group guard.
+    # Middleware order matters: rate-limit first, then DB session, then the
+    # bot-level ban guard (needs db_session; silently drops banned users), then
+    # the group-membership guard.
     dp.update.middleware(RateLimitMiddleware())
     dp.update.middleware(DbSessionMiddleware())
+    dp.update.middleware(BannedUserMiddleware())
     dp.update.middleware(GroupMemberMiddleware())
 
     # Router order matters: admin_betting MUST precede betting so that

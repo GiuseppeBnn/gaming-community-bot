@@ -260,6 +260,20 @@ async def clear_warnings(
 
 
 # ---------------------------------------------------------------------------
+# Bot-level ban
+# ---------------------------------------------------------------------------
+
+async def set_user_banned(session: AsyncSession, tg_id: int, banned: bool) -> bool:
+    """Set/clear the bot-level ban flag on a user. Returns True if the user row
+    exists (was updated). No commit — the caller owns the transaction and is
+    responsible for invalidating the BannedUserMiddleware cache afterwards."""
+    result = await session.execute(
+        update(User).where(User.tg_id == tg_id).values(is_banned=banned)
+    )
+    return (result.rowcount or 0) > 0
+
+
+# ---------------------------------------------------------------------------
 # Audit log
 # ---------------------------------------------------------------------------
 

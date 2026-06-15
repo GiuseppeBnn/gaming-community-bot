@@ -24,6 +24,31 @@ _SYNC_FIELDS = (
     "xp_reward", "condition_type", "condition_value",
 )
 
+# Human-readable "how to unlock" text per condition type (the 6 supported in
+# catalog_loader.TROPHY_CONDITIONS / check_and_award_milestones). Keeps the
+# dev-jargon "type ≥ value" out of the user-facing trophy screens; shared by
+# /catalogo_badge and /traguardi so the two render conditions identically.
+_CONDITION_TEMPLATES = {
+    "onboarding": "Completa la registrazione",
+    "balance": "Raggiungi {v:,} Aldueuri",
+    "daily_streak": "Riscuoti il /daily per {v} giorni di fila",
+    "bets_won": "Vinci {v} scommesse",
+    "transfers_made": "Invia {v} trasferimenti",
+    "xp": "Accumula {v:,} XP",
+}
+
+
+def describe_condition(condition_type: str | None, condition_value: int | None) -> str | None:
+    """Plain-Italian unlock requirement for a trophy, or None if it has no
+    machine condition (manually awarded). Pure presentation — no DB, no escaping
+    (the value is numeric; the caller escapes any surrounding user text)."""
+    if not condition_type:
+        return None
+    template = _CONDITION_TEMPLATES.get(condition_type)
+    if template is None:
+        return None
+    return template.format(v=condition_value or 0)
+
 
 async def sync_trophies(session: AsyncSession, rows: list[dict] | None = None) -> int:
     """Upsert the trophy catalog (CSV-driven, falling back to built-in defaults).

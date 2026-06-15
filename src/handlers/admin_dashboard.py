@@ -38,6 +38,7 @@ from handlers.admin import apply_warning, render_audit, render_panel_help, rende
 from handlers.admin_betting import _show_event_list
 from handlers.leaderboard import render_board
 from handlers.quiz import close_quiz, open_quiz, start_quiz_creation
+from middlewares import ban_guard
 from keyboards.admin_dashboard_kb import (
     PAGE_SIZE,
     back_home_kb,
@@ -450,6 +451,7 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
             return
         count, _esc = await apply_warning(bot, db_session, admin_id, tg_id, chat_id, None)
         await db_session.commit()
+        ban_guard.invalidate(tg_id)  # a warn may have auto-banned the user
         await callback.answer(f"⚠️ Warn registrato (#{count}).")
         await _show_detail_cb(callback, db_session, tg_id)
         return
@@ -465,6 +467,7 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         success, err = await moderation_service.ban(bot, chat_id, tg_id)
         toast = "⛔ Utente bannato." if success else f"❌ {err}"
         if success:
+            await admin_service.set_user_banned(db_session, tg_id, True)
             await admin_service.log_action(db_session, admin_id, "ban", target_tg_id=tg_id, group_id=chat_id)
     elif action == "kick":
         success, err = await moderation_service.kick(bot, chat_id, tg_id)
@@ -475,6 +478,7 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         success, err = await moderation_service.unban(bot, chat_id, tg_id)
         toast = "✅ Utente sbannato." if success else f"❌ {err}"
         if success:
+            await admin_service.set_user_banned(db_session, tg_id, False)
             await admin_service.log_action(db_session, admin_id, "sban", target_tg_id=tg_id, group_id=chat_id)
     elif action == "unmute":
         success, err = await moderation_service.unmute(bot, chat_id, tg_id)
@@ -494,6 +498,8 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         return
 
     await db_session.commit()
+    if action in ("ban", "sban"):
+        ban_guard.invalidate(tg_id)  # apply the new bot-ban state on the next update
     await callback.answer(toast, show_alert=not success)
     await _show_detail_cb(callback, db_session, tg_id)
 

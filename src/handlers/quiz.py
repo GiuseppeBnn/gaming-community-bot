@@ -32,11 +32,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from database.models import User
-from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter, is_admin
 from handlers._privacy import redirect_to_private
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, quiz_service
 from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc, format_seconds_short
 
 log = logging.getLogger(__name__)
@@ -648,8 +649,46 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
     return True, "Quiz avviato nel gruppo!"
 
 
-@router.message(Command("quiz"), IsAdminFilter())
+async def _show_play_view(message: Message, db_session: AsyncSession) -> None:
+    """Non-admin view of /quiz: a button to play the running quiz, or a clear
+    'no quiz active' message — never silence (the old admin filter just dropped
+    a non-admin's /quiz). One live reply per user in groups (anti-flood)."""
+    if not await cooldown.ready(message, "quiz", settings.command_cooldown_seconds):
+        return
+    running = [q for q in await quiz_service.list_ready(db_session) if q.status == "running"]
+    if not running:
+        await reply_static(
+            message,
+            "🧠 <b>Nessun quiz attivo al momento.</b>\n"
+            "Quando un admin ne avvia uno te lo segnaliamo qui nel gruppo! 🏁",
+            "quiz",
+        )
+        return
+    bot_info = await message.bot.get_me()
+    b = InlineKeyboardBuilder()
+    for q in running:
+        # Button text is not HTML-parsed → raw title is fine here.
+        b.button(
+            text=f"▶️ Gioca: {q.title[:30]}",
+            url=f"https://t.me/{bot_info.username}?start=quiz_{q.id}",
+        )
+    b.adjust(1)
+    await reply_static(
+        message,
+        "🧠 <b>Quiz in corso!</b> Tocca per giocare in chat privata:",
+        "quiz",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.message(Command("quiz"))
 async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
+    # Public entry point. Non-admins get the "play" view (with a clear message
+    # when no quiz is active); admins get the management list. The admin branch is
+    # still gated by this in-handler is_admin check.
+    if not await is_admin(message.bot, message.from_user.id):
+        await _show_play_view(message, db_session)
+        return
     if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
         return
     quizzes = [q for q in await quiz_service.list_ready(db_session) if q.status == "ready"]

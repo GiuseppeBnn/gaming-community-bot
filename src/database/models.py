@@ -60,6 +60,10 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(256), nullable=False)
     xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Bot-level ban (set by /ban, the warn auto-ban and the dashboard; cleared by
+    # /sban). A banned user's updates are dropped silently by BannedUserMiddleware —
+    # the bot never replies, anywhere — but their data (wallet, trophies, …) stays.
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_daily_claim: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     daily_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     bets_won: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

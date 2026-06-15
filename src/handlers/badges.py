@@ -62,7 +62,11 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
             if badge.id in earned_ids:
                 lines.append(f"{badge.icon_emoji} <b>{esc(badge.name)}</b> — {esc(badge.description)}")
             else:
-                lines.append(f"🔒 <i>{esc(badge.name)}</i> — {esc(badge.description)}")
+                # Locked: show the plain-Italian unlock requirement (same wording
+                # as /catalogo_badge) so the two screens stay consistent.
+                cond = badge_service.describe_condition(badge.condition_type, badge.condition_value)
+                cond_txt = f"\n   <i>Come sbloccarlo: {esc(cond)}</i>" if cond else ""
+                lines.append(f"🔒 <i>{esc(badge.name)}</i> — {esc(badge.description)}{cond_txt}")
 
     if not earned_ids:
         lines.append(
@@ -83,9 +87,10 @@ async def cmd_catalogo_badge(message: Message, db_session: AsyncSession) -> None
 
     lines = ["📚 <b>Catalogo Trofei</b>\n"]
     for badge in sorted(all_badges, key=_rarity_key):
-        cond = ""
-        if badge.condition_type and badge.condition_value is not None:
-            cond = f"\n   <i>Condizione: {badge.condition_type} ≥ {badge.condition_value}</i>"
+        # Plain-Italian unlock requirement instead of the dev-jargon "type ≥ value"
+        # (shared wording with /traguardi via badge_service.describe_condition).
+        cond_text = badge_service.describe_condition(badge.condition_type, badge.condition_value)
+        cond = f"\n   <i>Come sbloccarlo: {esc(cond_text)}</i>" if cond_text else ""
         rarity = RARITY_LABELS.get(badge.rarity, badge.rarity.title())
         lines.append(
             f"{badge.icon_emoji} <b>{esc(badge.name)}</b> · {rarity}\n"

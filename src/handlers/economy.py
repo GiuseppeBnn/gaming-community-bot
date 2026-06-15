@@ -24,6 +24,8 @@ from filters.admin_filter import IsAdminFilter
 from handlers._privacy import redirect_to_private
 from services import badge_service, economy_service, xp_service
 from services.xp_service import XpSource
+from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc, format_duration
 
 log = logging.getLogger(__name__)
@@ -46,19 +48,21 @@ _TX_LABELS = {
 
 
 async def show_saldo(message: Message, db_session: AsyncSession) -> None:
-    """Render the caller's balance. Reused by the /saldo command and the
-    ``?start=saldo`` deep-link (private chat only)."""
+    """Render the caller's balance. Public: works in the group (one live reply per
+    user via static_reply) and in private; also reused by the ``?start=saldo`` /
+    ``?start=daily`` deep-links."""
     try:
         balance = await economy_service.get_balance(db_session, message.from_user.id)
     except WalletNotFoundError:
         await message.answer("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
-    await message.answer(f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>")
+    await reply_static(message, f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>", "saldo")
 
 
 @router.message(Command("saldo"))
 async def cmd_saldo(message: Message, db_session: AsyncSession) -> None:
-    if await redirect_to_private(message, "saldo", "🪙 Vedi il tuo saldo"):
+    # Public command: answers in the group too (no longer redirected to private).
+    if not await cooldown.ready(message, "saldo", settings.command_cooldown_seconds):
         return
     await show_saldo(message, db_session)
 
@@ -70,15 +74,25 @@ async def show_storico(message: Message, db_session: AsyncSession) -> None:
         await message.answer("📋 Nessuna transazione ancora.")
         return
 
+    _TRANSFER_TYPES = (
+        TransactionType.transfer_out.value,
+        TransactionType.transfer_in.value,
+    )
     lines = ["<b>📋 Ultime transazioni:</b>\n"]
     for entry in entries:
         label = _TX_LABELS.get(entry.tx_type, "📌 Transazione")
         sign = "+" if entry.amount > 0 else ""
         ts = entry.created_at
+        # For transfers the counterparty lives in the description (e.g.
+        # "Trasferimento a @mario") — surface the name so the history is readable.
+        detail = ""
+        if entry.tx_type in _TRANSFER_TYPES and entry.description:
+            detail = f"\n   <i>{esc(entry.description)}</i>"
         lines.append(
             f"{label}\n"
             f"   <b>{sign}{entry.amount:,} 🪙</b>"
             f" — <i>{ts.strftime('%d/%m %H:%M')}</i>"
+            f"{detail}"
         )
     await message.answer("\n".join(lines))
 
@@ -188,9 +202,13 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         )
         return
 
+    sender = message.from_user
+    sender_name = f"@{sender.username}" if sender.username else sender.full_name
+    recipient_name = f"@{target.username}" if target.username else target.full_name
     try:
         await economy_service.transfer(
-            db_session, message.from_user.id, target.tg_id, amount
+            db_session, message.from_user.id, target.tg_id, amount,
+            from_name=sender_name, to_name=recipient_name,
         )
         await db_session.commit()
     except SelfTransferError:

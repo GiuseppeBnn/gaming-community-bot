@@ -176,6 +176,34 @@ class TestTransfer:
 
         assert user1.transfers_made == 1
 
+    async def test_names_appear_in_ledger_descriptions(self, session, user_factory):
+        await user_factory(tg_id=1, coins=500)
+        await user_factory(tg_id=2, coins=0)
+
+        await eco.transfer(
+            session, 1, 2, 100, from_name="@mittente", to_name="@destinatario"
+        )
+        await session.commit()
+
+        from sqlalchemy import select
+        entries = list((await session.execute(select(LedgerEntry))).scalars())
+        by_type = {e.tx_type: e.description for e in entries}
+        assert by_type[TransactionType.transfer_out.value] == "Trasferimento a @destinatario"
+        assert by_type[TransactionType.transfer_in.value] == "Trasferimento da @mittente"
+
+    async def test_falls_back_to_ids_without_names(self, session, user_factory):
+        await user_factory(tg_id=1, coins=500)
+        await user_factory(tg_id=2, coins=0)
+
+        await eco.transfer(session, 1, 2, 100)  # no names supplied
+        await session.commit()
+
+        from sqlalchemy import select
+        entries = list((await session.execute(select(LedgerEntry))).scalars())
+        by_type = {e.tx_type: e.description for e in entries}
+        assert by_type[TransactionType.transfer_out.value] == "Trasferimento a 2"
+        assert by_type[TransactionType.transfer_in.value] == "Trasferimento da 1"
+
     async def test_raises_self_transfer_error(self, session, user_factory):
         await user_factory(tg_id=1, coins=500)
 

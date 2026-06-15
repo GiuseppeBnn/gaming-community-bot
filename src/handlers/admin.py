@@ -26,6 +26,7 @@ from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers._privacy import redirect_to_private
 from handlers._targeting import ResolvedTarget, resolve_target
+from middlewares import ban_guard
 
 # Admin commands that must never answer in the group (data exposure / noise):
 # in a group they redirect the admin to the private dashboard.
@@ -289,11 +290,14 @@ async def cmd_ban(message: Message, command: CommandObject, db_session: AsyncSes
         await message.reply(f"❌ {err}")
         return
 
+    # Bot-level ban too: the user becomes mute-to-the-bot everywhere (silent drop).
+    await admin_service.set_user_banned(db_session, target.tg_id, True)
     await admin_service.log_action(
         db_session, message.from_user.id, "ban",
         target_tg_id=target.tg_id, group_id=chat_id, detail=reason or None,
     )
     await db_session.commit()
+    ban_guard.invalidate(target.tg_id)
     await _notify(message, target.tg_id, "⛔ Sei stato bannato dal gruppo.")
     suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
     await message.reply(f"⛔ {target.display_name} bannato.{suffix}")
@@ -313,10 +317,13 @@ async def cmd_sban(message: Message, command: CommandObject, db_session: AsyncSe
     if not ok:
         await message.reply(f"❌ {err}")
         return
+    # Lift the bot-level ban too: the user can talk to the bot again.
+    await admin_service.set_user_banned(db_session, target.tg_id, False)
     await admin_service.log_action(
         db_session, message.from_user.id, "sban", target_tg_id=target.tg_id, group_id=chat_id
     )
     await db_session.commit()
+    ban_guard.invalidate(target.tg_id)
     await message.reply(f"✅ {target.display_name} può rientrare nel gruppo.")
 
 
@@ -422,6 +429,8 @@ async def apply_warning(
     if count >= settings.warn_ban_threshold:
         ok, _ = await moderation_service.ban(bot, chat_id, target_id)
         if ok:
+            # Bot-level ban too (caller invalidates the cache after commit).
+            await admin_service.set_user_banned(db_session, target_id, True)
             await admin_service.log_action(
                 db_session, admin_id, "ban",
                 target_tg_id=target_id, group_id=chat_id, detail="auto: soglia warn",
@@ -457,6 +466,8 @@ async def cmd_warn(message: Message, command: CommandObject, db_session: AsyncSe
     )
 
     await db_session.commit()
+    # A warn may have auto-banned the user → refresh the ban-guard cache.
+    ban_guard.invalidate(target.tg_id)
     suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
     await _notify(
         message, target.tg_id,

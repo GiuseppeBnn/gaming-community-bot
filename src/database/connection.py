@@ -31,6 +31,8 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_streak INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS bets_won INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS transfers_made INTEGER NOT NULL DEFAULT 0",
+    # users: bot-level ban flag (silent-drop middleware) added after initial deploy
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT false",
     # quizzes: per-rank custom prizes + decreasing consolation (added after initial deploy)
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_first INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_second INTEGER NOT NULL DEFAULT 0",

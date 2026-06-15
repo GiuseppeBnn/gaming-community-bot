@@ -54,7 +54,7 @@ _COMMANDS: list[CommandDoc] = [
         "profilo", "Il tuo profilo: XP, saldo, trofei, tag", "👤 Profilo & Economia",
         usage="/profilo",
         details="Mostra la tua scheda personale: rango XP, Aldueuri 🪙, numero di trofei e "
-                "i tag attivi. Nel gruppo apre la scheda in chat privata per non mostrarla a tutti.",
+                "i tag attivi. Funziona anche nel gruppo (mostra sempre e solo il tuo profilo).",
     ),
     CommandDoc(
         "saldo", "Saldo e ultimi movimenti", "👤 Profilo & Economia",
@@ -95,6 +95,13 @@ _COMMANDS: list[CommandDoc] = [
                 "descrizione e opzioni). La pubblicazione effettiva è gestita dagli admin.",
     ),
     # --- 🏆 Progressione ---
+    CommandDoc(
+        "quiz", "Gioca al quiz in corso (o vedi se ce n'è uno)", "🏆 Progressione",
+        usage="/quiz",
+        details="Se è in corso un quiz, ti dà il pulsante per <b>giocarlo</b> in chat privata; "
+                "altrimenti ti dice chiaramente che non ce ne sono di attivi. Gli admin lo usano "
+                "invece per gestire e avviare i quiz.",
+    ),
     CommandDoc(
         "traguardi", "I tuoi trofei (per rarità) e il rango", "🏆 Progressione",
         usage="/traguardi",
@@ -188,7 +195,10 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc("set_xp", "Imposta l'XP di un utente", "💰 Valuta & XP",
                usage="/set_xp @utente <n>", admin_only=True),
     CommandDoc("ban", "Banna un utente dal gruppo", "🛡️ Moderazione",
-               usage="/ban (reply o @utente/ID)", admin_only=True),
+               usage="/ban (reply o @utente/ID)", admin_only=True,
+               details="Rimuove l'utente dal gruppo e lo rende <b>muto al bot</b>: non riceverà più "
+                       "risposte da nessuna parte, nemmeno in privato. I suoi dati restano intatti; "
+                       "<code>/sban</code> ripristina tutto."),
     CommandDoc("sban", "Revoca il ban", "🛡️ Moderazione",
                usage="/sban (reply o @utente/ID)", admin_only=True),
     CommandDoc("kick", "Espelli un utente", "🛡️ Moderazione",

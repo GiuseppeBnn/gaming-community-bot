@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from keyboards.betting_kb import (
     PRESET_AMOUNTS,
     get_amount_keyboard,
@@ -119,11 +117,14 @@ class TestOptionsKeyboard:
         # 2 options + back + close = 4
         assert len(buttons) == 4
 
-    def test_odds_in_text(self):
-        opts = [SimpleNamespace(id=1, label="Win", odds_multiplier=2.5, total_wagered=0)]
+    def test_button_shows_label_and_wagered_without_odds(self):
+        # The "x2.0" odds multiplier was removed from option buttons (trivial noise).
+        opts = [SimpleNamespace(id=1, label="Win", odds_multiplier=2.5, total_wagered=300)]
         kb = get_options_keyboard(event_id=1, options=opts)
         btn = _flat_buttons(kb)[0]
-        assert "2.5" in btn.text
+        assert "Win" in btn.text
+        assert "300" in btn.text
+        assert "x2.5" not in btn.text and "(x" not in btn.text
 
     def test_callback_format(self):
         opts = [SimpleNamespace(id=3, label="X", odds_multiplier=1.0, total_wagered=0)]

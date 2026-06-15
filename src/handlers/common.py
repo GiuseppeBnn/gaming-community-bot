@@ -32,6 +32,7 @@ from handlers._privacy import redirect_to_private
 from handlers.help_content import render_command, render_legend, suggestions
 from handlers.onboarding import show_rules_prompt
 from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc
 
 router = Router()
@@ -213,14 +214,17 @@ async def cmd_start(
 
 @router.message(Command("profilo"))
 async def cmd_profilo(message: Message, db_session: AsyncSession) -> None:
-    from handlers._privacy import redirect_to_private
-    if await redirect_to_private(message, "profilo", "🎮 Vedi il tuo profilo"):
+    # Public command: answers in the group too (no longer redirected to private).
+    # Light anti-flood cooldown; the reply itself is deduplicated per user+command.
+    if not await cooldown.ready(message, "profilo", settings.command_cooldown_seconds):
         return
     await show_profilo(message, db_session)
 
 
 async def show_profilo(message: Message, db_session: AsyncSession) -> None:
-    """Render the caller's profile (private chat only)."""
+    """Render the caller's own profile. Public: works in the group (one live reply
+    per user via static_reply) and in private. Never shows the Telegram ID — that
+    stays exclusive to the admin /info dossier."""
     result = await db_session.execute(
         select(User)
         .where(User.tg_id == message.from_user.id)
@@ -249,16 +253,17 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     if tags:
         title = f"{esc(tags)} · {title}"
 
-    await message.answer(
+    await reply_static(
+        message,
         f"🎮 <b>{title}</b>\n\n"
         f"🔖 <b>Username:</b> {username_display}\n"
-        f"🆔 <b>Telegram ID:</b> <code>{user.tg_id}</code>\n"
         f"📅 <b>Membro dal:</b> {member_since}\n\n"
         f"{tag_line}"
         f"{rank_line}"
         f"💰 <b>Aldueuri:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
         f"⚡ <b>XP:</b> {user.xp:,}\n"
-        f"🏆 <b>Trofei:</b> {badge_count}"
+        f"🏆 <b>Trofei:</b> {badge_count}",
+        "profilo",
     )
 
 
@@ -266,6 +271,8 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
 @router.message(Command("comandi", "help"))
 async def cmd_help(message: Message) -> None:
     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        if not await cooldown.ready(message, "comandi", settings.command_cooldown_seconds):
+            return
         bot_info = await message.bot.get_me()
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[
@@ -275,8 +282,11 @@ async def cmd_help(message: Message) -> None:
                 )
             ]]
         )
-        await message.reply(
+        # Anti-flood: keep a single live "open the guide" button per user.
+        await reply_static(
+            message,
             "ℹ️ Clicca per vedere tutti i comandi disponibili.",
+            "comandi",
             reply_markup=kb,
         )
         return

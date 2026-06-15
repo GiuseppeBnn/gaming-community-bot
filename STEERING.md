@@ -126,6 +126,7 @@ BetStatus:       pending | won | lost | refunded
 - `bot_state` (key/value) è una tabella **nuova** (no `_MIGRATIONS`): persiste l'id gruppo effettivo dopo una migrazione Telegram (§13, `group_registry`)
 - `UserBet` ha UniqueConstraint(user_tg_id, event_id) — un utente non può scommettere due volte sullo stesso evento
 - `daily_streak`, `bets_won`, `transfers_made` su `User` vengono aggiornati nei rispettivi service — **non** calcolati on-the-fly
+- `User.is_banned` (bool, default false) è il **ban bot-level** (§18, `BannedUserMiddleware`): aggiunto a `users` *dopo* il primo deploy → ha la sua voce `ALTER TABLE … ADD COLUMN IF NOT EXISTS is_banned …` in `_MIGRATIONS`. Si muta **solo** via `admin_service.set_user_banned`; **non** è una condizione-milestone (regola 10 non coinvolta)
 - `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo rango visto (per annunciare i rank-up); `cosmetic_tag` è il flair acquistato nel negozio (§11)
 - `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`) e `badges.rarity` sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
 - `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`)
@@ -174,10 +175,14 @@ await db_session.commit()  # ← qui
 ```python
 dp.update.middleware(RateLimitMiddleware())    # 1. rate-limit (12 req/10s per utente)
 dp.update.middleware(DbSessionMiddleware())    # 2. DB session + upsert utente
-dp.update.middleware(GroupMemberMiddleware())  # 3. blocca non-membri in privato
+dp.update.middleware(BannedUserMiddleware())   # 3. bannati dal bot → scarto SILENZIOSO
+dp.update.middleware(GroupMemberMiddleware())  # 4. blocca non-membri in privato
 ```
 
-**Non invertire.** Il DB middleware deve girare prima del guard perché il guard fa API call che richiede il bot (disponibile dal framework), non la sessione DB.
+**Non invertire.** Il DB middleware deve girare prima dei guard perché:
+- `BannedUserMiddleware` (§18) legge `User.is_banned` via `db_session` e **scarta in silenzio**
+  (nessuna risposta, ovunque) gli update di un utente bannato dal bot — i dati restano intatti;
+- `GroupMemberMiddleware` fa una API call che richiede il bot (dal framework), non la sessione DB.
 
 ---
 
@@ -269,15 +274,18 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
 | `bet_custom_<e>_<o>` | `common.cmd_start` → `betting.start_custom_amount` | FSM importo custom |
 | `bet_<event_id>` | `common.cmd_start` → `betting.start_bet_view` | Dettaglio evento |
-| `saldo` | `common.cmd_start` → `economy.show_saldo` | Saldo personale (redirect privacy da gruppo) |
+| `saldo` | `common.cmd_start` → `economy.show_saldo` | Saldo personale (back-compat: usato dal fallback `/daily`) |
 | `storico` | `common.cmd_start` → `economy.show_storico` | Storico movimenti (redirect privacy) |
-| `profilo` | `common.cmd_start` → `common.show_profilo` | Profilo personale (redirect privacy) |
+| `profilo` | `common.cmd_start` → `common.show_profilo` | Profilo personale (back-compat) |
 | `traguardi` | `common.cmd_start` → `badges.show_traguardi` | Trofei personali (redirect privacy) |
 | `daily` | `common.cmd_start` → `economy.show_saldo` | Fallback `/daily` da gruppo (DM fallito) |
 
-I comandi che mostrano **dati personali** (`/saldo`, `/storico`, `/profilo`, `/traguardi`,
-`/negozio`) nel gruppo **non rispondono in chiaro**: usano `handlers/_privacy.redirect_to_private`
-che invia un bottone deep-link verso il privato. `/daily` invece riscuote subito in gruppo con un
+`/profilo` e `/saldo` sono **pubblici**: rispondono in chiaro anche nel gruppo (decisione di
+prodotto — il saldo è visibile a tutti), con l'**anti-flood "sostituisci"** di `utils/static_reply`
+(§14, una sola risposta viva per utente+comando). `/profilo` **non** mostra mai il Telegram ID
+(resta esclusiva del dossier admin `/info`). I comandi che mostrano **dati personali** ancora
+**redirezionati** in privato (`handlers/_privacy.redirect_to_private`, bottone deep-link) sono
+`/storico`, `/traguardi`, `/negozio`, `/classifiche`. `/daily` riscuote subito in gruppo con un
 **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best-effort**.
 
 I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
@@ -371,7 +379,10 @@ coi default. Catalogo default (9 trofei) in `catalog_loader.DEFAULT_TROPHIES`.
 
 **Condizioni di sblocco** (`check_and_award_milestones`): `onboarding`, `balance`,
 `daily_streak`, `bets_won`, `transfers_made`, **`xp`** (nuova). Il "Platino" è semplicemente
-un trofeo con condizione `xp` ad alta soglia. I counter vengono incrementati in:
+un trofeo con condizione `xp` ad alta soglia. La resa **user-facing** della condizione passa da
+`badge_service.describe_condition(type, value)` (Italiano leggibile, es. "Raggiungi 1.000 Aldueuri"
+— **mai** il gergo `type ≥ value`), usata sia da `/catalogo_badge` sia da `/traguardi` (sui trofei
+🔒 bloccati) così i due comandi mostrano le condizioni **identiche**. I counter vengono incrementati in:
 - `daily_streak` → `economy_service.claim_daily()`
 - `bets_won` → `bet_service.resolve_event()`
 - `transfers_made` → `economy_service.transfer()`
@@ -478,6 +489,19 @@ Si applica a tutti gli update: `Message` e `CallbackQuery`. Il dict per-utente �
 chiave si rimuove quando la finestra si svuota + sweep periodico ogni 512 chiamate (no crescita
 illimitata con tanti utenti).
 
+### Anti-flood comandi statici di gruppo (`utils/static_reply`)
+
+Oltre al rate-limit globale, i **comandi statici** che ora rispondono **in chiaro nel gruppo**
+(`/profilo`, `/saldo`, la vista non-admin di `/quiz`, il bottone-guida di `/comandi`) usano
+`utils.static_reply.reply_static(message, text, bucket, **kwargs)`: strategia **"sostituisci il
+precedente"** — tiene una mappa `(chat_id, user_id, bucket) → message_id` e, prima di inviare la
+risposta nuova, **cancella** quella precedente del bot per quella chiave (best-effort) ⇒ **una sola
+copia viva** per utente+comando, niente muro di duplicati. Solo nei gruppi (in privato risponde e
+basta); cancella **solo le risposte del bot**, mai i messaggi-comando dell'utente. Mappa **prunata**
+a soglia. Davanti c'è un **cooldown leggero silenzioso** `utils.cooldown.ready(...)`
+(`command_cooldown_seconds`, admin esenti): entro la finestra la ripetizione è ignorata **senza**
+aggiungere altro rumore (la risposta fresca è già lì).
+
 ---
 
 ## 15. FSM states attivi
@@ -500,19 +524,25 @@ illimitata con tanti utenti).
 ## 16. Comandi registrati
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/negozio`, `/comandi`, `/spiega_comando <cmd>`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/negozio`, `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/traguardi`, `/classifiche`, `/negozio`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/quiz`, `/traguardi`, `/classifiche`, `/negozio`, `/comandi`
 
 > **`/help` → `/comandi`**: il comando canonico è ora `/comandi` (`/help` resta come alias nascosto +
 > deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
 > condividono il registro unico in `handlers/help_content.py` (zero drift legenda↔dettaglio).
 
-> **Privacy (§9):** in gruppo `/saldo` · `/storico` · `/profilo` · `/traguardi` · `/negozio` · `/classifiche`
+> **`/quiz` ha due facce** (un solo handler, ramifica su `is_admin` — niente filtro sul decoratore):
+> per i **non-admin** è user-facing (bottone «▶️ Gioca» sul quiz in corso, o un messaggio chiaro
+> «Nessun quiz attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
+> redirect al pannello). Gli handler di gestione restano gated.
+
+> **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/negozio` · `/classifiche`
 > **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
-> switcher + tasto Chiudi → chiunque poteva chiuderla, ora è privata). `/daily` riscuote in gruppo con
-> ack minimale + DM dei dettagli. I comandi restano in `_GROUP_COMMANDS` (funzionano: reindirizzano).
+> switcher + tasto Chiudi → chiunque poteva chiuderla, ora è privata). `/profilo` e `/saldo` sono invece
+> **pubblici** (rispondono in chiaro nel gruppo, anti-flood "sostituisci" §14; `/profilo` senza Telegram
+> ID). `/daily` riscuote in gruppo con ack minimale + DM dei dettagli.
 
 > **Anti-spam (§3 nota):** oltre al rate-limit globale (12/10s, `middlewares/rate_limit.py`) c'è un
 > cooldown per-comando riusabile (`utils/cooldown.py`, admin-exempt) su comandi pesanti e sull'avvio
@@ -589,7 +619,18 @@ Strumenti admin per gestire un gruppo numeroso. **UX doppia:** comandi testuali 
 - **Valuta**: `set_balance` (delta → riusa `economy_service.credit/debit` con `admin_credit`/`admin_debit`), `mass_credit` (airdrop: bulk `UPDATE wallets` + 1 ledger per utente).
 - **Dossier/stats**: `get_dossier`, `search_users` (ILIKE), `leaderboard`, `economy_stats`.
 - **Warn**: `add_warning` (→ count attivi), `active_warnings`, `active_warning_count`, `clear_warnings` (soft-delete).
+- **Ban bot-level**: `set_user_banned(session, tg_id, banned) -> bool` (no-commit) setta/azzera `User.is_banned`.
 - **Audit**: `log_action(admin, action_type, target?, group?, amount?, detail?)` (solo `session.add`, no commit), `recent_actions`. `action_type` valuta: `credita/addebita/setsaldo/airdrop`; **XP**: `xp_grant/xp_set/xp_airdrop` (amount = XP, mostrati con suffisso `XP` in `render_audit`); moderazione: `ban/sban/kick/mute/unmute/warn/unwarn`.
+
+### Ban bot-level (`User.is_banned` + `BannedUserMiddleware`, §6)
+
+Distinto dal ban **Telegram** (`moderation_service.ban` = rimozione dal gruppo): `is_banned` rende
+l'utente **muto-al-bot ovunque** (anche in privato) → `BannedUserMiddleware` scarta i suoi update **in
+silenzio** (nessuna risposta). I **dati restano intatti** (solo il flag): `/sban` lo ripristina del
+tutto. Settato da `/ban`, dall'**auto-ban a soglia warn** (`apply_warning`) e dal **ban della
+dashboard**; azzerato da `/sban`. **`/kick`** (ban+unban per rientro) **non** lo setta. Ogni set/clear
+chiama `ban_guard.invalidate(tg_id)` **dopo il commit**, così il nuovo stato vale dal primo update
+successivo (la cache del middleware ha comunque un TTL di sicurezza).
 
 ### moderation_service (Telegram-side, no DB)
 
