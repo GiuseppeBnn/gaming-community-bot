@@ -260,7 +260,7 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
         f"📅 <b>Membro dal:</b> {member_since}\n\n"
         f"{tag_line}"
         f"{rank_line}"
-        f"💰 <b>Aldueuri:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
+        f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
         f"⚡ <b>XP:</b> {user.xp:,}\n"
         f"🏆 <b>Trofei:</b> {badge_count}",
         "profilo",

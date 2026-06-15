@@ -257,7 +257,7 @@ async def _prompt_prize_mode(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_prize_mode)
     await message.answer(
         "<b>Step 3/3 — Premi</b> 💰\n\n"
-        "Come vuoi assegnare i premi in Aldueuri?\n"
+        "Come vuoi assegnare i premi in CoInn?\n"
         "• <b>Consigliati</b> — usa i valori di default\n"
         "• <b>Personalizza</b> — scegli 1°/2°/3° e la consolazione (a scendere, con minimo "
         "garantito per <i>tutti</i> i finisher)\n"
@@ -784,7 +784,7 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
         prize_txt = ""
         if award and award.coins:
             icon = "🎖️" if award.kind == "consolation" else "🏆"
-            prize_txt = f" — {icon} <b>+{award.coins} 🪙 Aldueuri</b>"
+            prize_txt = f" — {icon} <b>+{award.coins} 🪙 CoInn</b>"
         time_txt = ""
         if row.completion_seconds is not None:
             time_txt = f" · ⏱️ {format_seconds_short(row.completion_seconds)}"

@@ -13,7 +13,7 @@ class TestDescribeCondition:
         assert describe_condition("onboarding", 1) == "Completa la registrazione"
 
     def test_balance_is_thousands_formatted(self):
-        assert describe_condition("balance", 1000) == "Raggiungi 1,000 Aldueuri"
+        assert describe_condition("balance", 1000) == "Raggiungi 1,000 CoInn"
 
     def test_daily_streak(self):
         assert describe_condition("daily_streak", 7) == "Riscuoti il /daily per 7 giorni di fila"

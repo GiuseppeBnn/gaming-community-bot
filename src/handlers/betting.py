@@ -313,7 +313,7 @@ async def start_custom_amount(
     await state.update_data(custom_bet_event=event_id, custom_bet_option=option_id)
     await state.set_state(BetCustomAmountState.waiting_for_amount)
     sent = await message.answer(
-        "✏️ Inserisci l'importo che vuoi scommettere (in Aldueuri):"
+        "✏️ Inserisci l'importo che vuoi scommettere (in CoInn):"
     )
     await state.update_data(bet_active_msg_id=sent.message_id)
 
@@ -488,7 +488,7 @@ async def cb_bet_custom(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(bet_active_msg_id=callback.message.message_id)
     await state.set_state(BetCustomAmountState.waiting_for_amount)
     await callback.message.edit_text(
-        "✏️ Inserisci l'importo che vuoi scommettere (in Aldueuri):\n\n"
+        "✏️ Inserisci l'importo che vuoi scommettere (in CoInn):\n\n"
         "<i>Invia solo il numero, es: <code>150</code></i>"
     )
     await callback.answer()

@@ -25,7 +25,7 @@ _COMMUNITY_RULES = (
     "1️⃣ Rispetta sempre gli altri membri.\n"
     "2️⃣ Niente spam o contenuti inappropriati.\n"
     "3️⃣ Le scommesse sono solo per divertimento — nessun denaro reale.\n"
-    "4️⃣ Gli Aldueuri non hanno valore monetario.\n"
+    "4️⃣ I CoInn non hanno valore monetario.\n"
     "5️⃣ Gli admin hanno l'ultima parola sulle dispute.\n\n"
     "<i>Clicca il bottone per confermare di aver letto e accettare le regole.</i>"
 )

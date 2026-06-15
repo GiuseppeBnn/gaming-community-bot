@@ -53,31 +53,31 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc(
         "profilo", "Il tuo profilo: XP, saldo, trofei, tag", "👤 Profilo & Economia",
         usage="/profilo",
-        details="Mostra la tua scheda personale: rango XP, Aldueuri 🪙, numero di trofei e "
+        details="Mostra la tua scheda personale: rango XP, CoInn 🪙, numero di trofei e "
                 "i tag attivi. Funziona anche nel gruppo (mostra sempre e solo il tuo profilo).",
     ),
     CommandDoc(
         "saldo", "Saldo e ultimi movimenti", "👤 Profilo & Economia",
         usage="/saldo",
-        details="Mostra quanti Aldueuri 🪙 hai e le ultime transazioni (premi, scommesse, "
+        details="Mostra quanti CoInn 🪙 hai e le ultime transazioni (premi, scommesse, "
                 "acquisti, trasferimenti).",
     ),
     CommandDoc(
         "storico", "Cronologia completa dei movimenti", "👤 Profilo & Economia",
         usage="/storico",
-        details="L'elenco esteso di tutte le tue entrate e uscite di Aldueuri, dalla più recente.",
+        details="L'elenco esteso di tutte le tue entrate e uscite di CoInn, dalla più recente.",
     ),
     CommandDoc(
         "daily", "Premio giornaliero (ogni 20h)", "👤 Profilo & Economia",
         usage="/daily",
-        details="Riscuoti il premio in Aldueuri. Si può riscuotere una volta ogni 20 ore: se "
+        details="Riscuoti il premio in CoInn. Si può riscuotere una volta ogni 20 ore: se "
                 "riprovi prima, il bot ti dice quanto manca. Riscuoterlo in giorni consecutivi "
                 "aumenta la tua <i>streak</i>.",
     ),
     CommandDoc(
-        "trasferisci", "Manda Aldueuri a un altro utente", "👤 Profilo & Economia",
+        "trasferisci", "Manda CoInn a un altro utente", "👤 Profilo & Economia",
         usage="/trasferisci @utente <importo>",
-        details="Trasferisce Aldueuri dal tuo saldo a quello di un altro membro. Puoi indicare "
+        details="Trasferisce CoInn dal tuo saldo a quello di un altro membro. Puoi indicare "
                 "il destinatario con @username, rispondendo a un suo messaggio, o col suo ID.\n"
                 "Esempio: <code>/trasferisci @mario 100</code>.",
     ),
@@ -122,7 +122,7 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc(
         "negozio", "Compra e gestisci i tag del profilo", "🛒 Negozio",
         usage="/negozio",
-        details="Spendi Aldueuri per acquistare <b>tag</b> cosmetici da mostrare sul profilo. "
+        details="Spendi CoInn per acquistare <b>tag</b> cosmetici da mostrare sul profilo. "
                 "Dal negozio puoi anche attivarli/disattivarli e combinarne più di uno.",
     ),
     # --- 🤖 Intrattenimento AI (in gruppo, in risposta a un messaggio) ---
@@ -182,13 +182,13 @@ _COMMANDS: list[CommandDoc] = [
                usage="/admin", admin_only=True),
     CommandDoc("gestisci_scommesse", "Pannello gestione scommesse", "🔧 Pannelli",
                usage="/gestisci_scommesse", admin_only=True),
-    CommandDoc("credita", "Accredita Aldueuri a un utente", "💰 Valuta & XP",
+    CommandDoc("credita", "Accredita CoInn a un utente", "💰 Valuta & XP",
                usage="/credita @utente <n>", admin_only=True),
-    CommandDoc("addebita", "Sottrai Aldueuri a un utente", "💰 Valuta & XP",
+    CommandDoc("addebita", "Sottrai CoInn a un utente", "💰 Valuta & XP",
                usage="/addebita @utente <n>", admin_only=True),
     CommandDoc("setsaldo", "Imposta il saldo di un utente", "💰 Valuta & XP",
                usage="/setsaldo @utente <n>", admin_only=True),
-    CommandDoc("airdrop", "Distribuisci Aldueuri a tutti", "💰 Valuta & XP",
+    CommandDoc("airdrop", "Distribuisci CoInn a tutti", "💰 Valuta & XP",
                usage="/airdrop <n>", admin_only=True),
     CommandDoc("saldo_di", "Mostra il saldo di un utente", "💰 Valuta & XP",
                usage="/saldo_di @utente", admin_only=True),

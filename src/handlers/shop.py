@@ -1,5 +1,5 @@
 """
-Shop handler — spend Aldueuri on **cosmetic** customizations (tags/titles).
+Shop handler — spend CoInn on **cosmetic** customizations (tags/titles).
 
 Opens **everywhere** (private or group): /negozio shows the catalog inline; there is
 no group context to resolve and no deep-link dance.
@@ -82,12 +82,12 @@ def _catalog_text(balance: int, has_items: bool) -> str:
     if not has_items:
         return (
             "🛒 <b>Negozio</b>\n\n"
-            f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>\n\n"
+            f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>\n\n"
             "<i>Nessuna personalizzazione disponibile al momento.</i>"
         )
     return (
         "🛒 <b>Negozio — Personalizzazioni</b>\n\n"
-        f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>\n\n"
+        f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>\n\n"
         "Compra un <b>tag</b> da mostrare sul tuo profilo.\n"
         "✅ = acquistabile · ❌ = saldo insufficiente · 🎁 = già posseduto"
     )

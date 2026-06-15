@@ -607,7 +607,7 @@ async def render_stats(db_session: AsyncSession) -> str:
     return (
         "📊 <b>Statistiche gruppo</b>\n\n"
         f"👥 Utenti registrati: <b>{s.total_users:,}</b>\n"
-        f"💰 Aldueuri in circolazione: <b>{s.total_coins:,} 🪙</b>\n"
+        f"💰 CoInn in circolazione: <b>{s.total_coins:,} 🪙</b>\n"
         f"📈 Media per utente: <b>{s.avg_coins:,} 🪙</b>\n"
         f"🎲 Scommesse attive: <b>{s.active_events}</b>\n"
         f"⚠️ Warn attivi: <b>{s.active_warnings}</b>"

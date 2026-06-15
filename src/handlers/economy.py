@@ -56,7 +56,7 @@ async def show_saldo(message: Message, db_session: AsyncSession) -> None:
     except WalletNotFoundError:
         await message.answer("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
-    await reply_static(message, f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>", "saldo")
+    await reply_static(message, f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>", "saldo")
 
 
 @router.message(Command("saldo"))
@@ -130,7 +130,7 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     await db_session.commit()
 
     text = (
-        f"🎉 <b>+{reward:,} Aldueuri</b> riscossi!\n"
+        f"🎉 <b>+{reward:,} CoInn</b> riscossi!\n"
         f"📅 Streak: <b>{streak}</b> giorni\n"
     )
     if xp_res.granted:
@@ -212,7 +212,7 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         )
         await db_session.commit()
     except SelfTransferError:
-        await message.answer("⚠️ Non puoi trasferire Aldueuri a te stesso.")
+        await message.answer("⚠️ Non puoi trasferire CoInn a te stesso.")
         return
     except InsufficientFundsError as e:
         await message.answer(

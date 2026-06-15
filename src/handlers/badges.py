@@ -71,7 +71,7 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
     if not earned_ids:
         lines.append(
             "\n<i>Non hai ancora sbloccato nessun trofeo.</i>\n"
-            "Partecipa a quiz ed eventi, accumula XP e Aldueuri!"
+            "Partecipa a quiz ed eventi, accumula XP e CoInn!"
         )
 
     await message.answer("\n".join(lines))

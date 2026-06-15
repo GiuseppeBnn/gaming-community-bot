@@ -348,7 +348,7 @@ async def cb_admin_confirm_resolve(
         f"✅ Opzione vincente: <b>{esc(summary['winning_option'])}</b>\n"
         f"💰 Pool totale: <b>{summary['total_pot']} 🪙</b>\n"
         f"🏆 Vincitori: <b>{summary['winners']}</b>\n"
-        f"💸 Aldueuri distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
+        f"💸 CoInn distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
         f"<i>I vincitori sono stati notificati in privato.</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔙 Torna alla lista", callback_data="admin_bet:list"),

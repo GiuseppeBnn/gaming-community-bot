@@ -38,5 +38,5 @@ mostrato è quello con `min_xp` più alto tra quelli raggiunti.
 ## `shop_cosmetics.csv`
 `key,name,tag_text,emoji,price`
 
-Tag/titoli acquistabili nel negozio con gli Aldueuri. `tag_text` è il flair mostrato sul profilo
+Tag/titoli acquistabili nel negozio con i CoInn. `tag_text` è il flair mostrato sul profilo
 (solo estetico, nessun permesso reale). `price` in monete (intero ≥ 0).

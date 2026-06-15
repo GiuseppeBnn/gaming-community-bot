@@ -30,7 +30,7 @@ _SYNC_FIELDS = (
 # /catalogo_badge and /traguardi so the two render conditions identically.
 _CONDITION_TEMPLATES = {
     "onboarding": "Completa la registrazione",
-    "balance": "Raggiungi {v:,} Aldueuri",
+    "balance": "Raggiungi {v:,} CoInn",
     "daily_streak": "Riscuoti il /daily per {v} giorni di fila",
     "bets_won": "Vinci {v} scommesse",
     "transfers_made": "Invia {v} trasferimenti",

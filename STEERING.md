@@ -120,7 +120,7 @@ BetStatus:       pending | won | lost | refunded
 ### Regole di schema da non violare
 
 - `Wallet` è **separato** da `User` — `User.coins` non esiste
-- La valuta si chiama **Alduero** (sing.) / **Aldueuri** (plur.) nei testi utente; la colonna/attributo DB resta `Wallet.coins` (NON rinominare il campo, solo le stringhe visibili)
+- La valuta si chiama **CoInn** (invariante, scritta esattamente così) nei testi utente; la colonna/attributo DB resta `Wallet.coins` (NON rinominare il campo, solo le stringhe visibili)
 - `LedgerEntry` traccia ogni movimento — `amount` positivo per credit, negativo per debit
 - `Wallet.coins` e `LedgerEntry.amount` sono **`BigInteger`** (int64): saldi/airdrop accumulati possono superare int32. Modifiche di **tipo** colonna su tabelle esistenti ⇒ voce `ALTER TABLE … ALTER COLUMN … TYPE …` in `_MIGRATIONS` (idempotente: ri-applicare lo stesso tipo è no-op; solo Postgres, SQLite tipizza dinamicamente)
 - `bot_state` (key/value) è una tabella **nuova** (no `_MIGRATIONS`): persiste l'id gruppo effettivo dopo una migrazione Telegram (§13, `group_registry`)
@@ -380,7 +380,7 @@ coi default. Catalogo default (9 trofei) in `catalog_loader.DEFAULT_TROPHIES`.
 **Condizioni di sblocco** (`check_and_award_milestones`): `onboarding`, `balance`,
 `daily_streak`, `bets_won`, `transfers_made`, **`xp`** (nuova). Il "Platino" è semplicemente
 un trofeo con condizione `xp` ad alta soglia. La resa **user-facing** della condizione passa da
-`badge_service.describe_condition(type, value)` (Italiano leggibile, es. "Raggiungi 1.000 Aldueuri"
+`badge_service.describe_condition(type, value)` (Italiano leggibile, es. "Raggiungi 1.000 CoInn"
 — **mai** il gergo `type ≥ value`), usata sia da `/catalogo_badge` sia da `/traguardi` (sui trofei
 🔒 bloccati) così i due comandi mostrano le condizioni **identiche**. I counter vengono incrementati in:
 - `daily_streak` → `economy_service.claim_daily()`

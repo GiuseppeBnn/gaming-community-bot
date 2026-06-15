@@ -59,7 +59,7 @@ DEFAULT_TROPHIES: list[dict] = [
     {"slug": "first_steps", "name": "Primi Passi", "description": "Entra a far parte della community.",
      "icon_emoji": "🚀", "category": "onboarding", "rarity": "bronze", "xp_reward": 50,
      "condition_type": "onboarding", "condition_value": 1},
-    {"slug": "generous", "name": "Generoso", "description": "Trasferisci Aldueuri a un altro membro.",
+    {"slug": "generous", "name": "Generoso", "description": "Trasferisci CoInn a un altro membro.",
      "icon_emoji": "🎁", "category": "economia", "rarity": "bronze", "xp_reward": 50,
      "condition_type": "transfers_made", "condition_value": 1},
     {"slug": "rich_1k", "name": "Benestante", "description": "Raggiungi 1.000 🪙 nel saldo.",

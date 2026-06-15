@@ -137,11 +137,11 @@ variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 | `/start` | Onboarding (primo accesso) o menu principale; gestisce i deep-link |
 | `/profilo` · `/saldo` · `/storico` | Profilo, saldo, cronologia movimenti |
 | `/daily` | Premio giornaliero (ogni 20h) |
-| `/trasferisci @user importo` | Trasferisci Aldueuri |
+| `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
 | `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
-| `/negozio` | Compra personalizzazioni (tag cosmetici) con gli Aldueuri — apre ovunque |
+| `/negozio` | Compra personalizzazioni (tag cosmetici) con i CoInn — apre ovunque |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 
@@ -171,7 +171,7 @@ gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
 
 ## XP, Trofei, Ranghi e Tag
 
-Le **monete** (Aldueuri) sono spendibili e farmabili; gli **XP** sono una metrica di
+Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica di
 **merito separata** e **non farmabile**:
 
 - **Si guadagnano XP** dagli **eventi curati dagli admin** (quiz, scommesse risolte) e
