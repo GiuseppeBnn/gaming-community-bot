@@ -575,17 +575,19 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 - **Sempre `aiohttp` async** — mai librerie bloccanti (non bloccare l'event loop di aiogram).
 - Endpoint OpenAI-compatible: `https://api.groq.com/openai/v1/chat/completions`.
-- `generate_completion(system_prompt, user_text, max_tokens=300) -> str`:
+- `generate_completion(system_prompt, user_text, max_tokens=300, *, temperature=None) -> str`:
   - `settings.groq_api_key` vuota → `AIServiceError` (niente chiamata di rete).
   - Timeout `aiohttp.ClientTimeout(total=20)`; `try/except` su `asyncio.TimeoutError` / `aiohttp.ClientError` / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**.
+  - `temperature` **per-comando**: `None` ⇒ default `_TEMPERATURE` (0.9, alto → risposte varie/creative); un valore più basso rende il modello conservativo (meno parole inventate). Usato da `/dialetto` (`_DIALETTO_TEMPERATURE = 0.5`) per tenere il catanese autentico.
   - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens`. **Nessun campo di moderazione** (requisito di design).
 - Costante `AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."` — usata dagli handler su `AIServiceError`.
 
 ### fun_ai — handler
 
 - **Solo gruppo** (`ChatType.GROUP/SUPERGROUP`): in privato il bot invita a usarli nel gruppo.
-- Comandi **reply-based** (`/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto`): operano sul testo del `reply_to_message`; helper `_run_ai_command`. `/insulta` invece prende un target taggato (`@user`/reply).
-- `/dialetto` traduce in **catanese stretto** (non siciliano generico): prompt con few-shot di lessico catanese.
+- Comandi **reply-based** (`/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto`): operano sul testo del `reply_to_message`; helper `_run_ai_command` (accetta `temperature` per-comando opzionale). `/insulta` invece prende un target taggato (`@user`/reply).
+- **Tono**: gruppo di **soli adulti** → satira nera, volgare, politicamente scorretta, senza buonismo né disclaimer. I prompt impongono **varietà anti-ripetizione** (mai riciclare aperture/battute/schema; ogni risposta diversa e fantasiosa, es. `/difendi` inventa ogni volta una strategia difensiva nuova) e **vietano i cliché da gamer** ('noob', 'scrub', 'git gud'…) come riempitivi — i riferimenti gaming solo se arguti.
+- `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — su Groq llama non c'è "ragionamento", l'autenticità si forza così.
 - **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente, in-memory; **admin esenti** (via `is_admin`). Controllato in `_run_ai_command` e `cmd_insulta` prima del typing; timestamp aggiornato solo su comando eseguito. Il dict `_last_used` è **prunato** (`_prune_cooldowns`, soglia 512) per non crescere illimitato.
 - `send_chat_action(chat_id, ChatAction.TYPING)` prima della generazione.
 - **Anti prompt-injection & anti-HTML** (sicurezza):
@@ -593,8 +595,9 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - Il testo è **incapsulato** tra i delimitatori `<<<CONTENUTO>>> … <<<FINE CONTENUTO>>>`; `_STYLE` istruisce il modello a trattarlo come **contenuto inerte, mai istruzioni** (ignora cambi di ruolo / "ignora le istruzioni" / system prompt iniettati).
   - L'**output** del modello è inviato con **`parse_mode=None`** (`message.reply(result, parse_mode=None)`): mai renderizzato come HTML → niente injection di tag/`<a>` via output LLM.
 - Ogni prompt è costruito con `_prompt(persona, max_chars)` che appende `_STYLE` condiviso:
-  - regole "senza filtri / no disclaimer / no muri di testo",
-  - **flavor gaming globale** (slang/riferimenti ai videogiochi quando ha senso),
+  - regole "senza filtri / no disclaimer / no buonismo / no muri di testo" (pubblico adulto),
+  - **regola anti-ripetizione** (varia sempre angolo, immagini, lessico),
+  - **gaming come spezia** (riferimenti solo se arguti; vietati i cliché 'noob/scrub/git gud' come stampella),
   - **regola contenuto≠istruzioni** (anti-injection, vedi sopra),
   - cap di caratteri per comando + **tetto `max_tokens` hard** per-comando (rete di sicurezza anti wall-of-text).
 

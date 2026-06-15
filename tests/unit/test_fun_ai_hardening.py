@@ -79,10 +79,11 @@ class _StubMessage:
 
 
 async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
-    async def fake_completion(system_prompt, user_text, max_tokens):
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
         captured["user_text"] = user_text
+        captured["temperature"] = temperature
         return '<b>ignore me</b> <a href="x">y</a>'
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
@@ -95,6 +96,8 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
     assert fun_ai._CONTENT_OPEN in captured["user_text"]
     assert fun_ai._CONTENT_CLOSE in captured["user_text"]
     assert "ciao mondo" in captured["user_text"]
+    # No explicit temperature → service default (None forwarded).
+    assert captured["temperature"] is None
 
     # The model output is sent verbatim with parse_mode=None (never HTML).
     text, kwargs = msg.replies[-1]
@@ -103,8 +106,29 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
     fun_ai._last_used.clear()
 
 
+async def test_temperature_is_forwarded(monkeypatch):
+    """Per-command temperature (e.g. /dialetto) reaches the Groq client."""
+    captured: dict[str, object] = {}
+
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
+        captured["temperature"] = temperature
+        return "ok"
+
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    fun_ai._last_used.clear()
+
+    msg = _StubMessage()
+    await fun_ai._generate_and_reply(
+        msg, "SYSTEM", "ciao", 100, temperature=fun_ai._DIALETTO_TEMPERATURE
+    )
+
+    assert captured["temperature"] == fun_ai._DIALETTO_TEMPERATURE
+    assert fun_ai._DIALETTO_TEMPERATURE < ai_service._TEMPERATURE  # genuinely lower
+    fun_ai._last_used.clear()
+
+
 async def test_fallback_message_on_ai_error(monkeypatch):
-    async def boom(system_prompt, user_text, max_tokens):
+    async def boom(system_prompt, user_text, max_tokens, *, temperature=None):
         raise ai_service.AIServiceError("down")
 
     monkeypatch.setattr(ai_service, "generate_completion", boom)

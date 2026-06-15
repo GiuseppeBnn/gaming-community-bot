@@ -37,11 +37,17 @@ async def generate_completion(
     system_prompt: str,
     user_text: str,
     max_tokens: int = _DEFAULT_MAX_TOKENS,
+    *,
+    temperature: float | None = None,
 ) -> str:
     """Send a system + user prompt to Groq and return the assistant text.
 
     `max_tokens` is a hard cap on the reply length (per-command) to avoid
     walls of text even if the model ignores the prompt instructions.
+
+    `temperature` is per-command: ``None`` uses the default (`_TEMPERATURE`,
+    high → varied/creative). A lower value (e.g. /dialetto) makes the model
+    more conservative so it invents fewer non-existent words.
 
     Raises AIServiceError on missing API key, timeout, network error,
     non-200 status, or a malformed response body.
@@ -56,7 +62,7 @@ async def generate_completion(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_text},
         ],
-        "temperature": _TEMPERATURE,
+        "temperature": _TEMPERATURE if temperature is None else temperature,
         "max_tokens": max_tokens,
     }
     headers = {

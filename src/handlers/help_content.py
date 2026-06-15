@@ -139,7 +139,8 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc(
         "difendi", "Avvocato difensore del messaggio", "🤖 Intrattenimento AI",
         usage="/difendi (in risposta a un messaggio)",
-        details="Un avvocato senza scrupoli difende il messaggio a cui rispondi.",
+        details="Un avvocato senza scrupoli inventa un'arringa difensiva (sempre diversa) "
+                "per il messaggio a cui rispondi.",
     ),
     CommandDoc(
         "accusa", "Inquisitore: condanna il messaggio", "🤖 Intrattenimento AI",
@@ -152,14 +153,15 @@ _COMMANDS: list[CommandDoc] = [
         details="Riscrive il messaggio come il climax di un anime drammatico.",
     ),
     CommandDoc(
-        "dialetto", "Traduce in siciliano grezzo", "🤖 Intrattenimento AI",
+        "dialetto", "Traduce in catanese stretto", "🤖 Intrattenimento AI",
         usage="/dialetto (in risposta a un messaggio)",
-        details="Traduce il messaggio a cui rispondi in siciliano grezzo.",
+        details="Traduce il messaggio a cui rispondi in catanese stretto e autentico.",
     ),
     CommandDoc(
         "insulta", "Blasta l'utente taggato", "🤖 Intrattenimento AI",
         usage="/insulta @utente",
-        details="L'AI scrive un insulto ironico (e bonario) rivolto all'utente che tagghi.",
+        details="L'AI confeziona un insulto originale e tagliente rivolto all'utente che tagghi. "
+                "Roba da adulti, niente peli sulla lingua.",
     ),
     # --- ❓ Aiuto ---
     CommandDoc(
