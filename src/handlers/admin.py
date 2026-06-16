@@ -285,12 +285,11 @@ async def cmd_ban(message: Message, command: CommandObject, db_session: AsyncSes
         return
 
     reason = target.remainder.strip()
+    # The Telegram group-removal is best-effort; the bot-level ban is the authority
+    # for "dead to the bot" and is applied on the admin's intent regardless — even
+    # if the user already left or the group-kick fails — otherwise a removed user
+    # could keep using the bot in private. /sban reverses it.
     ok, err = await moderation_service.ban(message.bot, chat_id, target.tg_id)
-    if not ok:
-        await message.reply(f"❌ {err}")
-        return
-
-    # Bot-level ban too: the user becomes mute-to-the-bot everywhere (silent drop).
     await admin_service.set_user_banned(db_session, target.tg_id, True)
     await admin_service.log_action(
         db_session, message.from_user.id, "ban",
@@ -300,7 +299,8 @@ async def cmd_ban(message: Message, command: CommandObject, db_session: AsyncSes
     ban_guard.invalidate(target.tg_id)
     await _notify(message, target.tg_id, "⛔ Sei stato bannato dal gruppo.")
     suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
-    await message.reply(f"⛔ {target.display_name} bannato.{suffix}")
+    warn_line = "" if ok else f"\n⚠️ Rimozione dal gruppo non riuscita: {esc(err)}"
+    await message.reply(f"⛔ {target.display_name} bannato (anche in privato).{suffix}{warn_line}")
 
 
 @router.message(Command("sban"), IsAdminFilter())
@@ -427,15 +427,17 @@ async def apply_warning(
 
     escalation = ""
     if count >= settings.warn_ban_threshold:
+        # The bot-level ban applies once the threshold is crossed, independent of the
+        # Telegram group-removal succeeding (caller invalidates the cache after commit).
         ok, _ = await moderation_service.ban(bot, chat_id, target_id)
-        if ok:
-            # Bot-level ban too (caller invalidates the cache after commit).
-            await admin_service.set_user_banned(db_session, target_id, True)
-            await admin_service.log_action(
-                db_session, admin_id, "ban",
-                target_tg_id=target_id, group_id=chat_id, detail="auto: soglia warn",
-            )
-            escalation = "\n⛔ Soglia raggiunta → <b>BAN automatico</b>."
+        await admin_service.set_user_banned(db_session, target_id, True)
+        await admin_service.log_action(
+            db_session, admin_id, "ban",
+            target_tg_id=target_id, group_id=chat_id, detail="auto: soglia warn",
+        )
+        escalation = "\n⛔ Soglia raggiunta → <b>BAN automatico</b>."
+        if not ok:
+            escalation += " <i>(rimozione dal gruppo non riuscita)</i>"
     elif count >= settings.warn_mute_threshold:
         ok, _ = await moderation_service.mute(
             bot, chat_id, target_id, settings.warn_mute_duration_seconds

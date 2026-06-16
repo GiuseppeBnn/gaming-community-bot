@@ -9,7 +9,7 @@ import pytest
 from sqlalchemy import select
 
 import services.admin_service as admin
-from database.models import AdminAction, LedgerEntry, TransactionType, Warning
+from database.models import AdminAction, LedgerEntry, TransactionType, User, Wallet, Warning
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 
 
@@ -170,3 +170,30 @@ class TestAudit:
         actions = await admin.recent_actions(session, target_tg_id=2)
         assert len(actions) == 1
         assert actions[0].target_tg_id == 2
+
+
+# ---------------------------------------------------------------------------
+# set_user_banned (bot-level ban flag, with stub-row upsert)
+# ---------------------------------------------------------------------------
+
+class TestSetUserBanned:
+    async def test_sets_flag_on_existing_user(self, session, user_factory):
+        await user_factory(tg_id=1, coins=0)
+        assert await admin.set_user_banned(session, 1, True) is True
+        await session.commit()
+        assert await session.scalar(select(User.is_banned).where(User.tg_id == 1)) is True
+
+    async def test_ban_without_row_creates_banned_stub(self, session):
+        # Banning a user the bot has never seen must still stick: a stub row is
+        # created, otherwise their first update would upsert an unbanned row.
+        assert await admin.set_user_banned(session, 777, True) is True
+        await session.commit()
+        user = await session.get(User, 777)
+        assert user is not None and user.is_banned is True
+        # A wallet is materialised too, so later admin/economy reads don't break.
+        assert await session.scalar(select(Wallet.tg_id).where(Wallet.tg_id == 777)) == 777
+
+    async def test_clear_without_row_is_noop(self, session):
+        assert await admin.set_user_banned(session, 888, False) is False
+        await session.commit()
+        assert await session.get(User, 888) is None  # no row materialised for a clear

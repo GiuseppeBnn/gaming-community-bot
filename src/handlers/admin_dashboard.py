@@ -464,11 +464,14 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
 
     success = True
     if action == "ban":
+        # Bot-level ban applies on the admin's intent regardless of the group-removal
+        # result, so a removed user can't keep using the bot in private. /sban reverses it.
+        # `success` stays False on a failed group-removal only to surface the warning
+        # toast (show_alert) — the bot-ban itself always lands.
         success, err = await moderation_service.ban(bot, chat_id, tg_id)
-        toast = "⛔ Utente bannato." if success else f"❌ {err}"
-        if success:
-            await admin_service.set_user_banned(db_session, tg_id, True)
-            await admin_service.log_action(db_session, admin_id, "ban", target_tg_id=tg_id, group_id=chat_id)
+        toast = "⛔ Utente bannato (anche in privato)." if success else f"⛔ Bannato dal bot.\n⚠️ Rimozione dal gruppo non riuscita: {err}"
+        await admin_service.set_user_banned(db_session, tg_id, True)
+        await admin_service.log_action(db_session, admin_id, "ban", target_tg_id=tg_id, group_id=chat_id)
     elif action == "kick":
         success, err = await moderation_service.kick(bot, chat_id, tg_id)
         toast = "👢 Utente espulso." if success else f"❌ {err}"

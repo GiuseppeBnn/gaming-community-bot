@@ -630,10 +630,28 @@ Strumenti admin per gestire un gruppo numeroso. **UX doppia:** comandi testuali 
 Distinto dal ban **Telegram** (`moderation_service.ban` = rimozione dal gruppo): `is_banned` rende
 l'utente **muto-al-bot ovunque** (anche in privato) → `BannedUserMiddleware` scarta i suoi update **in
 silenzio** (nessuna risposta). I **dati restano intatti** (solo il flag): `/sban` lo ripristina del
-tutto. Settato da `/ban`, dall'**auto-ban a soglia warn** (`apply_warning`) e dal **ban della
-dashboard**; azzerato da `/sban`. **`/kick`** (ban+unban per rientro) **non** lo setta. Ogni set/clear
+tutto. Settato da `/ban`, dall'**auto-ban a soglia warn** (`apply_warning`), dal **ban della
+dashboard** e dalla **sincronizzazione con la moderazione nativa Telegram** (vedi sotto); azzerato da
+`/sban` e dallo sban nativo. **`/kick`** (ban+unban per rientro) **non** lo setta. Ogni set/clear
 chiama `ban_guard.invalidate(tg_id)` **dopo il commit**, così il nuovo stato vale dal primo update
 successivo (la cache del middleware ha comunque un TTL di sicurezza).
+
+> **Sync moderazione nativa** (`group_events.on_chat_member`): un ban/sban fatto dall'**UI di Telegram**
+> (non con `/ban`) deve comunque rendere l'utente muto-al-bot → l'handler `chat_member` allinea
+> `is_banned` quando lo status passa a/da `"kicked"`. Sono ignorate le transizioni **iniziate dal bot
+> stesso** (`event.from_user.id == event.bot.id`): le gestiscono già i comandi, e un `/kick` passa per
+> `"kicked"` solo transitoriamente.
+>
+> **Upsert difensivo**: `set_user_banned(tg_id, True)` su un utente **senza riga** crea uno stub bannato
+> (nome/wallet ripopolati al primo contatto), altrimenti il primo update dell'utente creerebbe una riga
+> *non* bannata e scavalcherebbe il middleware. Un clear su riga assente è un no-op.
+
+> **Invariante**: il ban bot-level si applica sull'**intenzione** dell'admin, **indipendentemente** dal
+> fatto che la rimozione Telegram (`moderation_service.ban`) riesca. Un fallimento della rimozione dal
+> gruppo (utente già uscito, target admin, permessi mancanti) **non deve** lasciare l'utente libero di
+> usare il bot in privato: `set_user_banned(True)` va chiamato comunque, segnalando l'eventuale
+> mancata rimozione come avviso non bloccante. **Vietato** annidare `set_user_banned(True)` dentro un
+> `if ok:` legato all'esito del ban Telegram.
 
 ### moderation_service (Telegram-side, no DB)
 
