@@ -24,6 +24,7 @@ from handlers import (
     betting,
     common,
     economy,
+    event_types,
     events,
     fun_ai,
     group_events,
@@ -147,6 +148,11 @@ async def main() -> None:
         "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici. Group id effettivo: %s",
         n_trophies, counts["ranks"], counts["cosmetics"], effective_group,
     )
+
+    # Populate the event-type registry before any event handler / the scheduler
+    # loop runs. New event types plug in here — the hub and scheduler dispatch
+    # only through this registry (no per-type if/elif).
+    event_types.register_builtin()
 
     storage = _build_storage()
     logger.info("FSM storage: %s", settings.fsm_storage)

@@ -674,21 +674,34 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
 ### 18.2 Hub Eventi (macro-categoria, namespace `ev:*`)
 
 `handlers/events.py` (router incluso dopo `admin_dashboard`, prima di `quiz`). Unifica **quiz ·
-sondaggi · scommesse** sotto un modello unico: ogni evento si **pre-crea**, poi si **avvia subito**
-nel gruppo *oppure* si **programma** — come già facevano i quiz. Entry: `/admin → 🎬 Eventi`,
-`/eventi`, o deep-link `?start=eventi`.
+sondaggi · scommesse** (e ogni tipo futuro) sotto un modello unico: ogni evento si **pre-crea**, poi
+si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano i quiz. Entry:
+`/admin → 🎬 Eventi`, `/eventi`, o deep-link `?start=eventi`.
 
-- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<quiz|poll|bet>`, `ev:item:<type>:<id>` (schermata
-  «Avvia ora / Programma»), `ev:start:<type>:<id>`, `ev:sched:<type>:<id>`, `ev:close:quiz:<id>`,
-  `ev:new:<type>`, `ev:pt:cancel[_yes|_no]`.
+- **Registro tipi-evento** (`handlers/event_types/`): **unico punto d'estensione**. Ogni tipo è una
+  spec `EventType` (`key`, `hub_label`, `create_label`, `render_list`, `schedulable_items`,
+  `start_creation`, `start_now`, `execute_scheduled`, `close_now`) registrata in `register_builtin()`
+  (chiamata in `main()`). **L'hub e lo scheduler dispatchano *solo* attraverso il registro** — niente
+  `if/elif` per tipo. Aggiungere un tipo = una nuova spec + una riga in `register_builtin`, **zero**
+  modifiche a `events.py`/`schedule.py`. Le spec **non committano mai** (§5): committa il chiamante
+  (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
+- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (schermata
+  «Avvia ora / Programma»), `ev:start:<type>:<id>`, `ev:sched:<type>:<id>`, `ev:close:<type>:<id>`,
+  `ev:new:<type>`, `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi
+  presente nel registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py`
+  con il suo gate admin di router (§8).
 - **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
   (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
   community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
   e `bet_service.activate_event` fa `draft→open`). `get_open_events`/`get_all_active_events` escludono i draft.
-- **Avvia ora**: quiz→`open_quiz`; poll→`send_poll` + `mark_used`; bet→`activate_event` + annuncio gruppo.
+- **Avvia ora / Chiudi** (`spec.start_now`/`close_now`): quiz→`open_quiz`/`close_quiz`;
+  poll→`send_poll` + `mark_used`; bet→`activate_event` + annuncio gruppo (`close_now` → `None`: nessuna
+  chiusura). L'annuncio scommessa è centralizzato in `BetType._announce_open` (un'unica fonte per
+  avvia-ora **e** scheduler).
 - **Programma**: `handlers.schedule.start_schedule_for(type, ref_id, label)` → stato unico
-  `ScheduleStates.event_runat` → `schedule_task(type, ref_id)`. `execute_task` gestisce **`ref_id`**
-  (nuovo: carica PollTemplate / attiva draft) con **fallback al `payload`** legacy (task già schedulati).
+  `ScheduleStates.event_runat` → `schedule_task(type, ref_id)`. `execute_task` delega a
+  `spec.execute_scheduled`, che gestisce **`ref_id`** (nuovo: carica PollTemplate / attiva draft) con
+  **fallback al `payload`** legacy (task già schedulati).
 - **`/programma`** ora fa scegliere **elementi già creati** per tutti e 3 i tipi (niente più creazione
   inline). Conferma «Sicuro di voler annullare?» (§ cancel) prima di scartare un flusso a metà.
 
@@ -769,8 +782,11 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   `scheduler_poll_interval`s esegue i `due_tasks` (try/except per task → `mark_done`/`mark_failed`).
 - `parse_run_at(text)`: assoluto `AAAA-MM-GG HH:MM` o relativo `30m`/`2h`/`1d` → **UTC naive**
   (timezone `scheduler_timezone`). Rifiuta orari passati.
-- `execute_task` per tipo: `bet` → `bet_service.create_event` (open) da payload + annuncio gruppo;
-  `quiz` → `quiz.open_quiz` (annuncia + apre); `poll` → `bot.send_poll` (regolare) nel gruppo.
+- `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
+  `event_types.get(task.task_type).execute_scheduled(...)`** (tipo ignoto → `RuntimeError`). Le spec:
+  `bet` → `activate_event` (o `create_event` da payload legacy) + annuncio gruppo; `quiz` →
+  `open_quiz` (annuncia + apre); `poll` → `bot.send_poll` nel gruppo. Le spec **non committano** (il
+  `scheduler_loop` committa dopo `mark_done`/`mark_failed`).
 - Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
@@ -850,6 +866,7 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 22. **Mutazioni denaro/XP/bet lockano le righe** con `with_for_update` (no-op su SQLite, reale su Postgres). Ordine di lock canonico **Event → User → Wallet**; tra due wallet, `tg_id` crescente (anti-deadlock). `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
+25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
 
 ---
 
@@ -990,7 +1007,7 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 - [ ] Nuovi cosmetici/trofei/ranghi: aggiungere al CSV (`catalogs/*.example.csv` + default Python), non hardcodare nel codice
 - [ ] Nuovi service method coperti da integration test
 - [ ] Azioni admin mutanti loggate via `log_action` + guard self/bot-target; nuovi comandi AI con cap di lunghezza, input clippato, output `parse_mode=None`, nessun filtro moderazione nel payload
-- [ ] Nuovi check admin via `is_admin`; nuovi `ScheduledTask` con esecuzione in `execute_task`; quiz: handler `poll_answer` registrato
+- [ ] Nuovi check admin via `is_admin`; nuovi **tipi-evento** via spec `EventType` registrata in `register_builtin` (mai `if/elif` in hub/scheduler, §18.2/regola 25); quiz: handler `poll_answer` registrato
 - [ ] **Backup/export** (§25): nuove tabelle ⇒ entrano automaticamente nell'export (`Base.metadata.sorted_tables`); IO file solo via `utils.atomic_io`; nessuna nuova lettura non-streaming su tabelle grandi; archivio chat resta opt-in e non bloccante
 
 ---

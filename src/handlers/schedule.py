@@ -25,8 +25,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers import event_types
 from keyboards.common_kb import confirm_cancel_kb
-from services import bet_service, group_registry, poll_service, quiz_service, schedule_service
+from services import group_registry, schedule_service
 from utils import cooldown
 from utils.text import esc
 
@@ -65,11 +66,11 @@ _RUNAT_HINT = (
 async def start_schedule_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     b = InlineKeyboardBuilder()
-    b.button(text="🧠 Quiz", callback_data="sched:type:quiz")
-    b.button(text="📊 Sondaggio", callback_data="sched:type:poll")
-    b.button(text="🎲 Scommessa", callback_data="sched:type:bet")
+    types = event_types.all_types()
+    for et in types:
+        b.button(text=et.hub_label, callback_data=f"sched:type:{et.key}")
     b.button(text="❌ Annulla", callback_data="sched:cancel")
-    b.adjust(3, 1)
+    b.adjust(len(types) or 1, 1)
     await message.answer("🗓️ <b>Programma un evento</b>\n\nCosa vuoi programmare?", reply_markup=b.as_markup())
 
 
@@ -117,10 +118,7 @@ async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-# --- Unified scheduling: pick a PRE-CREATED quiz/poll/bet, then a run-at time ---
-
-_TYPE_LABEL = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
-
+# --- Unified scheduling: pick a PRE-CREATED item, then a run-at time ---
 
 def _pick_kb(task_type: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
@@ -144,45 +142,35 @@ async def start_schedule_for(
     )
 
 
-@router.callback_query(F.data == "sched:type:quiz")
-async def cb_type_quiz(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    items = [(q.id, q.title) for q in await quiz_service.list_ready(db_session) if q.status == "ready"]
-    if not items:
-        await callback.answer("Nessun quiz pronto. Crealo dagli Eventi o con /crea_quiz.", show_alert=True)
+@router.callback_query(F.data.startswith("sched:type:"))
+async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> None:
+    et = event_types.get(callback.data.split(":")[2])
+    if et is None:
+        await callback.answer()
         return
-    await callback.message.edit_text("🧠 Quale quiz vuoi programmare?", reply_markup=_pick_kb("quiz", items))
-    await callback.answer()
-
-
-@router.callback_query(F.data == "sched:type:poll")
-async def cb_type_poll(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    items = [(p.id, p.question) for p in await poll_service.list_ready(db_session)]
+    items = await et.schedulable_items(db_session)
     if not items:
-        await callback.answer("Nessun sondaggio pronto. Crealo dagli Eventi.", show_alert=True)
+        await callback.answer(
+            f"Nessun elemento pronto per «{et.hub_label}». Crealo dagli Eventi.",
+            show_alert=True,
+        )
         return
-    await callback.message.edit_text("📊 Quale sondaggio vuoi programmare?", reply_markup=_pick_kb("poll", items))
-    await callback.answer()
-
-
-@router.callback_query(F.data == "sched:type:bet")
-async def cb_type_bet(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    items = [(e.id, e.title) for e in await bet_service.list_drafts(db_session)]
-    if not items:
-        await callback.answer("Nessuna scommessa in bozza. Creala dagli Eventi.", show_alert=True)
-        return
-    await callback.message.edit_text("🎲 Quale scommessa vuoi programmare?", reply_markup=_pick_kb("bet", items))
+    await callback.message.edit_text(
+        f"{et.hub_label}: quale vuoi programmare?", reply_markup=_pick_kb(et.key, items)
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("sched:pick:"))
 async def cb_pick_event(callback: CallbackQuery, state: FSMContext) -> None:
     _, _, task_type, raw_id = callback.data.split(":")
-    if task_type not in _TYPE_LABEL or not raw_id.isdigit():
+    et = event_types.get(task_type)
+    if et is None or not raw_id.isdigit():
         await callback.answer()
         return
     ref_id = int(raw_id)
     await start_schedule_for(
-        callback.message, state, task_type, ref_id, f"{_TYPE_LABEL[task_type]} #{ref_id}"
+        callback.message, state, task_type, ref_id, f"{et.hub_label} #{ref_id}"
     )
     await callback.answer()
 
@@ -212,12 +200,13 @@ async def cmd_programmati(message: Message, db_session) -> None:
     if not tasks:
         await message.reply("🗓️ Nessun evento programmato.")
         return
-    labels = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
     b = InlineKeyboardBuilder()
     lines = ["🗓️ <b>Eventi programmati</b>\n"]
     for t in tasks:
         when = t.run_at.strftime("%d/%m %H:%M")
-        lines.append(f"• #{t.id} {labels.get(t.task_type, t.task_type)} — {when} UTC")
+        et = event_types.get(t.task_type)
+        label = et.hub_label if et else t.task_type
+        lines.append(f"• #{t.id} {label} — {when} UTC")
         b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
     b.adjust(1)
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
@@ -280,11 +269,12 @@ async def _parse_or_reprompt(message: Message) -> datetime | None:
 
 
 async def _confirm(message: Message, task) -> None:
-    labels = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
+    et = event_types.get(task.task_type)
+    label = et.hub_label if et else task.task_type
     when = task.run_at.strftime("%d/%m/%Y %H:%M")
     await message.answer(
         f"✅ <b>Programmato!</b>\n\n"
-        f"{labels.get(task.task_type, task.task_type)} · #{task.id}\n"
+        f"{label} · #{task.id}\n"
         f"🕒 Esecuzione: <b>{when} UTC</b>\n\n"
         f"Vedi/annulla con /programmati."
     )
@@ -295,63 +285,21 @@ async def _confirm(message: Message, task) -> None:
 # ---------------------------------------------------------------------------
 
 async def execute_task(bot, session, task) -> None:
-    """Execute a single due task. Raises on failure (caller marks failed)."""
+    """Execute a single due task by delegating to its event-type spec.
+
+    Raises on failure (the caller marks the task failed). Dispatch goes through
+    the event-type registry — no per-type branching here.
+    """
     # Prefer the live effective group id (the task's stored id may be stale after
     # a migration); fall back to the task's own group_id if none is configured.
     group_id = group_registry.get_group_id() or task.group_id
     if not group_id:
         raise RuntimeError("GROUP_ID non configurato")
 
-    if task.task_type == "quiz":
-        from handlers.quiz import open_quiz
-        ok, msg = await open_quiz(bot, session, task.ref_id)
-        if not ok:
-            raise RuntimeError(msg)
-
-    elif task.task_type == "poll":
-        # New model: ref_id → a pre-created PollTemplate. Legacy: inline payload.
-        if task.ref_id:
-            poll = await poll_service.get(session, task.ref_id)
-            if poll is None:
-                raise RuntimeError(f"Sondaggio #{task.ref_id} non trovato")
-            question, options = poll.question, poll_service.options_of(poll)
-            await poll_service.mark_used(session, poll.id)
-        else:
-            payload = schedule_service.task_payload(task)
-            question, options = payload["question"], payload["options"]
-        await bot.send_poll(
-            chat_id=group_id, question=question, options=options, is_anonymous=False,
-        )
-
-    elif task.task_type == "bet":
-        # New model: ref_id → activate a pre-created draft event. Legacy: payload.
-        if task.ref_id:
-            event = await bet_service.activate_event(session, task.ref_id)
-            description = event.description
-        else:
-            payload = schedule_service.task_payload(task)
-            event = await bet_service.create_event(
-                session,
-                creator_tg_id=task.created_by_tg_id,
-                title=payload["title"],
-                description=payload.get("description", ""),
-                options=[{"label": o} for o in payload["options"]],
-            )
-            description = payload.get("description", "")
-        await session.flush()
-        bot_info = await bot.get_me()
-        await group_registry.send_group_message(
-            bot, session,
-            f"🎲 <b>Nuova scommessa aperta!</b>\n\n"
-            f"<b>{esc(event.title)}</b>\n{esc(description)}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🎯 Scommetti", url=f"https://t.me/{bot_info.username}?start=bet_{event.id}"
-                )
-            ]]),
-        )
-    else:
+    et = event_types.get(task.task_type)
+    if et is None:
         raise RuntimeError(f"Tipo task sconosciuto: {task.task_type}")
+    await et.execute_scheduled(bot, session, task, group_id)
 
 
 async def scheduler_loop(bot) -> None:
