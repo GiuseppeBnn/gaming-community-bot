@@ -35,7 +35,7 @@ from database.models import User
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter, is_admin
 from handlers._privacy import redirect_to_private
 from keyboards.common_kb import confirm_cancel_kb
-from services import group_registry, quiz_service
+from services import badge_service, group_registry, progress_service, quiz_service
 from utils import cooldown
 from utils.static_reply import reply_static
 from utils.text import esc, format_seconds_short
@@ -747,7 +747,27 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     ranked = await quiz_service.podium(db_session, quiz_id)
     awards = await quiz_service.award_prizes(db_session, quiz_id)
     await quiz_service.set_status(db_session, quiz_id, "finished")
+
+    # Record Trivia podium finishes (top 3) and re-check trophies for them (covers
+    # the podium trophies plus any XP/coin milestone hit by the quiz rewards).
+    podium_users = ranked[:3]
+    for rank, row in enumerate(podium_users, start=1):
+        await progress_service.record_podium(db_session, row.user_tg_id, "trivia", rank, quiz_id)
+    await db_session.flush()  # make the podium rows visible to the count query
+    trophy_notes: dict[int, list] = {}
+    for row in podium_users:
+        earned = await badge_service.check_and_award_milestones(db_session, row.user_tg_id)
+        if earned:
+            trophy_notes[row.user_tg_id] = earned
     await db_session.commit()
+
+    # Best-effort DM of newly unlocked trophies to the podium finishers.
+    for uid, earned in trophy_notes.items():
+        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in earned)
+        try:
+            await bot.send_message(uid, f"🏅 <b>Trofeo sbloccato:</b> {badges_text}!")
+        except Exception:  # noqa: BLE001
+            pass
 
     text = await _podium_text(db_session, quiz.title, ranked, awards)
     if group_registry.get_group_id() != 0:

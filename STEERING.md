@@ -312,9 +312,34 @@ La preview (stima) per l'utente nella schermata di conferma usa la stessa formul
 
 ---
 
-## 11. Shop — personalizzazioni cosmetiche
+## 11. Locanda — cosmetici + consumabili
 
-File: `services/shop_service.py` · handler `handlers/shop.py` · kb `keyboards/shop_kb.py`
+File: `services/shop_service.py` (cosmetici) · `services/consumable_service.py` (consumabili) ·
+handler `handlers/shop.py` · kb `keyboards/shop_kb.py`
+
+Il vecchio "negozio" è ora **La Locanda del Drago**: comando **`/locanda`** (alias nascosto
+`/negozio`, deep-link `shop_<chat_id>` invariato). Due sezioni nello stesso pannello inline
+(`shop:home`): **🏷️ Personalizzazioni** (cosmetici) e **🍖 Menù della Locanda** (consumabili),
+più **🎒 Dispensa** (inventario). In gruppo fa **redirect** in privato (il catalogo svela il
+saldo dell'apertore). Niente item di moderazione (rimossi: erano grief).
+
+### 11.b Consumabili (cibi/bevande) — `consumable_service`
+
+Acquisto **ripetibile** (non idempotente, a differenza dei cosmetici): spende CoInn, logga una
+riga `ShopPurchase` (`group_id=0`, `success=True`) e accumula la **dispensa** dell'utente
+(mostrata sul profilo). **Nessun permesso Telegram, nessun effetto di gioco** → puro sink +
+fuel trofei. L'inventario è **derivato** da `shop_purchases` (COUNT per `item_key`): nessuna
+colonna su `User`. Flusso: `shop:menu` → `shop:cat:<key>` → `shop:cbuy:<key>` →
+`shop:cexec:<key>` (debit con lock wallet → `record_consumption` → **flush** → milestone check →
+commit). Il **flush prima del milestone check** è obbligatorio (autoflush off: la query dei
+conteggi non vedrebbe l'INSERT pendente). Catalogo CSV `consumables.csv` +
+`consumable_categories.csv` (§12.2).
+
+> **Anti-collisione chiavi**: consumabili `cons_*`, cosmetici `tag_*` — condividono
+> `shop_purchases.item_key` ma i registry sono disgiunti, quindi `has_cosmetic` e
+> `consumable_service.purchase_counts` (filtrato sulle chiavi consumabili) non si incrociano mai.
+
+### 11.a Cosmetici — `shop_service`
 
 Il negozio vende **cosmetici** (tag/titoli), **non** azioni di moderazione. I vecchi item
 mute (`mute_user/mute_admin/mute_random`) e tutto il flusso target sono stati **rimossi**:
@@ -377,15 +402,34 @@ Catalogo **CSV-driven** (§12.2): `sync_trophies(session, rows=None)` fa **upser
 (insert se manca, aggiorna i campi `_SYNC_FIELDS` se esiste); `seed_badges` = `sync_trophies`
 coi default. Catalogo default (9 trofei) in `catalog_loader.DEFAULT_TROPHIES`.
 
-**Condizioni di sblocco** (`check_and_award_milestones`): `onboarding`, `balance`,
-`daily_streak`, `bets_won`, `transfers_made`, **`xp`** (nuova). Il "Platino" è semplicemente
-un trofeo con condizione `xp` ad alta soglia. La resa **user-facing** della condizione passa da
-`badge_service.describe_condition(type, value)` (Italiano leggibile, es. "Raggiungi 1.000 CoInn"
-— **mai** il gergo `type ≥ value`), usata sia da `/catalogo_badge` sia da `/traguardi` (sui trofei
-🔒 bloccati) così i due comandi mostrano le condizioni **identiche**. I counter vengono incrementati in:
+**Motore condizioni — data-driven (`check_and_award_milestones`).** Niente catena `if/elif`
+sparsa: un **dispatch** di valutatori per `condition_type`, con aggregati calcolati **lazy** (una
+sola query ciascuno, solo se un candidato la richiede). Tipi supportati (vedi
+`catalog_loader.TROPHY_CONDITIONS`):
+
+| `condition_type` | sorgente | `condition_param` |
+|---|---|---|
+| `onboarding`·`balance`·`daily_streak`·`bets_won`·`transfers_made`·`xp` | `User`/`Wallet` | — |
+| `item_purchases` | conteggi consumabili (`consumable_service.purchase_counts`) | key consumabile `cons_*` |
+| `category_purchases` | somma conteggi categoria | key categoria |
+| `shop_purchases` | totale consumabili acquistati | — |
+| `podium_count` / `first_place_count` | `progress_service.podium_counts` (tabella `game_podiums`) | game key (`trivia`·`guess`·`sound`, `None`⇒`any`) |
+| `collection` | possesso di altri trofei | **slug prerequisiti separati da `;`** |
+
+La colonna **`Badge.condition_param`** (String(128), nullable) scopa le condizioni parametriche;
+`condition_value` resta la soglia numerica (per `collection` è `None`). **Pass a punto fisso**: una
+`collection` può sbloccarsi nello stesso giro dell'ultimo prerequisito (il loop ricalcola gli slug
+posseduti finché stabile) → es. *Critico Gastronomico* (tutti i 12 bronzo del menù) e *Leggenda di
+Dragons'Inn* (Critico + i 4 argento). Il "Platino" classico resta un `xp` ad alta soglia.
+
+La resa **user-facing** passa da `badge_service.describe_condition(type, value, param)` (Italiano
+leggibile, nomi item/categoria/gioco risolti dal registry — **mai** il gergo `type ≥ value`),
+condivisa da `/catalogo_badge` e `/traguardi`. I counter capped vengono incrementati in:
 - `daily_streak` → `economy_service.claim_daily()`
 - `bets_won` → `bet_service.resolve_event()`
 - `transfers_made` → `economy_service.transfer()`
+- consumabili → `consumable_service.record_consumption` (Locanda, §11.b)
+- podio → `progress_service.record_podium` (quiz `close_quiz` per `trivia`; `guess`/`sound` futuri)
 
 `check_and_award_milestones` va chiamato dopo ogni azione che può sbloccare un trofeo, prima
 del commit finale; **non committa**. `leaderboard_trophies(session)` ordina per numero di

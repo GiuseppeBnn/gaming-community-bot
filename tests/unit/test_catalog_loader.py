@@ -72,6 +72,90 @@ class TestTrophiesCsv:
         assert rows[0]["condition_type"] is None
         assert rows[0]["condition_value"] is None
 
+    def test_condition_param_parsed(self, tmp_path):
+        self._write(
+            tmp_path,
+            "slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param\n"
+            "buy,Compra,d,🍕,locanda,bronze,0,item_purchases,1,cons_pizza_pacman\n",
+        )
+        rows = catalog_loader.load_trophies(str(tmp_path))
+        assert rows[0]["condition_type"] == "item_purchases"
+        assert rows[0]["condition_value"] == 1
+        assert rows[0]["condition_param"] == "cons_pizza_pacman"
+
+    def test_collection_keeps_param_drops_value(self, tmp_path):
+        self._write(
+            tmp_path,
+            "slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param\n"
+            "coll,Coll,d,💠,locanda,gold,0,collection,,a;b;c\n",
+        )
+        rows = catalog_loader.load_trophies(str(tmp_path))
+        assert rows[0]["condition_type"] == "collection"
+        assert rows[0]["condition_value"] is None
+        assert rows[0]["condition_param"] == "a;b;c"
+
+    def test_param_required_condition_without_param_dropped(self, tmp_path):
+        # item_purchases requires a condition_param → without it the condition is dropped.
+        self._write(
+            tmp_path,
+            "slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param\n"
+            "x,X,d,🍕,locanda,bronze,0,item_purchases,1,\n",
+        )
+        rows = catalog_loader.load_trophies(str(tmp_path))
+        assert rows[0]["condition_type"] is None
+        assert rows[0]["condition_param"] is None
+
+    def test_missing_param_column_back_compat(self, tmp_path):
+        # A legacy CSV without the condition_param column still parses (param=None).
+        self._write(
+            tmp_path,
+            "slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value\n"
+            "win,Vincitore,d,🏆,gen,gold,0,xp,500\n",
+        )
+        rows = catalog_loader.load_trophies(str(tmp_path))
+        assert rows[0]["condition_param"] is None
+        assert rows[0]["condition_value"] == 500
+
+
+# ---------------------------------------------------------------------------
+# Consumables + categories CSV
+# ---------------------------------------------------------------------------
+
+class TestConsumablesCsv:
+    def test_default_when_missing(self, tmp_path):
+        assert catalog_loader.load_consumables(str(tmp_path)) == catalog_loader.DEFAULT_CONSUMABLES
+        cats = catalog_loader.load_consumable_categories(str(tmp_path))
+        assert cats == catalog_loader.DEFAULT_CONSUMABLE_CATEGORIES
+
+    def test_valid_consumable(self, tmp_path):
+        (tmp_path / "consumables.csv").write_text(
+            "key,name,emoji,category,price,description\n"
+            "cons_x,Snack X,🍿,snack,99,Buono\n",
+            encoding="utf-8",
+        )
+        items = catalog_loader.load_consumables(str(tmp_path))
+        assert "cons_x" in items
+        assert items["cons_x"].price == 99
+        assert items["cons_x"].category == "snack"
+
+    def test_missing_category_or_price_skipped_then_defaults(self, tmp_path):
+        (tmp_path / "consumables.csv").write_text(
+            "key,name,emoji,category,price,description\n"
+            "cons_a,A,🍿,,10,x\n"        # missing category
+            "cons_b,B,🍿,snack,-5,x\n",  # negative price
+            encoding="utf-8",
+        )
+        assert catalog_loader.load_consumables(str(tmp_path)) == catalog_loader.DEFAULT_CONSUMABLES
+
+    def test_categories_valid(self, tmp_path):
+        (tmp_path / "consumable_categories.csv").write_text(
+            "key,name,emoji,order\nbev,Bevande,🧪,2\nfood,Cibo,🍖,1\n",
+            encoding="utf-8",
+        )
+        cats = catalog_loader.load_consumable_categories(str(tmp_path))
+        assert set(cats) == {"bev", "food"}
+        assert cats["bev"].order == 2
+
 
 # ---------------------------------------------------------------------------
 # Ranks CSV
@@ -123,5 +207,8 @@ class TestRegistries:
         counts = catalog_loader.init_registries(str(tmp_path))
         assert counts["ranks"] == len(catalog_loader.DEFAULT_RANKS)
         assert counts["cosmetics"] == len(catalog_loader.DEFAULT_COSMETICS)
+        assert counts["consumables"] == len(catalog_loader.DEFAULT_CONSUMABLES)
+        assert counts["consumable_categories"] == len(catalog_loader.DEFAULT_CONSUMABLE_CATEGORIES)
+        assert catalog_loader.get_consumables() == catalog_loader.DEFAULT_CONSUMABLES
         # restore defaults for other tests
         catalog_loader.init_registries(str(tmp_path))

@@ -62,7 +62,7 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="traguardi", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_badge", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
-    BotCommand(command="negozio", description="Personalizzazioni (tag)"),
+    BotCommand(command="locanda", description="🍺 Locanda: tag e consumabili"),
     BotCommand(command="comandi", description="Guida ai comandi"),
     BotCommand(command="spiega_comando", description="Spiegazione di un comando"),
 ]
@@ -76,7 +76,7 @@ _GROUP_COMMANDS = [
     BotCommand(command="quiz", description="🧠 Quiz attivo da giocare"),
     BotCommand(command="traguardi", description="I tuoi trofei e rango"),
     BotCommand(command="classifiche", description="Classifiche della community"),
-    BotCommand(command="negozio", description="Personalizzazioni (tag)"),
+    BotCommand(command="locanda", description="🍺 Locanda: tag e consumabili"),
     BotCommand(command="maestro", description="Trasforma uno sfogo in filosofia"),
     BotCommand(command="complotto", description="Teoria del complotto sul messaggio"),
     BotCommand(command="difendi", description="Avvocato difensore del messaggio"),
@@ -145,8 +145,10 @@ async def main() -> None:
         effective_group = await group_registry.load(session)
     counts = catalog_loader.init_registries()
     logger.info(
-        "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici. Group id effettivo: %s",
-        n_trophies, counts["ranks"], counts["cosmetics"], effective_group,
+        "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici, %d consumabili "
+        "(%d categorie). Group id effettivo: %s",
+        n_trophies, counts["ranks"], counts["cosmetics"], counts["consumables"],
+        counts["consumable_categories"], effective_group,
     )
 
     # Populate the event-type registry before any event handler / the scheduler

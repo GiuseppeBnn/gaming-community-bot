@@ -30,7 +30,7 @@ USER_CATEGORIES = (
     "👤 Profilo & Economia",
     "🎲 Scommesse",
     "🏆 Progressione",
-    "🛒 Negozio",
+    "🍺 Locanda",
     "🤖 Intrattenimento AI",
     "❓ Aiuto",
 )
@@ -118,12 +118,15 @@ _COMMANDS: list[CommandDoc] = [
         details="Le classifiche della community con uno switcher tra ricchezza, XP e trofei. "
                 "Si aprono in chat privata.",
     ),
-    # --- 🛒 Negozio ---
+    # --- 🍺 Locanda ---
     CommandDoc(
-        "negozio", "Compra e gestisci i tag del profilo", "🛒 Negozio",
-        usage="/negozio",
-        details="Spendi CoInn per acquistare <b>tag</b> cosmetici da mostrare sul profilo. "
-                "Dal negozio puoi anche attivarli/disattivarli e combinarne più di uno.",
+        "locanda", "La Locanda: tag cosmetici e menù consumabili", "🍺 Locanda",
+        usage="/locanda",
+        aliases=("negozio",),
+        details="<i>La Locanda del Drago.</i> Spendi CoInn in due sezioni: 🏷️ "
+                "<b>Personalizzazioni</b> (tag cosmetici da mostrare sul profilo, attivabili "
+                "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
+                "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei).",
     ),
     # --- 🤖 Intrattenimento AI (in gruppo, in risposta a un messaggio) ---
     CommandDoc(

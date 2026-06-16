@@ -13,10 +13,14 @@ from keyboards.betting_kb import (
     get_options_keyboard,
 )
 from keyboards.shop_kb import (
+    get_consumable_confirm_kb,
+    get_locanda_home_kb,
+    get_menu_categories_kb,
+    get_menu_items_kb,
     get_shop_catalog_kb,
     get_shop_confirm_kb,
 )
-from services.catalog_loader import CosmeticItem
+from services.catalog_loader import ConsumableCategory, ConsumableItem, CosmeticItem
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +229,48 @@ class TestShopCatalogKb:
         kb = get_shop_catalog_kb([_cosmetic(key="tag_vip")], balance=500, owned=set())
         btn = _flat_buttons(kb)[0]
         assert btn.callback_data == "shop:buy:tag_vip"
+
+
+def _consumable(key="cons_pizza_pacman", price=300, category="snack"):
+    return ConsumableItem(
+        key=key, name="Pizza", emoji="🍕", category=category, price=price, description="d",
+    )
+
+
+class TestLocandaKeyboards:
+    def test_home_has_both_sections(self):
+        kb = get_locanda_home_kb(has_cosmetics=True, has_menu=True)
+        cbs = [b.callback_data for b in _flat_buttons(kb)]
+        assert "shop:list" in cbs and "shop:menu" in cbs
+        assert "shop:pantry" in cbs and "shop:close" in cbs
+
+    def test_home_hides_empty_sections(self):
+        kb = get_locanda_home_kb(has_cosmetics=False, has_menu=False)
+        cbs = [b.callback_data for b in _flat_buttons(kb)]
+        assert "shop:list" not in cbs and "shop:menu" not in cbs
+
+    def test_categories_callbacks(self):
+        cats = [ConsumableCategory("snack", "Snack", "📦", 0)]
+        kb = get_menu_categories_kb(cats)
+        cbs = [b.callback_data for b in _flat_buttons(kb)]
+        assert "shop:cat:snack" in cbs
+        assert all(len(c.encode()) <= 64 for c in cbs)
+
+    def test_menu_item_affordable_and_owned_count(self):
+        kb = get_menu_items_kb([_consumable()], balance=500, counts={"cons_pizza_pacman": 2})
+        btn = _flat_buttons(kb)[0]
+        assert btn.callback_data == "shop:cbuy:cons_pizza_pacman"
+        assert "✅" in btn.text and "·2" in btn.text
+
+    def test_menu_item_unaffordable(self):
+        kb = get_menu_items_kb([_consumable(price=9999)], balance=10, counts={})
+        assert "❌" in _flat_buttons(kb)[0].text
+
+    def test_consumable_confirm_callbacks(self):
+        kb = get_consumable_confirm_kb("cons_pizza_pacman", "snack")
+        btns = _flat_buttons(kb)
+        assert btns[0].callback_data == "shop:cexec:cons_pizza_pacman"
+        assert btns[1].callback_data == "shop:cat:snack"
 
 
 class TestShopConfirmKb:

@@ -7,7 +7,7 @@ Deep-link payloads routed through /start:
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   help                  → shows the help message
-  shop_<group_id>       → opens the shop catalog for the given group
+  shop_<group_id>       → opens the Locanda (shop) catalog for the given group
   backup / esporta      → runs the chat archive / state export (admin only)
 
 Every admin entry point re-checks ``is_admin`` here: this router is public, so the
@@ -243,7 +243,7 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     badge_count = len(user.badges)
     member_since = user.created_at.strftime("%d/%m/%Y")
 
-    from services import xp_service
+    from services import consumable_service, xp_service
     from services.shop_service import render_active_tags
     rank = xp_service.rank_for_xp(user.xp)
     rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {esc(rank.name)}\n" if rank else ""
@@ -252,6 +252,14 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     title = esc(user.full_name)
     if tags:
         title = f"{esc(tags)} · {title}"
+
+    # Pantry preview: the first few consumables, compact (e.g. "🍕 ×3 · 🐉 ×1").
+    pantry = await consumable_service.inventory(db_session, user.tg_id)
+    pantry_line = ""
+    if pantry:
+        shown = " · ".join(f"{it.emoji} ×{qty}" for it, qty in pantry[:6])
+        more = " …" if len(pantry) > 6 else ""
+        pantry_line = f"🎒 <b>Dispensa:</b> {shown}{more}\n"
 
     await reply_static(
         message,
@@ -262,7 +270,8 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
         f"{rank_line}"
         f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
         f"⚡ <b>XP:</b> {user.xp:,}\n"
-        f"🏆 <b>Trofei:</b> {badge_count}",
+        f"🏆 <b>Trofei:</b> {badge_count}\n"
+        f"{pantry_line}".rstrip("\n"),
         "profilo",
     )
 

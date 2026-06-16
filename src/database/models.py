@@ -133,6 +133,11 @@ class Badge(Base):
     xp_reward: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     condition_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     condition_value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Scope for parametrized conditions: a consumable item key (item_purchases), a
+    # category key (category_purchases), a game key (podium_count/first_place_count),
+    # or a ``;``-separated list of prerequisite trophy slugs (collection). NULL for
+    # the plain counter conditions (xp/balance/…).
+    condition_param: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
     user_badges: Mapped[list["UserBadge"]] = relationship(
         back_populates="badge", cascade="all, delete-orphan"
@@ -232,6 +237,24 @@ class ShopPurchase(Base):
     purchased_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     success: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     error_reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+
+
+class GamePodium(Base):
+    """A podium finish (rank 1–3) by a user in a community game.
+
+    ``game_key`` identifies the game: ``trivia`` (the quiz, live today) and the
+    forward-declared ``guess`` / ``sound`` (built later). Trophy conditions
+    ``podium_count`` / ``first_place_count`` count rows here — recorded once per
+    user per game event (e.g. one quiz run) by ``progress_service.record_podium``."""
+
+    __tablename__ = "game_podiums"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    game_key: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1=first, 2=second, 3=third
+    ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # e.g. quiz_id
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class Warning(Base):
