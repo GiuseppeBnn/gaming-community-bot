@@ -2,10 +2,11 @@
 
 Un bot Telegram production-grade per community di videogiocatori: economia con
 ledger, **XP & progressione** (trofei stile PlayStation, ranghi, tag cosmetici),
-scommesse stile Twitch, **classifiche multiple**, negozio di personalizzazioni,
-onboarding interattivo, quiz a premi con podio, un modulo di intrattenimento AI e
-una **dashboard admin a bottoni**. Trofei, ranghi e cosmetici sono
-**personalizzabili via CSV** senza toccare il codice.
+scommesse stile Twitch, **classifiche multiple**, **La Locanda** (negozio di
+personalizzazioni + menù di consumabili da collezionare), onboarding interattivo,
+quiz a premi con podio, un modulo di intrattenimento AI e una **dashboard admin a
+bottoni**. Trofei, ranghi, cosmetici e consumabili sono **personalizzabili via CSV**
+senza toccare il codice.
 
 ---
 
@@ -141,7 +142,7 @@ variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
 | `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
-| `/negozio` | Compra personalizzazioni (tag cosmetici) con i CoInn — apre ovunque |
+| `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 
@@ -179,12 +180,14 @@ Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica d
   **piccola quota di partecipazione giornaliera con tetto** (`/daily`, vittoria scommessa).
   Il tetto è applicato lato server (`XP_DAILY_PARTICIPATION_CAP`), così nessuno può farmare XP.
 - **Trofei** (stile PlayStation): achievement con **rarità** Bronzo/Argento/Oro/Platino,
-  sbloccati da condizioni (saldo, streak, scommesse, **XP**…). Li vedi con `/traguardi`
-  (raggruppati per rarità) e `/catalogo_badge`.
+  sbloccati da condizioni — saldo, streak, scommesse, **XP**, **acquisti alla Locanda**
+  (per oggetto / per categoria), **podio nel Trivia**, e **collezioni** (sblocca tutti i
+  trofei di un set). Li vedi con `/traguardi` (raggruppati per rarità) e `/catalogo_badge`.
 - **Ranghi**: titoli sbloccati automaticamente al crescere degli XP (es. Novizio → Veterano
   → Leggenda), mostrati sul profilo; il rank-up viene annunciato.
-- **Tag cosmetici**: flair acquistabili nel **negozio** con le monete (`/negozio`, apre
-  ovunque). Sono **solo estetici** — nessun permesso reale, nessuna escalation.
+- **La Locanda** (`/locanda`): 🏷️ **tag cosmetici** (flair, acquisto una tantum) e 🍖 **menù
+  di consumabili** (cibi/bevande riacquistabili che riempiono la 🎒 **dispensa** mostrata sul
+  profilo). Tutto **solo estetico/collezionabile** — nessun permesso reale, nessuna escalation.
 
 ### Personalizzare con i CSV
 
@@ -192,9 +195,11 @@ Nomi, soglie, rarità e prezzi sono **modificabili senza ricompilare**, via CSV 
 cartella dati montata (`CATALOG_DIR`, default `data/`):
 
 ```bash
-cp catalogs/trophies.example.csv        data/trophies.csv
-cp catalogs/ranks.example.csv           data/ranks.csv
-cp catalogs/shop_cosmetics.example.csv  data/shop_cosmetics.csv
+cp catalogs/trophies.example.csv               data/trophies.csv
+cp catalogs/ranks.example.csv                  data/ranks.csv
+cp catalogs/shop_cosmetics.example.csv         data/shop_cosmetics.csv
+cp catalogs/consumable_categories.example.csv  data/consumable_categories.csv
+cp catalogs/consumables.example.csv            data/consumables.csv
 # edita data/*.csv e RIAVVIA il bot (i cataloghi si leggono all'avvio)
 ```
 

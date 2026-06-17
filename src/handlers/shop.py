@@ -135,17 +135,6 @@ def _catalog_text(balance: int, has_items: bool) -> str:
     )
 
 
-async def _show_catalog(message: Message, db_session: AsyncSession) -> None:
-    tg_id = message.from_user.id
-    balance = await _balance(db_session, tg_id)
-    items = list(shop_service.get_cosmetics().values())
-    owned = await _owned_keys(db_session, tg_id, [i.key for i in items])
-    await message.answer(
-        _catalog_text(balance, bool(items)),
-        reply_markup=get_shop_catalog_kb(items, balance, owned),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Callbacks
 # ---------------------------------------------------------------------------

@@ -80,7 +80,8 @@ wallets         (id PK, tg_id FK unique → users, coins)
 ledger          (id PK, from_tg_id, to_tg_id, amount, tx_type, description,
                  reference_id FK → betting_events, created_at)
 badges          (id PK, slug unique, name, description, icon_emoji, category,
-                 rarity, xp_reward, condition_type, condition_value)   ← rarity = trofei (§12)
+                 rarity, xp_reward, condition_type, condition_value, condition_param)
+                 ← rarity = trofei (§12); condition_param = scope condizioni parametriche
 user_badges     (id PK, user_tg_id FK, badge_id FK, earned_at, notified)
                 UniqueConstraint(user_tg_id, badge_id)
 betting_events  (id PK, title, description, creator_tg_id FK, status, resolution_option_id,
@@ -104,6 +105,8 @@ quiz_answers    (id PK, quiz_id index, question_id FK, user_tg_id, selected_opti
                  is_correct, response_ms, answered_at)  UniqueConstraint(question_id, user_tg_id)
 scheduled_tasks (id PK, task_type [quiz|poll|bet], ref_id, payload_json, run_at index,
                  status, created_by_tg_id, group_id, created_at, executed_at, error)
+game_podiums    (id PK, user_tg_id BigInt index, game_key index, rank, ref_id, created_at)
+                 ← podio per gioco (trivia|guess|sound); fuel trofei podium_count/first_place_count (§12)
 ```
 
 ### Enums (str, Enum — valori in DB come stringa)
@@ -128,7 +131,7 @@ BetStatus:       pending | won | lost | refunded
 - `daily_streak`, `bets_won`, `transfers_made` su `User` vengono aggiornati nei rispettivi service — **non** calcolati on-the-fly
 - `User.is_banned` (bool, default false) è il **ban bot-level** (§18, `BannedUserMiddleware`): aggiunto a `users` *dopo* il primo deploy → ha la sua voce `ALTER TABLE … ADD COLUMN IF NOT EXISTS is_banned …` in `_MIGRATIONS`. Si muta **solo** via `admin_service.set_user_banned`; **non** è una condizione-milestone (regola 10 non coinvolta)
 - `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo rango visto (per annunciare i rank-up); `cosmetic_tag` è il flair acquistato nel negozio (§11)
-- `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`) e `badges.rarity` sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
+- `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks`/`game_podiums` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`), `badges.rarity` e **`badges.condition_param`** sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
 - `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`)
 - timestamp scheduler in **UTC naive** (`schedule_service.utcnow()`); `parse_run_at` converte l'orario locale (`scheduler_timezone`) in UTC naive
 - `Warning.active` è un **soft-delete**: `clear_warnings` setta `active=False`, non cancella la riga (storico preservato)
@@ -270,7 +273,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
-| `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo negozio |
+| `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo Locanda (cosmetici + menù) |
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
 | `bet_custom_<e>_<o>` | `common.cmd_start` → `betting.start_custom_amount` | FSM importo custom |
 | `bet_<event_id>` | `common.cmd_start` → `betting.start_bet_view` | Dettaglio evento |
@@ -285,7 +288,7 @@ prodotto — il saldo è visibile a tutti), con l'**anti-flood "sostituisci"** d
 (§14, una sola risposta viva per utente+comando). `/profilo` **non** mostra mai il Telegram ID
 (resta esclusiva del dossier admin `/info`). I comandi che mostrano **dati personali** ancora
 **redirezionati** in privato (`handlers/_privacy.redirect_to_private`, bottone deep-link) sono
-`/storico`, `/traguardi`, `/negozio`, `/classifiche`. `/daily` riscuote subito in gruppo con un
+`/storico`, `/traguardi`, `/locanda`, `/classifiche`. `/daily` riscuote subito in gruppo con un
 **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best-effort**.
 
 I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
@@ -351,18 +354,20 @@ COSMETICS: dict[str, CosmeticItem]  # = catalog_loader.get_cosmetics()
 ```
 
 **Solo in privato:** in gruppo il catalogo esporrebbe il saldo dell'apertore a tutti (e i bottoni
-inline agiscono su chiunque clicchi), quindi `/negozio` in gruppo fa **redirect** con bottone
-deep-link `?start=shop_<chat_id>` (`redirect_to_private`, §9); in privato `_show_catalog` mostra il
-catalogo. `start_shop_private` (deep-link) chiama `_show_catalog`.
+inline agiscono su chiunque clicchi), quindi `/locanda` in gruppo fa **redirect** con bottone
+deep-link `?start=shop_<chat_id>` (`redirect_to_private`, §9); in privato `_show_home` mostra le due
+sezioni. `start_shop_private` (deep-link) chiama `_show_home`.
 
 ### Flow acquisto
 
 ```
-/negozio → privato: _show_catalog · gruppo: redirect deep-link
+/locanda → privato: _show_home (sezioni) · gruppo: redirect deep-link
+shop:home → landing · shop:list → catalogo cosmetici · shop:menu → categorie consumabili · shop:pantry → dispensa
 shop:buy:<key>  → idempotenza (già posseduto? alert) → balance check → conferma + anteprima tag
 shop:exec:<key> → debit (lock wallet) → re-check idempotenza SOTTO LOCK → record_purchase (no-commit) → apply_cosmetic → commit
-shop:owned      → alert "già posseduto"
-shop:list       → torna al catalogo · shop:close → elimina
+shop:cbuy:<key> → balance check → conferma (consumabile, ripetibile)
+shop:cexec:<key> → debit (lock wallet) → record_consumption → flush → milestone check → commit
+shop:owned      → alert "già posseduto" · shop:list/menu/home → naviga · shop:close → elimina
 ```
 
 Il re-check di `has_cosmetic` **dopo** il debit (che prende il lock di riga del wallet) chiude la
@@ -481,16 +486,22 @@ riusato anche dalla dashboard `adm:lead:*`). Board: 💰 `admin_service.leaderbo
 
 ## 12.2 Cataloghi CSV (catalog_loader)
 
-File: `services/catalog_loader.py` — carica **trofei**, **ranghi**, **cosmetici** da CSV nella
-dir `settings.catalog_dir` (default `data/`), **una sola volta all'avvio** (riavvio per
-applicare le modifiche). Template tracciati in `catalogs/*.example.csv` + `catalogs/README.md`.
+File: `services/catalog_loader.py` — carica **trofei**, **ranghi**, **cosmetici**, **consumabili**
+e **categorie consumabili** da CSV nella dir `settings.catalog_dir` (default `data/`), **una sola
+volta all'avvio** (riavvio per applicare le modifiche). Template in `catalogs/*.example.csv` +
+`catalogs/README.md`.
 
-- `load_trophies()/load_ranks()/load_cosmetics()` — puri, **validano** le righe, **saltano e
-  loggano** quelle malformate, e in caso di file assente/vuoto **fanno fallback ai default
-  Python** (`DEFAULT_TROPHIES/RANKS/COSMETICS`) → il bot parte sempre, anche a freddo/nei test.
+- `load_trophies()/load_ranks()/load_cosmetics()/load_consumables()/load_consumable_categories()` —
+  puri, **validano** le righe, **saltano e loggano** quelle malformate, e in caso di file
+  assente/vuoto **fanno fallback ai default Python**
+  (`DEFAULT_TROPHIES/RANKS/COSMETICS/CONSUMABLES/CONSUMABLE_CATEGORIES`) → il bot parte sempre,
+  anche a freddo/nei test. `load_trophies` legge la colonna opzionale `condition_param` (assente ⇒
+  back-compat); i tipi *item/category/collection* senza param vengono scartati.
 - `init_registries(catalog_dir=None)` (chiamata in `main()`) popola i registry in-memoria
-  `_ranks`/`_cosmetics`; accessori `get_ranks()/get_cosmetics()`. I **ranghi non hanno tabella**
-  (derivati dagli XP); i **cosmetici** neppure (registry in-memoria, acquisto loggato in `ShopPurchase`).
+  `_ranks`/`_cosmetics`/`_consumables`/`_consumable_categories`; accessori
+  `get_ranks()/get_cosmetics()/get_consumables()/get_consumable_categories()`. I **ranghi non hanno
+  tabella** (derivati dagli XP); **cosmetici e consumabili** neppure (registry in-memoria, acquisto
+  loggato in `ShopPurchase`; la dispensa è derivata dai conteggi).
 - `main()` chiama `badge_service.sync_trophies(session)` (trofei → DB) + `catalog_loader.init_registries()` e logga i conteggi.
 
 **Per personalizzare:** copia `catalogs/*.example.csv` in `data/` (senza `.example`), edita, riavvia.
@@ -559,7 +570,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `QuizCreationStates.*` | `handlers/quiz.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
-> Il negozio non usa più una FSM: i cosmetici si applicano al volo (§11), nessun `ShopState`.
+> La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
 | `ScheduleStates.*` | `handlers/schedule.py` | programmazione quiz/poll/bet (scelta orario run-at) |
 | `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
 
@@ -568,10 +579,10 @@ aggiungere altro rumore (la risposta fresca è già lì).
 ## 16. Comandi registrati
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/negozio`, `/comandi`, `/spiega_comando <cmd>`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/quiz`, `/traguardi`, `/classifiche`, `/negozio`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/quiz`, `/traguardi`, `/classifiche`, `/locanda`, `/comandi`
 
 > **`/help` → `/comandi`**: il comando canonico è ora `/comandi` (`/help` resta come alias nascosto +
 > deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
@@ -582,7 +593,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 > «Nessun quiz attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
 > redirect al pannello). Gli handler di gestione restano gated.
 
-> **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/negozio` · `/classifiche`
+> **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/locanda` · `/classifiche`
 > **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
 > switcher + tasto Chiudi → chiunque poteva chiuderla, ora è privata). `/profilo` e `/saldo` sono invece
 > **pubblici** (rispondono in chiaro nel gruppo, anti-flood "sostituisci" §14; `/profilo` senza Telegram
@@ -929,6 +940,7 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
+26. **Trofei & Locanda** (§11/§12): nuove **condizioni trofeo** si aggiungono al **dispatch** di `check_and_award_milestones` + a `TROPHY_CONDITIONS` + a `describe_condition` (mai catene `if/elif` fuori dagli helper). Le condizioni scoped usano **`Badge.condition_param`** (key item/categoria/gioco o slug `;`-separati per `collection`); colonna nuova ⇒ voce in `_MIGRATIONS`. Le **`collection`** si risolvono a **punto fisso** (sblocco a catena nello stesso commit). **Chiavi disgiunte**: consumabili `cons_*`, cosmetici `tag_*` (namespace `shop_purchases.item_key` condiviso). Acquisto consumabile: **flush prima** del milestone check (autoflush off). Cataloghi (consumabili/categorie/trofei) **solo via CSV + default Python**, mai hardcode negli handler. Nuovi giochi col podio chiamano `progress_service.record_podium(game_key, rank)` — i loro trofei `podium_count`/`first_place_count` si attivano da soli.
 
 ---
 
@@ -946,7 +958,8 @@ tests/
 │   ├── test_rate_limit.py    # RateLimitMiddleware (finestre, isolamento utenti)
 │   ├── test_payout.py        # compute_payout_preview (funzione pura)
 │   ├── test_xp_service.py    # rank_for_xp + tetto giornaliero + set/airdrop (funzioni pure/async)
-│   ├── test_catalog_loader.py # parse CSV trofei/ranghi/cosmetici + fallback + righe malformate
+│   ├── test_catalog_loader.py # parse CSV trofei/ranghi/cosmetici/consumabili/categorie + condition_param + fallback + righe malformate
+│   ├── test_locanda_catalog.py # helper consumabili (sync) + describe_condition (item/category/podio/collection)
 │   ├── test_group_guard.py   # invalidate_cache, _chat_type, _NON_MEMBER_STATUSES
 │   ├── test_ai_service.py    # Groq client (aioresponses): success/timeout/http/malformed/no-key
 │   ├── test_moderation_service.py # parse_duration + mappatura errori (Bot fake)
@@ -964,7 +977,7 @@ tests/
     ├── test_economy_service.py  # credit / debit / transfer / daily / history
     ├── test_economy_locking.py  # validazione amount>0 (credit/debit) + daily idempotente
     ├── test_badge_service.py    # sync_trophies / award / milestones (rarità, default catalog)
-    ├── test_trophies.py         # condizione xp / sync upsert / leaderboard_trophies
+    ├── test_trophies.py         # condizione xp / item_purchases / category_purchases / shop_purchases / podium / collection (punto fisso) / sync upsert / leaderboard_trophies
     ├── test_xp_admin.py         # grant/set/airdrop XP + parità audit (xp_grant/xp_set/xp_airdrop) + leaderboard_xp
     ├── test_bet_service.py      # create_event / place_bet / resolve / cancel
     ├── test_bet_locking.py      # no bet su evento locked + total_wagered atomico
@@ -972,6 +985,8 @@ tests/
     ├── test_shop_service.py     # cosmetici: acquisto debita + applica tag, idempotenza, niente mute
     ├── test_db_middleware.py    # _upsert_user (upsert, update, idempotenza)
     ├── test_admin_service.py    # set_balance / mass_credit / warn / dossier / stats / audit / list_users
+    ├── test_consumable_service.py # consumabili: record_consumption ripetibile, purchase_counts, inventory, category_total
+    ├── test_progress_service.py  # record_podium / podium_counts (podi + primi posti, aggregato "any")
     ├── test_quiz_service.py     # create/add_question / record_answer / podium / award_prizes (legacy + per-rango + consolazione)
     ├── test_admin_dashboard.py  # apply_warning (audit + escalation) / render_user_detail / user picker
     ├── test_schedule_service.py # schedule / due_tasks / mark_done|failed / cancel
@@ -1055,7 +1070,7 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 
 ## 24. Checklist prima di ogni PR
 
-- [ ] `pytest` passa (380+ test verdi)
+- [ ] `pytest` passa (540+ test verdi)
 - [ ] `python src/main.py` importa senza errori (o `PYTHONPATH=src python -c "import main"`)
 - [ ] Tutti i nuovi handler usano `db_session: AsyncSession`
 - [ ] Service non committano (salvo eccezioni documentate)
@@ -1066,7 +1081,7 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 - [ ] Mutazioni denaro/XP/bet con `with_for_update` (ordine Event→User→Wallet); `credit/debit` con `amount>0` (regola 22)
 - [ ] Trofei conditions aggiornate se aggiunte nuove metriche su `User`; nuove colonne `User` ⇒ voce in `_MIGRATIONS` (anche cambi di **tipo** colonna)
 - [ ] `User.xp` mutato solo via `xp_service`; nuove sorgenti XP classificate capped/uncapped
-- [ ] Nuovi cosmetici/trofei/ranghi: aggiungere al CSV (`catalogs/*.example.csv` + default Python), non hardcodare nel codice
+- [ ] Nuovi cosmetici/consumabili/categorie/trofei/ranghi: aggiungere al CSV (`catalogs/*.example.csv` + default Python), non hardcodare nel codice; nuove condizioni trofeo via dispatch + `TROPHY_CONDITIONS` + `describe_condition` (mai `if/elif` sparsi); `collection` a punto fisso
 - [ ] Nuovi service method coperti da integration test
 - [ ] Azioni admin mutanti loggate via `log_action` + guard self/bot-target; nuovi comandi AI con cap di lunghezza, input clippato, output `parse_mode=None`, nessun filtro moderazione nel payload
 - [ ] Nuovi check admin via `is_admin`; nuovi **tipi-evento** via spec `EventType` registrata in `register_builtin` (mai `if/elif` in hub/scheduler, §18.2/regola 25); quiz: handler `poll_answer` registrato
