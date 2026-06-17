@@ -14,7 +14,7 @@ from exceptions.economy import (
     WalletNotFoundError,
 )
 
-_DAILY_COOLDOWN = timedelta(hours=20)
+_DAILY_COOLDOWN = timedelta(hours=24)
 _MIN_TRANSFER = 1
 _MAX_TRANSFER = 1_000_000
 

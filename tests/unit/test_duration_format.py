@@ -19,7 +19,7 @@ class TestFormatDuration:
 
     def test_hours_and_minutes(self):
         assert format_duration(3 * 3600 + 15 * 60) == "3h 15min"
-        # The /daily 20h cooldown should read cleanly, never "19.8 ore".
+        # The /daily 24h cooldown should read cleanly, never "19.8 ore".
         assert "." not in format_duration(19 * 3600 + 48 * 60)
 
     def test_negative_clamped(self):

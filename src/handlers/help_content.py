@@ -68,9 +68,9 @@ _COMMANDS: list[CommandDoc] = [
         details="L'elenco esteso di tutte le tue entrate e uscite di CoInn, dalla più recente.",
     ),
     CommandDoc(
-        "daily", "Premio giornaliero (ogni 20h)", "👤 Profilo & Economia",
+        "daily", "Premio giornaliero (ogni 24h)", "👤 Profilo & Economia",
         usage="/daily",
-        details="Riscuoti il premio in CoInn. Si può riscuotere una volta ogni 20 ore: se "
+        details="Riscuoti il premio in CoInn. Si può riscuotere una volta ogni 24 ore: se "
                 "riprovi prima, il bot ti dice quanto manca. Riscuoterlo in giorni consecutivi "
                 "aumenta la tua <i>streak</i>.",
     ),

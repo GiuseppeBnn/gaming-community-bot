@@ -261,8 +261,8 @@ class TestClaimDaily:
 
     async def test_consecutive_claim_increments_streak(self, session, user_factory):
         user, _ = await user_factory(tg_id=1, coins=0)
-        # Simulate a claim 21h ago (within the 48h streak window but past 20h cooldown)
-        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=21)
+        # Simulate a claim 25h ago (within the 48h streak window but past 24h cooldown)
+        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=25)
         user.daily_streak = 3
         await session.commit()
 
@@ -280,7 +280,7 @@ class TestClaimDaily:
 
     async def test_raises_daily_already_claimed_within_cooldown(self, session, user_factory):
         user, _ = await user_factory(tg_id=1, coins=0)
-        # Claim 10h ago — still within 20h cooldown
+        # Claim 10h ago — still within 24h cooldown
         user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=10)
         await session.commit()
 
@@ -288,7 +288,7 @@ class TestClaimDaily:
             await eco.claim_daily(session, 1)
 
         assert exc.value.hours_remaining > 0
-        assert exc.value.hours_remaining < 20
+        assert exc.value.hours_remaining < 24
 
     async def test_raises_wallet_not_found_for_unknown_user(self, session):
         with pytest.raises(WalletNotFoundError):
@@ -296,8 +296,8 @@ class TestClaimDaily:
 
     async def test_claim_exactly_at_cooldown_boundary_passes(self, session, user_factory):
         user, _ = await user_factory(tg_id=1, coins=0)
-        # Set last claim to exactly 20h + 1 second ago
-        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=20, seconds=1)
+        # Set last claim to exactly 24h + 1 second ago
+        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=24, seconds=1)
         await session.commit()
 
         reward, _ = await eco.claim_daily(session, 1)
