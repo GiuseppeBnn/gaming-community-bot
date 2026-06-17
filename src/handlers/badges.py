@@ -8,7 +8,7 @@ from database.models import User
 from handlers._privacy import redirect_to_private
 from services import badge_service, xp_service
 from services.badge_service import RARITY_LABELS, RARITY_ORDER
-from utils.text import esc
+from utils.text import chunk_blocks, esc
 
 router = Router()
 
@@ -76,7 +76,10 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
             "Partecipa a quiz ed eventi, accumula XP e CoInn!"
         )
 
-    await message.answer("\n".join(lines))
+    # The full catalogue (40+ trophies, each with its unlock hint) exceeds
+    # Telegram's 4096-char limit, so split across messages on line boundaries.
+    for chunk in chunk_blocks(lines, sep="\n"):
+        await message.answer(chunk)
 
 
 @router.message(Command("catalogo_badge"))
@@ -101,4 +104,5 @@ async def cmd_catalogo_badge(message: Message, db_session: AsyncSession) -> None
             f"   {esc(badge.description)}{cond}"
         )
 
-    await message.answer("\n\n".join(lines))
+    for chunk in chunk_blocks(lines, sep="\n\n"):
+        await message.answer(chunk)

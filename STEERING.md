@@ -445,7 +445,12 @@ trofei (tie-break XP).
 > sorgenti di §12.1 → niente cascata di sblocchi.
 
 `/traguardi` mostra i trofei **raggruppati per rarità** + rango/tag correnti; `/catalogo_badge`
-elenca tutto con rarità e condizione.
+elenca tutto con rarità e condizione. Con il catalogo esteso (40+ trofei, ciascuno con la sua
+condizione di sblocco) il corpo supera il **limite Telegram di 4096 caratteri** → entrambi i
+comandi spezzano l'output in più messaggi via **`utils.text.chunk_blocks(blocks, sep)`** (packing
+greedy che non taglia mai un blocco a metà, così nessun tag HTML viene spezzato). Vale per
+**qualunque** listato che cresce coi dati (trofei, futuri elenchi): non fare mai
+`message.answer("\n".join(...))` su una lista illimitata.
 
 ---
 
@@ -968,7 +973,7 @@ tests/
 │   ├── test_schedule_parse.py # parse_run_at (assoluto/relativo/passato/invalid)
 │   ├── test_quiz_prizes.py   # consolation_amounts / participation_floor (funzioni pure)
 │   ├── test_keyboards.py     # keyboard builder (incl. shop cosmetici: affordable/owned/callback)
-│   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura)
+│   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura) + chunk_blocks (split ≤4096)
 │   ├── test_fun_ai_hardening.py # clip_source / _prune_cooldowns / output parse_mode=None + wrapper CONTENUTO
 │   ├── test_atomic_io.py       # scrittura atomica, sha256, troncatura, append membri gzip + rollback
 │   ├── test_chat_archive.py    # build_record/classify_media, _archive_range (dedup/append/no-op), _recover
