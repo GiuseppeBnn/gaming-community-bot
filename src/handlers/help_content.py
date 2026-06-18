@@ -3,15 +3,20 @@ Command registry + help rendering — single source of truth for ``/comandi``
 (the grouped legend) and ``/spiega_comando <comando>`` (a per-command manual).
 
 Keeping the catalog here (instead of scattering descriptions across handlers)
-lets both the short legend and the detailed "man pages" stay in sync. All text is
-static and HTML-safe; the only user-controlled value (the looked-up command name)
-is escaped by the caller.
+lets both the short legend and the detailed "man pages" stay in sync. ``details``
+bodies carry intentional HTML markup (``<b>``, ``<code>``, …); ``usage`` strings
+are literal command syntax whose ``<placeholder>`` tokens must be HTML-escaped at
+render time (otherwise Telegram reads e.g. ``<importo>`` as an unknown open tag
+and rejects the whole message). The user-controlled looked-up command name is
+escaped by the caller.
 """
 
 from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass, field
+
+from utils.text import esc
 
 
 @dataclass(frozen=True)
@@ -315,7 +320,9 @@ def render_command(raw: str, is_admin: bool = False) -> str | None:
         return None
     parts = [f"📘 <b>/{doc.name}</b>", "", doc.summary]
     if doc.usage:
-        parts += ["", f"📋 <b>Uso:</b> <code>{doc.usage}</code>"]
+        # usage is literal command syntax: its <placeholder> tokens are not HTML
+        # and must be escaped, or Telegram rejects the message (unknown tag).
+        parts += ["", f"📋 <b>Uso:</b> <code>{esc(doc.usage)}</code>"]
     if doc.details:
         parts += ["", doc.details]
     if doc.admin_only:
