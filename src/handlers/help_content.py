@@ -235,6 +235,10 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc("audit", "Registro azioni admin", "📊 Info",
                usage="/audit [utente]", admin_only=True,
                details="Solo admin e solo in chat privata col bot."),
+    CommandDoc("lista_ranghi", "Sistema ranghi e livelli", "📊 Info",
+               usage="/lista_ranghi", admin_only=True,
+               details="Mostra la curva dei livelli (XP per salire, crescita %) e come i "
+                       "nomi-rango (Novizio→Leggenda) si mappano sulle fasce di livello."),
     CommandDoc("eventi", "Hub eventi: quiz/sondaggi/scommesse", "🎬 Eventi",
                usage="/eventi", admin_only=True,
                details="Crea quiz, sondaggi e scommesse e poi avviali subito nel gruppo "
@@ -328,3 +332,19 @@ def render_command(raw: str, is_admin: bool = False) -> str | None:
     if doc.admin_only:
         parts += ["", "<i>🔐 Comando riservato agli admin.</i>"]
     return "\n".join(parts)
+
+
+def render_command_or_hint(raw: str, is_admin: bool = False) -> str:
+    """The man page for ``raw``, or a 'not found' message with close suggestions.
+
+    Shared by ``/spiega_comando`` (private) and the ``spiega_<cmd>`` deep-link, so
+    the two surfaces stay identical.
+    """
+    page = render_command(raw, is_admin)
+    if page is not None:
+        return page
+    hint = ""
+    near = [s for s in suggestions(raw) if render_command(s, is_admin)]
+    if near:
+        hint = "\n\nForse cercavi: " + " · ".join(f"<code>/{s}</code>" for s in near)
+    return f"❓ Comando «{esc(raw, 32)}» non trovato. Usa /comandi per l'elenco.{hint}"

@@ -35,15 +35,16 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
     )
     user = user_result.scalar_one_or_none()
     xp = user.xp if user else 0
-    rank = xp_service.rank_for_xp(xp)
+    prog = xp_service.level_for_xp(xp)
+    rank = xp_service.rank_for_level(prog.level)
 
     if not all_badges:
         await message.answer("🏆 Nessun trofeo disponibile al momento.")
         return
 
     header = f"🏆 <b>I tuoi Trofei</b> ({len(earned_ids)}/{len(all_badges)})"
-    if rank is not None:
-        header += f"\n{rank.emoji} <b>Rango:</b> {esc(rank.name)} · ⚡ <b>{xp} XP</b>"
+    rank_txt = f" · {rank.emoji} {esc(rank.name)}" if rank is not None else ""
+    header += f"\n⚡ <b>Livello {prog.level}</b>{rank_txt}"
     if user:
         from services.shop_service import render_active_tags
         tags = render_active_tags(user)

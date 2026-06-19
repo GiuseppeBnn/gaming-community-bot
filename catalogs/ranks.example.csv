@@ -1,7 +1,7 @@
-slug,name,emoji,min_xp
-novizio,Novizio,🐣,0
-iniziato,Iniziato,🔰,100
-esperto,Esperto,⭐,500
-veterano,Veterano,🎖️,1500
-maestro,Maestro,🧠,3000
-leggenda,Leggenda,👑,6000
+slug,name,emoji,min_level
+novizio,Novizio,🐣,1
+iniziato,Iniziato,🔰,6
+esperto,Esperto,⭐,11
+veterano,Veterano,🎖️,16
+maestro,Maestro,🧠,21
+leggenda,Leggenda,👑,26

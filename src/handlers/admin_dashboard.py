@@ -661,7 +661,8 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
             status_line = f"\n👥 Stato gruppo: {_STATUS_MAP.get(member.status, member.status)}"
         except Exception:  # noqa: BLE001
             pass
-    rank = xp_service.rank_for_xp(u.xp)
+    level = xp_service.level_for_xp(u.xp).level
+    rank = xp_service.rank_for_level(level)
     rank_str = f"{rank.emoji} {esc(rank.name)}" if rank else "—"
     from services.shop_service import render_active_tags
     _tags = render_active_tags(u)
@@ -671,7 +672,7 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
         f"🔖 {username}\n"
         f"🆔 <code>{u.tg_id}</code>\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
-        f"⚡ XP: {u.xp:,} · 🎖️ Rango: {rank_str}{tag_line}\n"
+        f"⚡ Livello {level} · XP: {u.xp:,} · 🎖️ Rango: {rank_str}{tag_line}\n"
         f"🏆 Trofei: {dossier.badge_count}\n"
         f"🎲 Scommesse: {dossier.bet_count} (vinte: {u.bets_won})\n"
         f"⚠️ Warn attivi: <b>{dossier.active_warnings}</b>"

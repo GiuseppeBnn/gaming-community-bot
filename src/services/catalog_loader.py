@@ -12,7 +12,7 @@ valid row — so the bot always starts, even cold or in tests.
 
 Expected files (headers shown):
   trophies.csv      slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param
-  ranks.csv         slug,name,emoji,min_xp
+  ranks.csv         slug,name,emoji,min_level
   shop_cosmetics.csv key,name,tag_text,emoji,price
   consumables.csv    key,name,emoji,category,price,description
   consumable_categories.csv key,name,emoji,order
@@ -49,7 +49,7 @@ class Rank:
     slug: str
     name: str
     emoji: str
-    min_xp: int
+    min_level: int   # the level (not XP) at which this named tier starts
 
 
 @dataclass(frozen=True)
@@ -230,13 +230,16 @@ DEFAULT_TROPHIES: list[dict] = [
      "condition_param": ";".join(("menu_critico", *_MENU_SILVER_SLUGS))},
 ]
 
+# Named tiers spread evenly across levels (every ~5 levels). Editable via
+# data/ranks.csv (column ``min_level``); the level→XP curve is the geometric
+# progression in xp_service (settings ``xp_level_base`` / ``xp_level_growth``).
 DEFAULT_RANKS: list[Rank] = [
-    Rank("novizio", "Novizio", "🐣", 0),
-    Rank("iniziato", "Iniziato", "🔰", 100),
-    Rank("esperto", "Esperto", "⭐", 500),
-    Rank("veterano", "Veterano", "🎖️", 1500),
-    Rank("maestro", "Maestro", "🧠", 3000),
-    Rank("leggenda", "Leggenda", "👑", 6000),
+    Rank("novizio", "Novizio", "🐣", 1),
+    Rank("iniziato", "Iniziato", "🔰", 6),
+    Rank("esperto", "Esperto", "⭐", 11),
+    Rank("veterano", "Veterano", "🎖️", 16),
+    Rank("maestro", "Maestro", "🧠", 21),
+    Rank("leggenda", "Leggenda", "👑", 26),
 ]
 
 DEFAULT_COSMETICS: dict[str, CosmeticItem] = {
@@ -389,17 +392,17 @@ def load_ranks(catalog_dir: str | None = None) -> list[Rank]:
     seen: set[str] = set()
     for i, row in enumerate(rows, start=2):
         slug, name = _clean(row, "slug"), _clean(row, "name")
-        min_xp = _as_int(_clean(row, "min_xp"))
-        if not slug or not name or slug in seen or min_xp is None or min_xp < 0:
-            log.warning("ranks.csv riga %d ignorata (campi mancanti o min_xp non valido).", i)
+        min_level = _as_int(_clean(row, "min_level"))
+        if not slug or not name or slug in seen or min_level is None or min_level < 1:
+            log.warning("ranks.csv riga %d ignorata (campi mancanti o min_level non valido).", i)
             continue
-        out.append(Rank(slug=slug, name=name, emoji=_clean(row, "emoji") or "🎖️", min_xp=min_xp))
+        out.append(Rank(slug=slug, name=name, emoji=_clean(row, "emoji") or "🎖️", min_level=min_level))
         seen.add(slug)
 
     if not out:
         log.warning("ranks.csv senza righe valide; uso i default.")
         return list(DEFAULT_RANKS)
-    out.sort(key=lambda r: r.min_xp)
+    out.sort(key=lambda r: r.min_level)
     return out
 
 

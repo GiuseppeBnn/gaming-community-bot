@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     xp_daily_participation_cap: int = 50     # max farmable XP per user per day
     xp_per_daily_claim: int = 10             # capped XP granted on /daily
     xp_per_bet_won: int = 15                 # capped XP granted on a winning bet
+    # Level curve (GTA-style): cost to go from level n to n+1 is
+    # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
+    xp_level_base: int = 100                 # XP to go from level 1 → 2
+    xp_level_growth: float = 1.15            # geometric growth per level (+15%)
 
     # Quiz mode
     quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers

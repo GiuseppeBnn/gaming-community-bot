@@ -7,6 +7,7 @@ Deep-link payloads routed through /start:
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   help                  → shows the help message
+  spiega_<cmd>          → shows the per-command manual (carried from the group button)
   shop_<group_id>       → opens the Locanda (shop) catalog for the given group
   backup / esporta      → runs the chat archive / state export (admin only)
 
@@ -14,6 +15,8 @@ Every admin entry point re-checks ``is_admin`` here: this router is public, so t
 deep-link landing must not trust that the caller passed the originating command's
 admin filter (a non-admin could craft the ?start=… link directly).
 """
+
+import re
 
 from aiogram import Router
 from aiogram.enums import ChatType
@@ -29,7 +32,7 @@ from config_data.config import settings
 from database.models import User
 from filters.admin_filter import is_admin as is_bot_admin
 from handlers._privacy import redirect_to_private
-from handlers.help_content import render_command, render_legend, suggestions
+from handlers.help_content import normalize, render_command_or_hint, render_legend
 from handlers.onboarding import show_rules_prompt
 from utils import cooldown
 from utils.static_reply import reply_static
@@ -130,6 +133,13 @@ async def cmd_start(
     # Deep-link: help
     if payload == "help":
         await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
+        return
+
+    # Deep-link: spiega_<cmd> (per-command manual, carried from the group button)
+    if payload.startswith("spiega_"):
+        cmd = payload[len("spiega_"):]
+        admin = await is_bot_admin(message.bot, message.from_user.id)
+        await message.answer(render_command_or_hint(cmd, admin))
         return
 
     # Deep-link: shop_<group_id>
@@ -245,8 +255,14 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
 
     from services import consumable_service, xp_service
     from services.shop_service import render_active_tags
-    rank = xp_service.rank_for_xp(user.xp)
-    rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {esc(rank.name)}\n" if rank else ""
+    prog = xp_service.level_for_xp(user.xp)
+    rank = xp_service.rank_for_level(prog.level)
+    rank_txt = f" · {rank.emoji} {esc(rank.name)}" if rank else ""
+    level_line = (
+        f"⚡ <b>Livello {prog.level}</b>{rank_txt}\n"
+        f"   {xp_service.progress_bar(prog)} "
+        f"{prog.xp_into_level:,}/{prog.xp_into_level + prog.xp_for_next:,} XP\n"
+    )
     tags = render_active_tags(user)
     tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""
     title = esc(user.full_name)
@@ -267,9 +283,8 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
         f"🔖 <b>Username:</b> {username_display}\n"
         f"📅 <b>Membro dal:</b> {member_since}\n\n"
         f"{tag_line}"
-        f"{rank_line}"
+        f"{level_line}"
         f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
-        f"⚡ <b>XP:</b> {user.xp:,}\n"
         f"🏆 <b>Trofei:</b> {badge_count}\n"
         f"{pantry_line}".rstrip("\n"),
         "profilo",
@@ -307,16 +322,20 @@ async def cmd_help(message: Message) -> None:
 async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
     # Detailed per-command manual — private only (keeps the group uncluttered and
     # never reveals the admin command set there).
+    arg = (command.args or "").strip()
+    # From the group, carry the command name through the deep-link so the landing
+    # shows its explanation (not the generic /start menu). The payload charset is
+    # [a-z0-9_] ⊂ Telegram's allowed [A-Za-z0-9_-]; unknown/empty → general guide.
+    norm = normalize(arg)
+    payload = f"spiega_{norm}" if arg and re.fullmatch(r"[a-z0-9_]+", norm) else "help"
     if await redirect_to_private(
-        message, "comandi", "📖 Apri la guida",
+        message, payload, "📖 Apri la guida",
         notice="📖 La guida dettagliata si apre in chat privata.",
     ):
         return
     if not await cooldown.guard(message, "spiega", settings.command_cooldown_seconds):
         return
 
-    is_admin = await is_bot_admin(message.bot, message.from_user.id)
-    arg = (command.args or "").strip()
     if not arg:
         await message.answer(
             "📘 <b>Spiega comando</b>\n\n"
@@ -326,14 +345,5 @@ async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
         )
         return
 
-    page = render_command(arg, is_admin)
-    if page is None:
-        hint = ""
-        near = [s for s in suggestions(arg) if render_command(s, is_admin)]
-        if near:
-            hint = "\n\nForse cercavi: " + " · ".join(f"<code>/{s}</code>" for s in near)
-        await message.answer(
-            f"❓ Comando «{esc(arg, 32)}» non trovato. Usa /comandi per l'elenco.{hint}"
-        )
-        return
-    await message.answer(page)
+    is_admin = await is_bot_admin(message.bot, message.from_user.id)
+    await message.answer(render_command_or_hint(arg, is_admin))

@@ -42,9 +42,10 @@ def _kb(active: str):
 
 
 async def render_board(db_session: AsyncSession, board: str) -> str:
+    unit = ""
     if board == "xp":
         rows = await xp_service.leaderboard_xp(db_session)
-        title, unit = "⚡ <b>Classifica XP</b>", "XP"
+        title = "⚡ <b>Classifica Livelli</b>"
     elif board == "trofei":
         rows = await badge_service.leaderboard_trophies(db_session)
         title, unit = "🏆 <b>Classifica Trofei</b>", "🏆"
@@ -57,8 +58,15 @@ async def render_board(db_session: AsyncSession, board: str) -> str:
 
     lines = [title, ""]
     for i, (user, value) in enumerate(rows):
-        rank = _MEDALS[i] if i < 3 else f"{i + 1}."
-        lines.append(f"{rank} {_name(user)} — <b>{value:,} {unit}</b>")
+        medal = _MEDALS[i] if i < 3 else f"{i + 1}."
+        if board == "xp":
+            prog = xp_service.level_for_xp(value)
+            tier = xp_service.rank_for_level(prog.level)
+            tier_txt = f" {tier.emoji}" if tier else ""
+            val = f"<b>Livello {prog.level}</b>{tier_txt}"
+        else:
+            val = f"<b>{value:,} {unit}</b>"
+        lines.append(f"{medal} {_name(user)} — {val}")
     return "\n".join(lines)
 
 

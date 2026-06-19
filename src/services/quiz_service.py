@@ -284,38 +284,40 @@ class PodiumRow:
     user_tg_id: int
     correct: int
     finished_at: datetime
-    completion_seconds: int | None = None  # finished_at - quiz.started_at
+    completion_seconds: int | None = None  # last answer − first answer (per-user span)
 
 
 async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
     """Finishers (answered every question) ranked by correct DESC, finish time ASC.
 
-    Each row carries ``completion_seconds`` (time from quiz start to the player's
-    last answer) when the quiz's ``started_at`` is known.
+    Each row carries ``completion_seconds`` = the player's **own** span (last −
+    first answer), so it measures how long *that user* took, not the time since the
+    admin launched the quiz. ``None`` for a single-answer quiz (span is meaningless).
+    The ranking tie-break stays the absolute ``finished_at`` (arrival order, §19).
     """
     total = await total_questions(session, quiz_id)
     if total == 0:
         return []
-    quiz = await get_quiz(session, quiz_id)
-    started_at = quiz.started_at if quiz else None
     result = await session.execute(
         select(
             QuizAnswer.user_tg_id,
             func.sum(func.cast(QuizAnswer.is_correct, Integer)).label("correct"),
             func.count().label("answered"),
             func.max(QuizAnswer.answered_at).label("finished_at"),
+            func.min(QuizAnswer.answered_at).label("first_at"),
         )
         .where(QuizAnswer.quiz_id == quiz_id)
         .group_by(QuizAnswer.user_tg_id)
     )
     rows: list[PodiumRow] = []
     for r in result.all():
-        if int(r[2] or 0) < total:
+        answered = int(r[2] or 0)
+        if answered < total:
             continue
-        finished_at = r[3]
+        finished_at, first_at = r[3], r[4]
         secs: int | None = None
-        if started_at is not None and finished_at is not None:
-            secs = max(0, int((finished_at - started_at).total_seconds()))
+        if answered >= 2 and finished_at is not None and first_at is not None:
+            secs = max(0, int((finished_at - first_at).total_seconds()))
         rows.append(
             PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0),
                       finished_at=finished_at, completion_seconds=secs)
@@ -324,17 +326,29 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
     return rows
 
 
-async def user_finished_at(
+async def user_completion_seconds(
     session: AsyncSession, quiz_id: int, user_tg_id: int
-) -> datetime | None:
-    """Timestamp of the player's last answer in a quiz (None if they never played)."""
-    return (
+) -> int | None:
+    """Seconds the user actually spent playing: last − first answer.
+
+    ``None`` if they have fewer than 2 answers (no meaningful span — e.g. a
+    single-question quiz). Measures the user's own span, independent of when the
+    admin launched the quiz.
+    """
+    first_at, last_at, n = (
         await session.execute(
-            select(func.max(QuizAnswer.answered_at)).where(
+            select(
+                func.min(QuizAnswer.answered_at),
+                func.max(QuizAnswer.answered_at),
+                func.count(),
+            ).where(
                 QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == user_tg_id
             )
         )
-    ).scalar_one_or_none()
+    ).one()
+    if int(n or 0) < 2 or first_at is None or last_at is None:
+        return None
+    return max(0, int((last_at - first_at).total_seconds()))
 
 
 @dataclass

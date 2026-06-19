@@ -49,10 +49,15 @@ cp catalogs/consumables.example.csv            data/consumables.csv
   guadagnano dagli eventi, non dai trofei).
 
 ## `ranks.csv`
-`slug,name,emoji,min_xp`
+`slug,name,emoji,min_level`
 
-Titoli cosmetici sbloccati automaticamente quando gli XP del membro superano `min_xp`. Il rango
-mostrato è quello con `min_xp` più alto tra quelli raggiunti.
+Titoli (nomi rango) sbloccati automaticamente quando il **livello** del membro raggiunge `min_level`.
+Il rango mostrato è quello con `min_level` più alto tra quelli raggiunti. Il livello a sua volta deriva
+dagli XP tramite una curva geometrica (vedi `XP_LEVEL_BASE` / `XP_LEVEL_GROWTH`): così puoi spostare i
+nomi sulle fasce di livello che preferisci senza ricalcolare le soglie XP.
+
+> Nota: la colonna è cambiata da `min_xp` a `min_level`. Un vecchio file con `min_xp` viene ignorato
+> (righe non valide) e il bot riparte con i ranghi di default — basta aggiornare l'intestazione.
 
 ## `shop_cosmetics.csv`
 `key,name,tag_text,emoji,price`

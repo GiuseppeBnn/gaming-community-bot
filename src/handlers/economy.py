@@ -136,9 +136,11 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     if xp_res.granted:
         text += f"⚡ <b>+{xp_res.granted} XP</b>\n"
     text += "🪙 Usa /saldo per vedere il tuo saldo."
+    if xp_res.leveled_up:
+        text += f"\n\n📈 Sei salito al <b>Livello {xp_res.new_level}</b>!"
     if xp_res.new_rank is not None:
         text += (
-            f"\n\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
+            f"\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
         )
     if newly_earned:
         badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)

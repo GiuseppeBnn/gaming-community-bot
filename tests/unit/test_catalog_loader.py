@@ -162,16 +162,18 @@ class TestConsumablesCsv:
 # ---------------------------------------------------------------------------
 
 class TestRanksCsv:
-    def test_sorted_by_min_xp(self, tmp_path):
+    def test_sorted_by_min_level(self, tmp_path):
         (tmp_path / "ranks.csv").write_text(
-            "slug,name,emoji,min_xp\nb,B,⭐,500\na,A,🐣,0\n", encoding="utf-8"
+            "slug,name,emoji,min_level\nb,B,⭐,6\na,A,🐣,1\n", encoding="utf-8"
         )
         ranks = catalog_loader.load_ranks(str(tmp_path))
-        assert [r.min_xp for r in ranks] == [0, 500]
+        assert [r.min_level for r in ranks] == [1, 6]
 
-    def test_invalid_min_xp_skipped(self, tmp_path):
+    def test_invalid_min_level_skipped(self, tmp_path):
+        # Non-numeric and < 1 levels are rejected; a stale min_xp file is ignored.
         (tmp_path / "ranks.csv").write_text(
-            "slug,name,emoji,min_xp\nok,Ok,🐣,0\nbad,Bad,⭐,abc\n", encoding="utf-8"
+            "slug,name,emoji,min_level\nok,Ok,🐣,1\nbad,Bad,⭐,abc\nzero,Zero,💤,0\n",
+            encoding="utf-8",
         )
         ranks = catalog_loader.load_ranks(str(tmp_path))
         assert [r.slug for r in ranks] == ["ok"]

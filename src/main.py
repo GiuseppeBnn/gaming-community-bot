@@ -101,6 +101,7 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="cerca", description="📊 Cerca utenti"),
     BotCommand(command="stats", description="📊 Statistiche community"),
     BotCommand(command="audit", description="📊 Registro azioni admin"),
+    BotCommand(command="lista_ranghi", description="📊 Sistema ranghi e livelli"),
     BotCommand(command="airdrop", description="💰 Airdrop CoInn"),
     BotCommand(command="credita", description="💰 Accredita CoInn"),
     BotCommand(command="addebita", description="💰 Addebita CoInn"),

@@ -155,7 +155,7 @@ variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 | `/dai_xp` · `/set_xp` | Assegna / imposta gli XP di un utente (gestione XP solo admin) |
 | `/ban` · `/sban` · `/kick` · `/mute [10m]` · `/unmute` | Moderazione (reply o @user/ID) |
 | `/warn [motivo]` · `/warns` · `/unwarn` | Warn/strike (auto mute/ban a soglia) |
-| `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` | Info & dossier |
+| `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 
@@ -183,8 +183,11 @@ Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica d
   sbloccati da condizioni — saldo, streak, scommesse, **XP**, **acquisti alla Locanda**
   (per oggetto / per categoria), **podio nel Trivia**, e **collezioni** (sblocca tutti i
   trofei di un set). Li vedi con `/traguardi` (raggruppati per rarità) e `/catalogo_badge`.
-- **Ranghi**: titoli sbloccati automaticamente al crescere degli XP (es. Novizio → Veterano
-  → Leggenda), mostrati sul profilo; il rank-up viene annunciato.
+- **Livelli & Ranghi** (stile GTA Online): gli XP si traducono in un **livello numerico** —
+  ogni livello costa il **15% in più** del precedente (configurabile) — ed è il livello, non
+  l'XP grezzo, a essere mostrato su profilo, traguardi e classifiche. I **nomi rango** (Novizio
+  → Veterano → Leggenda) sono titoli mappati su **fasce di livello** (personalizzabili via CSV);
+  level-up e rank-up vengono annunciati. Gli admin vedono il sistema completo con `/lista_ranghi`.
 - **La Locanda** (`/locanda`): 🏷️ **tag cosmetici** (flair, acquisto una tantum) e 🍖 **menù
   di consumabili** (cibi/bevande riacquistabili che riempiono la 🎒 **dispensa** mostrata sul
   profilo). Tutto **solo estetico/collezionabile** — nessun permesso reale, nessuna escalation.
@@ -252,6 +255,8 @@ gaming-community-bot/
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP farmabili per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
 | `XP_PER_BET_WON` | `15` | XP (capped) su una scommessa vinta |
+| `XP_LEVEL_BASE` | `100` | XP per salire dal livello 1 al 2 |
+| `XP_LEVEL_GROWTH` | `1.15` | ogni livello costa +15% del precedente |
 | `BOT_IMAGE` | `gaming-community-bot:local` | immagine usata dal compose (override → GHCR) |
 
 PostgreSQL e Redis sono già pronti nel `docker-compose.yml`.

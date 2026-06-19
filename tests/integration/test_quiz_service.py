@@ -95,6 +95,37 @@ class TestPodiumAndPrizes:
         board = await qz.podium(session, quiz.id)
         assert [r.user_tg_id for r in board] == [2, 1, 3]  # arrival breaks the 3-3 tie
 
+    async def test_completion_seconds_is_user_span_not_quiz_start(self, session):
+        # Quiz launched months earlier; the user plays for 90s recently → the
+        # completion time must be the user's own span (90s), NOT the time since
+        # the admin launched the quiz (the original bug).
+        quiz, qs = await _quiz(session, n_questions=3, correct=0)
+        quiz.started_at = datetime(2026, 1, 1, 0, 0, 0)
+        base = datetime(2026, 5, 1, 12, 0, 0)
+        for i, q in enumerate(qs):
+            session.add(QuizAnswer(
+                quiz_id=quiz.id, question_id=q.id, user_tg_id=1,
+                selected_option_id=0, is_correct=True, response_ms=0,
+                answered_at=base + timedelta(seconds=i * 45),  # 0s, 45s, 90s
+            ))
+        await session.commit()
+        board = await qz.podium(session, quiz.id)
+        assert len(board) == 1
+        assert board[0].completion_seconds == 90
+        assert await qz.user_completion_seconds(session, quiz.id, 1) == 90
+
+    async def test_completion_seconds_none_for_single_answer(self, session):
+        quiz, qs = await _quiz(session, n_questions=1, correct=0)
+        session.add(QuizAnswer(
+            quiz_id=quiz.id, question_id=qs[0].id, user_tg_id=1,
+            selected_option_id=0, is_correct=True, response_ms=0,
+            answered_at=datetime(2026, 5, 1, 12, 0, 0),
+        ))
+        await session.commit()
+        board = await qz.podium(session, quiz.id)
+        assert board[0].completion_seconds is None
+        assert await qz.user_completion_seconds(session, quiz.id, 1) is None
+
     async def test_podium_excludes_non_finishers(self, session):
         quiz, qs = await _quiz(session, n_questions=3, correct=0)
         # user 1 answered only 2/3 → not a finisher

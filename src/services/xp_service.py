@@ -8,8 +8,11 @@ XP is a merit metric, kept separate from coins:
     bounded by a per-user **daily cap** (``settings.xp_daily_participation_cap``)
     enforced server-side — so users can't farm XP from random actions.
 
-Ranks (cosmetic titles) are *derived* from XP via the CSV-loaded registry in
-``catalog_loader``; ``User.rank_slug`` caches the last rank seen to detect rank-ups.
+Progression is shown as a **level** (GTA-style): XP maps to a numeric level via a
+geometric curve (``settings.xp_level_base`` / ``xp_level_growth``), and the
+CSV-loaded named tiers in ``catalog_loader`` (Novizio→Leggenda) map to **level
+ranges** (``Rank.min_level``). ``User.rank_slug`` caches the last tier seen to
+detect tier-ups; the finer-grained level-up is derived on the fly from XP.
 
 No-commit convention: callers own the transaction (same as the other services).
 """
@@ -44,29 +47,86 @@ class XpSource(str, Enum):
 class XpGrantResult:
     granted: int            # XP actually added (may be < requested if capped)
     capped: bool            # True when the daily cap clipped the amount
-    new_rank: Rank | None   # set only when this grant promoted the user to a higher rank
+    new_rank: Rank | None   # set only when this grant promoted the user to a higher tier
+    new_level: int = 1      # the user's level after the grant
+    leveled_up: bool = False  # True when this grant raised the numeric level
 
 
-def rank_for_xp(xp: int) -> Rank | None:
-    """Highest rank whose ``min_xp`` is ≤ ``xp`` (ranks are loaded sorted ascending)."""
+@dataclass(frozen=True)
+class LevelProgress:
+    level: int            # current level (≥ 1)
+    xp_into_level: int    # XP accumulated within the current level
+    xp_for_next: int      # XP cost to reach the next level
+    floor_xp: int         # cumulative XP needed to have reached `level`
+
+
+def _level_cost(n: int) -> int:
+    """XP needed to go from level ``n`` to ``n+1`` (geometric, +growth% each level)."""
+    return round(settings.xp_level_base * settings.xp_level_growth ** (n - 1))
+
+
+def level_for_xp(xp: int) -> LevelProgress:
+    """Map a total XP value to its level + progress within that level.
+
+    Iterative (one step per level): the geometric curve grows fast, so even very
+    large XP totals resolve in a few dozen iterations — no closed form needed
+    (per-level rounding would make a logarithmic inverse imprecise anyway).
+    """
+    xp = max(0, xp)
+    level = 1
+    floor = 0
+    cost = _level_cost(1)
+    while floor + cost <= xp:
+        floor += cost
+        level += 1
+        cost = _level_cost(level)
+    return LevelProgress(level=level, xp_into_level=xp - floor, xp_for_next=cost, floor_xp=floor)
+
+
+def xp_to_reach_level(level: int) -> int:
+    """Cumulative XP needed to reach ``level`` (level 1 = 0). Inverse of ``level_for_xp``."""
+    total = 0
+    for n in range(1, max(1, level)):
+        total += _level_cost(n)
+    return total
+
+
+def progress_bar(prog: LevelProgress, width: int = 6) -> str:
+    """A plain ``▰▰▰▱▱▱`` bar for the progress within the current level.
+
+    Pure (no HTML / no user data) — safe to interpolate without escaping.
+    """
+    span = prog.xp_into_level + prog.xp_for_next
+    filled = 0 if span <= 0 else round(width * prog.xp_into_level / span)
+    filled = max(0, min(width, filled))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def rank_for_level(level: int) -> Rank | None:
+    """Highest named tier whose ``min_level`` is ≤ ``level`` (ranks sorted ascending)."""
     current: Rank | None = None
     for rank in catalog_loader.get_ranks():
-        if xp >= rank.min_xp:
+        if level >= rank.min_level:
             current = rank
         else:
             break
     return current
 
 
+def rank_for_xp(xp: int) -> Rank | None:
+    """The named tier for a given total XP (via the user's level)."""
+    return rank_for_level(level_for_xp(xp).level)
+
+
 def _apply_rank(user: User, old_xp: int) -> Rank | None:
-    """Refresh ``user.rank_slug`` from current XP; return the rank if it's a promotion."""
+    """Refresh ``user.rank_slug`` from current XP; return the tier if it's a promotion."""
     old_rank = rank_for_xp(old_xp)
     new_rank = rank_for_xp(user.xp)
     if new_rank is not None:
         user.rank_slug = new_rank.slug
     promoted = (
         new_rank is not None
-        and (old_rank is None or new_rank.min_xp > old_rank.min_xp)
+        and (old_rank is None or new_rank.min_level > old_rank.min_level)
     )
     return new_rank if promoted else None
 
@@ -122,8 +182,13 @@ async def grant_xp(
     old_xp = user.xp
     user.xp += granted
     new_rank = _apply_rank(user, old_xp)
+    old_level = level_for_xp(old_xp).level
+    new_level = level_for_xp(user.xp).level
     log.debug("XP +%d (%s) → %s = %d", granted, source.value, tg_id, user.xp)
-    return XpGrantResult(granted=granted, capped=was_capped, new_rank=new_rank)
+    return XpGrantResult(
+        granted=granted, capped=was_capped, new_rank=new_rank,
+        new_level=new_level, leveled_up=new_level > old_level,
+    )
 
 
 async def set_xp(session: AsyncSession, tg_id: int, value: int) -> int:

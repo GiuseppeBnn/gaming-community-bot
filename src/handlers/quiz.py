@@ -932,10 +932,11 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
     else:
         correct = await quiz_service.correct_count(db_session, quiz_id, callback.from_user.id)
         time_line = ""
-        if quiz.started_at is not None:
-            fin = await quiz_service.user_finished_at(db_session, quiz_id, callback.from_user.id)
-            if fin is not None:
-                secs = max(0, int((fin - quiz.started_at).total_seconds()))
+        if total > 1:
+            secs = await quiz_service.user_completion_seconds(
+                db_session, quiz_id, callback.from_user.id
+            )
+            if secs is not None:
                 time_line = f"⏱️ Tempo impiegato: <b>{format_seconds_short(secs)}</b>\n"
         await callback.message.answer(
             f"🏁 <b>Quiz completato!</b>\n\n"

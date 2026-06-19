@@ -8,7 +8,7 @@ syntax, not HTML, and must be escaped before going into a ParseMode.HTML message
 from __future__ import annotations
 
 from handlers import help_content
-from handlers.help_content import _COMMANDS, render_command
+from handlers.help_content import _COMMANDS, render_command, render_command_or_hint
 
 
 class TestRenderCommandIsHtmlSafe:
@@ -42,6 +42,29 @@ class TestRenderCommandIsHtmlSafe:
     def test_admin_command_hidden_from_non_admin(self):
         assert render_command("credita", is_admin=False) is None
         assert render_command("credita", is_admin=True) is not None
+
+
+class TestRenderCommandOrHint:
+    """Shared by /spiega_comando (private) and the spiega_<cmd> deep-link landing."""
+
+    def test_known_command_returns_manual(self):
+        out = render_command_or_hint("daily")
+        assert "📘" in out and "/daily" in out
+
+    def test_handles_slash_and_alias(self):
+        # normalize() strips the slash; aliases resolve to their canonical doc.
+        assert "/daily" in render_command_or_hint("/daily")
+        assert "/comandi" in render_command_or_hint("help")  # 'help' is an alias
+
+    def test_unknown_command_gives_not_found_with_suggestion(self):
+        out = render_command_or_hint("dailyy")
+        assert "non trovato" in out
+        assert "/daily" in out  # close match suggested
+
+    def test_admin_only_hidden_from_non_admin(self):
+        out = render_command_or_hint("credita", is_admin=False)
+        assert "non trovato" in out  # treated as unknown
+        assert "🔐" in render_command_or_hint("credita", is_admin=True)
 
 
 def esc_token(usage: str) -> str:

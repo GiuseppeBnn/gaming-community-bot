@@ -31,9 +31,16 @@ from middlewares import ban_guard
 # Admin commands that must never answer in the group (data exposure / noise):
 # in a group they redirect the admin to the private dashboard.
 _ADMIN_PRIVATE_NOTICE = "🔒 Comando riservato agli admin: usalo in chat privata col bot."
-from services import admin_service, economy_service, group_registry, moderation_service, xp_service
+from services import (
+    admin_service,
+    catalog_loader,
+    economy_service,
+    group_registry,
+    moderation_service,
+    xp_service,
+)
 from services.xp_service import XpSource
-from utils.text import esc
+from utils.text import chunk_blocks, esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -198,7 +205,9 @@ async def cmd_dai_xp(message: Message, command: CommandObject, db_session: Async
         db_session, message.from_user.id, "xp_grant", target_tg_id=target.tg_id, amount=amount
     )
     await db_session.commit()
-    extra = f" (nuovo rango: {esc(res.new_rank.name)})" if res.new_rank else ""
+    extra = f" → <b>Livello {res.new_level}</b>" if res.leveled_up else ""
+    if res.new_rank:
+        extra += f" · nuovo rango {esc(res.new_rank.name)}"
     await message.reply(f"⚡ Assegnati <b>+{res.granted:,} XP</b> a {target.display_name}{extra}.")
 
 
@@ -220,7 +229,41 @@ async def cmd_set_xp(message: Message, command: CommandObject, db_session: Async
         db_session, message.from_user.id, "xp_set", target_tg_id=target.tg_id, amount=new_xp
     )
     await db_session.commit()
-    await message.reply(f"⚡ XP di {target.display_name} impostati a <b>{new_xp:,}</b>.")
+    level = xp_service.level_for_xp(new_xp).level
+    await message.reply(
+        f"⚡ XP di {target.display_name} impostati a <b>{new_xp:,}</b> (Livello {level})."
+    )
+
+
+@router.message(Command("lista_ranghi"), IsAdminFilter())
+async def cmd_lista_ranghi(message: Message) -> None:
+    """Admin: show the level curve and how the named tiers map onto level ranges."""
+    ranks = catalog_loader.get_ranks()
+    growth_pct = round((settings.xp_level_growth - 1) * 100)
+    blocks = [
+        "📊 <b>Sistema Ranghi &amp; Livelli</b>\n"
+        f"Il livello sale con gli XP: il <b>Lv 1→2</b> costa <b>{settings.xp_level_base} XP</b>, "
+        f"e ogni livello successivo costa <b>+{growth_pct}%</b> del precedente."
+    ]
+
+    tier_lines = ["🎖️ <b>Fasce (nomi rango)</b>"]
+    for idx, r in enumerate(ranks):
+        if idx + 1 < len(ranks):
+            end = ranks[idx + 1].min_level - 1
+            span = f"Lv {r.min_level}" if end <= r.min_level else f"Lv {r.min_level}–{end}"
+        else:
+            span = f"Lv {r.min_level}+"
+        xp_at = xp_service.xp_to_reach_level(r.min_level)
+        tier_lines.append(f"{r.emoji} <b>{esc(r.name)}</b> — {span} (da {xp_at:,} XP)")
+    blocks.append("\n".join(tier_lines))
+
+    table_lines = ["🪜 <b>Primi livelli</b> (XP totali per raggiungerli)"]
+    for lvl in range(1, 16):
+        table_lines.append(f"Lv {lvl:>2} — {xp_service.xp_to_reach_level(lvl):,} XP")
+    blocks.append("\n".join(table_lines))
+
+    for chunk in chunk_blocks(blocks, sep="\n\n"):
+        await message.answer(chunk)
 
 
 @router.message(Command("airdrop"), IsAdminFilter())
@@ -553,7 +596,7 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
         f"🆔 ID: <code>{u.tg_id}</code>\n"
         f"📅 Membro dal: {member_since}\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
-        f"⚡ XP: {u.xp}\n"
+        f"⚡ XP: {u.xp:,} (Livello {xp_service.level_for_xp(u.xp).level})\n"
         f"🎖️ Badge: {dossier.badge_count}\n"
         f"🎲 Scommesse: {dossier.bet_count} (vinte: {u.bets_won})\n"
         f"🔥 Streak: {u.daily_streak}\n"

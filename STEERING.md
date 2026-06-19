@@ -60,7 +60,7 @@ Campi importanti:
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - `quiz_default_prize: int` (default 1000, **legacy** pool), `quiz_xp_per_correct: int` (default 10) — modalità quiz
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
-- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP farmabili/giorno); `xp_per_daily_claim: int` (default 10); `xp_per_bet_won: int` (default 15)
+- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP farmabili/giorno); `xp_per_daily_claim: int` (default 10); `xp_per_bet_won: int` (default 15); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -130,7 +130,7 @@ BetStatus:       pending | won | lost | refunded
 - `UserBet` ha UniqueConstraint(user_tg_id, event_id) — un utente non può scommettere due volte sullo stesso evento
 - `daily_streak`, `bets_won`, `transfers_made` su `User` vengono aggiornati nei rispettivi service — **non** calcolati on-the-fly
 - `User.is_banned` (bool, default false) è il **ban bot-level** (§18, `BannedUserMiddleware`): aggiunto a `users` *dopo* il primo deploy → ha la sua voce `ALTER TABLE … ADD COLUMN IF NOT EXISTS is_banned …` in `_MIGRATIONS`. Si muta **solo** via `admin_service.set_user_banned`; **non** è una condizione-milestone (regola 10 non coinvolta)
-- `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo rango visto (per annunciare i rank-up); `cosmetic_tag` è il flair acquistato nel negozio (§11)
+- `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). Lato display si mostra il **livello** (curva geometrica, §12.1), non l'XP grezzo. `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo **tier** (nome rango) visto, per annunciare i tier-up; `cosmetic_tag` è il flair acquistato nel negozio (§11)
 - `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks`/`game_podiums` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`), `badges.rarity` e **`badges.condition_param`** sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
 - `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`)
 - timestamp scheduler in **UTC naive** (`schedule_service.utcnow()`); `parse_run_at` converte l'orario locale (`scheduler_timezone`) in UTC naive
@@ -267,6 +267,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | Payload | Handler | Destinazione |
 |---|---|---|
 | `help` | `common.cmd_start` | Mostra guida comandi |
+| `spiega_<cmd>` | `common.cmd_start` → `help_content.render_command_or_hint` | Man page del comando `<cmd>` (dal bottone di `/spiega_comando` nel gruppo) |
 | `manage_bets` | `common.cmd_start` | Apre pannello admin scommesse (`admin_betting._show_event_list`) |
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
@@ -459,12 +460,24 @@ greedy che non taglia mai un blocco a metà, così nessun tag HTML viene spezzat
 File: `services/xp_service.py` — **unico** punto che muta `User.xp` (no-commit, §5).
 
 ```python
-grant_xp(session, tg_id, amount, source: XpSource, *, capped) -> XpGrantResult(granted, capped, new_rank)
+grant_xp(session, tg_id, amount, source, *, capped) -> XpGrantResult(granted, capped, new_rank, new_level, leveled_up)
 set_xp(session, tg_id, value)          # admin: valore assoluto
 airdrop_xp(session, amount)            # admin: +amount a tutti
-rank_for_xp(xp) -> Rank | None         # rango = max(min_xp ≤ xp), registry §12.2
+level_for_xp(xp) -> LevelProgress      # livello + progresso (curva geometrica)
+xp_to_reach_level(level) -> int        # XP cumulativi per il livello (inverso, usato da /lista_ranghi)
+progress_bar(prog, width=6) -> str     # ▰▰▱▱ puro (no HTML), per il profilo
+rank_for_level(level) -> Rank | None   # tier = max(min_level ≤ level), registry §12.2
+rank_for_xp(xp) -> Rank | None         # tier via level_for_xp(xp).level
 leaderboard_xp(session, limit=10)
 ```
+
+**Livelli (GTA-style):** la progressione mostrata all'utente è un **livello numerico**, non l'XP
+grezzo. Il costo per salire dal livello `n` a `n+1` è `round(xp_level_base · xp_level_growth^(n-1))`
+(default 100 · +15%). `level_for_xp` itera (la curva cresce in fretta: poche decine di iterazioni).
+I **nomi rango** (`Rank`, §12.2) sono **tier keyed per livello** (`min_level`, CSV-driven) e si
+mostrano accanto al livello (`⚡ Livello N · 🎖️ Tier`). Sito di display utente: `/profilo`,
+`/traguardi`, `/classifiche` (board ⚡ = livelli) — **mai** l'XP totale grezzo; le view admin
+(`/info`, dashboard, `/lista_ranghi`) lo mostrano per diagnostica.
 
 **Sorgenti XP** (`XpSource`):
 
@@ -476,8 +489,9 @@ leaderboard_xp(session, limit=10)
 `xp_daily_participation_cap` per utente al giorno, contato in `User.xp_today`/`xp_today_date`
 (reset automatico al cambio data). Gli eventi admin (quiz incluso) sono uncapped perché curati.
 
-**Rank-up:** `grant_xp` ricalcola il rango; se è una promozione, lo restituisce in
-`new_rank` e aggiorna `User.rank_slug` (gli handler `/daily`, `/dai_xp` lo annunciano).
+**Rank-up / level-up:** `grant_xp` ricalcola tier e livello; restituisce il **tier-up** in
+`new_rank` (+ aggiorna `User.rank_slug`) e il **level-up** in `new_level`/`leveled_up` (derivato,
+nessuna colonna). Gli handler `/daily`, `/dai_xp` annunciano entrambi.
 
 **Regola d'oro:** nessun handler deve fare `user.xp += …` direttamente — sempre via `xp_service`.
 
@@ -505,8 +519,9 @@ volta all'avvio** (riavvio per applicare le modifiche). Template in `catalogs/*.
 - `init_registries(catalog_dir=None)` (chiamata in `main()`) popola i registry in-memoria
   `_ranks`/`_cosmetics`/`_consumables`/`_consumable_categories`; accessori
   `get_ranks()/get_cosmetics()/get_consumables()/get_consumable_categories()`. I **ranghi non hanno
-  tabella** (derivati dagli XP); **cosmetici e consumabili** neppure (registry in-memoria, acquisto
-  loggato in `ShopPurchase`; la dispensa è derivata dai conteggi).
+  tabella** (tier keyed per **`min_level`** nel CSV `ranks.csv` — colonna cambiata da `min_xp`; il
+  livello deriva dagli XP via la curva §12.1); **cosmetici e consumabili** neppure (registry
+  in-memoria, acquisto loggato in `ShopPurchase`; la dispensa è derivata dai conteggi).
 - `main()` chiama `badge_service.sync_trophies(session)` (trofei → DB) + `catalog_loader.init_registries()` e logga i conteggi.
 
 **Per personalizzare:** copia `catalogs/*.example.csv` in `data/` (senza `.example`), edita, riavvia.
@@ -616,7 +631,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 - **XP**: `/dai_xp @u <n>` (grant, uncapped), `/set_xp @u <n>` (assoluto) — gestione XP solo admin (§12.1)
 - **Moderazione**: `/ban`, `/sban`, `/kick`, `/mute [durata]`, `/unmute`
 - **Warn**: `/warn [motivo]`, `/warns`, `/unwarn`
-- **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/admin` (UI a bottoni — §18.1)
+- **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/lista_ranghi` (curva livelli + fasce tier, §12.1), `/admin` (UI a bottoni — §18.1)
 - **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
 - **Visibilità menù "/":** gli admin vedono i comandi admin nel menù grazie a uno scope dedicato
   (`BotCommandScopeChat` per ogni `settings.admin_ids` in privato + `BotCommandScopeChatAdministrators`
@@ -827,7 +842,10 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 ### Podio & premi
 
 - `podium(quiz_id)`: solo i **finisher** (hanno risposto a tutte le domande), ordinati per
-  **corrette DESC, finish-time ASC** (ordine di arrivo).
+  **corrette DESC, finish-time ASC** (ordine di arrivo). Il `completion_seconds` mostrato è lo
+  **span del singolo utente** (ultimo − primo `answered_at`, `None` con <2 risposte), **non** il
+  tempo dall'avvio admin (`Quiz.started_at`): così chi gioca giorni dopo l'avvio vede il suo tempo
+  reale. `user_completion_seconds(session, quiz_id, uid)` per il messaggio di fine partita.
 - `award_prizes(quiz_id)` — due modalità (premi **mintati** via `economy_service.credit` `quiz_reward`,
   niente prelievo da un pot):
   - **Esplicita** (se almeno uno tra `prize_first/second/third/consolation` > 0): podio 1°/2°/3° →
