@@ -37,6 +37,7 @@ from config_data.config import settings
 from database.models import TransactionType, Wallet
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from handlers._privacy import redirect_to_private
+from handlers._trophy_announce import announce_trophies
 from keyboards.shop_kb import (
     get_consumable_confirm_kb,
     get_locanda_home_kb,
@@ -353,14 +354,14 @@ async def cb_consumable_execute(callback: CallbackQuery, db_session: AsyncSessio
         await callback.answer("⚠️ Wallet non trovato. Usa /start per registrarti.", show_alert=True)
         return
 
+    # Trophies are announced in the GROUP (tagging the user), not in private.
+    await announce_trophies(callback.bot, db_session, tg_id, newly)
+
     text = (
         f"✅ <b>Gustato!</b> {item.emoji}\n\n"
         f"Hai consumato <b>{esc(item.name)}</b> — finisce nella tua 🎒 Dispensa.\n"
         f"💸 Hai speso <b>{item.price:,} 🪙</b>."
     )
-    if newly:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly)
-        text += f"\n\n🏅 <b>Trofeo sbloccato:</b> {badges_text}!"
     await callback.message.edit_text(text, reply_markup=get_pantry_kb())
     await callback.answer("🎉 Acquistato!")
 

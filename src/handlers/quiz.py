@@ -17,23 +17,27 @@ then by finish time ASC (arrival order). The admin closes the quiz with
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from dataclasses import dataclass
 from functools import partial
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.filters.command import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
-from database.models import User
+from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter, is_admin
+from handlers._mentions import mention
 from handlers._privacy import redirect_to_private
+from handlers._trophy_announce import announce_trophies
 from keyboards.common_kb import confirm_cancel_kb
 from services import badge_service, group_registry, progress_service, quiz_service
 from utils import cooldown
@@ -57,6 +61,7 @@ class QuizCreationStates(StatesGroup):
     waiting_prize_second = State()
     waiting_prize_third = State()
     waiting_prize_consolation = State()
+    waiting_time_limit = State()
     waiting_question_text = State()
     waiting_question_options = State()
     waiting_correct = State()
@@ -122,6 +127,23 @@ def _prize_step_kb(default_value: int) -> InlineKeyboardMarkup:
     b.button(text="⬅️ Indietro", callback_data="quiz_new:back")
     b.button(text="❌ Annulla", callback_data="quiz_new:cancel")
     b.adjust(1, 2)
+    return b.as_markup()
+
+
+_TIME_LIMIT_PRESETS = (15, 30, 45, 60)
+
+
+def _time_limit_kb() -> InlineKeyboardMarkup:
+    default = settings.quiz_default_time_limit_seconds
+    b = InlineKeyboardBuilder()
+    for sec in _TIME_LIMIT_PRESETS:
+        mark = "✅ " if sec == default else "⏱️ "
+        b.button(text=f"{mark}{sec}s", callback_data=f"quiz_new:tl:{sec}")
+    b.button(text="🚫 Nessun limite", callback_data="quiz_new:tl:0")
+    b.button(text="✏️ Personalizza", callback_data="quiz_new:tlcustom")
+    b.button(text="⬅️ Indietro", callback_data="quiz_new:back")
+    b.button(text="❌ Annulla", callback_data="quiz_new:cancel")
+    b.adjust(4, 1, 1, 2)
     return b.as_markup()
 
 
@@ -285,6 +307,22 @@ async def _prompt_prize_step(message: Message, state: FSMContext, step_state: St
     )
 
 
+async def _prompt_time_limit(message: Message, state: FSMContext) -> None:
+    await state.set_state(QuizCreationStates.waiting_time_limit)
+    current = (await state.get_data()).get("time_limit")
+    current_hint = (
+        f"\n<i>Attuale: {current}s</i>" if current
+        else ("\n<i>Attuale: nessun limite</i>" if current == 0 else "")
+    )
+    await message.answer(
+        "⏱️ <b>Limite di tempo per domanda</b>\n\n"
+        "Quanti secondi ha ogni giocatore per rispondere a <b>ciascuna</b> domanda?\n"
+        "Allo scadere la domanda è data come <b>sbagliata</b> e si passa avanti.\n\n"
+        "Scegli un valore, «Nessun limite», o «Personalizza» (5–300 secondi)." + current_hint,
+        reply_markup=_time_limit_kb(),
+    )
+
+
 async def _prompt_question_text(message: Message, state: FSMContext, first: bool = False) -> None:
     await state.set_state(QuizCreationStates.waiting_question_text)
     data = await state.get_data()
@@ -330,6 +368,8 @@ async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncS
     if quiz.description:
         lines.append(f"<i>{esc(quiz.description)}</i>")
     lines.append(f"💰 Premi: {quiz_service.format_prize_summary(quiz)}")
+    tl = data.get("time_limit", 0)
+    lines.append(f"⏱️ Tempo: {f'{tl}s per domanda' if tl else 'nessun limite'}")
     lines.append(f"\n❓ <b>Domande ({len(quiz.questions)}):</b>")
     for i, q in enumerate(quiz.questions, 1):
         lines.append(f"{i}. {esc(q.text[:50])}")
@@ -383,21 +423,21 @@ async def fsm_description(message: Message, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 
 @router.callback_query(QuizCreationStates.waiting_prize_mode, F.data == "quiz_new:quickprize", IsAdminCallbackFilter())
-async def cb_quick_prize(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+async def cb_quick_prize(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(
         prize_first=settings.quiz_default_first,
         prize_second=settings.quiz_default_second,
         prize_third=settings.quiz_default_third,
         prize_consolation=settings.quiz_default_consolation,
     )
-    await _finalize_prizes_and_create(callback.message, state, db_session)
+    await _prompt_time_limit(callback.message, state)
     await callback.answer()
 
 
 @router.callback_query(QuizCreationStates.waiting_prize_mode, F.data == "quiz_new:noprize", IsAdminCallbackFilter())
-async def cb_no_prize(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+async def cb_no_prize(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(prize_first=0, prize_second=0, prize_third=0, prize_consolation=0)
-    await _finalize_prizes_and_create(callback.message, state, db_session)
+    await _prompt_time_limit(callback.message, state)
     await callback.answer()
 
 
@@ -411,7 +451,7 @@ async def cb_custom_prize(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(QuizCreationStates.waiting_prize_second, IsAdminFilter(), ~F.text.startswith("/"))
 @router.message(QuizCreationStates.waiting_prize_third, IsAdminFilter(), ~F.text.startswith("/"))
 @router.message(QuizCreationStates.waiting_prize_consolation, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_prize_value(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+async def fsm_prize_value(message: Message, state: FSMContext) -> None:
     cur = await state.get_state()
     key, _label, attr = _PRIZE_BY_STATE[cur]
     raw = (message.text or "").strip()
@@ -425,30 +465,75 @@ async def fsm_prize_value(message: Message, state: FSMContext, db_session: Async
         await message.answer("⚠️ Il premio non può essere negativo.",
                              reply_markup=_prize_step_kb(getattr(settings, attr)))
         return
-    await _advance_prize(message, state, db_session, key, value)
+    await _advance_prize(message, state, key, value)
 
 
 @router.callback_query(F.data == "quiz_new:usedefault", IsAdminCallbackFilter())
-async def cb_use_default(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+async def cb_use_default(callback: CallbackQuery, state: FSMContext) -> None:
     meta = _PRIZE_BY_STATE.get(await state.get_state())
     if meta is None:
         await callback.answer()
         return
     key, _label, attr = meta
-    await _advance_prize(callback.message, state, db_session, key, getattr(settings, attr))
+    await _advance_prize(callback.message, state, key, getattr(settings, attr))
     await callback.answer()
 
 
-async def _advance_prize(
-    message: Message, state: FSMContext, db_session: AsyncSession, key: str, value: int
-) -> None:
+async def _advance_prize(message: Message, state: FSMContext, key: str, value: int) -> None:
     await state.update_data(**{key: value})
     states = [s.state for s, *_ in _PRIZE_STEPS]
     idx = states.index(await state.get_state())
     if idx + 1 < len(states):
         await _prompt_prize_step(message, state, _PRIZE_STEPS[idx + 1][0])
     else:
-        await _finalize_prizes_and_create(message, state, db_session)
+        # Prizes done → pick the per-question time limit, then create the quiz.
+        await _prompt_time_limit(message, state)
+
+
+# ---------------------------------------------------------------------------
+# Time limit per question
+# ---------------------------------------------------------------------------
+
+@router.callback_query(
+    QuizCreationStates.waiting_time_limit, F.data.startswith("quiz_new:tl:"), IsAdminCallbackFilter()
+)
+async def cb_time_limit(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    value = int(callback.data.split(":")[2])
+    await state.update_data(time_limit=value)
+    await _finalize_prizes_and_create(callback.message, state, db_session)
+    await callback.answer()
+
+
+@router.callback_query(
+    QuizCreationStates.waiting_time_limit, F.data == "quiz_new:tlcustom", IsAdminCallbackFilter()
+)
+async def cb_time_limit_custom(callback: CallbackQuery) -> None:
+    await callback.message.answer(
+        "⏱️ Invia il limite in <b>secondi</b> (da 5 a 300), oppure 0 per nessun limite:",
+        reply_markup=_back_cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(QuizCreationStates.waiting_time_limit, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_time_limit(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        await message.answer(
+            "⚠️ Inserisci un numero di secondi (es. 30), oppure 0 per nessun limite.",
+            reply_markup=_time_limit_kb(),
+        )
+        return
+    if value != 0 and not (5 <= value <= 300):
+        await message.answer(
+            "⚠️ Il limite deve essere 0 (nessuno) oppure tra 5 e 300 secondi.",
+            reply_markup=_time_limit_kb(),
+        )
+        return
+    await state.update_data(time_limit=value)
+    await _finalize_prizes_and_create(message, state, db_session)
 
 
 async def _finalize_prizes_and_create(
@@ -537,6 +622,7 @@ async def _save_question(
         options=data["q_options"],
         correct_option_id=data["q_correct"],
         explanation=explanation,
+        time_limit_seconds=data.get("time_limit", 0),
     )
     await db_session.commit()
     await state.update_data(
@@ -602,6 +688,7 @@ _BACK_PROMPTERS = {
         partial(_prompt_prize_step, step_state=QuizCreationStates.waiting_prize_second),
     QuizCreationStates.waiting_prize_consolation.state:
         partial(_prompt_prize_step, step_state=QuizCreationStates.waiting_prize_third),
+    QuizCreationStates.waiting_time_limit.state: _prompt_prize_mode,
     QuizCreationStates.waiting_question_options.state: _prompt_question_text,
     QuizCreationStates.waiting_correct.state: _prompt_question_options,
     QuizCreationStates.waiting_explanation.state: _prompt_correct,
@@ -627,12 +714,14 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
 
     # Announce FIRST: if the group send fails (bot not admin / not in group) we
     # leave the quiz as `ready` rather than marking it running with no announcement.
+    limit = quiz_service.time_limit_seconds(quiz)
+    tl_text = f"⏱️ {limit}s/domanda" if limit else "⏱️ senza limite"
     try:
         bot_info = await bot.get_me()
         await group_registry.send_group_message(
             bot, db_session,
             f"🧠 <b>QUIZ: {esc(quiz.title)}</b>\n"
-            f"❓ {len(quiz.questions)} domande · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
+            f"❓ {len(quiz.questions)} domande · {tl_text} · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ne azzecca di più — "
             "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -761,13 +850,9 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
             trophy_notes[row.user_tg_id] = earned
     await db_session.commit()
 
-    # Best-effort DM of newly unlocked trophies to the podium finishers.
+    # Announce newly unlocked trophies in the group, tagging each finisher.
     for uid, earned in trophy_notes.items():
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in earned)
-        try:
-            await bot.send_message(uid, f"🏅 <b>Trofeo sbloccato:</b> {badges_text}!")
-        except Exception:  # noqa: BLE001
-            pass
+        await announce_trophies(bot, db_session, uid, earned)
 
     text = await _podium_text(db_session, quiz.title, ranked, awards)
     if group_registry.get_group_id() != 0:
@@ -813,17 +898,54 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
 
 
 async def _display_name(db_session: AsyncSession, tg_id: int) -> str:
-    user = (await db_session.execute(select(User).where(User.tg_id == tg_id))).scalar_one_or_none()
-    if user is None:
-        return f"<a href=\"tg://user?id={tg_id}\">giocatore</a>"
-    if user.username:
-        return f"@{esc(user.username)}"
-    return f"<a href=\"tg://user?id={tg_id}\">{esc(user.full_name)}</a>"
+    return await mention(db_session, tg_id)
 
 
 # ---------------------------------------------------------------------------
-# Private play
+# Private play (one question at a time, with an optional per-question timer)
 # ---------------------------------------------------------------------------
+
+@dataclass
+class _PlayCtx:
+    """In-memory state of the question a user is currently looking at — used to
+    measure response time and to run the countdown. Keyed by (quiz_id, user_tg_id)."""
+    question_id: int
+    shown_at: float          # time.monotonic() when the question was sent
+    message_id: int
+    chat_id: int
+    timer: "asyncio.Task | None" = None
+
+
+_PLAY: dict[tuple[int, int], _PlayCtx] = {}
+
+
+def _play_key(quiz_id: int, user_tg_id: int) -> tuple[int, int]:
+    return (quiz_id, user_tg_id)
+
+
+def _cancel_timer(quiz_id: int, user_tg_id: int) -> None:
+    ctx = _PLAY.get(_play_key(quiz_id, user_tg_id))
+    if ctx is not None and ctx.timer is not None:
+        ctx.timer.cancel()
+
+
+def _forget_play(quiz_id: int, user_tg_id: int) -> None:
+    ctx = _PLAY.pop(_play_key(quiz_id, user_tg_id), None)
+    if ctx is not None and ctx.timer is not None:
+        ctx.timer.cancel()
+
+
+def _response_ms(quiz_id: int, user_tg_id: int, question_id: int, limit: int) -> int:
+    """Milliseconds the user took on this question (from the in-memory shown_at).
+    Falls back to 0 if the context is missing (e.g. after a restart)."""
+    ctx = _PLAY.get(_play_key(quiz_id, user_tg_id))
+    if ctx is None or ctx.question_id != question_id:
+        return 0
+    ms = round((time.monotonic() - ctx.shown_at) * 1000)
+    if limit > 0:
+        ms = min(ms, limit * 1000)
+    return max(0, ms)
+
 
 async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id: int) -> None:
     """Deep-link quiz_<id>: start (or resume) playing the quiz in private."""
@@ -848,20 +970,112 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
         )
         return
 
-    await message.answer(
-        f"🧠 <b>{esc(quiz.title)}</b>\n<i>Rispondi alle domande. Nessun limite di tempo, "
-        "ma chi finisce prima sale sul podio a parità di risposte!</i>"
+    limit = quiz_service.time_limit_seconds(quiz)
+    rules = (
+        f"Hai <b>{limit} secondi</b> per ogni domanda: allo scadere è data come sbagliata. "
+        "A parità di risposte, chi finisce prima sale sul podio!"
+        if limit > 0 else
+        "Nessun limite di tempo, ma chi finisce prima sale sul podio a parità di risposte!"
     )
-    await _send_question(message, quiz, done)
+    await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n<i>{rules}</i>")
+    await _present_question(message.bot, message.chat.id, message.from_user.id, quiz, done)
 
 
-async def _send_question(message: Message, quiz, index: int) -> None:
+async def _present_question(bot: Bot, chat_id: int, user_tg_id: int, quiz, index: int) -> None:
+    """Send question #index to the user and arm its countdown (if a limit is set)."""
     question = quiz.questions[index]
     options = quiz_service.question_options(question)
-    await message.answer(
-        f"❓ <b>Domanda {index + 1}/{len(quiz.questions)}</b>\n\n{esc(question.text)}",
+    limit = question.open_period
+    hint = f"\n\n⏱️ <i>Hai {limit} secondi</i>" if limit > 0 else ""
+    sent = await bot.send_message(
+        chat_id,
+        f"❓ <b>Domanda {index + 1}/{len(quiz.questions)}</b>\n\n{esc(question.text)}{hint}",
         reply_markup=_question_kb(quiz.id, question.id, options),
     )
+
+    key = _play_key(quiz.id, user_tg_id)
+    old = _PLAY.pop(key, None)
+    if old is not None and old.timer is not None:
+        old.timer.cancel()
+    ctx = _PlayCtx(
+        question_id=question.id, shown_at=time.monotonic(),
+        message_id=sent.message_id, chat_id=chat_id,
+    )
+    _PLAY[key] = ctx
+    if limit > 0:
+        ctx.timer = asyncio.create_task(
+            _expire_question(bot, chat_id, quiz.id, user_tg_id, question.id, sent.message_id, limit)
+        )
+
+
+async def _advance_or_finish(
+    bot: Bot, chat_id: int, user_tg_id: int, quiz, db_session: AsyncSession
+) -> None:
+    """Send the next question or, once all are answered, the final wrap-up."""
+    total = len(quiz.questions)
+    done = await quiz_service.answered_count(db_session, quiz.id, user_tg_id)
+    if done < total:
+        await _present_question(bot, chat_id, user_tg_id, quiz, done)
+        return
+    _forget_play(quiz.id, user_tg_id)
+    correct = await quiz_service.correct_count(db_session, quiz.id, user_tg_id)
+    secs = await quiz_service.user_completion_seconds(db_session, quiz.id, user_tg_id)
+    time_line = (
+        f"⏱️ Tempo impiegato: <b>{format_seconds_short(secs)}</b>\n" if secs is not None else ""
+    )
+    await bot.send_message(
+        chat_id,
+        f"🏁 <b>Quiz completato!</b>\n\n"
+        f"Hai totalizzato <b>{correct}/{total}</b> risposte corrette.\n"
+        f"{time_line}"
+        "Aspetta la chiusura per scoprire il podio! 🏆",
+    )
+
+
+async def _expire_question(
+    bot: Bot, chat_id: int, quiz_id: int, user_tg_id: int,
+    question_id: int, message_id: int, limit: int,
+) -> None:
+    """Countdown for one question: after `limit` seconds, if still unanswered, mark
+    it wrong and advance. Uses its own DB session (the request's is long gone)."""
+    try:
+        await asyncio.sleep(limit)
+    except asyncio.CancelledError:
+        return
+    try:
+        async with async_session_maker() as session:
+            quiz = await quiz_service.get_quiz(session, quiz_id)
+            if quiz is None or quiz.status != "running":
+                return
+            question = next((q for q in quiz.questions if q.id == question_id), None)
+            if question is None:
+                return
+            # -1 = no option chosen → never matches the correct id → wrong.
+            outcome = await quiz_service.record_answer(
+                session, quiz_id, question_id, user_tg_id, -1, response_ms=limit * 1000
+            )
+            if outcome is None or not outcome.recorded:
+                return  # the user answered just in time — nothing to do
+            await session.commit()
+
+            options = quiz_service.question_options(question)
+            correct_label = esc(options[outcome.correct_option_id])
+            feedback = (
+                "⏱️ <b>Tempo scaduto!</b> Nessuna risposta.\n"
+                f"✅ Giusta: <b>{correct_label}</b>"
+            )
+            if question.explanation:
+                feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
+            try:
+                await bot.edit_message_text(
+                    f"❓ {esc(question.text)}\n\n{feedback}",
+                    chat_id=chat_id, message_id=message_id,
+                )
+            except Exception:  # noqa: BLE001 — message may be too old to edit
+                pass
+            await _advance_or_finish(bot, chat_id, user_tg_id, quiz, session)
+    except Exception:  # noqa: BLE001 — a timer must never crash the event loop
+        log.exception("Timer domanda quiz %s/%s fallito", quiz_id, question_id)
 
 
 @router.callback_query(F.data.startswith("quiz_ans:"))
@@ -887,8 +1101,9 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
         await callback.answer("Opzione non valida.", show_alert=True)
         return
 
+    user_tg_id = callback.from_user.id
     # Enforce sequential play: only the user's current question is answerable.
-    done_before = await quiz_service.answered_count(db_session, quiz_id, callback.from_user.id)
+    done_before = await quiz_service.answered_count(db_session, quiz_id, user_tg_id)
     if question.position != done_before:
         await callback.answer(
             "Hai già risposto a questa domanda."
@@ -897,8 +1112,11 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
         )
         return
 
+    # Measure the response time, then stop this question's countdown before recording.
+    resp_ms = _response_ms(quiz_id, user_tg_id, question_id, question.open_period)
+    _cancel_timer(quiz_id, user_tg_id)
     outcome = await quiz_service.record_answer(
-        db_session, quiz_id, question_id, callback.from_user.id, opt_idx
+        db_session, quiz_id, question_id, user_tg_id, opt_idx, response_ms=resp_ms
     )
     if outcome is None:
         await callback.answer("Domanda non valida.", show_alert=True)
@@ -918,30 +1136,9 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
     if question.explanation:
         feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
     try:
-        await callback.message.edit_text(
-            f"❓ {esc(question.text)}\n\n{feedback}"
-        )
+        await callback.message.edit_text(f"❓ {esc(question.text)}\n\n{feedback}")
     except Exception:  # noqa: BLE001 — editing may fail if message is too old
         await callback.message.answer(feedback)
 
-    # Advance or finish.
-    total = len(quiz.questions)
-    done = await quiz_service.answered_count(db_session, quiz_id, callback.from_user.id)
-    if done < total:
-        await _send_question(callback.message, quiz, done)
-    else:
-        correct = await quiz_service.correct_count(db_session, quiz_id, callback.from_user.id)
-        time_line = ""
-        if total > 1:
-            secs = await quiz_service.user_completion_seconds(
-                db_session, quiz_id, callback.from_user.id
-            )
-            if secs is not None:
-                time_line = f"⏱️ Tempo impiegato: <b>{format_seconds_short(secs)}</b>\n"
-        await callback.message.answer(
-            f"🏁 <b>Quiz completato!</b>\n\n"
-            f"Hai totalizzato <b>{correct}/{total}</b> risposte corrette.\n"
-            f"{time_line}"
-            "Aspetta la chiusura per scoprire il podio! 🏆"
-        )
+    await _advance_or_finish(callback.bot, callback.message.chat.id, user_tg_id, quiz, db_session)
     await callback.answer()

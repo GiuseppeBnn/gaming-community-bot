@@ -107,6 +107,7 @@ async def add_question(
     options: list[str],
     correct_option_id: int,
     explanation: str | None,
+    time_limit_seconds: int = 0,
 ) -> QuizQuestion:
     position = (
         await session.execute(
@@ -120,7 +121,7 @@ async def add_question(
         options_json=json.dumps(options, ensure_ascii=False),
         correct_option_id=correct_option_id,
         explanation=(explanation or None) and explanation[:200],
-        open_period=0,  # no time limit
+        open_period=max(0, time_limit_seconds),  # per-question time limit (0 = none)
     )
     session.add(question)
     await session.flush()
@@ -145,6 +146,15 @@ async def delete_last_question(session: AsyncSession, quiz_id: int) -> int:
 
 def question_options(question: QuizQuestion) -> list[str]:
     return json.loads(question.options_json)
+
+
+def time_limit_seconds(quiz: Quiz) -> int:
+    """Per-question time limit of a quiz (uniform across questions; 0 = none).
+
+    Read from the first question's ``open_period`` — the creation flow sets the
+    same limit on every question. 0 when the quiz has no questions yet.
+    """
+    return quiz.questions[0].open_period if quiz.questions else 0
 
 
 async def get_quiz(session: AsyncSession, quiz_id: int) -> Quiz | None:
@@ -224,10 +234,13 @@ async def record_answer(
     question_id: int,
     user_tg_id: int,
     selected_option_id: int,
+    response_ms: int = 0,
 ) -> AnswerOutcome | None:
     """Record a private-chat answer. Returns None if the question is invalid.
 
-    Idempotent per (question, user): a duplicate returns recorded=False.
+    ``response_ms`` is how long the user took on this question; ``selected_option_id
+    = -1`` marks a timeout (no option chosen → wrong). Idempotent per (question,
+    user): a duplicate returns recorded=False.
     """
     question = (
         await session.execute(
@@ -259,7 +272,7 @@ async def record_answer(
             user_tg_id=user_tg_id,
             selected_option_id=selected_option_id,
             is_correct=is_correct,
-            response_ms=0,
+            response_ms=max(0, response_ms),
             answered_at=_now(),
         )
     )
@@ -284,16 +297,16 @@ class PodiumRow:
     user_tg_id: int
     correct: int
     finished_at: datetime
-    completion_seconds: int | None = None  # last answer − first answer (per-user span)
+    completion_seconds: int | None = None  # sum of per-question response times
 
 
 async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
     """Finishers (answered every question) ranked by correct DESC, finish time ASC.
 
-    Each row carries ``completion_seconds`` = the player's **own** span (last −
-    first answer), so it measures how long *that user* took, not the time since the
-    admin launched the quiz. ``None`` for a single-answer quiz (span is meaningless).
-    The ranking tie-break stays the absolute ``finished_at`` (arrival order, §19).
+    Each row carries ``completion_seconds`` = the **sum of the player's per-question
+    response times** (so it includes the first question and works for a single-
+    question quiz), measuring how long *that user* actually took. The ranking
+    tie-break stays the absolute ``finished_at`` (arrival order, §19).
     """
     total = await total_questions(session, quiz_id)
     if total == 0:
@@ -304,7 +317,7 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
             func.sum(func.cast(QuizAnswer.is_correct, Integer)).label("correct"),
             func.count().label("answered"),
             func.max(QuizAnswer.answered_at).label("finished_at"),
-            func.min(QuizAnswer.answered_at).label("first_at"),
+            func.sum(QuizAnswer.response_ms).label("total_ms"),
         )
         .where(QuizAnswer.quiz_id == quiz_id)
         .group_by(QuizAnswer.user_tg_id)
@@ -314,13 +327,10 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
         answered = int(r[2] or 0)
         if answered < total:
             continue
-        finished_at, first_at = r[3], r[4]
-        secs: int | None = None
-        if answered >= 2 and finished_at is not None and first_at is not None:
-            secs = max(0, int((finished_at - first_at).total_seconds()))
+        secs = round(int(r[4] or 0) / 1000)
         rows.append(
             PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0),
-                      finished_at=finished_at, completion_seconds=secs)
+                      finished_at=r[3], completion_seconds=secs)
         )
     rows.sort(key=lambda r: (-r.correct, r.finished_at))
     return rows
@@ -329,26 +339,20 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
 async def user_completion_seconds(
     session: AsyncSession, quiz_id: int, user_tg_id: int
 ) -> int | None:
-    """Seconds the user actually spent playing: last − first answer.
-
-    ``None`` if they have fewer than 2 answers (no meaningful span — e.g. a
-    single-question quiz). Measures the user's own span, independent of when the
-    admin launched the quiz.
+    """Seconds the user actually spent playing: the sum of their per-question
+    response times. Works with a single question too; ``None`` only when the user
+    has not answered anything yet.
     """
-    first_at, last_at, n = (
+    total_ms, n = (
         await session.execute(
-            select(
-                func.min(QuizAnswer.answered_at),
-                func.max(QuizAnswer.answered_at),
-                func.count(),
-            ).where(
+            select(func.sum(QuizAnswer.response_ms), func.count()).where(
                 QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == user_tg_id
             )
         )
     ).one()
-    if int(n or 0) < 2 or first_at is None or last_at is None:
+    if int(n or 0) < 1:
         return None
-    return max(0, int((last_at - first_at).total_seconds()))
+    return round(int(total_ms or 0) / 1000)
 
 
 @dataclass

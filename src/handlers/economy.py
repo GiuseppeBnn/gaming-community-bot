@@ -22,6 +22,7 @@ from aiogram.enums import ChatType
 
 from filters.admin_filter import IsAdminFilter
 from handlers._privacy import redirect_to_private
+from handlers._trophy_announce import announce_trophies
 from services import badge_service, economy_service, xp_service
 from services.xp_service import XpSource
 from utils import cooldown
@@ -128,6 +129,8 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
         db_session, message.from_user.id
     )
     await db_session.commit()
+    # Trophies are announced in the GROUP (tagging the user), not in private.
+    await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
     text = (
         f"🎉 <b>+{reward:,} CoInn</b> riscossi!\n"
@@ -142,9 +145,6 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
         text += (
             f"\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
         )
-    if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
-        text += f"\n\n🏅 <b>Trofeo sbloccato:</b> {badges_text}!"
 
     # In private: show everything. In group: claim succeeded, but the streak/XP/
     # rank details are personal → minimal public ack + best-effort DM of the rest.
@@ -234,12 +234,10 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
     )
     if newly_earned:
         await db_session.commit()
+        # Announced in the group (tagging the user), not appended in private.
+        await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
-    text = f"✅ Trasferiti <b>{amount:,} 🪙</b> a {target_name}!"
-    if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
-        text += f"\n\n🏅 <b>Badge sbloccato:</b> {badges_text}!"
-    await message.answer(text)
+    await message.answer(f"✅ Trasferiti <b>{amount:,} 🪙</b> a {target_name}!")
 
 
 @router.message(Command("credita"), IsAdminFilter())

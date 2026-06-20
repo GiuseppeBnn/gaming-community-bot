@@ -13,7 +13,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import User
+from database.models import Badge, User
+from handlers._trophy_announce import announce_trophies
 from keyboards.onboarding_kb import get_rules_keyboard
 from services import badge_service
 from utils.text import esc
@@ -53,15 +54,19 @@ async def cb_accept_rules(
         user.onboarding_completed = True
         await db_session.commit()
 
-    _, is_new = await badge_service.award_badge(
+    user_badge, is_new = await badge_service.award_badge(
         db_session, callback.from_user.id, badge_service.BADGE_FIRST_STEPS
     )
     if is_new:
         await db_session.commit()
-
-    badge_text = (
-        "\n\n🏅 <b>Badge sbloccato:</b> 🚀 <i>Primi Passi</i> (+50 XP)" if is_new else ""
-    )
+        # Like every trophy, announce it in the group (tagging the user).
+        badge = (
+            await db_session.execute(
+                select(Badge).where(Badge.slug == badge_service.BADGE_FIRST_STEPS)
+            )
+        ).scalar_one_or_none()
+        if badge is not None:
+            await announce_trophies(callback.bot, db_session, callback.from_user.id, [badge])
 
     name = esc(callback.from_user.first_name)
     await callback.message.edit_text(
@@ -73,6 +78,6 @@ async def cb_accept_rules(
         f"/saldo — Saldo e movimenti\n"
         f"/scommesse — Scommesse aperte\n"
         f"/traguardi — I tuoi badge\n"
-        f"/help — Tutti i comandi{badge_text}"
+        f"/help — Tutti i comandi"
     )
     await callback.answer("🎮 Benvenuto!")

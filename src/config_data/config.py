@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # Quiz mode
     quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers
     quiz_xp_per_correct: int = 10      # XP awarded per correct answer (event XP, uncapped)
+    # Suggested per-question time limit in the creation flow (seconds; 0 = no limit).
+    # The admin picks the actual value when building the quiz.
+    quiz_default_time_limit_seconds: int = 30
     # Per-rank prize defaults (suggested in the creation flow)
     quiz_default_first: int = 1000
     quiz_default_second: int = 500

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from exceptions.economy import EventAlreadySettledError, EventNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers._trophy_announce import announce_trophies
 from keyboards.admin_betting_kb import (
     get_admin_confirm_cancel_keyboard,
     get_admin_confirm_lock_keyboard,
@@ -300,7 +301,7 @@ async def cb_admin_confirm_resolve(
         )
         return
 
-    # Award winner milestones (best-effort)
+    # Award winner milestones (best-effort) and announce them in the group.
     try:
         for w in summary["winners_data"]:
             milestones = await badge_service.check_and_award_milestones(
@@ -308,6 +309,7 @@ async def cb_admin_confirm_resolve(
             )
             if milestones:
                 await db_session.commit()
+                await announce_trophies(callback.bot, db_session, w["tg_id"], milestones)
     except Exception:
         pass
 

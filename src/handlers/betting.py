@@ -45,6 +45,7 @@ from keyboards.betting_kb import (
     get_options_keyboard,
 )
 from config_data.config import settings
+from handlers._trophy_announce import announce_trophies
 from keyboards.common_kb import confirm_cancel_kb
 from services import badge_service, bet_service
 from utils import cooldown
@@ -599,17 +600,14 @@ async def cb_bet_confirm(
     )
     if newly_earned:
         await db_session.commit()
+        # Announced in the group (tagging the user), not appended in private.
+        await announce_trophies(callback.bot, db_session, callback.from_user.id, newly_earned)
 
-    text = (
+    await callback.message.edit_text(
         f"✅ <b>Scommessa piazzata!</b>\n\n"
         f"💸 Hai puntato <b>{amount} 🪙</b>.\n"
         f"<i>Ti notificheremo quando l'evento viene risolto.</i>"
     )
-    if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
-        text += f"\n\n🏅 <b>Badge sbloccato:</b> {badges_text}!"
-
-    await callback.message.edit_text(text)
     await state.update_data(bet_active_msg_id=None)
     await callback.answer("✅ Scommessa registrata!")
 

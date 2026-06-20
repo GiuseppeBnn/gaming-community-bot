@@ -34,6 +34,23 @@ class TestCreateAddQuestion:
         _, qs = await _quiz(session, n_questions=3)
         assert [q.position for q in qs] == [0, 1, 2]
 
+    async def test_time_limit_applied_to_questions(self, session):
+        quiz = await qz.create_quiz(session, 9, "T", "d")
+        q = await qz.add_question(
+            session, quiz.id, "Q", ["a", "b"], correct_option_id=0,
+            explanation=None, time_limit_seconds=45,
+        )
+        await session.commit()
+        assert q.open_period == 45
+        full = await qz.get_quiz(session, quiz.id)
+        assert qz.time_limit_seconds(full) == 45
+
+    async def test_time_limit_seconds_zero_without_questions(self, session):
+        quiz = await qz.create_quiz(session, 9, "T", "d")
+        await session.commit()
+        full = await qz.get_quiz(session, quiz.id)
+        assert qz.time_limit_seconds(full) == 0
+
 
 class TestRecordAnswer:
     async def test_correct_and_dedup(self, session, user_factory):
@@ -60,6 +77,22 @@ class TestRecordAnswer:
     async def test_invalid_question(self, session):
         quiz, _ = await _quiz(session)
         assert await qz.record_answer(session, quiz.id, 99999, 1, 0) is None
+
+    async def test_records_response_ms(self, session, user_factory):
+        await user_factory(tg_id=3)
+        quiz, qs = await _quiz(session, correct=0)
+        await qz.record_answer(session, quiz.id, qs[0].id, 3, 0, response_ms=4200)
+        await session.commit()
+        row = (await session.execute(select(QuizAnswer))).scalars().one()
+        assert row.response_ms == 4200
+
+    async def test_timeout_sentinel_is_wrong(self, session, user_factory):
+        # selected_option_id = -1 (no answer / timeout) is never correct.
+        await user_factory(tg_id=4)
+        quiz, qs = await _quiz(session, correct=0)
+        out = await qz.record_answer(session, quiz.id, qs[0].id, 4, -1, response_ms=30000)
+        await session.commit()
+        assert out.recorded is True and out.is_correct is False
 
 
 class TestProgress:
@@ -95,35 +128,39 @@ class TestPodiumAndPrizes:
         board = await qz.podium(session, quiz.id)
         assert [r.user_tg_id for r in board] == [2, 1, 3]  # arrival breaks the 3-3 tie
 
-    async def test_completion_seconds_is_user_span_not_quiz_start(self, session):
-        # Quiz launched months earlier; the user plays for 90s recently → the
-        # completion time must be the user's own span (90s), NOT the time since
-        # the admin launched the quiz (the original bug).
+    async def test_completion_seconds_is_sum_of_response_times(self, session):
+        # The completion time is the SUM of the user's per-question response times,
+        # so it includes the first question (the 16s↔10s bug was dropping it).
         quiz, qs = await _quiz(session, n_questions=3, correct=0)
         quiz.started_at = datetime(2026, 1, 1, 0, 0, 0)
-        base = datetime(2026, 5, 1, 12, 0, 0)
         for i, q in enumerate(qs):
             session.add(QuizAnswer(
                 quiz_id=quiz.id, question_id=q.id, user_tg_id=1,
-                selected_option_id=0, is_correct=True, response_ms=0,
-                answered_at=base + timedelta(seconds=i * 45),  # 0s, 45s, 90s
+                selected_option_id=0, is_correct=True,
+                response_ms=[6000, 6000, 4000][i],  # 6s + 6s + 4s = 16s
+                answered_at=datetime(2026, 5, 1, 12, 0, 0),
             ))
         await session.commit()
         board = await qz.podium(session, quiz.id)
         assert len(board) == 1
-        assert board[0].completion_seconds == 90
-        assert await qz.user_completion_seconds(session, quiz.id, 1) == 90
+        assert board[0].completion_seconds == 16
+        assert await qz.user_completion_seconds(session, quiz.id, 1) == 16
 
-    async def test_completion_seconds_none_for_single_answer(self, session):
+    async def test_completion_seconds_shown_for_single_answer(self, session):
+        # A single-question quiz now shows its time (the user's response_ms).
         quiz, qs = await _quiz(session, n_questions=1, correct=0)
         session.add(QuizAnswer(
             quiz_id=quiz.id, question_id=qs[0].id, user_tg_id=1,
-            selected_option_id=0, is_correct=True, response_ms=0,
+            selected_option_id=0, is_correct=True, response_ms=12000,
             answered_at=datetime(2026, 5, 1, 12, 0, 0),
         ))
         await session.commit()
         board = await qz.podium(session, quiz.id)
-        assert board[0].completion_seconds is None
+        assert board[0].completion_seconds == 12
+        assert await qz.user_completion_seconds(session, quiz.id, 1) == 12
+
+    async def test_completion_seconds_none_without_answers(self, session):
+        quiz, _ = await _quiz(session, n_questions=1, correct=0)
         assert await qz.user_completion_seconds(session, quiz.id, 1) is None
 
     async def test_podium_excludes_non_finishers(self, session):
