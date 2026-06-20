@@ -20,6 +20,12 @@ from config_data.config import settings
 from database.models import ScheduledTask
 
 
+class TaskSkip(Exception):
+    """Raised by ``execute_scheduled`` when a task should NOT run but it is *not*
+    an error (e.g. the quiz is already in progress). The scheduler loop marks the
+    task ``done`` and notifies the creator, instead of marking it ``failed``."""
+
+
 def utcnow() -> datetime:
     """Naive UTC, matching the DB's naive timestamps."""
     return datetime.now(timezone.utc).replace(tzinfo=None)

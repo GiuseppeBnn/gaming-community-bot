@@ -302,6 +302,17 @@ async def execute_task(bot, session, task) -> None:
     await et.execute_scheduled(bot, session, task, group_id)
 
 
+async def _notify_creator(bot, task, text: str) -> None:
+    """Best-effort DM to the admin who scheduled the task, so failures/skips are
+    visible on Telegram and not only in the logs."""
+    if not getattr(task, "created_by_tg_id", None):
+        return
+    try:
+        await bot.send_message(task.created_by_tg_id, text)
+    except Exception:  # noqa: BLE001 — the admin may have never opened the bot in private
+        log.warning("Avviso task #%s all'admin %s fallito", task.id, task.created_by_tg_id)
+
+
 async def scheduler_loop(bot) -> None:
     """Background loop: execute due ScheduledTasks. Started in main()."""
     log.info("Scheduler avviato (intervallo %ss).", settings.scheduler_poll_interval)
@@ -313,9 +324,19 @@ async def scheduler_loop(bot) -> None:
                     try:
                         await execute_task(bot, session, task)
                         await schedule_service.mark_done(session, task)
+                    except schedule_service.TaskSkip as e:
+                        # Not an error: the task was a no-op (e.g. quiz already running).
+                        log.info("Task #%s saltato: %s", task.id, e)
+                        await schedule_service.mark_done(session, task)
+                        await _notify_creator(
+                            bot, task, f"ℹ️ Task #{task.id} ({task.task_type}) saltato: {e}"
+                        )
                     except Exception as e:  # noqa: BLE001
                         log.exception("Task #%s fallito: %s", task.id, e)
                         await schedule_service.mark_failed(session, task, str(e))
+                        await _notify_creator(
+                            bot, task, f"⚠️ Task #{task.id} ({task.task_type}) fallito: {e}"
+                        )
                     await session.commit()
         except Exception:  # noqa: BLE001 — loop must never die
             log.exception("Scheduler loop error")

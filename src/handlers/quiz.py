@@ -928,16 +928,25 @@ def _play_key(quiz_id: int, user_tg_id: int) -> tuple[int, int]:
     return (quiz_id, user_tg_id)
 
 
+def _cancel_task(task: "asyncio.Task | None") -> None:
+    """Cancel a question's countdown task — but NEVER the one currently running.
+    A timer that cancels itself would raise CancelledError (a BaseException, so it
+    slips past ``except Exception``) at the next await and abort the very coroutine
+    that is finishing the quiz — the user would never see "Quiz completato!"."""
+    if task is not None and task is not asyncio.current_task():
+        task.cancel()
+
+
 def _cancel_timer(quiz_id: int, user_tg_id: int) -> None:
     ctx = _PLAY.get(_play_key(quiz_id, user_tg_id))
-    if ctx is not None and ctx.timer is not None:
-        ctx.timer.cancel()
+    if ctx is not None:
+        _cancel_task(ctx.timer)
 
 
 def _forget_play(quiz_id: int, user_tg_id: int) -> None:
     ctx = _PLAY.pop(_play_key(quiz_id, user_tg_id), None)
-    if ctx is not None and ctx.timer is not None:
-        ctx.timer.cancel()
+    if ctx is not None:
+        _cancel_task(ctx.timer)
 
 
 def _response_ms(quiz_id: int, user_tg_id: int, question_id: int, limit: int) -> int:
@@ -1000,8 +1009,8 @@ async def _present_question(bot: Bot, chat_id: int, user_tg_id: int, quiz, index
 
     key = _play_key(quiz.id, user_tg_id)
     old = _PLAY.pop(key, None)
-    if old is not None and old.timer is not None:
-        old.timer.cancel()
+    if old is not None:
+        _cancel_task(old.timer)
     ctx = _PlayCtx(
         question_id=question.id, shown_at=time.monotonic(),
         message_id=sent.message_id, chat_id=chat_id,

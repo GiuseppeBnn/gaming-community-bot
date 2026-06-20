@@ -67,6 +67,13 @@ class QuizType:
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
     ) -> None:
         from handlers.quiz import open_quiz
+        from services.schedule_service import TaskSkip
+
+        # Already running (e.g. an admin started it by hand before the scheduled
+        # time) → skip, don't fail: it's the intended end state anyway.
+        quiz = await quiz_service.get_quiz(session, task.ref_id)
+        if quiz is not None and quiz.status == "running":
+            raise TaskSkip("il quiz era già in corso, avvio programmato saltato.")
 
         ok, msg = await open_quiz(bot, session, task.ref_id)
         if not ok:
