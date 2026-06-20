@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 import services.quiz_service as qz
-from database.models import LedgerEntry, QuizAnswer, TransactionType, Wallet
+from database.models import LedgerEntry, QuizAnswer, TransactionType, User, Wallet
 
 
 async def _quiz(session, prize=0, n_questions=1, correct=0):
@@ -121,12 +121,38 @@ class TestPodiumAndPrizes:
     async def test_podium_orders_by_correct_then_arrival(self, session):
         quiz, qs = await _quiz(session, n_questions=3, correct=0)
         t0 = datetime(2026, 5, 29, 12, 0, 0)
-        # user 1: 3 correct, finishes later; user 2: 3 correct, finishes earlier; user 3: 2 correct
+        # user 1: 3 correct, finishes later; user 2: 3 correct, finishes earlier; user 3: 2 correct.
+        # response_ms is 0 for everyone here, so completion time ties → arrival (finished_at)
+        # is the final tie-break and user 2 (earlier) beats user 1 on the 3-3 tie.
         await self._answer_all(session, quiz, qs, 1, 3, when=t0 + timedelta(minutes=5))
         await self._answer_all(session, quiz, qs, 2, 3, when=t0 + timedelta(minutes=1))
         await self._answer_all(session, quiz, qs, 3, 2, when=t0)
         board = await qz.podium(session, quiz.id)
-        assert [r.user_tg_id for r in board] == [2, 1, 3]  # arrival breaks the 3-3 tie
+        assert [r.user_tg_id for r in board] == [2, 1, 3]
+
+    async def test_podium_tiebreak_by_completion_time(self, session):
+        # Equal correct answers → the FASTER player (lower total response time) ranks
+        # higher, even if they finished later in wall-clock arrival order.
+        quiz, qs = await _quiz(session, n_questions=2, correct=0)
+        t0 = datetime(2026, 5, 29, 12, 0, 0)
+        for q in qs:
+            # user 1: arrived first but slow (9s/question = 18s total)
+            session.add(QuizAnswer(
+                quiz_id=quiz.id, question_id=q.id, user_tg_id=1,
+                selected_option_id=q.correct_option_id, is_correct=True,
+                response_ms=9000, answered_at=t0,
+            ))
+            # user 2: arrived later but fast (1s/question = 2s total)
+            session.add(QuizAnswer(
+                quiz_id=quiz.id, question_id=q.id, user_tg_id=2,
+                selected_option_id=q.correct_option_id, is_correct=True,
+                response_ms=1000, answered_at=t0 + timedelta(minutes=5),
+            ))
+        await session.commit()
+        board = await qz.podium(session, quiz.id)
+        assert [r.user_tg_id for r in board] == [2, 1]  # faster on top despite later arrival
+        assert board[0].completion_seconds == 2
+        assert board[1].completion_seconds == 18
 
     async def test_completion_seconds_is_sum_of_response_times(self, session):
         # The completion time is the SUM of the user's per-question response times,
@@ -195,6 +221,63 @@ class TestPodiumAndPrizes:
         quiz, qs = await _quiz(session, prize=0, n_questions=1, correct=0)
         await self._answer_all(session, quiz, qs, 1, 1)
         assert await qz.award_prizes(session, quiz.id) == []
+
+
+class TestQuizXp:
+    """Event XP rewards participation, correctness, and the podium (note.txt)."""
+
+    async def _answer_all(self, session, quiz, qs, uid, n_correct, when=None):
+        for i, q in enumerate(qs):
+            selected = q.correct_option_id if i < n_correct else (q.correct_option_id + 1) % 3
+            session.add(QuizAnswer(
+                quiz_id=quiz.id, question_id=q.id, user_tg_id=uid,
+                selected_option_id=selected, is_correct=(i < n_correct),
+                response_ms=1000, answered_at=when or datetime(2026, 5, 29, 12, 0, 0),
+            ))
+        await session.commit()
+
+    async def _xp(self, session, uid):
+        return (await session.execute(select(User.xp).where(User.tg_id == uid))).scalar_one()
+
+    @staticmethod
+    def _set_xp_settings(monkeypatch):
+        from config_data.config import settings
+        monkeypatch.setattr(settings, "quiz_xp_participation", 20)
+        monkeypatch.setattr(settings, "quiz_xp_per_correct", 10)
+        monkeypatch.setattr(settings, "quiz_xp_podium_first", 50)
+        monkeypatch.setattr(settings, "quiz_xp_podium_second", 30)
+        monkeypatch.setattr(settings, "quiz_xp_podium_third", 20)
+
+    async def test_participation_correct_and_podium_bonus(self, session, user_factory, monkeypatch):
+        self._set_xp_settings(monkeypatch)
+        for uid in (1, 2, 3):
+            await user_factory(tg_id=uid, xp=0)
+        quiz, qs = await _quiz(session, n_questions=2, correct=0)
+        t0 = datetime(2026, 5, 29, 12, 0, 0)
+        await self._answer_all(session, quiz, qs, 1, 2, when=t0)                       # 1st
+        await self._answer_all(session, quiz, qs, 2, 2, when=t0 + timedelta(minutes=1))  # 2nd (later)
+        await self._answer_all(session, quiz, qs, 3, 0, when=t0 + timedelta(minutes=2))  # 3rd, 0 correct
+        await qz.award_prizes(session, quiz.id)
+        await session.commit()
+        # 1st: 20 + 2*10 + 50 = 90 ; 2nd: 20 + 2*10 + 30 = 70 ; 3rd: 20 + 0 + 20 = 40
+        assert await self._xp(session, 1) == 90
+        assert await self._xp(session, 2) == 70
+        assert await self._xp(session, 3) == 40
+
+    async def test_participation_xp_even_without_finishing(self, session, user_factory, monkeypatch):
+        self._set_xp_settings(monkeypatch)
+        await user_factory(tg_id=1, xp=0)
+        quiz, qs = await _quiz(session, n_questions=3, correct=0)
+        # Answers only 1 of 3 questions → not a finisher (no podium, no prize) but participated.
+        session.add(QuizAnswer(
+            quiz_id=quiz.id, question_id=qs[0].id, user_tg_id=1,
+            selected_option_id=qs[0].correct_option_id, is_correct=True, response_ms=0,
+        ))
+        await session.commit()
+        awards = await qz.award_prizes(session, quiz.id)
+        await session.commit()
+        assert awards == []                       # not a finisher → no coin prize
+        assert await self._xp(session, 1) == 30   # 20 participation + 10 for the one correct
 
 
 async def _quiz_explicit(

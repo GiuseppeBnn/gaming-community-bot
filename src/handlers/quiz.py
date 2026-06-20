@@ -894,6 +894,11 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
         if row.completion_seconds is not None:
             time_txt = f" · ⏱️ {format_seconds_short(row.completion_seconds)}"
         lines.append(f"{rank} {name} — {row.correct} ✅{time_txt}{prize_txt}")
+    if settings.quiz_xp_participation > 0 or settings.quiz_xp_per_correct > 0:
+        lines.append(
+            f"\n⚡ <i>XP a tutti i partecipanti: {settings.quiz_xp_participation} di base"
+            f" + {settings.quiz_xp_per_correct}/risposta giusta + bonus podio.</i>"
+        )
     return "\n".join(lines)
 
 

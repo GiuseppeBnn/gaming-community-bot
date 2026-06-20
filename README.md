@@ -175,10 +175,16 @@ gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
 Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica di
 **merito separata** e **non farmabile**:
 
-- **Si guadagnano XP** dagli **eventi curati dagli admin** (quiz, scommesse risolte) e
-  dall'**assegnazione manuale** dell'admin (`/dai_xp`, `/set_xp`, Airdrop XP), più una
-  **piccola quota di partecipazione giornaliera con tetto** (`/daily`, vittoria scommessa).
-  Il tetto è applicato lato server (`XP_DAILY_PARTICIPATION_CAP`), così nessuno può farmare XP.
+- **Si guadagnano XP partecipando, non solo vincendo.** Gli XP arrivano da due fonti:
+  - **Eventi curati dagli admin** (XP *senza tetto*, perché non spammabili):
+    - **Quiz** — chi gioca prende `QUIZ_XP_PARTICIPATION` di base (basta **1 risposta**),
+      `+QUIZ_XP_PER_CORRECT` per ogni risposta giusta, e il podio (1°/2°/3°) un **bonus**
+      extra (`QUIZ_XP_PODIUM_FIRST/SECOND/THIRD`).
+    - **Scommesse** — piazzare una scommessa dà `XP_PER_BET_PLACED` di partecipazione;
+      se vinci, `XP_PER_BET_WON` in più.
+    - **Assegnazione manuale** admin (`/dai_xp`, `/set_xp`, Airdrop XP).
+  - **Quota giornaliera con tetto** (anti-farm): il `/daily` dà `XP_PER_DAILY_CLAIM`,
+    limitato a `XP_DAILY_PARTICIPATION_CAP` XP al giorno per utente (lato server).
 - **Trofei** (stile PlayStation): achievement con **rarità** Bronzo/Argento/Oro/Platino,
   sbloccati da condizioni — saldo, streak, scommesse, **XP**, **acquisti alla Locanda**
   (per oggetto / per categoria), **podio nel Trivia**, e **collezioni** (sblocca tutti i
@@ -252,9 +258,13 @@ gaming-community-bot/
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
 | `GROQ_API_KEY` | — | modulo AI (opzionale) |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
-| `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP farmabili per utente al giorno |
+| `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
-| `XP_PER_BET_WON` | `15` | XP (capped) su una scommessa vinta |
+| `XP_PER_BET_PLACED` | `10` | XP (evento) per aver piazzato una scommessa |
+| `XP_PER_BET_WON` | `25` | XP (evento) extra se la scommessa vince |
+| `QUIZ_XP_PARTICIPATION` | `20` | XP (evento) per aver giocato il quiz (≥1 risposta) |
+| `QUIZ_XP_PER_CORRECT` | `10` | XP (evento) per ogni risposta corretta |
+| `QUIZ_XP_PODIUM_FIRST` / `_SECOND` / `_THIRD` | `50` / `30` / `20` | bonus podio quiz |
 | `XP_LEVEL_BASE` | `100` | XP per salire dal livello 1 al 2 |
 | `XP_LEVEL_GROWTH` | `1.15` | ogni livello costa +15% del precedente |
 | `BOT_IMAGE` | `gaming-community-bot:local` | immagine usata dal compose (override → GHCR) |

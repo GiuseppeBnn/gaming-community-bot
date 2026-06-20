@@ -145,6 +145,16 @@ async def place_bet(
         await session.rollback()
         raise AlreadyBetError(user_tg_id, event_id)
 
+    # Event XP for participating (placing a bet), uncapped — once per event, since a
+    # second bet on the same event raises AlreadyBetError above. The (larger) win
+    # bonus is paid later, only to winners, in resolve_event. Uncapped grant takes no
+    # User lock, so it never inverts the canonical User → Wallet lock order.
+    if settings.xp_per_bet_placed > 0:
+        await xp_service.grant_xp(
+            session, user_tg_id, settings.xp_per_bet_placed,
+            XpSource.bet_placed, capped=False,
+        )
+
     return bet
 
 
@@ -238,10 +248,11 @@ async def resolve_event(
             winner_user = user_result.scalar_one_or_none()
             if winner_user is not None:
                 winner_user.bets_won += 1
-            # Capped participation XP for a winning bet (anti-farm via daily cap).
+            # Event XP bonus for a winning bet (uncapped — participation XP was already
+            # paid at placement). The User row is already locked above for bets_won.
             await xp_service.grant_xp(
                 session, bet.user_tg_id, settings.xp_per_bet_won,
-                XpSource.bet_won, capped=True,
+                XpSource.bet_won, capped=False,
             )
             payout = payout_map.get(bet.id, 0)
             if payout > 0:

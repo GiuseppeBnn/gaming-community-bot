@@ -261,7 +261,7 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     level_line = (
         f"⚡ <b>Livello {prog.level}</b>{rank_txt}\n"
         f"   {xp_service.progress_bar(prog)} "
-        f"{prog.xp_into_level:,}/{prog.xp_into_level + prog.xp_for_next:,} XP\n"
+        f"{prog.xp_into_level:,}/{prog.xp_for_next:,} XP\n"
     )
     tags = render_active_tags(user)
     tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""

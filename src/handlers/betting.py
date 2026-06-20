@@ -603,9 +603,16 @@ async def cb_bet_confirm(
         # Announced in the group (tagging the user), not appended in private.
         await announce_trophies(callback.bot, db_session, callback.from_user.id, newly_earned)
 
+    xp_line = (
+        f"⚡ <b>+{settings.xp_per_bet_placed} XP</b> per la partecipazione "
+        f"(altri se vinci!).\n"
+        if settings.xp_per_bet_placed > 0
+        else ""
+    )
     await callback.message.edit_text(
         f"✅ <b>Scommessa piazzata!</b>\n\n"
         f"💸 Hai puntato <b>{amount} 🪙</b>.\n"
+        f"{xp_line}"
         f"<i>Ti notificheremo quando l'evento viene risolto.</i>"
     )
     await state.update_data(bet_active_msg_id=None)

@@ -1,12 +1,15 @@
 """
 XP progression — the **single** place that mutates ``User.xp``.
 
-XP is a merit metric, kept separate from coins:
-  * **Event XP** (uncapped): quizzes and direct admin grants/airdrops. Curated by
-    admins, so not farmable.
-  * **Participation XP** (capped): small amounts from /daily and winning a bet,
-    bounded by a per-user **daily cap** (``settings.xp_daily_participation_cap``)
-    enforced server-side — so users can't farm XP from random actions.
+XP is a merit metric, kept separate from coins. It is earned **by participating**,
+not only by winning — two tiers:
+  * **Event XP** (uncapped): admin-gated events you can't spam — quizzes and bets —
+    plus direct admin grants/airdrops. Quizzes pay every player a participation
+    amount, more for correct answers, and a podium bonus to the top 3; bets pay a
+    participation amount for placing and a win bonus on top. Curated, so not farmable.
+  * **Daily-quota XP** (capped): low-effort/recurring actions (/daily), bounded by a
+    per-user **daily cap** (``settings.xp_daily_participation_cap``) enforced
+    server-side — so users can't farm XP from random actions.
 
 Progression is shown as a **level** (GTA-style): XP maps to a numeric level via a
 geometric curve (``settings.xp_level_base`` / ``xp_level_growth``), and the
@@ -36,10 +39,11 @@ log = logging.getLogger(__name__)
 
 
 class XpSource(str, Enum):
-    quiz = "quiz"               # event, uncapped
-    daily = "daily"             # participation, capped
-    bet_won = "bet_won"         # participation, capped
-    admin_grant = "admin_grant"  # event, uncapped
+    quiz = "quiz"                    # event, uncapped (participation + correct + podium)
+    bet_placed = "bet_placed"        # event, uncapped (participation: placed a bet)
+    bet_won = "bet_won"              # event, uncapped (bonus: bet won)
+    daily = "daily"                  # daily quota, capped
+    admin_grant = "admin_grant"      # event, uncapped
     admin_airdrop = "admin_airdrop"  # event, uncapped
 
 
@@ -55,8 +59,9 @@ class XpGrantResult:
 @dataclass(frozen=True)
 class LevelProgress:
     level: int            # current level (≥ 1)
-    xp_into_level: int    # XP accumulated within the current level
-    xp_for_next: int      # XP cost to reach the next level
+    xp_into_level: int    # XP accumulated within the current level (< xp_for_next)
+    xp_for_next: int      # FULL XP cost of the current level (not the remaining); the
+                          # progress within the level is xp_into_level / xp_for_next
     floor_xp: int         # cumulative XP needed to have reached `level`
 
 
@@ -94,9 +99,14 @@ def xp_to_reach_level(level: int) -> int:
 def progress_bar(prog: LevelProgress, width: int = 6) -> str:
     """A plain ``▰▰▰▱▱▱`` bar for the progress within the current level.
 
+    The fill is ``xp_into_level / xp_for_next`` — ``xp_for_next`` is the **full
+    cost** of the current level, so the bar reads 0% right after a level-up and
+    nears 100% just before the next one. (Adding ``xp_into_level`` into the span
+    here was the old bug that kept the bar stuck around half.)
+
     Pure (no HTML / no user data) — safe to interpolate without escaping.
     """
-    span = prog.xp_into_level + prog.xp_for_next
+    span = prog.xp_for_next
     filled = 0 if span <= 0 else round(width * prog.xp_into_level / span)
     filled = max(0, min(width, filled))
     return "▰" * filled + "▱" * (width - filled)

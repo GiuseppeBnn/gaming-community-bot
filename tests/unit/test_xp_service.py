@@ -58,6 +58,24 @@ class TestLevels:
         bar = xp_service.progress_bar(xp_service.level_for_xp(150), width=6)
         assert len(bar) == 6 and set(bar) <= {"▰", "▱"}
 
+    def test_progress_bar_fills_toward_next_level(self):
+        # Regression (note.txt): the bar fills xp_into_level / xp_for_next, where
+        # xp_for_next is the FULL cost of the level. The old bug used
+        # xp_into_level / (xp_into_level + xp_for_next), which kept the bar stuck
+        # around half and made the profile show a denominator like "143/295" that
+        # then *shrank* at the next level. Here it must reach (near) full instead.
+        floor = xp_service.xp_to_reach_level(4)
+        cost = xp_service._level_cost(4)
+        assert xp_service.progress_bar(xp_service.level_for_xp(floor), width=6) == "▱" * 6
+        near_top = xp_service.level_for_xp(floor + cost - 1)  # one XP short of level 5
+        assert xp_service.progress_bar(near_top, width=6).count("▰") >= 5
+
+    def test_level_cost_strictly_increases(self):
+        # The "level 4 needs 295, level 5 needs less" report was a display bug, not the
+        # curve: each level's real cost is strictly greater than the previous one.
+        costs = [xp_service._level_cost(n) for n in range(1, 12)]
+        assert all(b > a for a, b in zip(costs, costs[1:]))
+
 
 # ---------------------------------------------------------------------------
 # rank_for_xp / rank_for_level (named tiers keyed by level)

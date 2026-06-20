@@ -58,9 +58,10 @@ Campi importanti:
 - `groq_model: str` — default `"llama-3.3-70b-versatile"` (il vecchio `llama3-70b-8192` è **dismesso**)
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
-- `quiz_default_prize: int` (default 1000, **legacy** pool), `quiz_xp_per_correct: int` (default 10) — modalità quiz
+- `quiz_default_prize: int` (default 1000, **legacy** pool) — modalità quiz
+- **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
-- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP farmabili/giorno); `xp_per_daily_claim: int` (default 10); `xp_per_bet_won: int` (default 15); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
+- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -479,15 +480,20 @@ mostrano accanto al livello (`⚡ Livello N · 🎖️ Tier`). Sito di display u
 `/traguardi`, `/classifiche` (board ⚡ = livelli) — **mai** l'XP totale grezzo; le view admin
 (`/info`, dashboard, `/lista_ranghi`) lo mostrano per diagnostica.
 
-**Sorgenti XP** (`XpSource`):
+**Sorgenti XP** (`XpSource`) — **premiano la partecipazione, non solo la vincita**:
 
-- `quiz` (evento, **non capped**) — `quiz_xp_per_correct` per risposta corretta (in `quiz_service._grant_xp`)
-- `daily` / `bet_won` (**capped**) — `xp_per_daily_claim` / `xp_per_bet_won`
+- `quiz` (evento, **non capped**, in `quiz_service._grant_xp`): a **tutti** quelli che hanno
+  risposto ad ≥1 domanda `quiz_xp_participation`; `+quiz_xp_per_correct` per risposta corretta;
+  ai primi 3 del podio un bonus `quiz_xp_podium_first/second/third`.
+- `bet_placed` / `bet_won` (evento, **non capped**): `xp_per_bet_placed` quando si **piazza** una
+  scommessa (una volta per evento — `place_bet`); `xp_per_bet_won` extra ai **vincitori** (`resolve_event`).
+- `daily` (**capped**) — `xp_per_daily_claim`.
 - `admin_grant` / `admin_airdrop` (**non capped**) — `/dai_xp`, `/set_xp`, Airdrop XP dashboard
 
 **Tetto giornaliero** (anti-farm): le sorgenti `capped=True` accreditano al massimo
 `xp_daily_participation_cap` per utente al giorno, contato in `User.xp_today`/`xp_today_date`
-(reset automatico al cambio data). Gli eventi admin (quiz incluso) sono uncapped perché curati.
+(reset automatico al cambio data). Gli **eventi admin** (quiz e scommesse) sono uncapped perché
+curati e non spammabili (1 sola scommessa per evento, quiz aperti dall'admin).
 
 **Rank-up / level-up:** `grant_xp` ricalcola tier e livello; restituisce il **tier-up** in
 `new_rank` (+ aggiorna `User.rank_slug`) e il **level-up** in `new_level`/`leveled_up` (derivato,
@@ -809,8 +815,9 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
 ## 19. Quiz mode (privato, con podio)
 
 Quiz a risposta multipla creati dall'admin e giocati da ogni utente nella **propria chat privata**
-(NO poll di gruppo: in un poll di gruppo si "risponde per tutti" / non si avanza bene). Niente
-limite di tempo; vince chi ne azzecca di più, a parità conta l'**ordine di arrivo**.
+(NO poll di gruppo: in un poll di gruppo si "risponde per tutti" / non si avanza bene). Limite di
+tempo per domanda **opzionale** (scelto in creazione); vince chi ne azzecca di più, **a parità
+conta il tempo minore** (poi l'ordine di arrivo).
 
 **File:** `services/quiz_service.py` (DB), `handlers/quiz.py` (FSM + comandi + play privato).
 
@@ -842,10 +849,11 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 ### Podio & premi
 
 - `podium(quiz_id)`: solo i **finisher** (hanno risposto a tutte le domande), ordinati per
-  **corrette DESC, finish-time ASC** (ordine di arrivo). Il `completion_seconds` mostrato è lo
-  **span del singolo utente** (ultimo − primo `answered_at`, `None` con <2 risposte), **non** il
-  tempo dall'avvio admin (`Quiz.started_at`): così chi gioca giorni dopo l'avvio vede il suo tempo
-  reale. `user_completion_seconds(session, quiz_id, uid)` per il messaggio di fine partita.
+  **corrette DESC, poi tempo di completamento ASC** (più veloce avanti), con il `finished_at`
+  (ordine di arrivo) solo come ultimo spareggio. Il `completion_seconds`/`completion_ms` è la
+  **somma dei tempi-risposta per domanda** del singolo utente (include la 1ª domanda, vale anche
+  con **una sola** risposta; `None` solo senza risposte), **non** il tempo dall'avvio admin
+  (`Quiz.started_at`). `user_completion_seconds(session, quiz_id, uid)` per il messaggio di fine partita.
 - `award_prizes(quiz_id)` — due modalità (premi **mintati** via `economy_service.credit` `quiz_reward`,
   niente prelievo da un pot):
   - **Esplicita** (se almeno uno tra `prize_first/second/third/consolation` > 0): podio 1°/2°/3° →
@@ -854,7 +862,8 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
     tutti ≥ floor. Solo finisher.
   - **Legacy** (altrimenti, se `prize_coins` > 0): pool diviso top-3 `_PRIZE_SPLIT` 0.5/0.3/0.2 (resto al 1°) —
     comportamento **invariato** per i quiz vecchi.
-  - XP: `quiz_xp_per_correct` × corrette per chiunque abbia ≥1 corretta.
+  - XP (`_grant_xp`, evento uncapped): `quiz_xp_participation` a chiunque abbia ≥1 risposta,
+    `+quiz_xp_per_correct` per corretta, `+quiz_xp_podium_first/second/third` ai primi 3.
 - `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dalla dashboard
   (`adm:quiz:close`) → `award_prizes` → `finished` → annuncio podio (🎖️ per le consolazioni).
 - `format_prize_summary(quiz)` riassume i premi nelle schede/annunci.

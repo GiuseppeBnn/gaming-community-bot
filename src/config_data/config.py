@@ -40,13 +40,19 @@ class Settings(BaseSettings):
     warn_ban_threshold: int = 5        # active warnings → auto-ban
     warn_mute_duration_seconds: int = 3600
 
-    # XP progression (merit metric, kept separate from coins).
-    # XP is earned from admin-curated events (quiz) uncapped, plus a small *capped*
-    # daily participation quota so users can't farm XP from random actions.
+    # XP progression (merit metric, kept separate from coins). Two tiers:
+    #   * EVENT XP (uncapped): admin-gated events you can't spam — quizzes and bets.
+    #     These reward *participation first* and performance on top (see below), so
+    #     showing up earns XP even without winning.
+    #   * DAILY-QUOTA XP (capped): low-effort/recurring actions (/daily), bounded by
+    #     `xp_daily_participation_cap` per user per day so they can't be farmed.
     catalog_dir: str = "data"               # dir with optional trophies/ranks/cosmetics CSVs
-    xp_daily_participation_cap: int = 50     # max farmable XP per user per day
+    xp_daily_participation_cap: int = 50     # max farmable (capped) XP per user per day
     xp_per_daily_claim: int = 10             # capped XP granted on /daily
-    xp_per_bet_won: int = 15                 # capped XP granted on a winning bet
+    # Betting event XP (uncapped): placing a bet always pays participation XP; a
+    # winning bet pays the (larger) win bonus on top at resolution.
+    xp_per_bet_placed: int = 10              # participation XP for placing a bet
+    xp_per_bet_won: int = 25                 # extra XP when that bet wins
     # Level curve (GTA-style): cost to go from level n to n+1 is
     # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
     xp_level_base: int = 100                 # XP to go from level 1 → 2
@@ -54,7 +60,14 @@ class Settings(BaseSettings):
 
     # Quiz mode
     quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers
-    quiz_xp_per_correct: int = 10      # XP awarded per correct answer (event XP, uncapped)
+    # Quiz event XP (uncapped). Every player who answers at least one question gets
+    # `quiz_xp_participation`; each correct answer adds `quiz_xp_per_correct`; the
+    # top-3 finishers get an extra podium bonus. Rewards participation, not just winning.
+    quiz_xp_participation: int = 20    # XP just for playing (≥ 1 answer)
+    quiz_xp_per_correct: int = 10      # XP per correct answer
+    quiz_xp_podium_first: int = 50     # extra XP for the 1st-place finisher
+    quiz_xp_podium_second: int = 30    # extra XP for the 2nd-place finisher
+    quiz_xp_podium_third: int = 20     # extra XP for the 3rd-place finisher
     # Suggested per-question time limit in the creation flow (seconds; 0 = no limit).
     # The admin picks the actual value when building the quiz.
     quiz_default_time_limit_seconds: int = 30

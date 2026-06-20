@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 import services.bet_service as bet_svc
-from database.models import BettingEvent, BetStatus, EventStatus, UserBet
+from database.models import BettingEvent, BetStatus, EventStatus, User, UserBet
 from exceptions.economy import (
     AlreadyBetError,
     BettingClosedError,
@@ -470,3 +470,36 @@ class TestEventQueries:
     async def test_get_event_detail_returns_none_for_unknown(self, session):
         result = await bet_svc.get_event_detail(session, 9999)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Event XP — participation on placement + win bonus, both uncapped (note.txt)
+# ---------------------------------------------------------------------------
+
+class TestBetXp:
+    async def _xp(self, session, uid):
+        return (await session.execute(select(User.xp).where(User.tg_id == uid))).scalar_one()
+
+    async def test_placing_a_bet_grants_participation_xp(self, session, user_factory, monkeypatch):
+        monkeypatch.setattr(bet_svc.settings, "xp_per_bet_placed", 10)
+        await user_factory(tg_id=1, coins=500, xp=0)
+        event = await _create_event(session, 1)
+        await _place_bet_for(session, 1, event, option_index=0, amount=100)
+        assert await self._xp(session, 1) == 10
+
+    async def test_win_adds_bonus_xp_and_is_uncapped(self, session, user_factory, monkeypatch):
+        monkeypatch.setattr(bet_svc.settings, "xp_per_bet_placed", 10)
+        monkeypatch.setattr(bet_svc.settings, "xp_per_bet_won", 25)
+        # A tiny daily cap must NOT clip event XP — proves the win bonus is uncapped now.
+        monkeypatch.setattr(bet_svc.settings, "xp_daily_participation_cap", 5)
+        await user_factory(tg_id=1, coins=1000, xp=0)
+        await user_factory(tg_id=2, coins=1000, xp=0)
+        event = await _create_event(session, 1)
+        await _place_bet_for(session, 1, event, option_index=0, amount=500)
+        await _place_bet_for(session, 2, event, option_index=1, amount=500)
+
+        await bet_svc.resolve_event(session, event.id, event.options[0].id)
+        await session.commit()
+
+        assert await self._xp(session, 1) == 35  # 10 placed + 25 won, not clipped by cap=5
+        assert await self._xp(session, 2) == 10  # loser keeps only the participation XP
