@@ -1,5 +1,5 @@
 """describe_condition: plain-Italian unlock text shared by /catalogo_badge and
-/traguardi (no dev-jargon 'type ≥ value')."""
+/trofei (no dev-jargon 'type ≥ value')."""
 
 from __future__ import annotations
 

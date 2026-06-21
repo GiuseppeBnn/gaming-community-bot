@@ -203,10 +203,10 @@ async def cmd_programmati(message: Message, db_session) -> None:
     b = InlineKeyboardBuilder()
     lines = ["🗓️ <b>Eventi programmati</b>\n"]
     for t in tasks:
-        when = t.run_at.strftime("%d/%m %H:%M")
+        when = schedule_service.to_local(t.run_at).strftime("%d/%m %H:%M")
         et = event_types.get(t.task_type)
         label = et.hub_label if et else t.task_type
-        lines.append(f"• #{t.id} {label} — {when} UTC")
+        lines.append(f"• #{t.id} {label} — {when}")
         b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
     b.adjust(1)
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
@@ -271,11 +271,11 @@ async def _parse_or_reprompt(message: Message) -> datetime | None:
 async def _confirm(message: Message, task) -> None:
     et = event_types.get(task.task_type)
     label = et.hub_label if et else task.task_type
-    when = task.run_at.strftime("%d/%m/%Y %H:%M")
+    when = schedule_service.to_local(task.run_at).strftime("%d/%m/%Y %H:%M")
     await message.answer(
         f"✅ <b>Programmato!</b>\n\n"
         f"{label} · #{task.id}\n"
-        f"🕒 Esecuzione: <b>{when} UTC</b>\n\n"
+        f"🕒 Esecuzione: <b>{when}</b>\n\n"
         f"Vedi/annulla con /programmati."
     )
 

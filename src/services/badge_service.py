@@ -36,7 +36,7 @@ _SYNC_FIELDS = (
 
 # Plain-text "how to unlock" templates for the **un-parametrized counter**
 # conditions. Keeps the dev-jargon "type ≥ value" out of the user-facing trophy
-# screens; shared by /catalogo_badge and /traguardi so they render identically.
+# screens; shared by /catalogo_badge and /trofei so they render identically.
 _CONDITION_TEMPLATES = {
     "onboarding": "Completa la registrazione",
     "balance": "Raggiungi {v:,} CoInn",

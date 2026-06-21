@@ -108,8 +108,8 @@ _COMMANDS: list[CommandDoc] = [
                 "invece per gestire e avviare i quiz.",
     ),
     CommandDoc(
-        "traguardi", "I tuoi trofei (per rarità) e il rango", "🏆 Progressione",
-        usage="/traguardi",
+        "trofei", "I tuoi trofei (per rarità) e il rango", "🏆 Progressione",
+        usage="/trofei",
         details="Mostra i trofei che hai sbloccato, raggruppati per rarità, e il tuo rango XP attuale.",
     ),
     CommandDoc(

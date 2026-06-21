@@ -17,9 +17,9 @@ def _rarity_key(badge) -> tuple[int, int]:
     return (RARITY_ORDER.get(badge.rarity, 0), badge.id)
 
 
-@router.message(Command("traguardi"))
+@router.message(Command("trofei", "traguardi"))
 async def cmd_traguardi(message: Message, db_session: AsyncSession) -> None:
-    if await redirect_to_private(message, "traguardi", "🏆 Vedi i tuoi trofei"):
+    if await redirect_to_private(message, "trofei", "🏆 Vedi i tuoi trofei"):
         return
     await show_traguardi(message, db_session)
 
@@ -106,7 +106,7 @@ async def cmd_catalogo_badge(message: Message, db_session: AsyncSession) -> None
             lines.append(f"❓ <b>???</b> · {rarity}\n   <i>Trofeo nascosto</i>")
             continue
         # Plain-Italian unlock requirement instead of the dev-jargon "type ≥ value"
-        # (shared wording with /traguardi via badge_service.describe_condition).
+        # (shared wording with /trofei via badge_service.describe_condition).
         cond_text = badge_service.describe_condition(
             badge.condition_type, badge.condition_value, badge.condition_param
         )

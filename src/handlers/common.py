@@ -161,7 +161,7 @@ async def cmd_start(
     if payload == "profilo":
         await show_profilo(message, db_session)
         return
-    if payload == "traguardi":
+    if payload in ("trofei", "traguardi"):
         from handlers.badges import show_traguardi
         await show_traguardi(message, db_session)
         return
@@ -217,7 +217,7 @@ async def cmd_start(
         f"/saldo — Saldo e movimenti\n"
         f"/daily — Premio giornaliero\n"
         f"/scommesse — Scommesse aperte\n"
-        f"/traguardi — I tuoi badge\n"
+        f"/trofei — I tuoi trofei\n"
         f"/help — Tutti i comandi"
     )
 

@@ -77,7 +77,7 @@ async def cb_accept_rules(
         f"/profilo — Il tuo profilo\n"
         f"/saldo — Saldo e movimenti\n"
         f"/scommesse — Scommesse aperte\n"
-        f"/traguardi — I tuoi badge\n"
+        f"/trofei — I tuoi trofei\n"
         f"/help — Tutti i comandi"
     )
     await callback.answer("🎮 Benvenuto!")

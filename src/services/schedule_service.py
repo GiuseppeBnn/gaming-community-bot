@@ -66,6 +66,18 @@ def parse_run_at(text: str, tz_name: str | None = None) -> datetime:
     return target_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def to_local(dt: datetime) -> datetime:
+    """Convert a naive UTC datetime (as stored in the DB) to the configured local
+    timezone, for display. Inverse of ``parse_run_at``; returns a naive datetime so
+    callers can ``strftime`` it directly. Timezone is driven by ``SCHEDULER_TIMEZONE``
+    (default ``Europe/Rome``), so the displayed time matches the admin's input."""
+    return (
+        dt.replace(tzinfo=timezone.utc)
+        .astimezone(ZoneInfo(settings.scheduler_timezone))
+        .replace(tzinfo=None)
+    )
+
+
 async def schedule_task(
     session: AsyncSession,
     task_type: str,
