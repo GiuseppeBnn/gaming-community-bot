@@ -68,7 +68,7 @@ async def cmd_locanda(message: Message, db_session: AsyncSession) -> None:
         return
     if not await cooldown.guard(message, "locanda", settings.command_cooldown_seconds):
         return
-    await _show_home(message, db_session)
+    await _show_home(message, db_session, message.from_user.id)
 
 
 async def start_shop_private(
@@ -78,7 +78,7 @@ async def start_shop_private(
     db_session: AsyncSession,
 ) -> None:
     """Back-compat entry for the legacy ``?start=shop_<group_id>`` deep-link."""
-    await _show_home(message, db_session)
+    await _show_home(message, db_session, message.from_user.id)
 
 
 async def _balance(db_session: AsyncSession, tg_id: int) -> int:
@@ -105,8 +105,13 @@ def _home_text(balance: int) -> str:
     )
 
 
-async def _show_home(message: Message, db_session: AsyncSession, *, edit: bool = False) -> None:
-    balance = await _balance(db_session, message.from_user.id)
+async def _show_home(
+    message: Message, db_session: AsyncSession, tg_id: int, *, edit: bool = False
+) -> None:
+    # ``tg_id`` is passed explicitly: on a callback, ``message`` is the bot-sent
+    # panel whose ``from_user`` is the *bot*, not the buyer — reading the balance
+    # from it would show 0. The caller always supplies the clicking user's id.
+    balance = await _balance(db_session, tg_id)
     kb = get_locanda_home_kb(
         has_cosmetics=bool(shop_service.get_cosmetics()),
         has_menu=bool(consumable_service.get_consumables()),
@@ -142,7 +147,7 @@ def _catalog_text(balance: int, has_items: bool) -> str:
 
 @router.callback_query(F.data == "shop:home")
 async def cb_shop_home(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    await _show_home(callback.message, db_session, edit=True)
+    await _show_home(callback.message, db_session, callback.from_user.id, edit=True)
     await callback.answer()
 
 
