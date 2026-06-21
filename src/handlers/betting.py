@@ -53,6 +53,12 @@ from utils.text import esc
 
 router = Router()
 
+# Upper bound on a single bet (mirrors economy_service._MAX_TRANSFER). Besides
+# being a sane gameplay limit, it keeps the confirm button's callback_data well
+# within Telegram's 64-byte cap — an unbounded amount would overflow it and make
+# the API reject the keyboard.
+MAX_BET = 1_000_000
+
 
 class BetCreationStates(StatesGroup):
     waiting_for_title = State()
@@ -67,6 +73,22 @@ class BetCustomAmountState(StatesGroup):
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def parse_bet_amount(raw: str) -> tuple[int | None, str | None]:
+    """Validate a user-typed bet amount. Returns ``(amount, None)`` on success or
+    ``(None, error_message)`` for non-numeric, non-positive, or over-cap input.
+
+    Pure (no I/O) so it's unit-testable and shared by every custom-amount entry."""
+    try:
+        amount = int((raw or "").strip())
+    except ValueError:
+        return None, "⚠️ Inserisci solo un numero intero, es: <code>150</code>"
+    if amount <= 0:
+        return None, "⚠️ L'importo deve essere positivo."
+    if amount > MAX_BET:
+        return None, f"⚠️ Importo massimo per una scommessa: <b>{MAX_BET:,} 🪙</b>."
+    return amount, None
+
 
 def _cancel_creation_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
@@ -499,15 +521,9 @@ async def cb_bet_custom(callback: CallbackQuery, state: FSMContext) -> None:
 async def fsm_custom_amount(
     message: Message, state: FSMContext, db_session: AsyncSession
 ) -> None:
-    raw = (message.text or "").strip()
-    try:
-        amount = int(raw)
-    except ValueError:
-        await message.answer("⚠️ Inserisci solo un numero intero, es: <code>150</code>")
-        return
-
-    if amount <= 0:
-        await message.answer("⚠️ L'importo deve essere positivo.")
+    amount, err = parse_bet_amount(message.text or "")
+    if err:
+        await message.answer(err)
         return
 
     data = await state.get_data()

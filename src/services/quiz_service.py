@@ -157,10 +157,15 @@ def time_limit_seconds(quiz: Quiz) -> int:
     return quiz.questions[0].open_period if quiz.questions else 0
 
 
-async def get_quiz(session: AsyncSession, quiz_id: int) -> Quiz | None:
-    result = await session.execute(
-        select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
-    )
+async def get_quiz(
+    session: AsyncSession, quiz_id: int, *, for_update: bool = False
+) -> Quiz | None:
+    stmt = select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
+    if for_update:
+        # Row-level lock so two concurrent closes can't both pass the status check
+        # and pay prizes twice. No-op on SQLite (dev/tests), real on Postgres (prod).
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 

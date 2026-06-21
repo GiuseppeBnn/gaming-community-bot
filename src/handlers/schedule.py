@@ -313,6 +313,44 @@ async def _notify_creator(bot, task, text: str) -> None:
         log.warning("Avviso task #%s all'admin %s fallito", task.id, task.created_by_tg_id)
 
 
+async def _run_due_task(bot, session, task) -> None:
+    """Execute one due task and persist its outcome, isolating failures.
+
+    On any error the session is **rolled back before** the task is marked failed,
+    so a poisoned transaction (e.g. a partial flush that raised) can neither
+    strand the task as ``pending`` — which would make the loop retry it forever —
+    nor commit half-done work. The id/type are captured up front because reading
+    them off the ORM object after a rollback would trigger an implicit reload
+    (illegal in async). Each task is its own unit: a failure never bleeds into the
+    next one in the same tick.
+    """
+    task_id = getattr(task, "id", "?")
+    task_type = getattr(task, "task_type", "?")
+    notice: str | None = None
+    try:
+        try:
+            await execute_task(bot, session, task)
+            await schedule_service.mark_done(session, task)
+        except schedule_service.TaskSkip as e:
+            # Not an error: the task was an intentional no-op (e.g. quiz already running).
+            await session.rollback()
+            log.info("Task #%s saltato: %s", task_id, e)
+            await schedule_service.mark_done(session, task)
+            notice = f"ℹ️ Task #{task_id} ({task_type}) saltato: {e}"
+        except Exception as e:  # noqa: BLE001
+            await session.rollback()
+            log.exception("Task #%s fallito: %s", task_id, e)
+            await schedule_service.mark_failed(session, task, str(e))
+            notice = f"⚠️ Task #{task_id} ({task_type}) fallito: {e}"
+        await session.commit()
+    except Exception:  # noqa: BLE001 — persisting the outcome failed; retry next tick
+        log.exception("Task #%s: persistenza esito fallita", task_id)
+        await session.rollback()
+        return
+    if notice:
+        await _notify_creator(bot, task, notice)
+
+
 async def scheduler_loop(bot) -> None:
     """Background loop: execute due ScheduledTasks. Started in main()."""
     log.info("Scheduler avviato (intervallo %ss).", settings.scheduler_poll_interval)
@@ -321,23 +359,7 @@ async def scheduler_loop(bot) -> None:
             async with async_session_maker() as session:
                 tasks = await schedule_service.due_tasks(session, schedule_service.utcnow())
                 for task in tasks:
-                    try:
-                        await execute_task(bot, session, task)
-                        await schedule_service.mark_done(session, task)
-                    except schedule_service.TaskSkip as e:
-                        # Not an error: the task was a no-op (e.g. quiz already running).
-                        log.info("Task #%s saltato: %s", task.id, e)
-                        await schedule_service.mark_done(session, task)
-                        await _notify_creator(
-                            bot, task, f"ℹ️ Task #{task.id} ({task.task_type}) saltato: {e}"
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        log.exception("Task #%s fallito: %s", task.id, e)
-                        await schedule_service.mark_failed(session, task, str(e))
-                        await _notify_creator(
-                            bot, task, f"⚠️ Task #{task.id} ({task.task_type}) fallito: {e}"
-                        )
-                    await session.commit()
+                    await _run_due_task(bot, session, task)
         except Exception:  # noqa: BLE001 — loop must never die
             log.exception("Scheduler loop error")
         await asyncio.sleep(settings.scheduler_poll_interval)

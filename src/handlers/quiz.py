@@ -825,7 +825,9 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     Returns (ok, message). The message is the podium text when there is no group
     to announce to, otherwise a short confirmation. Caller need not commit.
     """
-    quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    # Lock the quiz row: the status check below and the prize payout must be atomic,
+    # or two concurrent closes could both pass the guard and pay out twice.
+    quiz = await quiz_service.get_quiz(db_session, quiz_id, for_update=True)
     if quiz is None:
         return False, "Quiz non trovato."
     if quiz.status == "finished":

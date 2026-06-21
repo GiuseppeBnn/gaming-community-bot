@@ -51,6 +51,14 @@ class TestCreateAddQuestion:
         full = await qz.get_quiz(session, quiz.id)
         assert qz.time_limit_seconds(full) == 0
 
+    async def test_get_quiz_for_update_returns_quiz_with_questions(self, session):
+        # The FOR UPDATE branch (used by close_quiz to serialize concurrent closes)
+        # must still eager-load questions; the lock is a no-op on SQLite.
+        quiz, qs = await _quiz(session, n_questions=2)
+        got = await qz.get_quiz(session, quiz.id, for_update=True)
+        assert got is not None and got.id == quiz.id
+        assert len(got.questions) == len(qs)
+
 
 class TestRecordAnswer:
     async def test_correct_and_dedup(self, session, user_factory):
