@@ -49,6 +49,8 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS rarity VARCHAR(16) NOT NULL DEFAULT 'bronze'",
     # badges → trophies: scope for parametrized conditions (item/category/game/collection)
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS condition_param VARCHAR(128)",
+    # badges → trophies: hidden ("secret") flag, masked in the catalog until earned
+    "ALTER TABLE badges ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false",
     # wallets/ledger: balances can exceed int32 (airdrops/payouts accumulate).
     # ALTER TYPE to the same type is a no-op → idempotent like the entries above.
     "ALTER TABLE wallets ALTER COLUMN coins TYPE BIGINT",

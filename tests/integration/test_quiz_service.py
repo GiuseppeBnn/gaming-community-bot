@@ -394,3 +394,65 @@ class TestExplicitPrizes:
         assert await self._coins(session, 1) == 1000
         assert await self._coins(session, 4) == 0
         assert all(a.kind == "podium" for a in awards)
+
+
+class TestCloseQuizTriviaEvents:
+    """close_quiz wiring: it records the new Trivia progress events (last place /
+    completed under 30 s) for the trophy engine, beyond the top-3 podium."""
+
+    async def _answer(self, session, quiz, q, uid, response_ms, correct=True):
+        await qz.record_answer(
+            session, quiz.id, q.id, uid,
+            selected_option_id=(0 if correct else 1), response_ms=response_ms,
+        )
+
+    async def test_records_last_place_and_sub30(self, session, user_factory):
+        from unittest.mock import AsyncMock
+
+        from handlers.quiz import close_quiz
+        from services import group_registry, progress_service
+
+        group_registry.set_runtime_group_id(0)  # no group → no broadcast
+        try:
+            for uid in (1, 2):
+                await user_factory(tg_id=uid, coins=0)
+            quiz, qs = await _quiz(session, n_questions=1, correct=0)
+            await self._answer(session, quiz, qs[0], 1, response_ms=1_000)   # fast → 1st
+            await self._answer(session, quiz, qs[0], 2, response_ms=2_000)   # slower → last
+            await qz.set_status(session, quiz.id, "running")
+            await session.commit()
+
+            ok, _ = await close_quiz(AsyncMock(), session, quiz.id)
+            assert ok
+
+            c1 = await progress_service.event_counts(session, 1)
+            c2 = await progress_service.event_counts(session, 2)
+            # Both finished under 30 s; only the runner-up is "last place".
+            assert c1.get(progress_service.TRIVIA_SUB30) == 1
+            assert progress_service.TRIVIA_LAST_PLACE not in c1
+            assert c2.get(progress_service.TRIVIA_SUB30) == 1
+            assert c2.get(progress_service.TRIVIA_LAST_PLACE) == 1
+        finally:
+            group_registry.set_runtime_group_id(None)
+
+    async def test_single_finisher_is_not_last_place(self, session, user_factory):
+        from unittest.mock import AsyncMock
+
+        from handlers.quiz import close_quiz
+        from services import group_registry, progress_service
+
+        group_registry.set_runtime_group_id(0)
+        try:
+            await user_factory(tg_id=1, coins=0)
+            quiz, qs = await _quiz(session, n_questions=1, correct=0)
+            await self._answer(session, quiz, qs[0], 1, response_ms=45_000)  # over 30 s
+            await qz.set_status(session, quiz.id, "running")
+            await session.commit()
+
+            ok, _ = await close_quiz(AsyncMock(), session, quiz.id)
+            assert ok
+            counts = await progress_service.event_counts(session, 1)
+            # Solo player: not "last", and 45 s is not under 30 s → no events.
+            assert counts == {}
+        finally:
+            group_registry.set_runtime_group_id(None)

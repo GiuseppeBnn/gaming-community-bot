@@ -13,7 +13,7 @@ class TestDefaults:
     def test_trophies_default_when_missing(self, tmp_path):
         rows = catalog_loader.load_trophies(str(tmp_path))
         assert rows == catalog_loader.DEFAULT_TROPHIES
-        assert any(t["condition_type"] == "xp" for t in rows)
+        assert any(t["condition_type"] == "level" for t in rows)
 
     def test_ranks_default_when_missing(self, tmp_path):
         assert catalog_loader.load_ranks(str(tmp_path)) == catalog_loader.DEFAULT_RANKS

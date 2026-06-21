@@ -62,6 +62,9 @@ async def show_traguardi(message: Message, db_session: AsyncSession) -> None:
         for badge in by_rarity[rarity]:
             if badge.id in earned_ids:
                 lines.append(f"{badge.icon_emoji} <b>{esc(badge.name)}</b> — {esc(badge.description)}")
+            elif badge.hidden:
+                # Secret trophy: masked until earned (name + requirement hidden).
+                lines.append("🔒 <i>??? — Trofeo nascosto</i>")
             else:
                 # Locked: show the plain-Italian unlock requirement (same wording
                 # as /catalogo_badge) so the two screens stay consistent.
@@ -91,15 +94,23 @@ async def cmd_catalogo_badge(message: Message, db_session: AsyncSession) -> None
         await message.answer("📚 Catalogo trofei vuoto.")
         return
 
+    # Need the caller's earned set so secret trophies they own are shown in full.
+    user_badges = await badge_service.get_user_badges(db_session, message.from_user.id)
+    earned_ids = {ub.badge_id for ub in user_badges}
+
     lines = ["📚 <b>Catalogo Trofei</b>\n"]
     for badge in sorted(all_badges, key=_rarity_key):
+        rarity = RARITY_LABELS.get(badge.rarity, badge.rarity.title())
+        if badge.hidden and badge.id not in earned_ids:
+            # Secret trophy: masked until earned (only its rarity is revealed).
+            lines.append(f"❓ <b>???</b> · {rarity}\n   <i>Trofeo nascosto</i>")
+            continue
         # Plain-Italian unlock requirement instead of the dev-jargon "type ≥ value"
         # (shared wording with /traguardi via badge_service.describe_condition).
         cond_text = badge_service.describe_condition(
             badge.condition_type, badge.condition_value, badge.condition_param
         )
         cond = f"\n   <i>Come sbloccarlo: {esc(cond_text)}</i>" if cond_text else ""
-        rarity = RARITY_LABELS.get(badge.rarity, badge.rarity.title())
         lines.append(
             f"{badge.icon_emoji} <b>{esc(badge.name)}</b> · {rarity}\n"
             f"   {esc(badge.description)}{cond}"

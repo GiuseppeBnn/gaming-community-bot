@@ -39,3 +39,29 @@ class TestRecordPodium:
         tallies = await progress_service.podium_counts(session, 1)
         assert "any" in tallies
         assert tallies["any"].podiums == 0
+
+
+class TestProgressEvents:
+    async def test_counts_events_per_metric(self, session, user_factory):
+        await user_factory(tg_id=1)
+        await progress_service.record_event(session, 1, progress_service.TRIVIA_SUB30, 1)
+        await progress_service.record_event(session, 1, progress_service.TRIVIA_SUB30, 2)
+        await progress_service.record_event(session, 1, progress_service.TRIVIA_LAST_PLACE, 2)
+        await session.commit()
+
+        counts = await progress_service.event_counts(session, 1)
+        assert counts[progress_service.TRIVIA_SUB30] == 2
+        assert counts[progress_service.TRIVIA_LAST_PLACE] == 1
+
+    async def test_idempotent_on_same_source_event(self, session, user_factory):
+        await user_factory(tg_id=1)
+        first = await progress_service.record_event(session, 1, progress_service.TRIVIA_SUB30, 7)
+        await session.commit()
+        dup = await progress_service.record_event(session, 1, progress_service.TRIVIA_SUB30, 7)
+        await session.commit()
+        assert first is not None and dup is None
+        assert (await progress_service.event_counts(session, 1))[progress_service.TRIVIA_SUB30] == 1
+
+    async def test_empty_user_has_no_events(self, session, user_factory):
+        await user_factory(tg_id=1)
+        assert await progress_service.event_counts(session, 1) == {}

@@ -50,6 +50,25 @@ async def has_cosmetic(session: AsyncSession, user_tg_id: int, item_key: str) ->
     return result.scalar_one_or_none() is not None
 
 
+async def owned_cosmetic_keys(session: AsyncSession, user_tg_id: int) -> set[str]:
+    """Set of cosmetic keys the user owns — one query, restricted to the cosmetic
+    catalog so it never picks up ``cons_*`` consumable rows in the shared
+    ``shop_purchases.item_key`` namespace. Feeds the ``catalog_complete`` trophy."""
+    keys = list(catalog_loader.get_cosmetics().keys())
+    if not keys:
+        return set()
+    result = await session.execute(
+        select(ShopPurchase.item_key)
+        .where(
+            ShopPurchase.user_tg_id == user_tg_id,
+            ShopPurchase.success == True,  # noqa: E712
+            ShopPurchase.item_key.in_(keys),
+        )
+        .group_by(ShopPurchase.item_key)
+    )
+    return {row[0] for row in result.all()}
+
+
 async def record_purchase(
     session: AsyncSession, user_tg_id: int, item_key: str, cost: int
 ) -> ShopPurchase:

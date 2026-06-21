@@ -20,7 +20,7 @@ cp catalogs/consumables.example.csv            data/consumables.csv
 - La prima riga è sempre l'**header** (nomi colonna): non rimuoverla.
 
 ## `trophies.csv`
-`slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param`
+`slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param,hidden`
 
 - `slug`: identificatore unico (non cambiarlo dopo l'assegnazione, altrimenti i trofei già sbloccati
   non vengono riconosciuti).
@@ -35,16 +35,24 @@ cp catalogs/consumables.example.csv            data/consumables.csv
   | `bets_won` | scommesse vinte | — |
   | `transfers_made` | trasferimenti | — |
   | `xp` | XP richiesti | — |
+  | `level` | livello richiesto | — |
   | `item_purchases` | quante volte | **key del consumabile** (`cons_*`) |
   | `category_purchases` | quante volte | **key della categoria** (es. `bevande`) |
   | `shop_purchases` | acquisti totali nella Locanda | — |
   | `podium_count` | quanti podi | **game key** (`trivia` · `guess` · `sound`) |
   | `first_place_count` | quanti 1° posti | **game key** |
+  | `event_count` | quante volte | **metric key** (`trivia_last_place` · `trivia_sub30`) |
   | `collection` | — (lascialo vuoto) | **slug dei trofei prerequisiti separati da `;`** |
+  | `catalog_complete` | — (lascialo vuoto) | — (possiedi ogni consumabile **e** ogni cosmetico) |
+  | `all_trophies` | — (lascialo vuoto) | — (Platino: tutti gli altri trofei auto-sbloccabili) |
 
-  Lascia vuoto `condition_type` per un trofeo assegnato solo manualmente. I tipi *item/category/collection*
-  richiedono `condition_param` (senza, la condizione viene ignorata). Le `collection` si sbloccano quando
-  possiedi tutti i trofei elencati (anche a catena nello stesso istante).
+  Lascia vuoto `condition_type` per un trofeo assegnato solo manualmente (es. l'ingresso nel server
+  Discord, in attesa dell'integrazione). I tipi *item/category/event/collection* richiedono
+  `condition_param` (senza, la condizione viene ignorata). Le `collection` si sbloccano quando possiedi
+  tutti i trofei elencati (anche a catena nello stesso istante); `all_trophies` (il Platino) ignora i
+  trofei manuali, quindi resta ottenibile.
+- `hidden`: `true` per un **trofeo nascosto** (mascherato nel catalogo finché non lo sblocchi);
+  qualsiasi altro valore (o colonna assente) = visibile.
 - `xp_reward`: valore mostrato a schermo (gli XP **non** vengono accreditati automaticamente: gli XP si
   guadagnano dagli eventi, non dai trofei).
 

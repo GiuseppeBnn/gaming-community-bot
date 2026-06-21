@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+import logging
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from database.models import Badge, User, UserBadge
-from services import catalog_loader, consumable_service, progress_service
+from services import (
+    catalog_loader,
+    consumable_service,
+    progress_service,
+    shop_service,
+    xp_service,
+)
+
+log = logging.getLogger(__name__)
 
 BADGE_FIRST_STEPS = "first_steps"
 
@@ -21,7 +31,7 @@ RARITY_LABELS = {
 # Fields synced from the catalog onto an existing Badge row (slug is the identity).
 _SYNC_FIELDS = (
     "name", "description", "icon_emoji", "category", "rarity",
-    "xp_reward", "condition_type", "condition_value", "condition_param",
+    "xp_reward", "condition_type", "condition_value", "condition_param", "hidden",
 )
 
 # Plain-text "how to unlock" templates for the **un-parametrized counter**
@@ -34,6 +44,7 @@ _CONDITION_TEMPLATES = {
     "bets_won": "Vinci {v} scommesse",
     "transfers_made": "Invia {v} trasferimenti",
     "xp": "Accumula {v:,} XP",
+    "level": "Raggiungi il livello {v}",
 }
 
 
@@ -68,6 +79,16 @@ def describe_condition(
         return f"Acquista {v} consumabili — {name}"
     if condition_type == "shop_purchases":
         return f"Acquista {v} consumabili nella Locanda"
+    if condition_type == "event_count":
+        when = "per la prima volta" if v <= 1 else f"{v} volte"
+        template = progress_service.EVENT_LABELS.get(condition_param or "")
+        if template is None:  # unknown/missing metric → generic fallback (never None)
+            return f"Completa l'obiettivo {when}"
+        return template.format(when=when)
+    if condition_type == "catalog_complete":
+        return "Possiedi ogni oggetto del negozio: consumabili e cosmetici"
+    if condition_type == "all_trophies":
+        return "Sblocca tutti gli altri trofei"
     if condition_type == "podium_count":
         game = progress_service.GAME_LABELS.get(condition_param or "", "un gioco")
         when = "per la prima volta" if v <= 1 else f"{v} volte"
@@ -83,10 +104,13 @@ def describe_condition(
 
 
 async def sync_trophies(session: AsyncSession, rows: list[dict] | None = None) -> int:
-    """Upsert the trophy catalog (CSV-driven, falling back to built-in defaults).
+    """Reconcile the trophy catalog to the canonical source (CSV-driven, falling
+    back to built-in defaults) — the catalog is the single source of truth.
 
-    Inserts missing trophies and refreshes the display/condition fields of existing
-    ones, keyed by ``slug``. Returns the number of catalog entries. Commits.
+    Inserts missing trophies, refreshes the display/condition fields of existing
+    ones (keyed by ``slug``), and **prunes** any trophy whose slug is no longer in
+    the catalog, cascading its ``user_badges``. Returns the number of catalog
+    entries. Commits.
     """
     if rows is None:
         rows = catalog_loader.load_trophies()
@@ -99,6 +123,21 @@ async def sync_trophies(session: AsyncSession, rows: list[dict] | None = None) -
             for field in _SYNC_FIELDS:
                 if field in entry:
                     setattr(badge, field, entry[field])
+
+    # Prune trophies dropped from the catalog so the DB matches it exactly. Flush
+    # first (autoflush is off) so freshly-inserted slugs are visible to the query.
+    await session.flush()
+    canonical = {entry["slug"] for entry in rows}
+    existing = (await session.execute(select(Badge.id, Badge.slug))).all()
+    stale_ids = [bid for bid, slug in existing if slug not in canonical]
+    if stale_ids:
+        # Delete the user_badges explicitly (DB-agnostic — don't rely on ON DELETE
+        # CASCADE, which SQLite enforces only with PRAGMA foreign_keys=ON).
+        await session.execute(delete(UserBadge).where(UserBadge.badge_id.in_(stale_ids)))
+        await session.execute(delete(Badge).where(Badge.id.in_(stale_ids)))
+        stale_slugs = sorted(slug for _, slug in existing if slug not in canonical)
+        log.info("Pruned %d trofei fuori catalogo: %s", len(stale_ids), ", ".join(stale_slugs))
+
     await session.commit()
     return len(rows)
 
@@ -139,11 +178,13 @@ async def award_badge(
 
 # Condition families → which aggregate query (if any) they need. Drives the lazy
 # computation: a query runs only when a candidate badge actually needs it.
+# Counter conditions read User/Wallet directly (``level`` is derived from XP).
 _COUNTER_CONDITIONS = frozenset(
-    {"onboarding", "balance", "daily_streak", "bets_won", "transfers_made", "xp"}
+    {"onboarding", "balance", "daily_streak", "bets_won", "transfers_made", "xp", "level"}
 )
 _PURCHASE_CONDITIONS = frozenset({"item_purchases", "category_purchases", "shop_purchases"})
 _PODIUM_CONDITIONS = frozenset({"podium_count", "first_place_count"})
+_EVENT_CONDITIONS = frozenset({"event_count"})
 
 
 def _counter_met(user: User, ct: str, cv: int) -> bool:
@@ -159,6 +200,8 @@ def _counter_met(user: User, ct: str, cv: int) -> bool:
         return user.transfers_made >= cv
     if ct == "xp":
         return user.xp >= cv
+    if ct == "level":
+        return xp_service.level_for_xp(user.xp).level >= cv
     return False
 
 
@@ -196,13 +239,23 @@ async def check_and_award_milestones(
     present_types = {b.condition_type for b in candidates}
 
     # Lazy aggregates — one query each, only when a candidate needs it.
+    # ``catalog_complete`` needs the consumable counts too (every item bought ≥1).
+    needs_counts = present_types & (_PURCHASE_CONDITIONS | {"catalog_complete"})
     counts = (
         await consumable_service.purchase_counts(session, user_tg_id)
-        if present_types & _PURCHASE_CONDITIONS else {}
+        if needs_counts else {}
     )
     podium = (
         await progress_service.podium_counts(session, user_tg_id)
         if present_types & _PODIUM_CONDITIONS else {}
+    )
+    events = (
+        await progress_service.event_counts(session, user_tg_id)
+        if present_types & _EVENT_CONDITIONS else {}
+    )
+    cosmetics_owned = (
+        await shop_service.owned_cosmetic_keys(session, user_tg_id)
+        if "catalog_complete" in present_types else set()
     )
 
     def _meets(badge: Badge) -> bool:
@@ -218,6 +271,25 @@ async def check_and_award_milestones(
             )
         if ct == "shop_purchases":
             return cv is not None and consumable_service.total_purchases(counts) >= cv
+        if ct == "event_count":
+            return cv is not None and bool(cp) and events.get(cp, 0) >= cv
+        if ct == "catalog_complete":
+            consumables = catalog_loader.get_consumables()
+            cosmetics = catalog_loader.get_cosmetics()
+            return (
+                bool(consumables) and bool(cosmetics)
+                and all(counts.get(k, 0) >= 1 for k in consumables)
+                and all(k in cosmetics_owned for k in cosmetics)
+            )
+        if ct == "all_trophies":
+            # Own every *other* auto-conditioned trophy. Manual trophies (no
+            # condition_type, e.g. the Discord placeholder) are excluded, so the
+            # platinum stays obtainable. The fixpoint loop lets it unlock in the
+            # same pass as the last collection it depends on.
+            required = {
+                b.slug for b in all_badges if b.condition_type and b.slug != badge.slug
+            }
+            return bool(required) and required <= earned_slugs
         if ct == "podium_count":
             tally = podium.get(cp or "any", progress_service.PodiumTally())
             return cv is not None and tally.podiums >= cv

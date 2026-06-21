@@ -11,7 +11,7 @@ falls back to the built-in Python defaults when a file is missing or yields no
 valid row — so the bot always starts, even cold or in tests.
 
 Expected files (headers shown):
-  trophies.csv      slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param
+  trophies.csv      slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param,hidden
   ranks.csv         slug,name,emoji,min_level
   shop_cosmetics.csv key,name,tag_text,emoji,price
   consumables.csv    key,name,emoji,category,price,description
@@ -33,15 +33,23 @@ log = logging.getLogger(__name__)
 
 RARITIES = ("bronze", "silver", "gold", "platinum")
 # Trophy condition types understood by badge_service.check_and_award_milestones.
-# The first 6 read counters on User/Wallet; the rest are scoped by condition_param
-# (item key / category key / game key / ``;``-separated trophy slugs).
+# Counter conditions read User/Wallet (``level`` is derived from XP); the rest are
+# scoped by condition_param (item/category/game/event-metric key, or ``;``-separated
+# trophy slugs for ``collection``). ``catalog_complete`` / ``all_trophies`` are
+# value-less "own everything" conditions.
 TROPHY_CONDITIONS = (
-    "onboarding", "balance", "daily_streak", "bets_won", "transfers_made", "xp",
+    "onboarding", "balance", "daily_streak", "bets_won", "transfers_made", "xp", "level",
     "item_purchases", "category_purchases", "shop_purchases",
-    "podium_count", "first_place_count", "collection",
+    "podium_count", "first_place_count", "event_count",
+    "collection", "catalog_complete", "all_trophies",
 )
 # Condition types whose ``condition_param`` is mandatory (a scope is required).
-CONDITIONS_REQUIRING_PARAM = ("item_purchases", "category_purchases", "collection")
+CONDITIONS_REQUIRING_PARAM = (
+    "item_purchases", "category_purchases", "event_count", "collection",
+)
+# Condition types that unlock on owning things, not on a numeric threshold → no
+# ``condition_value`` expected.
+CONDITIONS_WITHOUT_VALUE = ("collection", "catalog_complete", "all_trophies")
 
 
 @dataclass(frozen=True)
@@ -93,80 +101,140 @@ _MENU_BRONZE_SLUGS = (
     "t_alette", "t_coda", "t_occhi", "t_caloriemate", "t_pizza", "t_fungo",
     "t_latte", "t_elisir", "t_nuka", "t_estus", "t_torta", "t_gelato",
 )
-_MENU_SILVER_SLUGS = ("menu_specialita", "menu_snack", "menu_bevande", "menu_dessert")
 
 DEFAULT_TROPHIES: list[dict] = [
-    # --- Core progression (existing slugs — kept stable) ---
-    {"slug": "first_steps", "name": "Primi Passi", "description": "Entra a far parte della community.",
-     "icon_emoji": "🚀", "category": "onboarding", "rarity": "bronze", "xp_reward": 50,
-     "condition_type": "onboarding", "condition_value": 1},
-    {"slug": "generous", "name": "Generoso", "description": "Trasferisci CoInn a un altro membro.",
-     "icon_emoji": "🎁", "category": "economia", "rarity": "bronze", "xp_reward": 50,
-     "condition_type": "transfers_made", "condition_value": 1},
-    {"slug": "rich_1k", "name": "Benestante", "description": "Raggiungi 1.000 🪙 nel saldo.",
-     "icon_emoji": "💰", "category": "economia", "rarity": "silver", "xp_reward": 100,
-     "condition_type": "balance", "condition_value": 1000},
-    {"slug": "streak_7", "name": "Costanza", "description": "Riscuoti il daily reward per 7 giorni di fila.",
-     "icon_emoji": "📅", "category": "daily", "rarity": "silver", "xp_reward": 75,
-     "condition_type": "daily_streak", "condition_value": 7},
-    {"slug": "bet_winner", "name": "Scommettitore", "description": "Vinci la tua prima scommessa.",
-     "icon_emoji": "🎰", "category": "scommesse", "rarity": "silver", "xp_reward": 100,
-     "condition_type": "bets_won", "condition_value": 1},
-    {"slug": "xp_500", "name": "Esperto", "description": "Raggiungi 500 XP di esperienza.",
-     "icon_emoji": "⭐", "category": "esperienza", "rarity": "gold", "xp_reward": 0,
-     "condition_type": "xp", "condition_value": 500},
-    {"slug": "rich_10k", "name": "Milionario", "description": "Raggiungi 10.000 🪙 nel saldo.",
-     "icon_emoji": "🤑", "category": "economia", "rarity": "gold", "xp_reward": 250,
-     "condition_type": "balance", "condition_value": 10000},
-    {"slug": "streak_30", "name": "Dedicato", "description": "Riscuoti il daily reward per 30 giorni di fila.",
-     "icon_emoji": "🔥", "category": "daily", "rarity": "gold", "xp_reward": 300,
-     "condition_type": "daily_streak", "condition_value": 30},
-    {"slug": "xp_2000", "name": "Leggenda", "description": "Raggiungi 2.000 XP: sei nell'olimpo.",
-     "icon_emoji": "🏆", "category": "esperienza", "rarity": "platinum", "xp_reward": 0,
-     "condition_type": "xp", "condition_value": 2000},
+    # =====================================================================
+    #  Catalogo canonico (note.txt) — 50 trofei: 1 Platino, 10 Oro,
+    #  12 Argento, 27 Bronzo. Gli slug sono l'identità (sync per slug).
+    # =====================================================================
 
-    # --- Extra milestones on existing counters (from note-implementative) ---
-    {"slug": "xp_100", "name": "Senzaluce", "description": "Raggiungi 100 XP di esperienza.",
-     "icon_emoji": "🕯️", "category": "esperienza", "rarity": "bronze", "xp_reward": 0,
-     "condition_type": "xp", "condition_value": 100},
-    {"slug": "xp_1000", "name": "Dovahkiin", "description": "Raggiungi 1.000 XP di esperienza.",
-     "icon_emoji": "🐲", "category": "esperienza", "rarity": "silver", "xp_reward": 0,
-     "condition_type": "xp", "condition_value": 1000},
-    {"slug": "streak_60", "name": "Determination", "description": "Riscuoti il daily reward per 60 giorni di fila.",
-     "icon_emoji": "❤️", "category": "daily", "rarity": "silver", "xp_reward": 200,
-     "condition_type": "daily_streak", "condition_value": 60},
+    # --- 💠 Platino ---
+    {"slug": "menu_leggenda_inn", "name": "Leggenda di Dragons'Inn",
+     "description": "Sblocca tutti gli altri trofei della Taverna del Drago!",
+     "icon_emoji": "💠", "category": "speciale", "rarity": "platinum", "xp_reward": 0,
+     "condition_type": "all_trophies"},
+
+    # --- 🥇 Oro ---
+    {"slug": "level_150", "name": "Sia lodato il Sole!", "description": "Raggiungi il rango 150 (Leggenda).",
+     "icon_emoji": "☀️", "category": "esperienza", "rarity": "gold", "xp_reward": 500,
+     "condition_type": "level", "condition_value": 150},
     {"slug": "streak_365", "name": "Hardcore Gamer", "description": "Riscuoti il daily reward per 365 giorni di fila.",
      "icon_emoji": "🗓️", "category": "daily", "rarity": "gold", "xp_reward": 500,
      "condition_type": "daily_streak", "condition_value": 365},
-    {"slug": "rich_100k", "name": "Oro colato, baby!", "description": "Accumula 100.000 🪙 CoInn nel saldo.",
+    {"slug": "rich_100k", "name": "Oro colato, baby!", "description": "Accumula 100.000 CoInn nel saldo.",
      "icon_emoji": "🏦", "category": "economia", "rarity": "gold", "xp_reward": 500,
      "condition_type": "balance", "condition_value": 100000},
-    {"slug": "bets_10", "name": "Fortuna Sfacciata", "description": "Vinci 10 scommesse totali.",
-     "icon_emoji": "🍀", "category": "scommesse", "rarity": "bronze", "xp_reward": 75,
-     "condition_type": "bets_won", "condition_value": 10},
-    {"slug": "bets_50", "name": "Scommettitore nato", "description": "Vinci 50 scommesse totali.",
-     "icon_emoji": "🎲", "category": "scommesse", "rarity": "silver", "xp_reward": 150,
-     "condition_type": "bets_won", "condition_value": 50},
     {"slug": "bets_100", "name": "Gran Puntatore", "description": "Vinci 100 scommesse totali.",
      "icon_emoji": "💸", "category": "scommesse", "rarity": "gold", "xp_reward": 300,
      "condition_type": "bets_won", "condition_value": 100},
-
-    # --- Trivia (quiz) podium trophies ---
-    {"slug": "podium_trivia_1", "name": "So di non sapere", "description": "Raggiungi il podio per la prima volta nel Trivia Nerd.",
-     "icon_emoji": "🧠", "category": "trivia", "rarity": "bronze", "xp_reward": 50,
-     "condition_type": "podium_count", "condition_value": 1, "condition_param": "trivia"},
-    {"slug": "podium_trivia_10", "name": "Un travestimento sapiente", "description": "Raggiungi il podio 10 volte nel Trivia Nerd.",
-     "icon_emoji": "🎭", "category": "trivia", "rarity": "bronze", "xp_reward": 100,
-     "condition_type": "podium_count", "condition_value": 10, "condition_param": "trivia"},
-    {"slug": "podium_trivia_50", "name": "Sapere è Potere", "description": "Raggiungi il podio 50 volte nel Trivia Nerd.",
-     "icon_emoji": "📚", "category": "trivia", "rarity": "silver", "xp_reward": 200,
-     "condition_type": "podium_count", "condition_value": 50, "condition_param": "trivia"},
     {"slug": "podium_trivia_100", "name": "So-tutto-io", "description": "Raggiungi il podio 100 volte nel Trivia Nerd.",
      "icon_emoji": "🦉", "category": "trivia", "rarity": "gold", "xp_reward": 400,
      "condition_type": "podium_count", "condition_value": 100, "condition_param": "trivia"},
-    {"slug": "first_trivia_10", "name": "Campione del Trivia", "description": "Arriva 1° per 10 volte nel Trivia Nerd.",
-     "icon_emoji": "🥇", "category": "trivia", "rarity": "silver", "xp_reward": 250,
-     "condition_type": "first_place_count", "condition_value": 10, "condition_param": "trivia"},
+    {"slug": "last_trivia_100", "name": "Re degli Ultimi", "description": "Arriva ultimo 100 volte nel Trivia Nerd.",
+     "icon_emoji": "👑", "category": "trivia", "rarity": "gold", "xp_reward": 400,
+     "condition_type": "event_count", "condition_value": 100, "condition_param": "trivia_last_place",
+     "hidden": True},
+    {"slug": "fast_trivia_100", "name": "Need For Speed", "description": "Completa 100 volte il Trivia Nerd sotto i 30 secondi.",
+     "icon_emoji": "🏎️", "category": "trivia", "rarity": "gold", "xp_reward": 400,
+     "condition_type": "event_count", "condition_value": 100, "condition_param": "trivia_sub30"},
+    {"slug": "shop_100", "name": "Spendere e spandere", "description": "Acquista 100 oggetti totali nel negozio.",
+     "icon_emoji": "💳", "category": "locanda", "rarity": "gold", "xp_reward": 300,
+     "condition_type": "shop_purchases", "condition_value": 100},
+    {"slug": "collezionista", "name": "Collezionista", "description": "Compra ogni tipo di oggetto nel negozio.",
+     "icon_emoji": "🧩", "category": "locanda", "rarity": "gold", "xp_reward": 400,
+     "condition_type": "catalog_complete"},
+    {"slug": "menu_critico", "name": "Critico Gastronomico", "description": "Sblocca tutti i trofei di Bronzo del menù.",
+     "icon_emoji": "🍽️", "category": "locanda", "rarity": "gold", "xp_reward": 400,
+     "condition_type": "collection", "condition_param": ";".join(_MENU_BRONZE_SLUGS)},
+
+    # --- 🥈 Argento ---
+    {"slug": "level_80", "name": "Dovahkiin", "description": "Raggiungi il rango 80.",
+     "icon_emoji": "🐲", "category": "esperienza", "rarity": "silver", "xp_reward": 0,
+     "condition_type": "level", "condition_value": 80},
+    {"slug": "rich_10k", "name": "Tocco Aureo", "description": "Accumula 10.000 CoInn nel saldo.",
+     "icon_emoji": "🤑", "category": "economia", "rarity": "silver", "xp_reward": 250,
+     "condition_type": "balance", "condition_value": 10000},
+    {"slug": "streak_60", "name": "Determination.", "description": "Riscuoti il daily reward per 60 giorni di fila.",
+     "icon_emoji": "❤️", "category": "daily", "rarity": "silver", "xp_reward": 200,
+     "condition_type": "daily_streak", "condition_value": 60},
+    {"slug": "bets_50", "name": "Scommettitore nato", "description": "Vinci 50 scommesse totali.",
+     "icon_emoji": "🎲", "category": "scommesse", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "bets_won", "condition_value": 50},
+    {"slug": "podium_trivia_50", "name": "Sapere è Potere", "description": "Raggiungi il podio 50 volte nel Trivia Nerd.",
+     "icon_emoji": "📚", "category": "trivia", "rarity": "silver", "xp_reward": 200,
+     "condition_type": "podium_count", "condition_value": 50, "condition_param": "trivia"},
+    {"slug": "fast_trivia_50", "name": "Senza fermarsi mai", "description": "Completa 50 volte il Trivia Nerd sotto i 30 secondi.",
+     "icon_emoji": "💨", "category": "trivia", "rarity": "silver", "xp_reward": 200,
+     "condition_type": "event_count", "condition_value": 50, "condition_param": "trivia_sub30"},
+    {"slug": "last_trivia_50", "name": "Non so proprio tutto sull'argomento",
+     "description": "Arriva ultimo 50 volte nel Trivia Nerd.",
+     "icon_emoji": "🙈", "category": "trivia", "rarity": "silver", "xp_reward": 200,
+     "condition_type": "event_count", "condition_value": 50, "condition_param": "trivia_last_place",
+     "hidden": True},
+    {"slug": "shop_50", "name": "Cliente Fisso", "description": "Acquista 50 oggetti totali nel negozio.",
+     "icon_emoji": "🛍️", "category": "locanda", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "shop_purchases", "condition_value": 50},
+    {"slug": "menu_specialita", "name": "Gran Banchetto", "description": "Acquista 10 volte i piatti delle Specialità della Locanda.",
+     "icon_emoji": "🍖", "category": "locanda", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "category_purchases", "condition_value": 10, "condition_param": "specialita"},
+    {"slug": "menu_snack", "name": "Scorta di Sopravvivenza", "description": "Acquista 15 volte gli snack dei Consumabili Leggendari.",
+     "icon_emoji": "📦", "category": "locanda", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "category_purchases", "condition_value": 15, "condition_param": "snack"},
+    {"slug": "menu_bevande", "name": "Astemio", "description": "Acquista 25 volte i drink delle Bevande Leggendarie.",
+     "icon_emoji": "🧪", "category": "locanda", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "category_purchases", "condition_value": 25, "condition_param": "bevande"},
+    {"slug": "menu_dessert", "name": "Ghiottone", "description": "Acquista 10 volte i dolci della categoria Dessert.",
+     "icon_emoji": "🍰", "category": "locanda", "rarity": "silver", "xp_reward": 150,
+     "condition_type": "category_purchases", "condition_value": 10, "condition_param": "dessert"},
+
+    # --- 🥉 Bronzo ---
+    {"slug": "level_30", "name": "Senzaluce", "description": "Raggiungi il rango 30.",
+     "icon_emoji": "🕯️", "category": "esperienza", "rarity": "bronze", "xp_reward": 0,
+     "condition_type": "level", "condition_value": 30},
+    {"slug": "rich_1k", "name": "Spiccioli", "description": "Accumula 1.000 CoInn nel saldo.",
+     "icon_emoji": "💰", "category": "economia", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "balance", "condition_value": 1000},
+    {"slug": "discord_origin", "name": "L'origine del sogno", "description": "Entra a far parte del server Discord.",
+     "icon_emoji": "🌌", "category": "community", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": None},
+    {"slug": "first_steps", "name": "Ehi, ti sei svegliato finalmente!",
+     "description": "Partecipa alla tua prima attività nella community.",
+     "icon_emoji": "🚀", "category": "onboarding", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "onboarding", "condition_value": 1},
+    {"slug": "generous", "name": "L'unione fa la forza", "description": "Trasferisci CoInn a un altro membro della community.",
+     "icon_emoji": "🤝", "category": "economia", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "transfers_made", "condition_value": 1},
+    {"slug": "streak_7", "name": "Il nostro pane quotidiano", "description": "Riscuoti il daily reward per 7 giorni di fila.",
+     "icon_emoji": "📅", "category": "daily", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "daily_streak", "condition_value": 7},
+    {"slug": "streak_30", "name": "Un mese di noi", "description": "Riscuoti il daily reward per 30 giorni di fila.",
+     "icon_emoji": "🔥", "category": "daily", "rarity": "bronze", "xp_reward": 75,
+     "condition_type": "daily_streak", "condition_value": 30},
+    {"slug": "bet_winner", "name": "Soldi facili", "description": "Vinci la tua prima scommessa.",
+     "icon_emoji": "🎰", "category": "scommesse", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "bets_won", "condition_value": 1},
+    {"slug": "bets_10", "name": "Fortuna Sfacciata", "description": "Vinci 10 scommesse totali.",
+     "icon_emoji": "🍀", "category": "scommesse", "rarity": "bronze", "xp_reward": 75,
+     "condition_type": "bets_won", "condition_value": 10},
+    {"slug": "podium_trivia_1", "name": "So di non sapere", "description": "Raggiungi il podio per la prima volta nel Trivia Nerd.",
+     "icon_emoji": "🧠", "category": "trivia", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "podium_count", "condition_value": 1, "condition_param": "trivia"},
+    {"slug": "podium_trivia_10", "name": "Un travestimento sapiente", "description": "Raggiungi il podio 10 volte al Trivia Nerd.",
+     "icon_emoji": "🎭", "category": "trivia", "rarity": "bronze", "xp_reward": 100,
+     "condition_type": "podium_count", "condition_value": 10, "condition_param": "trivia"},
+    {"slug": "fast_trivia_10", "name": "Velocista", "description": "Completa 10 volte il Trivia Nerd sotto i 30 secondi.",
+     "icon_emoji": "⚡", "category": "trivia", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "event_count", "condition_value": 10, "condition_param": "trivia_sub30"},
+    {"slug": "last_trivia_10", "name": "Rimandato", "description": "Arriva ultimo 10 volte nel Trivia Nerd.",
+     "icon_emoji": "🐌", "category": "trivia", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "event_count", "condition_value": 10, "condition_param": "trivia_last_place",
+     "hidden": True},
+    {"slug": "shop_1", "name": "Cosa compri di bello?", "description": "Acquista il tuo primo oggetto nel negozio.",
+     "icon_emoji": "🛒", "category": "locanda", "rarity": "bronze", "xp_reward": 25,
+     "condition_type": "shop_purchases", "condition_value": 1},
+    {"slug": "shop_10", "name": "Shopping compulsivo", "description": "Acquista 10 oggetti totali nel negozio.",
+     "icon_emoji": "🧾", "category": "locanda", "rarity": "bronze", "xp_reward": 50,
+     "condition_type": "shop_purchases", "condition_value": 10},
 
     # --- 🍖 Menu della Locanda: per-item bronze (buy at least once) ---
     {"slug": "t_alette", "name": "Addestratore di Draghi", "description": "Acquista le Alette di Drago croccanti.",
@@ -205,29 +273,6 @@ DEFAULT_TROPHIES: list[dict] = [
     {"slug": "t_gelato", "name": "Custode del Keyblade", "description": "Acquista il Gelato al Sale Marino.",
      "icon_emoji": "🍦", "category": "locanda", "rarity": "bronze", "xp_reward": 25,
      "condition_type": "item_purchases", "condition_value": 1, "condition_param": "cons_gelato_sale_marino"},
-
-    # --- 🍖 Menu della Locanda: per-category silver aggregates ---
-    {"slug": "menu_specialita", "name": "Gran Banchetto", "description": "Acquista 10 piatti delle Specialità della Locanda.",
-     "icon_emoji": "🍖", "category": "locanda", "rarity": "silver", "xp_reward": 150,
-     "condition_type": "category_purchases", "condition_value": 10, "condition_param": "specialita"},
-    {"slug": "menu_snack", "name": "Scorta di Sopravvivenza", "description": "Acquista 15 Consumabili Leggendari.",
-     "icon_emoji": "📦", "category": "locanda", "rarity": "silver", "xp_reward": 150,
-     "condition_type": "category_purchases", "condition_value": 15, "condition_param": "snack"},
-    {"slug": "menu_bevande", "name": "Astemio", "description": "Acquista 25 Bevande Leggendarie.",
-     "icon_emoji": "🧪", "category": "locanda", "rarity": "silver", "xp_reward": 150,
-     "condition_type": "category_purchases", "condition_value": 25, "condition_param": "bevande"},
-    {"slug": "menu_dessert", "name": "Ghiottone", "description": "Acquista 10 Dessert.",
-     "icon_emoji": "🍰", "category": "locanda", "rarity": "silver", "xp_reward": 150,
-     "condition_type": "category_purchases", "condition_value": 10, "condition_param": "dessert"},
-
-    # --- 🍖 Menu della Locanda: collection trophies ---
-    {"slug": "menu_critico", "name": "Critico Gastronomico", "description": "Sblocca tutti i trofei di bronzo del menù.",
-     "icon_emoji": "🍽️", "category": "locanda", "rarity": "gold", "xp_reward": 400,
-     "condition_type": "collection", "condition_param": ";".join(_MENU_BRONZE_SLUGS)},
-    {"slug": "menu_leggenda_inn", "name": "Leggenda di Dragons'Inn", "description": "Sblocca tutti i trofei della Taverna del Drago.",
-     "icon_emoji": "💠", "category": "locanda", "rarity": "platinum", "xp_reward": 0,
-     "condition_type": "collection",
-     "condition_param": ";".join(("menu_critico", *_MENU_SILVER_SLUGS))},
 ]
 
 # Named tiers spread evenly across levels (every ~5 levels). Editable via
@@ -362,8 +407,9 @@ def load_trophies(catalog_dir: str | None = None) -> list[dict]:
         if ctype in CONDITIONS_REQUIRING_PARAM and not cparam:
             log.warning("trophies.csv riga %d: condition_type '%s' richiede condition_param, ignorato.", i, ctype)
             ctype = None
-        # ``collection`` unlocks on owning other trophies, not on a numeric threshold.
-        needs_value = ctype is not None and ctype != "collection"
+        # "Own everything" conditions unlock on possession, not a numeric threshold.
+        needs_value = ctype is not None and ctype not in CONDITIONS_WITHOUT_VALUE
+        hidden = _clean(row, "hidden").lower() in ("1", "true", "yes", "si", "sì")
         out.append({
             "slug": slug, "name": name,
             "description": _clean(row, "description"),
@@ -374,6 +420,7 @@ def load_trophies(catalog_dir: str | None = None) -> list[dict]:
             "condition_type": ctype,
             "condition_value": cval if (needs_value and cval is not None and cval >= 0) else None,
             "condition_param": cparam if ctype is not None else None,
+            "hidden": hidden,
         })
         seen.add(slug)
 

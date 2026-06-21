@@ -837,17 +837,35 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     awards = await quiz_service.award_prizes(db_session, quiz_id)
     await quiz_service.set_status(db_session, quiz_id, "finished")
 
-    # Record Trivia podium finishes (top 3) and re-check trophies for them (covers
-    # the podium trophies plus any XP/coin milestone hit by the quiz rewards).
-    podium_users = ranked[:3]
-    for rank, row in enumerate(podium_users, start=1):
+    # Record Trivia progress for the trophy engine, then re-check trophies for
+    # everyone it could affect (not just the podium):
+    #   • podium, top 3          → game_podiums (podium_count / first_place_count)
+    #   • last place, ≥2 players → "trivia_last_place" event (hidden trophies)
+    #   • completed under 30 s   → "trivia_sub30" event (Velocista / Need For Speed …)
+    # plus any XP/coin milestone hit by the quiz rewards. record_event is idempotent
+    # per (user, metric, quiz) so a re-close cannot double-count.
+    affected: set[int] = set()
+    for rank, row in enumerate(ranked[:3], start=1):
         await progress_service.record_podium(db_session, row.user_tg_id, "trivia", rank, quiz_id)
-    await db_session.flush()  # make the podium rows visible to the count query
+        affected.add(row.user_tg_id)
+    if len(ranked) >= 2:
+        last = ranked[-1]
+        await progress_service.record_event(
+            db_session, last.user_tg_id, progress_service.TRIVIA_LAST_PLACE, quiz_id
+        )
+        affected.add(last.user_tg_id)
+    for row in ranked:
+        if row.completion_ms < 30_000:  # total play time under 30 seconds
+            await progress_service.record_event(
+                db_session, row.user_tg_id, progress_service.TRIVIA_SUB30, quiz_id
+            )
+            affected.add(row.user_tg_id)
+    await db_session.flush()  # make the new rows visible to the count queries
     trophy_notes: dict[int, list] = {}
-    for row in podium_users:
-        earned = await badge_service.check_and_award_milestones(db_session, row.user_tg_id)
+    for uid in affected:
+        earned = await badge_service.check_and_award_milestones(db_session, uid)
         if earned:
-            trophy_notes[row.user_tg_id] = earned
+            trophy_notes[uid] = earned
     await db_session.commit()
 
     # Announce newly unlocked trophies in the group, tagging each finisher.
