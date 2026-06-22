@@ -75,7 +75,7 @@ async def cb_accept_rules(
         f"💰 Usa /daily per il tuo primo premio giornaliero!\n\n"
         f"<b>Comandi disponibili:</b>\n"
         f"/profilo — Il tuo profilo\n"
-        f"/saldo — Saldo e movimenti\n"
+        f"/saldo — Saldo residuo\n"
         f"/scommesse — Scommesse aperte\n"
         f"/trofei — I tuoi trofei\n"
         f"/help — Tutti i comandi"

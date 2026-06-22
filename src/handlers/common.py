@@ -214,7 +214,7 @@ async def cmd_start(
     await message.answer(
         f"🎮 <b>Bentornato, {name}{username_str}!</b>\n\n"
         f"/profilo — Il tuo profilo\n"
-        f"/saldo — Saldo e movimenti\n"
+        f"/saldo — Saldo residuo\n"
         f"/daily — Premio giornaliero\n"
         f"/scommesse — Scommesse aperte\n"
         f"/trofei — I tuoi trofei\n"
