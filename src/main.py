@@ -60,7 +60,7 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="crea_scommessa", description="Crea una scommessa"),
     BotCommand(command="quiz", description="🧠 Quiz: gioca o gestisci"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
-    BotCommand(command="catalogo_badge", description="Tutti i trofei"),
+    BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
     BotCommand(command="locanda", description="🍺 Locanda: tag e consumabili"),
     BotCommand(command="comandi", description="Guida ai comandi"),

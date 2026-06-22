@@ -27,6 +27,15 @@ RARITY_LABELS = {
     "gold": "🥇 Oro",
     "platinum": "💠 Platino",
 }
+# Section headers for the trophy screens, mirroring note.txt's canonical layout
+# ("Trofei <tier>", platinum singular). /catalogo_trofei and /trofei group entries
+# by tier under these instead of repeating the rarity on every single trophy.
+RARITY_HEADERS = {
+    "bronze": "🥉 Trofei Bronzo",
+    "silver": "🥈 Trofei Argento",
+    "gold": "🥇 Trofei Oro",
+    "platinum": "🏆 Trofeo Platino",
+}
 
 # Fields synced from the catalog onto an existing Badge row (slug is the identity).
 _SYNC_FIELDS = (
@@ -35,8 +44,9 @@ _SYNC_FIELDS = (
 )
 
 # Plain-text "how to unlock" templates for the **un-parametrized counter**
-# conditions. Keeps the dev-jargon "type ≥ value" out of the user-facing trophy
-# screens; shared by /catalogo_badge and /trofei so they render identically.
+# conditions. The trophy screens show each trophy's curated `description`; this is
+# the fallback the renderer uses only when a (CSV-authored) trophy left it blank,
+# so an entry never appears without its goal.
 _CONDITION_TEMPLATES = {
     "onboarding": "Completa la registrazione",
     "balance": "Raggiungi {v:,} CoInn",

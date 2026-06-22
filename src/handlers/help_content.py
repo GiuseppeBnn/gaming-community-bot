@@ -113,8 +113,8 @@ _COMMANDS: list[CommandDoc] = [
         details="Mostra i trofei che hai sbloccato, raggruppati per rarità, e il tuo rango XP attuale.",
     ),
     CommandDoc(
-        "catalogo_badge", "Tutti i trofei ottenibili", "🏆 Progressione",
-        usage="/catalogo_badge",
+        "catalogo_trofei", "Tutti i trofei ottenibili", "🏆 Progressione",
+        usage="/catalogo_trofei",
         details="L'elenco completo dei trofei disponibili e di come si sbloccano.",
     ),
     CommandDoc(

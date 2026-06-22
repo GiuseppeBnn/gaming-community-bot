@@ -1,5 +1,5 @@
-"""describe_condition: plain-Italian unlock text shared by /catalogo_badge and
-/trofei (no dev-jargon 'type ≥ value')."""
+"""describe_condition: plain-Italian unlock text used as the trophy-screen
+fallback when a trophy has no curated description (no dev-jargon 'type ≥ value')."""
 
 from __future__ import annotations
 

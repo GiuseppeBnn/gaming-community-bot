@@ -364,7 +364,7 @@ async def cb_consumable_execute(callback: CallbackQuery, db_session: AsyncSessio
 
     text = (
         f"✅ <b>Gustato!</b> {item.emoji}\n\n"
-        f"Hai consumato <b>{esc(item.name)}</b> — finisce nella tua 🎒 Dispensa.\n"
+        f"Hai acquistato <b>{esc(item.name)}</b> — finisce nella tua 🎒 Dispensa.\n"
         f"💸 Hai speso <b>{item.price:,} 🪙</b>."
     )
     await callback.message.edit_text(text, reply_markup=get_pantry_kb())
