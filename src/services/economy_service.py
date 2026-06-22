@@ -14,7 +14,7 @@ from exceptions.economy import (
     WalletNotFoundError,
 )
 
-_DAILY_COOLDOWN = timedelta(hours=20)
+_DAILY_COOLDOWN = timedelta(hours=24)
 _MIN_TRANSFER = 1
 _MAX_TRANSFER = 1_000_000
 
@@ -99,10 +99,17 @@ async def transfer(
     from_tg_id: int,
     to_tg_id: int,
     amount: int,
+    from_name: str | None = None,
+    to_name: str | None = None,
 ) -> None:
     """Transfer `amount` coins between two users.
     Raises SelfTransferError, InsufficientFundsError, or WalletNotFoundError.
     Does NOT commit — caller is responsible for the commit.
+
+    `from_name`/`to_name` are display labels stored in the two ledger entries so
+    the counterparty shows up by name in /storico (a transfer's counterparty is
+    not in a column — `transfer_out` only has `from_tg_id`, `transfer_in` only
+    `to_tg_id`). Falls back to the numeric id when a name is not supplied.
     """
     if from_tg_id == to_tg_id:
         raise SelfTransferError()
@@ -125,12 +132,12 @@ async def transfer(
     await debit(
         session, from_tg_id, amount,
         TransactionType.transfer_out,
-        f"Trasferimento a {to_tg_id}",
+        f"Trasferimento a {to_name or to_tg_id}",
     )
     await credit(
         session, to_tg_id, amount,
         TransactionType.transfer_in,
-        f"Trasferimento da {from_tg_id}",
+        f"Trasferimento da {from_name or from_tg_id}",
     )
 
     # Increment transfers_made counter for badge tracking (lock the row so the
@@ -166,8 +173,8 @@ async def claim_daily(
         last = user.last_daily_claim
         elapsed = now - last
         if elapsed < _DAILY_COOLDOWN:
-            remaining = (_DAILY_COOLDOWN - elapsed).total_seconds() / 3600
-            raise DailyAlreadyClaimedError(hours_remaining=remaining)
+            remaining_seconds = int((_DAILY_COOLDOWN - elapsed).total_seconds())
+            raise DailyAlreadyClaimedError(seconds_remaining=remaining_seconds)
 
     # Determine new streak before updating last_daily_claim
     if user.last_daily_claim is not None and (now - user.last_daily_claim) < timedelta(hours=48):

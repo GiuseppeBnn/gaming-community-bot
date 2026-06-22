@@ -31,6 +31,8 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_streak INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS bets_won INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS transfers_made INTEGER NOT NULL DEFAULT 0",
+    # users: bot-level ban flag (silent-drop middleware) added after initial deploy
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT false",
     # quizzes: per-rank custom prizes + decreasing consolation (added after initial deploy)
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_first INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_second INTEGER NOT NULL DEFAULT 0",
@@ -39,11 +41,16 @@ _MIGRATIONS: list[str] = [
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS prize_min INTEGER NOT NULL DEFAULT 0",
     # users: progression / cosmetics + daily-XP cap bookkeeping (added after initial deploy)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS cosmetic_tag VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS active_tags_json VARCHAR(512)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS rank_slug VARCHAR(64)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_today INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS xp_today_date VARCHAR(10)",
     # badges → trophies: PlayStation-style rarity tier
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS rarity VARCHAR(16) NOT NULL DEFAULT 'bronze'",
+    # badges → trophies: scope for parametrized conditions (item/category/game/collection)
+    "ALTER TABLE badges ADD COLUMN IF NOT EXISTS condition_param VARCHAR(128)",
+    # badges → trophies: hidden ("secret") flag, masked in the catalog until earned
+    "ALTER TABLE badges ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT false",
     # wallets/ledger: balances can exceed int32 (airdrops/payouts accumulate).
     # ALTER TYPE to the same type is a no-op → idempotent like the entries above.
     "ALTER TABLE wallets ALTER COLUMN coins TYPE BIGINT",

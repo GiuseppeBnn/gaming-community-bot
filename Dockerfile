@@ -18,7 +18,10 @@ COPY src/ ./src/
 # Writable data dir for the SQLite fallback (overridden by the ./data volume in compose).
 RUN mkdir -p /app/data \
     && useradd -m -u 1001 botuser \
-    && chown -R botuser:botuser /app
+    && chown -R botuser:botuser /app   \
+    && mkdir -p /app/backups && chown -R botuser:botuser /app/backups
+
+
 USER botuser
 
 CMD ["python", "src/main.py"]

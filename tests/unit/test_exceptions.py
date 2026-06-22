@@ -45,16 +45,20 @@ class TestWalletNotFoundError:
 
 class TestDailyAlreadyClaimedError:
     def test_attribute(self):
-        err = DailyAlreadyClaimedError(hours_remaining=5.5)
-        assert err.hours_remaining == pytest.approx(5.5)
+        err = DailyAlreadyClaimedError(seconds_remaining=5 * 3600 + 30 * 60)
+        assert err.seconds_remaining == 5 * 3600 + 30 * 60
+        assert err.hours_remaining == pytest.approx(5.5)  # back-compat
 
-    def test_message_contains_hours(self):
-        err = DailyAlreadyClaimedError(hours_remaining=3.25)
-        assert "3.2" in str(err)  # formatted to 1 decimal place
+    def test_message_is_human_friendly(self):
+        # No more decimal hours ("3.2 ore"): a clean compact duration.
+        err = DailyAlreadyClaimedError(seconds_remaining=3 * 3600 + 15 * 60)
+        assert "3h 15min" in str(err)
+        assert "3.2" not in str(err)
 
-    def test_fractional_hours(self):
-        err = DailyAlreadyClaimedError(hours_remaining=0.1)
-        assert err.hours_remaining == pytest.approx(0.1)
+    def test_sub_minute(self):
+        err = DailyAlreadyClaimedError(seconds_remaining=30)
+        assert err.seconds_remaining == 30
+        assert "meno di 1 minuto" in str(err)
 
 
 class TestSelfTransferError:

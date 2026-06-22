@@ -107,6 +107,7 @@ async def add_question(
     options: list[str],
     correct_option_id: int,
     explanation: str | None,
+    time_limit_seconds: int = 0,
 ) -> QuizQuestion:
     position = (
         await session.execute(
@@ -120,7 +121,7 @@ async def add_question(
         options_json=json.dumps(options, ensure_ascii=False),
         correct_option_id=correct_option_id,
         explanation=(explanation or None) and explanation[:200],
-        open_period=0,  # no time limit
+        open_period=max(0, time_limit_seconds),  # per-question time limit (0 = none)
     )
     session.add(question)
     await session.flush()
@@ -147,10 +148,24 @@ def question_options(question: QuizQuestion) -> list[str]:
     return json.loads(question.options_json)
 
 
-async def get_quiz(session: AsyncSession, quiz_id: int) -> Quiz | None:
-    result = await session.execute(
-        select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
-    )
+def time_limit_seconds(quiz: Quiz) -> int:
+    """Per-question time limit of a quiz (uniform across questions; 0 = none).
+
+    Read from the first question's ``open_period`` — the creation flow sets the
+    same limit on every question. 0 when the quiz has no questions yet.
+    """
+    return quiz.questions[0].open_period if quiz.questions else 0
+
+
+async def get_quiz(
+    session: AsyncSession, quiz_id: int, *, for_update: bool = False
+) -> Quiz | None:
+    stmt = select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
+    if for_update:
+        # Row-level lock so two concurrent closes can't both pass the status check
+        # and pay prizes twice. No-op on SQLite (dev/tests), real on Postgres (prod).
+        stmt = stmt.with_for_update()
+    result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
 
@@ -224,10 +239,13 @@ async def record_answer(
     question_id: int,
     user_tg_id: int,
     selected_option_id: int,
+    response_ms: int = 0,
 ) -> AnswerOutcome | None:
     """Record a private-chat answer. Returns None if the question is invalid.
 
-    Idempotent per (question, user): a duplicate returns recorded=False.
+    ``response_ms`` is how long the user took on this question; ``selected_option_id
+    = -1`` marks a timeout (no option chosen → wrong). Idempotent per (question,
+    user): a duplicate returns recorded=False.
     """
     question = (
         await session.execute(
@@ -259,7 +277,7 @@ async def record_answer(
             user_tg_id=user_tg_id,
             selected_option_id=selected_option_id,
             is_correct=is_correct,
-            response_ms=0,
+            response_ms=max(0, response_ms),
             answered_at=_now(),
         )
     )
@@ -284,10 +302,20 @@ class PodiumRow:
     user_tg_id: int
     correct: int
     finished_at: datetime
+    completion_ms: int = 0                  # sum of per-question response times (ms)
+    completion_seconds: int | None = None   # same, rounded to seconds, for display
 
 
 async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
-    """Finishers (answered every question) ranked by correct DESC, finish time ASC."""
+    """Finishers (answered every question) ranked by correct DESC, then by the
+    player's **completion time ASC** (fastest first), with the absolute
+    ``finished_at`` (arrival order) only as a final tie-break.
+
+    Each row carries ``completion_ms``/``completion_seconds`` = the **sum of the
+    player's per-question response times** (so it includes the first question and
+    works for a single-question quiz), measuring how long *that user* actually
+    took. On equal correct answers the faster player ranks higher (§19).
+    """
     total = await total_questions(session, quiz_id)
     if total == 0:
         return []
@@ -297,17 +325,45 @@ async def podium(session: AsyncSession, quiz_id: int) -> list[PodiumRow]:
             func.sum(func.cast(QuizAnswer.is_correct, Integer)).label("correct"),
             func.count().label("answered"),
             func.max(QuizAnswer.answered_at).label("finished_at"),
+            func.sum(QuizAnswer.response_ms).label("total_ms"),
         )
         .where(QuizAnswer.quiz_id == quiz_id)
         .group_by(QuizAnswer.user_tg_id)
     )
-    rows = [
-        PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0), finished_at=r[3])
-        for r in result.all()
-        if int(r[2] or 0) >= total
-    ]
-    rows.sort(key=lambda r: (-r.correct, r.finished_at))
+    rows: list[PodiumRow] = []
+    for r in result.all():
+        answered = int(r[2] or 0)
+        if answered < total:
+            continue
+        total_ms = int(r[4] or 0)
+        rows.append(
+            PodiumRow(user_tg_id=r[0], correct=int(r[1] or 0),
+                      finished_at=r[3], completion_ms=total_ms,
+                      completion_seconds=round(total_ms / 1000))
+        )
+    # Most correct first; on a tie the faster player (lower completion_ms) wins,
+    # and only if those also tie do we fall back to who arrived first.
+    rows.sort(key=lambda r: (-r.correct, r.completion_ms, r.finished_at))
     return rows
+
+
+async def user_completion_seconds(
+    session: AsyncSession, quiz_id: int, user_tg_id: int
+) -> int | None:
+    """Seconds the user actually spent playing: the sum of their per-question
+    response times. Works with a single question too; ``None`` only when the user
+    has not answered anything yet.
+    """
+    total_ms, n = (
+        await session.execute(
+            select(func.sum(QuizAnswer.response_ms), func.count()).where(
+                QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == user_tg_id
+            )
+        )
+    ).one()
+    if int(n or 0) < 1:
+        return None
+    return round(int(total_ms or 0) / 1000)
 
 
 @dataclass
@@ -341,26 +397,46 @@ def format_prize_summary(quiz: Quiz) -> str:
     return "nessun premio"
 
 
-async def _grant_xp(session: AsyncSession, quiz_id: int) -> None:
-    """XP for everyone who answered at least one question correctly."""
-    xp = settings.quiz_xp_per_correct
-    if not xp:
-        return
-    scorers = await session.execute(
-        select(QuizAnswer.user_tg_id, func.sum(func.cast(QuizAnswer.is_correct, Integer)))
-        .where(QuizAnswer.quiz_id == quiz_id)
-        .group_by(QuizAnswer.user_tg_id)
-    )
-    for uid, correct in scorers.all():
-        if correct:
-            # Quiz is an admin-curated event → uncapped XP, via the single XP mutator.
-            await xp_service.grant_xp(
-                session, uid, int(correct) * xp, XpSource.quiz, capped=False
+async def _grant_xp(session: AsyncSession, quiz_id: int, ranked: list[PodiumRow]) -> None:
+    """Event XP for a closed quiz (uncapped) — rewards participation, not just wins:
+
+    * everyone who answered at least one question gets ``quiz_xp_participation``;
+    * each correct answer adds ``quiz_xp_per_correct``;
+    * the top-3 finishers get an extra podium bonus (1st/2nd/3rd).
+
+    Quiz is an admin-curated event, so all of it is uncapped, via the single XP mutator.
+    """
+    participation = max(0, settings.quiz_xp_participation)
+    per_correct = max(0, settings.quiz_xp_per_correct)
+
+    if participation or per_correct:
+        stats = await session.execute(
+            select(
+                QuizAnswer.user_tg_id,
+                func.sum(func.cast(QuizAnswer.is_correct, Integer)),
             )
+            .where(QuizAnswer.quiz_id == quiz_id)
+            .group_by(QuizAnswer.user_tg_id)
+        )
+        for uid, correct in stats.all():
+            amount = participation + int(correct or 0) * per_correct
+            if amount > 0:
+                await xp_service.grant_xp(session, uid, amount, XpSource.quiz, capped=False)
+
+    podium_bonus = (
+        settings.quiz_xp_podium_first,
+        settings.quiz_xp_podium_second,
+        settings.quiz_xp_podium_third,
+    )
+    for i, row in enumerate(ranked[:3]):
+        bonus = max(0, podium_bonus[i])
+        if bonus > 0:
+            await xp_service.grant_xp(session, row.user_tg_id, bonus, XpSource.quiz, capped=False)
 
 
 async def award_prizes(session: AsyncSession, quiz_id: int) -> list[PrizeAward]:
-    """Pay prizes to the finishers and grant XP per correct answer. No commit.
+    """Pay coin prizes to the finishers and grant event XP (participation +
+    correct answers + podium bonus, see ``_grant_xp``). No commit.
 
     Explicit per-rank model (preferred): podium gets first/second/third; every
     finisher below the podium gets a consolation decreasing linearly from
@@ -371,8 +447,10 @@ async def award_prizes(session: AsyncSession, quiz_id: int) -> list[PrizeAward]:
     if quiz is None:
         return []
 
-    await _grant_xp(session, quiz_id)
     ranked = await podium(session, quiz_id)
+    # Grant XP first — participation/correctness XP reaches every player who answered,
+    # even when nobody finished (ranked == []); the podium bonus uses `ranked`.
+    await _grant_xp(session, quiz_id, ranked)
     if not ranked:
         return []
 

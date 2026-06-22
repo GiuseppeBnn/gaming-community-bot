@@ -251,7 +251,40 @@ async def clear_warnings(
     to_clear = warns if count is None else warns[:count]
     for w in to_clear:
         w.active = False
+    # Flush so a subsequent active_warning_count() in the same session sees the
+    # deactivation: the session is autoflush=False, so without this the count
+    # query would still read the pre-clear rows (e.g. "restano 2" after removing
+    # 1 of 2). Mirrors add_warning()'s flush-before-count.
+    await session.flush()
     return len(to_clear)
+
+
+# ---------------------------------------------------------------------------
+# Bot-level ban
+# ---------------------------------------------------------------------------
+
+async def set_user_banned(session: AsyncSession, tg_id: int, banned: bool) -> bool:
+    """Set/clear the bot-level ban flag on a user. Returns True if the ban state is
+    now persisted for this user.
+
+    When banning a user who has **no row yet** (e.g. banned before they ever talked
+    to the bot), a minimal stub row is created so the ban sticks — otherwise their
+    first update would upsert a fresh, *unbanned* row and slip past
+    BannedUserMiddleware. Name/wallet are backfilled on their first contact. Clearing
+    a ban on a missing row is a no-op (the default is already False).
+
+    No commit — the caller owns the transaction and is responsible for invalidating
+    the BannedUserMiddleware cache afterwards."""
+    result = await session.execute(
+        update(User).where(User.tg_id == tg_id).values(is_banned=banned)
+    )
+    if (result.rowcount or 0) > 0:
+        return True
+    if not banned:
+        return False
+    session.add(User(tg_id=tg_id, full_name="", is_banned=True))
+    session.add(Wallet(tg_id=tg_id, coins=0))
+    return True
 
 
 # ---------------------------------------------------------------------------

@@ -23,14 +23,33 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import TransactionType
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
-from filters.admin_filter import IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers._privacy import redirect_to_private
 from handlers._targeting import ResolvedTarget, resolve_target
-from services import admin_service, economy_service, group_registry, moderation_service, xp_service
+from middlewares import ban_guard
+
+# Admin commands that must never answer in the group (data exposure / noise):
+# in a group they redirect the admin to the private dashboard.
+_ADMIN_PRIVATE_NOTICE = "🔒 Comando riservato agli admin: usalo in chat privata col bot."
+from services import (
+    admin_service,
+    catalog_loader,
+    economy_service,
+    group_registry,
+    moderation_service,
+    xp_service,
+)
 from services.xp_service import XpSource
-from utils.text import esc
+from utils.text import chunk_blocks, esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# 100%-admin router: gate every message/callback at the root, so no handler can
+# ever be reached by a non-admin even if a per-handler filter is forgotten. The
+# only authority is is_admin = env owner (admin_ids) OR current Telegram group
+# admin/creator; everyone else is denied (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
 
@@ -186,7 +205,9 @@ async def cmd_dai_xp(message: Message, command: CommandObject, db_session: Async
         db_session, message.from_user.id, "xp_grant", target_tg_id=target.tg_id, amount=amount
     )
     await db_session.commit()
-    extra = f" (nuovo rango: {esc(res.new_rank.name)})" if res.new_rank else ""
+    extra = f" → <b>Livello {res.new_level}</b>" if res.leveled_up else ""
+    if res.new_rank:
+        extra += f" · nuovo rango {esc(res.new_rank.name)}"
     await message.reply(f"⚡ Assegnati <b>+{res.granted:,} XP</b> a {target.display_name}{extra}.")
 
 
@@ -208,7 +229,41 @@ async def cmd_set_xp(message: Message, command: CommandObject, db_session: Async
         db_session, message.from_user.id, "xp_set", target_tg_id=target.tg_id, amount=new_xp
     )
     await db_session.commit()
-    await message.reply(f"⚡ XP di {target.display_name} impostati a <b>{new_xp:,}</b>.")
+    level = xp_service.level_for_xp(new_xp).level
+    await message.reply(
+        f"⚡ XP di {target.display_name} impostati a <b>{new_xp:,}</b> (Livello {level})."
+    )
+
+
+@router.message(Command("lista_ranghi"), IsAdminFilter())
+async def cmd_lista_ranghi(message: Message) -> None:
+    """Admin: show the level curve and how the named tiers map onto level ranges."""
+    ranks = catalog_loader.get_ranks()
+    growth_pct = round((settings.xp_level_growth - 1) * 100)
+    blocks = [
+        "📊 <b>Sistema Ranghi &amp; Livelli</b>\n"
+        f"Il livello sale con gli XP: il <b>Lv 1→2</b> costa <b>{settings.xp_level_base} XP</b>, "
+        f"e ogni livello successivo costa <b>+{growth_pct}%</b> del precedente."
+    ]
+
+    tier_lines = ["🎖️ <b>Fasce (nomi rango)</b>"]
+    for idx, r in enumerate(ranks):
+        if idx + 1 < len(ranks):
+            end = ranks[idx + 1].min_level - 1
+            span = f"Lv {r.min_level}" if end <= r.min_level else f"Lv {r.min_level}–{end}"
+        else:
+            span = f"Lv {r.min_level}+"
+        xp_at = xp_service.xp_to_reach_level(r.min_level)
+        tier_lines.append(f"{r.emoji} <b>{esc(r.name)}</b> — {span} (da {xp_at:,} XP)")
+    blocks.append("\n".join(tier_lines))
+
+    table_lines = ["🪜 <b>Primi livelli</b> (XP totali per raggiungerli)"]
+    for lvl in range(1, 16):
+        table_lines.append(f"Lv {lvl:>2} — {xp_service.xp_to_reach_level(lvl):,} XP")
+    blocks.append("\n".join(table_lines))
+
+    for chunk in chunk_blocks(blocks, sep="\n\n"):
+        await message.answer(chunk)
 
 
 @router.message(Command("airdrop"), IsAdminFilter())
@@ -273,19 +328,22 @@ async def cmd_ban(message: Message, command: CommandObject, db_session: AsyncSes
         return
 
     reason = target.remainder.strip()
+    # The Telegram group-removal is best-effort; the bot-level ban is the authority
+    # for "dead to the bot" and is applied on the admin's intent regardless — even
+    # if the user already left or the group-kick fails — otherwise a removed user
+    # could keep using the bot in private. /sban reverses it.
     ok, err = await moderation_service.ban(message.bot, chat_id, target.tg_id)
-    if not ok:
-        await message.reply(f"❌ {err}")
-        return
-
+    await admin_service.set_user_banned(db_session, target.tg_id, True)
     await admin_service.log_action(
         db_session, message.from_user.id, "ban",
         target_tg_id=target.tg_id, group_id=chat_id, detail=reason or None,
     )
     await db_session.commit()
+    ban_guard.invalidate(target.tg_id)
     await _notify(message, target.tg_id, "⛔ Sei stato bannato dal gruppo.")
     suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
-    await message.reply(f"⛔ {target.display_name} bannato.{suffix}")
+    warn_line = "" if ok else f"\n⚠️ Rimozione dal gruppo non riuscita: {esc(err)}"
+    await message.reply(f"⛔ {target.display_name} bannato (anche in privato).{suffix}{warn_line}")
 
 
 @router.message(Command("sban"), IsAdminFilter())
@@ -302,10 +360,13 @@ async def cmd_sban(message: Message, command: CommandObject, db_session: AsyncSe
     if not ok:
         await message.reply(f"❌ {err}")
         return
+    # Lift the bot-level ban too: the user can talk to the bot again.
+    await admin_service.set_user_banned(db_session, target.tg_id, False)
     await admin_service.log_action(
         db_session, message.from_user.id, "sban", target_tg_id=target.tg_id, group_id=chat_id
     )
     await db_session.commit()
+    ban_guard.invalidate(target.tg_id)
     await message.reply(f"✅ {target.display_name} può rientrare nel gruppo.")
 
 
@@ -409,13 +470,17 @@ async def apply_warning(
 
     escalation = ""
     if count >= settings.warn_ban_threshold:
+        # The bot-level ban applies once the threshold is crossed, independent of the
+        # Telegram group-removal succeeding (caller invalidates the cache after commit).
         ok, _ = await moderation_service.ban(bot, chat_id, target_id)
-        if ok:
-            await admin_service.log_action(
-                db_session, admin_id, "ban",
-                target_tg_id=target_id, group_id=chat_id, detail="auto: soglia warn",
-            )
-            escalation = "\n⛔ Soglia raggiunta → <b>BAN automatico</b>."
+        await admin_service.set_user_banned(db_session, target_id, True)
+        await admin_service.log_action(
+            db_session, admin_id, "ban",
+            target_tg_id=target_id, group_id=chat_id, detail="auto: soglia warn",
+        )
+        escalation = "\n⛔ Soglia raggiunta → <b>BAN automatico</b>."
+        if not ok:
+            escalation += " <i>(rimozione dal gruppo non riuscita)</i>"
     elif count >= settings.warn_mute_threshold:
         ok, _ = await moderation_service.mute(
             bot, chat_id, target_id, settings.warn_mute_duration_seconds
@@ -446,6 +511,8 @@ async def cmd_warn(message: Message, command: CommandObject, db_session: AsyncSe
     )
 
     await db_session.commit()
+    # A warn may have auto-banned the user → refresh the ban-guard cache.
+    ban_guard.invalidate(target.tg_id)
     suffix = f"\n📝 Motivo: <i>{esc(reason)}</i>" if reason else ""
     await _notify(
         message, target.tg_id,
@@ -527,9 +594,9 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
         f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 Username: {username}\n"
         f"🆔 ID: <code>{u.tg_id}</code>\n"
-        f"📅 Dal: {member_since}\n"
+        f"📅 Membro dal: {member_since}\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
-        f"⚡ XP: {u.xp}\n"
+        f"⚡ XP: {u.xp:,} (Livello {xp_service.level_for_xp(u.xp).level})\n"
         f"🎖️ Badge: {dossier.badge_count}\n"
         f"🎲 Scommesse: {dossier.bet_count} (vinte: {u.bets_won})\n"
         f"🔥 Streak: {u.daily_streak}\n"
@@ -540,6 +607,8 @@ async def cmd_info(message: Message, command: CommandObject, db_session: AsyncSe
 
 @router.message(Command("cerca"), IsAdminFilter())
 async def cmd_cerca(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_ADMIN_PRIVATE_NOTICE):
+        return
     query = (command.args or "").strip()
     if len(query) < 2:
         await message.reply("ℹ️ Uso: <code>/cerca &lt;testo&gt;</code> (almeno 2 caratteri).")
@@ -567,6 +636,8 @@ async def cmd_stats(message: Message, db_session: AsyncSession) -> None:
 
 @router.message(Command("audit"), IsAdminFilter())
 async def cmd_audit(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
+    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_ADMIN_PRIVATE_NOTICE):
+        return
     target = await resolve_target(message, db_session, command.args)
     target_tg_id = target.tg_id if target else None
     await message.reply(await render_audit(db_session, target_tg_id))
@@ -581,7 +652,7 @@ async def render_stats(db_session: AsyncSession) -> str:
     return (
         "📊 <b>Statistiche gruppo</b>\n\n"
         f"👥 Utenti registrati: <b>{s.total_users:,}</b>\n"
-        f"💰 Aldueuri in circolazione: <b>{s.total_coins:,} 🪙</b>\n"
+        f"💰 CoInn in circolazione: <b>{s.total_coins:,} 🪙</b>\n"
         f"📈 Media per utente: <b>{s.avg_coins:,} 🪙</b>\n"
         f"🎲 Scommesse attive: <b>{s.active_events}</b>\n"
         f"⚠️ Warn attivi: <b>{s.active_warnings}</b>"

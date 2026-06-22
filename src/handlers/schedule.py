@@ -24,30 +24,26 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from config_data.config import settings
 from database.connection import async_session_maker
-from filters.admin_filter import IsAdminFilter
-from services import bet_service, group_registry, quiz_service, schedule_service
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers import event_types
+from keyboards.common_kb import confirm_cancel_kb
+from services import group_registry, schedule_service
+from utils import cooldown
 from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
-
-_MIN_OPTIONS, _MAX_OPTIONS = 2, 10
+# Admin-only router: gate every message/callback handler. Several flows here are
+# FSM-state driven (run-at input, pickers); without a router-level admin gate a
+# user who started a flow while admin and then lost admin could still drive it to
+# completion — FSM state has no TTL (STEERING §8).
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 
 class ScheduleStates(StatesGroup):
-    quiz_runat = State()
-    poll_question = State()
-    poll_options = State()
-    poll_runat = State()
-    bet_title = State()
-    bet_description = State()
-    bet_options = State()
-    bet_runat = State()
-
-
-class SondaggioStates(StatesGroup):
-    question = State()
-    options = State()
+    # Unified flow: pick a pre-created quiz/poll/bet, then send the run-at time.
+    event_runat = State()
 
 
 def _cancel_kb() -> InlineKeyboardMarkup:
@@ -70,11 +66,11 @@ _RUNAT_HINT = (
 async def start_schedule_flow(message: Message, state: FSMContext) -> None:
     await state.clear()
     b = InlineKeyboardBuilder()
-    b.button(text="🧠 Quiz", callback_data="sched:type:quiz")
-    b.button(text="📊 Sondaggio", callback_data="sched:type:poll")
-    b.button(text="🎲 Scommessa", callback_data="sched:type:bet")
+    types = event_types.all_types()
+    for et in types:
+        b.button(text=et.hub_label, callback_data=f"sched:type:{et.key}")
     b.button(text="❌ Annulla", callback_data="sched:cancel")
-    b.adjust(3, 1)
+    b.adjust(len(types) or 1, 1)
     await message.answer("🗓️ <b>Programma un evento</b>\n\nCosa vuoi programmare?", reply_markup=b.as_markup())
 
 
@@ -96,164 +92,98 @@ async def cmd_programma(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "sched:cancel")
 async def cb_sched_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    # Nothing entered yet (e.g. the type-choice menu / quiz picker) → cancel
+    # directly; otherwise confirm before discarding the entered data.
+    if await state.get_state() is None:
+        await callback.message.edit_text("❌ Operazione annullata.")
+        await callback.answer()
+        return
+    await callback.message.answer(
+        "⚠️ Sicuro di voler annullare? I dati inseriti andranno persi.",
+        reply_markup=confirm_cancel_kb("sched:cancel_yes", "sched:cancel_no"),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "sched:cancel_yes")
+async def cb_sched_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Operazione annullata.")
     await callback.answer()
 
 
-# --- Quiz scheduling ---
+@router.callback_query(F.data == "sched:cancel_no")
+async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
+    await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
+    await callback.answer()
 
-@router.callback_query(F.data == "sched:type:quiz")
-async def cb_type_quiz(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    quizzes = await quiz_service.list_ready(db_session)
-    if not quizzes:
-        await callback.answer("Nessun quiz pronto. Creane uno con /crea_quiz.", show_alert=True)
-        return
+
+# --- Unified scheduling: pick a PRE-CREATED item, then a run-at time ---
+
+def _pick_kb(task_type: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    for q in quizzes:
-        b.button(text=f"#{q.id} {q.title[:30]}", callback_data=f"sched:quiz:{q.id}")
+    for iid, label in items:
+        b.button(text=f"#{iid} {label[:30]}", callback_data=f"sched:pick:{task_type}:{iid}")
     b.button(text="❌ Annulla", callback_data="sched:cancel")
     b.adjust(1)
-    await callback.message.edit_text("🧠 Quale quiz vuoi programmare?", reply_markup=b.as_markup())
-    await callback.answer()
+    return b.as_markup()
 
 
-@router.callback_query(F.data.startswith("sched:quiz:"))
-async def cb_pick_quiz(callback: CallbackQuery, state: FSMContext) -> None:
-    quiz_id = int(callback.data.split(":")[2])
-    await state.update_data(quiz_id=quiz_id)
-    await state.set_state(ScheduleStates.quiz_runat)
-    await callback.message.edit_text(_RUNAT_HINT, reply_markup=_cancel_kb())
-    await callback.answer()
-
-
-@router.message(ScheduleStates.quiz_runat, ~F.text.startswith("/"))
-async def fsm_quiz_runat(message: Message, state: FSMContext, db_session) -> None:
-    run_at = await _parse_or_reprompt(message)
-    if run_at is None:
-        return
-    data = await state.get_data()
-    task = await schedule_service.schedule_task(
-        db_session, "quiz", run_at, message.from_user.id, group_registry.get_group_id() or None,
-        ref_id=data["quiz_id"],
-    )
-    await db_session.commit()
+async def start_schedule_for(
+    message: Message, state: FSMContext, task_type: str, ref_id: int, label: str
+) -> None:
+    """Enter the run-at step for an already-created event (used by /programma and
+    by the Events hub «🗓️ Programma» buttons)."""
     await state.clear()
-    await _confirm(message, task)
-
-
-# --- Poll scheduling ---
-
-@router.callback_query(F.data == "sched:type:poll")
-async def cb_type_poll(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ScheduleStates.poll_question)
-    await callback.message.edit_text("📊 Invia la <b>domanda</b> del sondaggio:", reply_markup=_cancel_kb())
-    await callback.answer()
-
-
-@router.message(ScheduleStates.poll_question, ~F.text.startswith("/"))
-async def fsm_poll_question(message: Message, state: FSMContext) -> None:
-    q = (message.text or "").strip()[:300]
-    if len(q) < 3:
-        await message.answer("⚠️ Domanda troppo corta.", reply_markup=_cancel_kb())
-        return
-    await state.update_data(poll_question=q)
-    await state.set_state(ScheduleStates.poll_options)
+    await state.update_data(sched_type=task_type, sched_ref=ref_id, sched_label=label)
+    await state.set_state(ScheduleStates.event_runat)
     await message.answer(
-        f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
-        reply_markup=_cancel_kb(),
+        f"🗓️ <b>Programma:</b> {esc(label)}\n\n{_RUNAT_HINT}", reply_markup=_cancel_kb()
     )
 
 
-@router.message(ScheduleStates.poll_options, ~F.text.startswith("/"))
-async def fsm_poll_options(message: Message, state: FSMContext) -> None:
-    options = _parse_options(message.text)
-    if options is None:
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (≤100 caratteri, una per riga).",
-            reply_markup=_cancel_kb(),
+@router.callback_query(F.data.startswith("sched:type:"))
+async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> None:
+    et = event_types.get(callback.data.split(":")[2])
+    if et is None:
+        await callback.answer()
+        return
+    items = await et.schedulable_items(db_session)
+    if not items:
+        await callback.answer(
+            f"Nessun elemento pronto per «{et.hub_label}». Crealo dagli Eventi.",
+            show_alert=True,
         )
         return
-    await state.update_data(poll_options=options)
-    await state.set_state(ScheduleStates.poll_runat)
-    await message.answer(_RUNAT_HINT, reply_markup=_cancel_kb())
-
-
-@router.message(ScheduleStates.poll_runat, ~F.text.startswith("/"))
-async def fsm_poll_runat(message: Message, state: FSMContext, db_session) -> None:
-    run_at = await _parse_or_reprompt(message)
-    if run_at is None:
-        return
-    data = await state.get_data()
-    task = await schedule_service.schedule_task(
-        db_session, "poll", run_at, message.from_user.id, group_registry.get_group_id() or None,
-        payload={"question": data["poll_question"], "options": data["poll_options"]},
+    await callback.message.edit_text(
+        f"{et.hub_label}: quale vuoi programmare?", reply_markup=_pick_kb(et.key, items)
     )
-    await db_session.commit()
-    await state.clear()
-    await _confirm(message, task)
-
-
-# --- Bet scheduling ---
-
-@router.callback_query(F.data == "sched:type:bet")
-async def cb_type_bet(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(ScheduleStates.bet_title)
-    await callback.message.edit_text("🎲 Invia il <b>titolo</b> della scommessa:", reply_markup=_cancel_kb())
     await callback.answer()
 
 
-@router.message(ScheduleStates.bet_title, ~F.text.startswith("/"))
-async def fsm_bet_title(message: Message, state: FSMContext) -> None:
-    title = (message.text or "").strip()[:200]
-    if len(title) < 4:
-        await message.answer("⚠️ Titolo troppo corto (min 4).", reply_markup=_cancel_kb())
+@router.callback_query(F.data.startswith("sched:pick:"))
+async def cb_pick_event(callback: CallbackQuery, state: FSMContext) -> None:
+    _, _, task_type, raw_id = callback.data.split(":")
+    et = event_types.get(task_type)
+    if et is None or not raw_id.isdigit():
+        await callback.answer()
         return
-    await state.update_data(bet_title=title)
-    await state.set_state(ScheduleStates.bet_description)
-    await message.answer("Invia una breve <b>descrizione</b> (o «-»):", reply_markup=_cancel_kb())
-
-
-@router.message(ScheduleStates.bet_description, ~F.text.startswith("/"))
-async def fsm_bet_desc(message: Message, state: FSMContext) -> None:
-    desc = (message.text or "").strip()[:500]
-    if desc == "-":
-        desc = ""
-    await state.update_data(bet_description=desc)
-    await state.set_state(ScheduleStates.bet_options)
-    await message.answer(
-        f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
-        reply_markup=_cancel_kb(),
+    ref_id = int(raw_id)
+    await start_schedule_for(
+        callback.message, state, task_type, ref_id, f"{et.hub_label} #{ref_id}"
     )
+    await callback.answer()
 
 
-@router.message(ScheduleStates.bet_options, ~F.text.startswith("/"))
-async def fsm_bet_options(message: Message, state: FSMContext) -> None:
-    options = _parse_options(message.text)
-    if options is None:
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga).",
-            reply_markup=_cancel_kb(),
-        )
-        return
-    await state.update_data(bet_options=options)
-    await state.set_state(ScheduleStates.bet_runat)
-    await message.answer(_RUNAT_HINT, reply_markup=_cancel_kb())
-
-
-@router.message(ScheduleStates.bet_runat, ~F.text.startswith("/"))
-async def fsm_bet_runat(message: Message, state: FSMContext, db_session) -> None:
+@router.message(ScheduleStates.event_runat, ~F.text.startswith("/"))
+async def fsm_event_runat(message: Message, state: FSMContext, db_session) -> None:
     run_at = await _parse_or_reprompt(message)
     if run_at is None:
         return
     data = await state.get_data()
     task = await schedule_service.schedule_task(
-        db_session, "bet", run_at, message.from_user.id, group_registry.get_group_id() or None,
-        payload={
-            "title": data["bet_title"],
-            "description": data.get("bet_description", ""),
-            "options": data["bet_options"],
-        },
+        db_session, data["sched_type"], run_at, message.from_user.id,
+        group_registry.get_group_id() or None, ref_id=data["sched_ref"],
     )
     await db_session.commit()
     await state.clear()
@@ -270,18 +200,19 @@ async def cmd_programmati(message: Message, db_session) -> None:
     if not tasks:
         await message.reply("🗓️ Nessun evento programmato.")
         return
-    labels = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
     b = InlineKeyboardBuilder()
     lines = ["🗓️ <b>Eventi programmati</b>\n"]
     for t in tasks:
-        when = t.run_at.strftime("%d/%m %H:%M")
-        lines.append(f"• #{t.id} {labels.get(t.task_type, t.task_type)} — {when} UTC")
+        when = schedule_service.to_local(t.run_at).strftime("%d/%m %H:%M")
+        et = event_types.get(t.task_type)
+        label = et.hub_label if et else t.task_type
+        lines.append(f"• #{t.id} {label} — {when}")
         b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
     b.adjust(1)
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
 
 
-@router.callback_query(F.data.startswith("sched:del:"), IsAdminFilter())
+@router.callback_query(F.data.startswith("sched:del:"))
 async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
     task_id = int(callback.data.split(":")[2])
     ok = await schedule_service.cancel(db_session, task_id)
@@ -292,60 +223,42 @@ async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /sondaggio — post a poll to the group right now
+# /sondaggio — create a poll (stored), then choose: start now or schedule
 # ---------------------------------------------------------------------------
 
 @router.message(Command("sondaggio"), IsAdminFilter())
 async def cmd_sondaggio(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await state.set_state(SondaggioStates.question)
-    await message.reply("📊 Invia la <b>domanda</b> del sondaggio:", reply_markup=_cancel_kb())
-
-
-@router.message(SondaggioStates.question, ~F.text.startswith("/"))
-async def fsm_sondaggio_q(message: Message, state: FSMContext) -> None:
-    q = (message.text or "").strip()[:300]
-    if len(q) < 3:
-        await message.answer("⚠️ Domanda troppo corta.", reply_markup=_cancel_kb())
-        return
-    await state.update_data(question=q)
-    await state.set_state(SondaggioStates.options)
-    await message.answer(
-        f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
-        reply_markup=_cancel_kb(),
-    )
-
-
-@router.message(SondaggioStates.options, ~F.text.startswith("/"))
-async def fsm_sondaggio_opts(message: Message, state: FSMContext) -> None:
-    options = _parse_options(message.text)
-    if options is None:
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga).",
-            reply_markup=_cancel_kb(),
+    # The whole creation flow must happen in private chat — never in the group,
+    # where anyone could read the prompts or interfere with the FSM. Same pattern
+    # as /crea_quiz and /crea_scommessa: in a group, hand back a deep-link button
+    # that re-opens (and re-checks admin) in private (STEERING §16).
+    if message.chat.type != ChatType.PRIVATE:
+        bot_info = await message.bot.get_me()
+        await message.reply(
+            "📊 Crea il sondaggio in chat privata:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="➡️ Crea sondaggio",
+                    url=f"https://t.me/{bot_info.username}?start=create_poll",
+                )
+            ]]),
         )
         return
-    data = await state.get_data()
-    await state.clear()
-    target = group_registry.get_group_id() or message.chat.id
-    await message.bot.send_poll(
-        chat_id=target, question=data["question"], options=options, is_anonymous=False
-    )
-    await message.answer("✅ Sondaggio pubblicato nel gruppo!")
+    if not await cooldown.guard(
+        message, "event_create", settings.event_create_cooldown_seconds, exempt_admin=False
+    ):
+        return
+    # Like quiz/scommesse: a poll is created and stored, then the admin chooses to
+    # start it now or schedule it. Reuse the canonical poll-creation flow (no
+    # immediate publish, no duplicated FSM). Lazy import avoids a circular import.
+    from handlers.events import start_poll_creation
+
+    await start_poll_creation(message, state)
 
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
-
-def _parse_options(text: str | None) -> list[str] | None:
-    options = [o.strip() for o in (text or "").splitlines() if o.strip()]
-    if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
-        return None
-    if any(len(o) > 100 for o in options):
-        return None
-    return options
-
 
 async def _parse_or_reprompt(message: Message) -> datetime | None:
     try:
@@ -356,12 +269,13 @@ async def _parse_or_reprompt(message: Message) -> datetime | None:
 
 
 async def _confirm(message: Message, task) -> None:
-    labels = {"quiz": "🧠 Quiz", "poll": "📊 Sondaggio", "bet": "🎲 Scommessa"}
-    when = task.run_at.strftime("%d/%m/%Y %H:%M")
+    et = event_types.get(task.task_type)
+    label = et.hub_label if et else task.task_type
+    when = schedule_service.to_local(task.run_at).strftime("%d/%m/%Y %H:%M")
     await message.answer(
         f"✅ <b>Programmato!</b>\n\n"
-        f"{labels.get(task.task_type, task.task_type)} · #{task.id}\n"
-        f"🕒 Esecuzione: <b>{when} UTC</b>\n\n"
+        f"{label} · #{task.id}\n"
+        f"🕒 Esecuzione: <b>{when}</b>\n\n"
         f"Vedi/annulla con /programmati."
     )
 
@@ -371,49 +285,70 @@ async def _confirm(message: Message, task) -> None:
 # ---------------------------------------------------------------------------
 
 async def execute_task(bot, session, task) -> None:
-    """Execute a single due task. Raises on failure (caller marks failed)."""
+    """Execute a single due task by delegating to its event-type spec.
+
+    Raises on failure (the caller marks the task failed). Dispatch goes through
+    the event-type registry — no per-type branching here.
+    """
     # Prefer the live effective group id (the task's stored id may be stale after
     # a migration); fall back to the task's own group_id if none is configured.
     group_id = group_registry.get_group_id() or task.group_id
     if not group_id:
         raise RuntimeError("GROUP_ID non configurato")
 
-    if task.task_type == "quiz":
-        from handlers.quiz import open_quiz
-        ok, msg = await open_quiz(bot, session, task.ref_id)
-        if not ok:
-            raise RuntimeError(msg)
-
-    elif task.task_type == "poll":
-        payload = schedule_service.task_payload(task)
-        await bot.send_poll(
-            chat_id=group_id, question=payload["question"],
-            options=payload["options"], is_anonymous=False,
-        )
-
-    elif task.task_type == "bet":
-        payload = schedule_service.task_payload(task)
-        event = await bet_service.create_event(
-            session,
-            creator_tg_id=task.created_by_tg_id,
-            title=payload["title"],
-            description=payload.get("description", ""),
-            options=[{"label": o} for o in payload["options"]],
-        )
-        await session.flush()
-        bot_info = await bot.get_me()
-        await group_registry.send_group_message(
-            bot, session,
-            f"🎲 <b>Nuova scommessa aperta!</b>\n\n"
-            f"<b>{esc(event.title)}</b>\n{esc(payload.get('description', ''))}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="🎯 Scommetti", url=f"https://t.me/{bot_info.username}?start=bet_{event.id}"
-                )
-            ]]),
-        )
-    else:
+    et = event_types.get(task.task_type)
+    if et is None:
         raise RuntimeError(f"Tipo task sconosciuto: {task.task_type}")
+    await et.execute_scheduled(bot, session, task, group_id)
+
+
+async def _notify_creator(bot, task, text: str) -> None:
+    """Best-effort DM to the admin who scheduled the task, so failures/skips are
+    visible on Telegram and not only in the logs."""
+    if not getattr(task, "created_by_tg_id", None):
+        return
+    try:
+        await bot.send_message(task.created_by_tg_id, text)
+    except Exception:  # noqa: BLE001 — the admin may have never opened the bot in private
+        log.warning("Avviso task #%s all'admin %s fallito", task.id, task.created_by_tg_id)
+
+
+async def _run_due_task(bot, session, task) -> None:
+    """Execute one due task and persist its outcome, isolating failures.
+
+    On any error the session is **rolled back before** the task is marked failed,
+    so a poisoned transaction (e.g. a partial flush that raised) can neither
+    strand the task as ``pending`` — which would make the loop retry it forever —
+    nor commit half-done work. The id/type are captured up front because reading
+    them off the ORM object after a rollback would trigger an implicit reload
+    (illegal in async). Each task is its own unit: a failure never bleeds into the
+    next one in the same tick.
+    """
+    task_id = getattr(task, "id", "?")
+    task_type = getattr(task, "task_type", "?")
+    notice: str | None = None
+    try:
+        try:
+            await execute_task(bot, session, task)
+            await schedule_service.mark_done(session, task)
+        except schedule_service.TaskSkip as e:
+            # Not an error: the task was an intentional no-op (e.g. quiz already running).
+            await session.rollback()
+            log.info("Task #%s saltato: %s", task_id, e)
+            await schedule_service.mark_done(session, task)
+            notice = f"ℹ️ Task #{task_id} ({task_type}) saltato: {e}"
+        except Exception as e:  # noqa: BLE001
+            await session.rollback()
+            log.exception("Task #%s fallito: %s", task_id, e)
+            await schedule_service.mark_failed(session, task, str(e))
+            notice = f"⚠️ Task #{task_id} ({task_type}) fallito: {e}"
+        await session.commit()
+    except Exception:  # noqa: BLE001 — persisting the outcome failed; retry next tick
+        log.exception("Task #%s: persistenza esito fallita", task_id)
+        await session.rollback()
+        return
+    if notice:
+        await _notify_creator(bot, task, notice)
 
 
 async def scheduler_loop(bot) -> None:
@@ -424,13 +359,7 @@ async def scheduler_loop(bot) -> None:
             async with async_session_maker() as session:
                 tasks = await schedule_service.due_tasks(session, schedule_service.utcnow())
                 for task in tasks:
-                    try:
-                        await execute_task(bot, session, task)
-                        await schedule_service.mark_done(session, task)
-                    except Exception as e:  # noqa: BLE001
-                        log.exception("Task #%s fallito: %s", task.id, e)
-                        await schedule_service.mark_failed(session, task, str(e))
-                    await session.commit()
+                    await _run_due_task(bot, session, task)
         except Exception:  # noqa: BLE001 — loop must never die
             log.exception("Scheduler loop error")
         await asyncio.sleep(settings.scheduler_poll_interval)

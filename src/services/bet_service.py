@@ -34,12 +34,16 @@ async def create_event(
     title: str,
     description: str,
     options: list[dict],
+    status: str = EventStatus.open.value,
 ) -> BettingEvent:
+    """Create a betting event. Defaults to ``open`` (the community flow); pass
+    ``status=EventStatus.draft.value`` to pre-create one for the Events hub, to be
+    activated/scheduled later."""
     event = BettingEvent(
         title=title,
         description=description,
         creator_tg_id=creator_tg_id,
-        status=EventStatus.open.value,
+        status=status,
     )
     session.add(event)
     await session.flush()
@@ -53,6 +57,33 @@ async def create_event(
             )
         )
     return event
+
+
+async def activate_event(session: AsyncSession, event_id: int) -> BettingEvent:
+    """Transition a ``draft`` event to ``open`` so members can bet. Idempotent for
+    an already-open event; raises if it was locked/resolved/cancelled."""
+    event = (
+        await session.execute(select(BettingEvent).where(BettingEvent.id == event_id))
+    ).scalar_one_or_none()
+    if event is None:
+        raise EventNotFoundError(event_id)
+    if event.status == EventStatus.open.value:
+        return event
+    if event.status != EventStatus.draft.value:
+        raise EventAlreadySettledError(event_id, event.status)
+    event.status = EventStatus.open.value
+    return event
+
+
+async def list_drafts(session: AsyncSession) -> list[BettingEvent]:
+    """Pre-created (not yet opened) events, for the Events hub."""
+    result = await session.execute(
+        select(BettingEvent)
+        .where(BettingEvent.status == EventStatus.draft.value)
+        .options(selectinload(BettingEvent.options))
+        .order_by(BettingEvent.created_at.desc())
+    )
+    return list(result.scalars().all())
 
 
 async def place_bet(
@@ -113,6 +144,16 @@ async def place_bet(
     except IntegrityError:
         await session.rollback()
         raise AlreadyBetError(user_tg_id, event_id)
+
+    # Event XP for participating (placing a bet), uncapped — once per event, since a
+    # second bet on the same event raises AlreadyBetError above. The (larger) win
+    # bonus is paid later, only to winners, in resolve_event. Uncapped grant takes no
+    # User lock, so it never inverts the canonical User → Wallet lock order.
+    if settings.xp_per_bet_placed > 0:
+        await xp_service.grant_xp(
+            session, user_tg_id, settings.xp_per_bet_placed,
+            XpSource.bet_placed, capped=False,
+        )
 
     return bet
 
@@ -207,10 +248,11 @@ async def resolve_event(
             winner_user = user_result.scalar_one_or_none()
             if winner_user is not None:
                 winner_user.bets_won += 1
-            # Capped participation XP for a winning bet (anti-farm via daily cap).
+            # Event XP bonus for a winning bet (uncapped — participation XP was already
+            # paid at placement). The User row is already locked above for bets_won.
             await xp_service.grant_xp(
                 session, bet.user_tg_id, settings.xp_per_bet_won,
-                XpSource.bet_won, capped=True,
+                XpSource.bet_won, capped=False,
             )
             payout = payout_map.get(bet.id, 0)
             if payout > 0:

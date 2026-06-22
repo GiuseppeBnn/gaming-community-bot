@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from exceptions.economy import EventAlreadySettledError, EventNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers._trophy_announce import announce_trophies
 from keyboards.admin_betting_kb import (
     get_admin_confirm_cancel_keyboard,
     get_admin_confirm_lock_keyboard,
@@ -39,6 +40,10 @@ from services import badge_service, bet_service
 from utils.text import esc
 
 router = Router()
+# 100%-admin router: gate every message/callback at the root (STEERING §8). The
+# per-handler filters + `admin_bet:` deny catch-all stay as defense in depth.
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _STATUS_LABEL = {
     "open": "🟢 Aperta",
@@ -296,7 +301,7 @@ async def cb_admin_confirm_resolve(
         )
         return
 
-    # Award winner milestones (best-effort)
+    # Award winner milestones (best-effort) and announce them in the group.
     try:
         for w in summary["winners_data"]:
             milestones = await badge_service.check_and_award_milestones(
@@ -304,6 +309,7 @@ async def cb_admin_confirm_resolve(
             )
             if milestones:
                 await db_session.commit()
+                await announce_trophies(callback.bot, db_session, w["tg_id"], milestones)
     except Exception:
         pass
 
@@ -344,7 +350,7 @@ async def cb_admin_confirm_resolve(
         f"✅ Opzione vincente: <b>{esc(summary['winning_option'])}</b>\n"
         f"💰 Pool totale: <b>{summary['total_pot']} 🪙</b>\n"
         f"🏆 Vincitori: <b>{summary['winners']}</b>\n"
-        f"💸 Aldueuri distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
+        f"💸 CoInn distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
         f"<i>I vincitori sono stati notificati in privato.</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="🔙 Torna alla lista", callback_data="admin_bet:list"),

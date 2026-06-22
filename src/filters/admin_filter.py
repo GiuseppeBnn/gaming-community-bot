@@ -9,6 +9,7 @@ back to `admin_ids` only) — never grant elevated powers on uncertainty.
 
 from __future__ import annotations
 
+import logging
 import time
 
 from aiogram import Bot
@@ -17,6 +18,8 @@ from aiogram.types import CallbackQuery, Message
 
 from config_data.config import settings
 from services import group_registry
+
+log = logging.getLogger(__name__)
 
 _ADMIN_CACHE_TTL = 300  # seconds
 _cache: dict[int, tuple[set[int], float]] = {}
@@ -34,8 +37,33 @@ async def _telegram_admin_ids(bot: Bot, group_id: int) -> set[int]:
         # API error must not lock the group owner/admins out for the whole TTL.
         return set()
     ids = {m.user.id for m in members if m.user is not None}
+    # Guard against legacy *basic* groups with "All members are administrators"
+    # ON: there Telegram reports EVERY member as an administrator, which would
+    # silently elevate every member to bot-admin. If the admin list spans the
+    # whole group, it carries no authority → trust only the .env owner. This is a
+    # no-op for normal groups, where admins are always a strict subset.
+    if ids and await _all_members_are_admins(bot, group_id, len(members)):
+        log.warning(
+            "Gruppo %s: tutti i membri risultano amministratori ('Tutti i membri "
+            "sono amministratori' attivo). Ignoro la lista admin di Telegram: solo "
+            "ADMIN_IDS dell'.env sono admin del bot. Converti il gruppo in "
+            "supergruppo o disattiva quell'opzione per riconoscere gli admin del gruppo.",
+            group_id,
+        )
+        ids = set()
     _cache[group_id] = (ids, now)
     return ids
+
+
+async def _all_members_are_admins(bot: Bot, group_id: int, admin_count: int) -> bool:
+    """True when the administrator list spans the entire group (the legacy
+    "all members are admins" basic-group mode). Conservative: needs ≥3 members and
+    a successful member-count read, otherwise returns False (keep normal behavior)."""
+    try:
+        total = await bot.get_chat_member_count(group_id)
+    except Exception:
+        return False
+    return total >= 3 and admin_count >= total
 
 
 async def is_admin(bot: Bot, user_id: int) -> bool:

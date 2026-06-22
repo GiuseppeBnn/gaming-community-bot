@@ -1,10 +1,51 @@
-slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value
-first_steps,Primi Passi,Entra a far parte della community.,🚀,onboarding,bronze,50,onboarding,1
-generous,Generoso,Trasferisci Aldueuri a un altro membro.,🎁,economia,bronze,50,transfers_made,1
-rich_1k,Benestante,Raggiungi 1.000 🪙 nel saldo.,💰,economia,silver,100,balance,1000
-streak_7,Costanza,Riscuoti il daily reward per 7 giorni di fila.,📅,daily,silver,75,daily_streak,7
-bet_winner,Scommettitore,Vinci la tua prima scommessa.,🎰,scommesse,silver,100,bets_won,1
-xp_500,Esperto,Raggiungi 500 XP di esperienza.,⭐,esperienza,gold,0,xp,500
-rich_10k,Milionario,Raggiungi 10.000 🪙 nel saldo.,🤑,economia,gold,250,balance,10000
-streak_30,Dedicato,Riscuoti il daily reward per 30 giorni di fila.,🔥,daily,gold,300,daily_streak,30
-xp_2000,Leggenda,Raggiungi 2.000 XP: sei nell'olimpo.,🏆,esperienza,platinum,0,xp,2000
+slug,name,description,icon_emoji,category,rarity,xp_reward,condition_type,condition_value,condition_param,hidden
+menu_leggenda_inn,Leggenda di Dragons'Inn,Sblocca tutti gli altri trofei della Taverna del Drago!,💠,speciale,platinum,0,all_trophies,,,false
+level_150,Sia lodato il Sole!,Raggiungi il rango 150 (Leggenda).,☀️,esperienza,gold,500,level,150,,false
+streak_365,Hardcore Gamer,Riscuoti il daily reward per 365 giorni di fila.,🗓️,daily,gold,500,daily_streak,365,,false
+rich_100k,"Oro colato, baby!",Accumula 100.000 CoInn nel saldo.,🏦,economia,gold,500,balance,100000,,false
+bets_100,Gran Puntatore,Vinci 100 scommesse totali.,💸,scommesse,gold,300,bets_won,100,,false
+podium_trivia_100,So-tutto-io,Raggiungi il podio 100 volte nel Trivia Nerd.,🦉,trivia,gold,400,podium_count,100,trivia,false
+last_trivia_100,Re degli Ultimi,Arriva ultimo 100 volte nel Trivia Nerd.,👑,trivia,gold,400,event_count,100,trivia_last_place,true
+fast_trivia_100,Need For Speed,Completa 100 volte il Trivia Nerd sotto i 30 secondi.,🏎️,trivia,gold,400,event_count,100,trivia_sub30,false
+shop_100,Spendere e spandere,Acquista 100 oggetti totali nel negozio.,💳,locanda,gold,300,shop_purchases,100,,false
+collezionista,Collezionista,Compra ogni tipo di oggetto nel negozio.,🧩,locanda,gold,400,catalog_complete,,,false
+menu_critico,Critico Gastronomico,Sblocca tutti i trofei di Bronzo del menù.,🍽️,locanda,gold,400,collection,,t_alette;t_coda;t_occhi;t_caloriemate;t_pizza;t_fungo;t_latte;t_elisir;t_nuka;t_estus;t_torta;t_gelato,false
+level_80,Dovahkiin,Raggiungi il rango 80.,🐲,esperienza,silver,0,level,80,,false
+rich_10k,Tocco Aureo,Accumula 10.000 CoInn nel saldo.,🤑,economia,silver,250,balance,10000,,false
+streak_60,Determination.,Riscuoti il daily reward per 60 giorni di fila.,❤️,daily,silver,200,daily_streak,60,,false
+bets_50,Scommettitore nato,Vinci 50 scommesse totali.,🎲,scommesse,silver,150,bets_won,50,,false
+podium_trivia_50,Sapere è Potere,Raggiungi il podio 50 volte nel Trivia Nerd.,📚,trivia,silver,200,podium_count,50,trivia,false
+fast_trivia_50,Senza fermarsi mai,Completa 50 volte il Trivia Nerd sotto i 30 secondi.,💨,trivia,silver,200,event_count,50,trivia_sub30,false
+last_trivia_50,Non so proprio tutto sull'argomento,Arriva ultimo 50 volte nel Trivia Nerd.,🙈,trivia,silver,200,event_count,50,trivia_last_place,true
+shop_50,Cliente Fisso,Acquista 50 oggetti totali nel negozio.,🛍️,locanda,silver,150,shop_purchases,50,,false
+menu_specialita,Gran Banchetto,Acquista 10 volte i piatti delle Specialità della Locanda.,🍖,locanda,silver,150,category_purchases,10,specialita,false
+menu_snack,Scorta di Sopravvivenza,Acquista 15 volte gli snack dei Consumabili Leggendari.,📦,locanda,silver,150,category_purchases,15,snack,false
+menu_bevande,Astemio,Acquista 25 volte i drink delle Bevande Leggendarie.,🧪,locanda,silver,150,category_purchases,25,bevande,false
+menu_dessert,Ghiottone,Acquista 10 volte i dolci della categoria Dessert.,🍰,locanda,silver,150,category_purchases,10,dessert,false
+level_30,Senzaluce,Raggiungi il rango 30.,🕯️,esperienza,bronze,0,level,30,,false
+rich_1k,Spiccioli,Accumula 1.000 CoInn nel saldo.,💰,economia,bronze,50,balance,1000,,false
+discord_origin,L'origine del sogno,Entra a far parte del server Discord.,🌌,community,bronze,50,,,,false
+first_steps,"Ehi, ti sei svegliato finalmente!",Partecipa alla tua prima attività nella community.,🚀,onboarding,bronze,50,onboarding,1,,false
+generous,L'unione fa la forza,Trasferisci CoInn a un altro membro della community.,🤝,economia,bronze,50,transfers_made,1,,false
+streak_7,Il nostro pane quotidiano,Riscuoti il daily reward per 7 giorni di fila.,📅,daily,bronze,50,daily_streak,7,,false
+streak_30,Un mese di noi,Riscuoti il daily reward per 30 giorni di fila.,🔥,daily,bronze,75,daily_streak,30,,false
+bet_winner,Soldi facili,Vinci la tua prima scommessa.,🎰,scommesse,bronze,50,bets_won,1,,false
+bets_10,Fortuna Sfacciata,Vinci 10 scommesse totali.,🍀,scommesse,bronze,75,bets_won,10,,false
+podium_trivia_1,So di non sapere,Raggiungi il podio per la prima volta nel Trivia Nerd.,🧠,trivia,bronze,50,podium_count,1,trivia,false
+podium_trivia_10,Un travestimento sapiente,Raggiungi il podio 10 volte al Trivia Nerd.,🎭,trivia,bronze,100,podium_count,10,trivia,false
+fast_trivia_10,Velocista,Completa 10 volte il Trivia Nerd sotto i 30 secondi.,⚡,trivia,bronze,50,event_count,10,trivia_sub30,false
+last_trivia_10,Rimandato,Arriva ultimo 10 volte nel Trivia Nerd.,🐌,trivia,bronze,50,event_count,10,trivia_last_place,true
+shop_1,Cosa compri di bello?,Acquista il tuo primo oggetto nel negozio.,🛒,locanda,bronze,25,shop_purchases,1,,false
+shop_10,Shopping compulsivo,Acquista 10 oggetti totali nel negozio.,🧾,locanda,bronze,50,shop_purchases,10,,false
+t_alette,Addestratore di Draghi,Acquista le Alette di Drago croccanti.,🐉,locanda,bronze,25,item_purchases,1,cons_alette_drago,false
+t_coda,Taglio Pregiato,Acquista la Coda di Drago alla brace.,🔥,locanda,bronze,25,item_purchases,1,cons_coda_drago,false
+t_occhi,Vedo la gente viva,Acquista gli Occhi di Drago al sugo.,👁️,locanda,bronze,25,item_purchases,1,cons_occhi_drago,false
+t_caloriemate,"Mmm, squisito!",Acquista il CalorieMate.,🍫,locanda,bronze,25,item_purchases,1,cons_caloriemate,false
+t_pizza,Febbre da Pixel,Acquista la Pizza Pac-Man.,🍕,locanda,bronze,25,item_purchases,1,cons_pizza_pacman,false
+t_fungo,Crescita Miracolosa,Acquista il Super Fungo.,🍄,locanda,bronze,25,item_purchases,1,cons_super_fungo,false
+t_latte,Fulminato,Acquista il Latte di Mandorla.,🥛,locanda,bronze,25,item_purchases,1,cons_latte_mandorla,false
+t_elisir,Nuova Vita,Acquista l'Elisir di Salute.,🧉,locanda,bronze,25,item_purchases,1,cons_elisir_salute,false
+t_nuka,Tappi in tasca,Acquista la Nuka-Cola.,🥤,locanda,bronze,25,item_purchases,1,cons_nuka_cola,false
+t_estus,Non morto,Acquista la Fiaschetta Estus.,🍶,locanda,bronze,25,item_purchases,1,cons_fiaschetta_estus,false
+t_torta,The Cake is a Lie?,Acquista la Torta di Minecraft.,🎂,locanda,bronze,25,item_purchases,1,cons_torta_minecraft,false
+t_gelato,Custode del Keyblade,Acquista il Gelato al Sale Marino.,🍦,locanda,bronze,25,item_purchases,1,cons_gelato_sale_marino,false

@@ -22,9 +22,12 @@ from aiogram.enums import ChatType
 
 from filters.admin_filter import IsAdminFilter
 from handlers._privacy import redirect_to_private
+from handlers._trophy_announce import announce_trophies
 from services import badge_service, economy_service, xp_service
 from services.xp_service import XpSource
-from utils.text import esc
+from utils import cooldown
+from utils.static_reply import reply_static
+from utils.text import esc, format_duration
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -46,19 +49,21 @@ _TX_LABELS = {
 
 
 async def show_saldo(message: Message, db_session: AsyncSession) -> None:
-    """Render the caller's balance. Reused by the /saldo command and the
-    ``?start=saldo`` deep-link (private chat only)."""
+    """Render the caller's balance. Public: works in the group (one live reply per
+    user via static_reply) and in private; also reused by the ``?start=saldo`` /
+    ``?start=daily`` deep-links."""
     try:
         balance = await economy_service.get_balance(db_session, message.from_user.id)
     except WalletNotFoundError:
         await message.answer("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
-    await message.answer(f"🪙 Il tuo saldo: <b>{balance:,} Aldueuri</b>")
+    await reply_static(message, f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>", "saldo")
 
 
 @router.message(Command("saldo"))
 async def cmd_saldo(message: Message, db_session: AsyncSession) -> None:
-    if await redirect_to_private(message, "saldo", "🪙 Vedi il tuo saldo"):
+    # Public command: answers in the group too (no longer redirected to private).
+    if not await cooldown.ready(message, "saldo", settings.command_cooldown_seconds):
         return
     await show_saldo(message, db_session)
 
@@ -70,15 +75,25 @@ async def show_storico(message: Message, db_session: AsyncSession) -> None:
         await message.answer("📋 Nessuna transazione ancora.")
         return
 
+    _TRANSFER_TYPES = (
+        TransactionType.transfer_out.value,
+        TransactionType.transfer_in.value,
+    )
     lines = ["<b>📋 Ultime transazioni:</b>\n"]
     for entry in entries:
         label = _TX_LABELS.get(entry.tx_type, "📌 Transazione")
         sign = "+" if entry.amount > 0 else ""
         ts = entry.created_at
+        # For transfers the counterparty lives in the description (e.g.
+        # "Trasferimento a @mario") — surface the name so the history is readable.
+        detail = ""
+        if entry.tx_type in _TRANSFER_TYPES and entry.description:
+            detail = f"\n   <i>{esc(entry.description)}</i>"
         lines.append(
             f"{label}\n"
             f"   <b>{sign}{entry.amount:,} 🪙</b>"
             f" — <i>{ts.strftime('%d/%m %H:%M')}</i>"
+            f"{detail}"
         )
     await message.answer("\n".join(lines))
 
@@ -98,7 +113,7 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     except DailyAlreadyClaimedError as e:
         await message.reply(
             f"⏰ Hai già riscosso il premio oggi.\n"
-            f"Riprova tra <b>{e.hours_remaining:.1f} ore</b>."
+            f"Riprova tra <b>{format_duration(e.seconds_remaining)}</b>."
         )
         return
     except WalletNotFoundError:
@@ -114,21 +129,22 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
         db_session, message.from_user.id
     )
     await db_session.commit()
+    # Trophies are announced in the GROUP (tagging the user), not in private.
+    await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
     text = (
-        f"🎉 <b>+{reward:,} Aldueuri</b> riscossi!\n"
+        f"🎉 <b>+{reward:,} CoInn</b> riscossi!\n"
         f"📅 Streak: <b>{streak}</b> giorni\n"
     )
     if xp_res.granted:
         text += f"⚡ <b>+{xp_res.granted} XP</b>\n"
     text += "🪙 Usa /saldo per vedere il tuo saldo."
+    if xp_res.leveled_up:
+        text += f"\n\n📈 Sei salito al <b>Livello {xp_res.new_level}</b>!"
     if xp_res.new_rank is not None:
         text += (
-            f"\n\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
+            f"\n{xp_res.new_rank.emoji} <b>Nuovo rango:</b> {esc(xp_res.new_rank.name)}!"
         )
-    if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
-        text += f"\n\n🏅 <b>Trofeo sbloccato:</b> {badges_text}!"
 
     # In private: show everything. In group: claim succeeded, but the streak/XP/
     # rank details are personal → minimal public ack + best-effort DM of the rest.
@@ -188,13 +204,17 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         )
         return
 
+    sender = message.from_user
+    sender_name = f"@{sender.username}" if sender.username else sender.full_name
+    recipient_name = f"@{target.username}" if target.username else target.full_name
     try:
         await economy_service.transfer(
-            db_session, message.from_user.id, target.tg_id, amount
+            db_session, message.from_user.id, target.tg_id, amount,
+            from_name=sender_name, to_name=recipient_name,
         )
         await db_session.commit()
     except SelfTransferError:
-        await message.answer("⚠️ Non puoi trasferire Aldueuri a te stesso.")
+        await message.answer("⚠️ Non puoi trasferire CoInn a te stesso.")
         return
     except InsufficientFundsError as e:
         await message.answer(
@@ -214,12 +234,10 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
     )
     if newly_earned:
         await db_session.commit()
+        # Announced in the group (tagging the user), not appended in private.
+        await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
-    text = f"✅ Trasferiti <b>{amount:,} 🪙</b> a {target_name}!"
-    if newly_earned:
-        badges_text = ", ".join(f"{b.icon_emoji} {esc(b.name)}" for b in newly_earned)
-        text += f"\n\n🏅 <b>Badge sbloccato:</b> {badges_text}!"
-    await message.answer(text)
+    await message.answer(f"✅ Trasferiti <b>{amount:,} 🪙</b> a {target_name}!")
 
 
 @router.message(Command("credita"), IsAdminFilter())

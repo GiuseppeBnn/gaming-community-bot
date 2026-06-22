@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.schedule_service import parse_run_at
+from services.schedule_service import parse_run_at, to_local
 
 
 class TestParseRunAt:
@@ -35,3 +35,19 @@ class TestParseRunAt:
     def test_zero_relative_raises(self):
         with pytest.raises(ValueError):
             parse_run_at("0m")
+
+
+class TestToLocal:
+    def test_round_trips_with_parse_run_at(self):
+        # An absolute time entered in local tz, stored as UTC, must display back
+        # as the exact same wall-clock the admin typed (the schedule list/confirm).
+        future = datetime.now() + timedelta(days=2)
+        text = future.strftime("%Y-%m-%d %H:%M")
+        stored_utc = parse_run_at(text)  # naive UTC, as persisted
+        shown = to_local(stored_utc).strftime("%Y-%m-%d %H:%M")
+        assert shown == text
+
+    def test_default_tz_is_ahead_of_utc_in_summer(self):
+        # Europe/Rome is UTC+2 in summer (DST) — display should not equal raw UTC.
+        utc = datetime(2026, 7, 1, 12, 0)
+        assert to_local(utc) == datetime(2026, 7, 1, 14, 0)

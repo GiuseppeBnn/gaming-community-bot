@@ -2,10 +2,11 @@
 
 Un bot Telegram production-grade per community di videogiocatori: economia con
 ledger, **XP & progressione** (trofei stile PlayStation, ranghi, tag cosmetici),
-scommesse stile Twitch, **classifiche multiple**, negozio di personalizzazioni,
-onboarding interattivo, quiz a premi con podio, un modulo di intrattenimento AI e
-una **dashboard admin a bottoni**. Trofei, ranghi e cosmetici sono
-**personalizzabili via CSV** senza toccare il codice.
+scommesse stile Twitch, **classifiche multiple**, **La Locanda** (negozio di
+personalizzazioni + menù di consumabili da collezionare), onboarding interattivo,
+quiz a premi con podio, un modulo di intrattenimento AI e una **dashboard admin a
+bottoni**. Trofei, ranghi, cosmetici e consumabili sono **personalizzabili via CSV**
+senza toccare il codice.
 
 ---
 
@@ -137,11 +138,11 @@ variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 | `/start` | Onboarding (primo accesso) o menu principale; gestisce i deep-link |
 | `/profilo` · `/saldo` · `/storico` | Profilo, saldo, cronologia movimenti |
 | `/daily` | Premio giornaliero (ogni 20h) |
-| `/trasferisci @user importo` | Trasferisci Aldueuri |
+| `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
 | `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
-| `/negozio` | Compra personalizzazioni (tag cosmetici) con gli Aldueuri — apre ovunque |
+| `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 
@@ -154,7 +155,7 @@ variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 | `/dai_xp` · `/set_xp` | Assegna / imposta gli XP di un utente (gestione XP solo admin) |
 | `/ban` · `/sban` · `/kick` · `/mute [10m]` · `/unmute` | Moderazione (reply o @user/ID) |
 | `/warn [motivo]` · `/warns` · `/unwarn` | Warn/strike (auto mute/ban a soglia) |
-| `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` | Info & dossier |
+| `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 
@@ -171,20 +172,31 @@ gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
 
 ## XP, Trofei, Ranghi e Tag
 
-Le **monete** (Aldueuri) sono spendibili e farmabili; gli **XP** sono una metrica di
+Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica di
 **merito separata** e **non farmabile**:
 
-- **Si guadagnano XP** dagli **eventi curati dagli admin** (quiz, scommesse risolte) e
-  dall'**assegnazione manuale** dell'admin (`/dai_xp`, `/set_xp`, Airdrop XP), più una
-  **piccola quota di partecipazione giornaliera con tetto** (`/daily`, vittoria scommessa).
-  Il tetto è applicato lato server (`XP_DAILY_PARTICIPATION_CAP`), così nessuno può farmare XP.
+- **Si guadagnano XP partecipando, non solo vincendo.** Gli XP arrivano da due fonti:
+  - **Eventi curati dagli admin** (XP *senza tetto*, perché non spammabili):
+    - **Quiz** — chi gioca prende `QUIZ_XP_PARTICIPATION` di base (basta **1 risposta**),
+      `+QUIZ_XP_PER_CORRECT` per ogni risposta giusta, e il podio (1°/2°/3°) un **bonus**
+      extra (`QUIZ_XP_PODIUM_FIRST/SECOND/THIRD`).
+    - **Scommesse** — piazzare una scommessa dà `XP_PER_BET_PLACED` di partecipazione;
+      se vinci, `XP_PER_BET_WON` in più.
+    - **Assegnazione manuale** admin (`/dai_xp`, `/set_xp`, Airdrop XP).
+  - **Quota giornaliera con tetto** (anti-farm): il `/daily` dà `XP_PER_DAILY_CLAIM`,
+    limitato a `XP_DAILY_PARTICIPATION_CAP` XP al giorno per utente (lato server).
 - **Trofei** (stile PlayStation): achievement con **rarità** Bronzo/Argento/Oro/Platino,
-  sbloccati da condizioni (saldo, streak, scommesse, **XP**…). Li vedi con `/traguardi`
-  (raggruppati per rarità) e `/catalogo_badge`.
-- **Ranghi**: titoli sbloccati automaticamente al crescere degli XP (es. Novizio → Veterano
-  → Leggenda), mostrati sul profilo; il rank-up viene annunciato.
-- **Tag cosmetici**: flair acquistabili nel **negozio** con le monete (`/negozio`, apre
-  ovunque). Sono **solo estetici** — nessun permesso reale, nessuna escalation.
+  sbloccati da condizioni — saldo, streak, scommesse, **XP**, **acquisti alla Locanda**
+  (per oggetto / per categoria), **podio nel Trivia**, e **collezioni** (sblocca tutti i
+  trofei di un set). Li vedi con `/traguardi` (raggruppati per rarità) e `/catalogo_badge`.
+- **Livelli & Ranghi** (stile GTA Online): gli XP si traducono in un **livello numerico** —
+  ogni livello costa il **15% in più** del precedente (configurabile) — ed è il livello, non
+  l'XP grezzo, a essere mostrato su profilo, traguardi e classifiche. I **nomi rango** (Novizio
+  → Veterano → Leggenda) sono titoli mappati su **fasce di livello** (personalizzabili via CSV);
+  level-up e rank-up vengono annunciati. Gli admin vedono il sistema completo con `/lista_ranghi`.
+- **La Locanda** (`/locanda`): 🏷️ **tag cosmetici** (flair, acquisto una tantum) e 🍖 **menù
+  di consumabili** (cibi/bevande riacquistabili che riempiono la 🎒 **dispensa** mostrata sul
+  profilo). Tutto **solo estetico/collezionabile** — nessun permesso reale, nessuna escalation.
 
 ### Personalizzare con i CSV
 
@@ -192,9 +204,11 @@ Nomi, soglie, rarità e prezzi sono **modificabili senza ricompilare**, via CSV 
 cartella dati montata (`CATALOG_DIR`, default `data/`):
 
 ```bash
-cp catalogs/trophies.example.csv        data/trophies.csv
-cp catalogs/ranks.example.csv           data/ranks.csv
-cp catalogs/shop_cosmetics.example.csv  data/shop_cosmetics.csv
+cp catalogs/trophies.example.csv               data/trophies.csv
+cp catalogs/ranks.example.csv                  data/ranks.csv
+cp catalogs/shop_cosmetics.example.csv         data/shop_cosmetics.csv
+cp catalogs/consumable_categories.example.csv  data/consumable_categories.csv
+cp catalogs/consumables.example.csv            data/consumables.csv
 # edita data/*.csv e RIAVVIA il bot (i cataloghi si leggono all'avvio)
 ```
 
@@ -244,9 +258,15 @@ gaming-community-bot/
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
 | `GROQ_API_KEY` | — | modulo AI (opzionale) |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
-| `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP farmabili per utente al giorno |
+| `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
-| `XP_PER_BET_WON` | `15` | XP (capped) su una scommessa vinta |
+| `XP_PER_BET_PLACED` | `10` | XP (evento) per aver piazzato una scommessa |
+| `XP_PER_BET_WON` | `25` | XP (evento) extra se la scommessa vince |
+| `QUIZ_XP_PARTICIPATION` | `20` | XP (evento) per aver giocato il quiz (≥1 risposta) |
+| `QUIZ_XP_PER_CORRECT` | `10` | XP (evento) per ogni risposta corretta |
+| `QUIZ_XP_PODIUM_FIRST` / `_SECOND` / `_THIRD` | `50` / `30` / `20` | bonus podio quiz |
+| `XP_LEVEL_BASE` | `100` | XP per salire dal livello 1 al 2 |
+| `XP_LEVEL_GROWTH` | `1.15` | ogni livello costa +15% del precedente |
 | `BOT_IMAGE` | `gaming-community-bot:local` | immagine usata dal compose (override → GHCR) |
 
 PostgreSQL e Redis sono già pronti nel `docker-compose.yml`.

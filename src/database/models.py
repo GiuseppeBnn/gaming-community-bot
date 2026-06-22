@@ -38,6 +38,7 @@ class TransactionType(str, Enum):
 
 
 class EventStatus(str, Enum):
+    draft = "draft"        # pre-created by an admin, not yet announced/open
     open = "open"
     locked = "locked"
     resolved = "resolved"
@@ -59,6 +60,10 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(256), nullable=False)
     xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # Bot-level ban (set by /ban, the warn auto-ban and the dashboard; cleared by
+    # /sban). A banned user's updates are dropped silently by BannedUserMiddleware —
+    # the bot never replies, anywhere — but their data (wallet, trophies, …) stays.
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_daily_claim: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     daily_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     bets_won: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -68,6 +73,9 @@ class User(Base):
     # rank_slug: last XP-rank seen, used to detect & announce rank-ups.
     # xp_today / xp_today_date: server-side daily cap on farmable participation XP.
     cosmetic_tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Multiple simultaneously-active shop tags (JSON list of catalog item keys,
+    # ordered). cosmetic_tag is kept in sync as a legacy single-tag fallback.
+    active_tags_json: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     rank_slug: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     xp_today: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     xp_today_date: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
@@ -125,6 +133,13 @@ class Badge(Base):
     xp_reward: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     condition_type: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     condition_value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Scope for parametrized conditions: a consumable item key (item_purchases), a
+    # category key (category_purchases), a game key (podium_count/first_place_count),
+    # an event metric key (event_count), or a ``;``-separated list of prerequisite
+    # trophy slugs (collection). NULL for the plain counter conditions (xp/balance/…).
+    condition_param: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # Hidden ("secret") trophy: masked in the catalog until the user earns it.
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     user_badges: Mapped[list["UserBadge"]] = relationship(
         back_populates="badge", cascade="all, delete-orphan"
@@ -226,6 +241,45 @@ class ShopPurchase(Base):
     error_reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
 
+class GamePodium(Base):
+    """A podium finish (rank 1–3) by a user in a community game.
+
+    ``game_key`` identifies the game: ``trivia`` (the quiz, live today) and the
+    forward-declared ``guess`` / ``sound`` (built later). Trophy conditions
+    ``podium_count`` / ``first_place_count`` count rows here — recorded once per
+    user per game event (e.g. one quiz run) by ``progress_service.record_podium``."""
+
+    __tablename__ = "game_podiums"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    game_key: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    rank: Mapped[int] = mapped_column(Integer, nullable=False)  # 1=first, 2=second, 3=third
+    ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # e.g. quiz_id
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class UserProgressEvent(Base):
+    """A generic per-user "did action X in event Y" progress row.
+
+    The trophy engine's ``event_count`` condition counts rows by ``metric_key``
+    (e.g. ``trivia_last_place`` / ``trivia_sub30``), exactly like ``game_podiums``
+    counts podium finishes. Recorded once per source event via
+    ``progress_service.record_event``; the ``(user, metric, ref)`` unique key makes
+    re-processing the same event idempotent. Adding a new "do X N times" trophy
+    needs only a ``record_event`` call at the action site + a CSV row — no schema
+    change."""
+
+    __tablename__ = "user_progress_events"
+    __table_args__ = (UniqueConstraint("user_tg_id", "metric_key", "ref_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    metric_key: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    ref_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # e.g. quiz_id
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Warning(Base):
     """Persistent moderation warning (strike) issued by an admin."""
 
@@ -319,6 +373,25 @@ class QuizAnswer(Base):
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class PollTemplate(Base):
+    """A pre-created poll (question + options) that an admin can later start in
+    the group immediately or schedule — mirroring how quizzes are pre-created.
+
+    Status: ``ready`` (usable) → ``used`` (already sent). One-shot, like a quiz run.
+    """
+
+    __tablename__ = "poll_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    question: Mapped[str] = mapped_column(String(300), nullable=False)
+    options_json: Mapped[str] = mapped_column(String(2048), nullable=False)  # JSON list[str]
+    creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
 class BotState(Base):

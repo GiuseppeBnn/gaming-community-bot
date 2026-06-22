@@ -3,11 +3,20 @@ General-purpose handlers: /start (with deep-link dispatch), /profilo, /help.
 
 Deep-link payloads routed through /start:
   create_bet            → opens the bet-creation FSM in private chat
+  create_poll           → opens the poll-creation FSM in private chat (admin only)
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   help                  → shows the help message
-  shop_<group_id>       → opens the shop catalog for the given group
+  spiega_<cmd>          → shows the per-command manual (carried from the group button)
+  shop_<group_id>       → opens the Locanda (shop) catalog for the given group
+  backup / esporta      → runs the chat archive / state export (admin only)
+
+Every admin entry point re-checks ``is_admin`` here: this router is public, so the
+deep-link landing must not trust that the caller passed the originating command's
+admin filter (a non-admin could craft the ?start=… link directly).
 """
+
+import re
 
 from aiogram import Router
 from aiogram.enums import ChatType
@@ -19,77 +28,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from config_data.config import settings
 from database.models import User
 from filters.admin_filter import is_admin as is_bot_admin
+from handlers._privacy import redirect_to_private
+from handlers.help_content import normalize, render_command_or_hint, render_legend
 from handlers.onboarding import show_rules_prompt
+from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc
 
 router = Router()
 
 
-def _build_help_text(is_admin: bool = False) -> str:
-    user_section = (
-        "📖 <b>Comandi disponibili</b>\n\n"
-        "👤 <b>Profilo & Economia</b>\n"
-        "/start — Menu principale\n"
-        "/profilo — Il tuo profilo (XP, saldo, badge)\n"
-        "/saldo — Saldo e ultime transazioni\n"
-        "/storico — Cronologia completa movimenti\n"
-        "/daily — Premio giornaliero (ogni 20h)\n"
-        "/trasferisci — Trasferisci Aldueuri a un utente\n"
-        "\n"
-        "🎲 <b>Scommesse</b>\n"
-        "/scommesse — Vedi le scommesse aperte\n"
-        "/crea_scommessa — Crea una nuova scommessa\n"
-        "\n"
-        "🏆 <b>Progressione</b>\n"
-        "/traguardi — I tuoi trofei (per rarità) + rango\n"
-        "/catalogo_badge — Tutti i trofei disponibili\n"
-        "/classifiche — Classifiche: ricchezza · XP · trofei\n"
-        "\n"
-        "🛒 <b>Negozio</b>\n"
-        "/negozio — Compra personalizzazioni (tag) con gli Aldueuri\n"
-        "\n"
-        "🤖 <b>Intrattenimento AI</b> <i>(nel gruppo, in risposta a un messaggio)</i>\n"
-        "/maestro — Trasforma uno sfogo in filosofia aulica\n"
-        "/complotto — Genera una teoria del complotto sul messaggio\n"
-        "/difendi — Un avvocato senza scrupoli difende il messaggio\n"
-        "/accusa — Un inquisitore condanna il messaggio\n"
-        "/drama — Riscrive il messaggio come un climax anime drammatico\n"
-        "/dialetto — Traduce il messaggio in siciliano grezzo\n"
-        "/insulta @utente — Blasta senza pietà l'utente taggato\n"
-        "\n"
-        "❓ <b>Aiuto</b>\n"
-        "/help — Questo messaggio"
-    )
-    if not is_admin:
-        return user_section
-
-    admin_section = (
-        "\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "🔐 <b>Comandi Admin</b>\n\n"
-        "/admin — Pannello admin (stats · classifica · audit)\n"
-        "/gestisci_scommesse — Pannello gestione scommesse\n\n"
-        "💰 <b>Valuta</b>\n"
-        "/credita · /addebita @u &lt;n&gt; · /setsaldo @u &lt;n&gt;\n"
-        "/airdrop &lt;n&gt; · /saldo_di @u\n\n"
-        "⚡ <b>XP</b>\n"
-        "/dai_xp @u &lt;n&gt; · /set_xp @u &lt;n&gt;\n\n"
-        "🛡️ <b>Moderazione</b> (reply o @u/ID)\n"
-        "/ban · /sban · /kick · /mute [10m] · /unmute\n"
-        "/warn [motivo] · /warns · /unwarn\n\n"
-        "📊 <b>Info</b>\n"
-        "/info · /cerca &lt;testo&gt; · /classifica · /stats · /audit\n\n"
-        "🧠 <b>Quiz & Eventi</b>\n"
-        "/crea_quiz · /quiz · /avvia_quiz &lt;id&gt; · /chiudi_quiz &lt;id&gt;\n"
-        "/sondaggio · /programma · /programmati"
-    )
-    return user_section + admin_section
-
-
 async def _show_help(message: Message, is_admin: bool) -> None:
-    await message.answer(_build_help_text(is_admin))
+    # The legend lives in help_content (single source of truth shared with
+    # /spiega_comando), so the two never drift apart.
+    await message.answer(render_legend(is_admin))
 
 
 @router.message(CommandStart())
@@ -124,6 +79,15 @@ async def cmd_start(
             await message.answer("⛔ Accesso non autorizzato.")
         return
 
+    # Deep-link: eventi (admin events hub)
+    if payload == "eventi":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.events import show_hub
+            await show_hub(message)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
     # Deep-link: create_quiz (admin quiz creation FSM)
     if payload == "create_quiz":
         if await is_bot_admin(message.bot, message.from_user.id):
@@ -137,6 +101,15 @@ async def cmd_start(
     if payload.startswith("quiz_") and payload[5:].isdigit():
         from handlers.quiz import start_quiz_session
         await start_quiz_session(message, db_session, int(payload[5:]))
+        return
+
+    # Deep-link: create_poll (admin poll creation FSM, redirected from the group)
+    if payload == "create_poll":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.events import start_poll_creation
+            await start_poll_creation(message, state)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
         return
 
     # Deep-link: programma (admin scheduling FSM)
@@ -162,6 +135,13 @@ async def cmd_start(
         await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
         return
 
+    # Deep-link: spiega_<cmd> (per-command manual, carried from the group button)
+    if payload.startswith("spiega_"):
+        cmd = payload[len("spiega_"):]
+        admin = await is_bot_admin(message.bot, message.from_user.id)
+        await message.answer(render_command_or_hint(cmd, admin))
+        return
+
     # Deep-link: shop_<group_id>
     if payload.startswith("shop_") and payload[5:].lstrip("-").isdigit():
         group_id = int(payload[5:])
@@ -181,9 +161,25 @@ async def cmd_start(
     if payload == "profilo":
         await show_profilo(message, db_session)
         return
-    if payload == "traguardi":
+    if payload in ("trofei", "traguardi"):
         from handlers.badges import show_traguardi
         await show_traguardi(message, db_session)
+        return
+    if payload == "classifiche":
+        from handlers.leaderboard import show_board_private
+        await show_board_private(message, db_session)
+        return
+
+    # Deep-links: admin backup / state export (redirected from the group)
+    if payload in ("backup", "esporta"):
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.backup import run_backup_now, run_export_now
+            if payload == "backup":
+                await run_backup_now(message, db_session)
+            else:
+                await run_export_now(message, db_session)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
         return
 
     # Deep-link: create_bet
@@ -218,24 +214,27 @@ async def cmd_start(
     await message.answer(
         f"🎮 <b>Bentornato, {name}{username_str}!</b>\n\n"
         f"/profilo — Il tuo profilo\n"
-        f"/saldo — Saldo e movimenti\n"
+        f"/saldo — Saldo residuo\n"
         f"/daily — Premio giornaliero\n"
         f"/scommesse — Scommesse aperte\n"
-        f"/traguardi — I tuoi badge\n"
+        f"/trofei — I tuoi trofei\n"
         f"/help — Tutti i comandi"
     )
 
 
 @router.message(Command("profilo"))
 async def cmd_profilo(message: Message, db_session: AsyncSession) -> None:
-    from handlers._privacy import redirect_to_private
-    if await redirect_to_private(message, "profilo", "🎮 Vedi il tuo profilo"):
+    # Public command: answers in the group too (no longer redirected to private).
+    # Light anti-flood cooldown; the reply itself is deduplicated per user+command.
+    if not await cooldown.ready(message, "profilo", settings.command_cooldown_seconds):
         return
     await show_profilo(message, db_session)
 
 
 async def show_profilo(message: Message, db_session: AsyncSession) -> None:
-    """Render the caller's profile (private chat only)."""
+    """Render the caller's own profile. Public: works in the group (one live reply
+    per user via static_reply) and in private. Never shows the Telegram ID — that
+    stays exclusive to the admin /info dossier."""
     result = await db_session.execute(
         select(User)
         .where(User.tg_id == message.from_user.id)
@@ -254,30 +253,50 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     badge_count = len(user.badges)
     member_since = user.created_at.strftime("%d/%m/%Y")
 
-    from services import xp_service
-    rank = xp_service.rank_for_xp(user.xp)
-    rank_line = f"🎖️ <b>Rango:</b> {rank.emoji} {esc(rank.name)}\n" if rank else ""
-    tag_line = f"🏷️ <b>Tag:</b> {esc(user.cosmetic_tag)}\n" if user.cosmetic_tag else ""
+    from services import consumable_service, xp_service
+    from services.shop_service import render_active_tags
+    prog = xp_service.level_for_xp(user.xp)
+    rank = xp_service.rank_for_level(prog.level)
+    rank_txt = f" · {rank.emoji} {esc(rank.name)}" if rank else ""
+    level_line = (
+        f"⚡ <b>Livello {prog.level}</b>{rank_txt}\n"
+        f"   {xp_service.progress_bar(prog)} "
+        f"{prog.xp_into_level:,}/{prog.xp_for_next:,} XP\n"
+    )
+    tags = render_active_tags(user)
+    tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""
     title = esc(user.full_name)
-    if user.cosmetic_tag:
-        title = f"{esc(user.cosmetic_tag)} · {title}"
+    if tags:
+        title = f"{esc(tags)} · {title}"
 
-    await message.answer(
+    # Pantry preview: the first few consumables, compact (e.g. "🍕 ×3 · 🐉 ×1").
+    pantry = await consumable_service.inventory(db_session, user.tg_id)
+    pantry_line = ""
+    if pantry:
+        shown = " · ".join(f"{it.emoji} ×{qty}" for it, qty in pantry[:6])
+        more = " …" if len(pantry) > 6 else ""
+        pantry_line = f"🎒 <b>Dispensa:</b> {shown}{more}\n"
+
+    await reply_static(
+        message,
         f"🎮 <b>{title}</b>\n\n"
         f"🔖 <b>Username:</b> {username_display}\n"
-        f"🆔 <b>Telegram ID:</b> <code>{user.tg_id}</code>\n"
         f"📅 <b>Membro dal:</b> {member_since}\n\n"
         f"{tag_line}"
-        f"{rank_line}"
-        f"💰 <b>Aldueuri:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
-        f"⚡ <b>XP:</b> {user.xp:,}\n"
-        f"🏆 <b>Trofei:</b> {badge_count}"
+        f"{level_line}"
+        f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
+        f"🏆 <b>Trofei:</b> {badge_count}\n"
+        f"{pantry_line}".rstrip("\n"),
+        "profilo",
     )
 
 
-@router.message(Command("help"))
+# /comandi is the canonical name; /help is kept as a hidden back-compat alias.
+@router.message(Command("comandi", "help"))
 async def cmd_help(message: Message) -> None:
     if message.chat.type in (ChatType.GROUP, ChatType.SUPERGROUP):
+        if not await cooldown.ready(message, "comandi", settings.command_cooldown_seconds):
+            return
         bot_info = await message.bot.get_me()
         kb = InlineKeyboardMarkup(
             inline_keyboard=[[
@@ -287,10 +306,44 @@ async def cmd_help(message: Message) -> None:
                 )
             ]]
         )
-        await message.reply(
+        # Anti-flood: keep a single live "open the guide" button per user.
+        await reply_static(
+            message,
             "ℹ️ Clicca per vedere tutti i comandi disponibili.",
+            "comandi",
             reply_markup=kb,
         )
         return
 
     await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
+
+
+@router.message(Command("spiega_comando"))
+async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
+    # Detailed per-command manual — private only (keeps the group uncluttered and
+    # never reveals the admin command set there).
+    arg = (command.args or "").strip()
+    # From the group, carry the command name through the deep-link so the landing
+    # shows its explanation (not the generic /start menu). The payload charset is
+    # [a-z0-9_] ⊂ Telegram's allowed [A-Za-z0-9_-]; unknown/empty → general guide.
+    norm = normalize(arg)
+    payload = f"spiega_{norm}" if arg and re.fullmatch(r"[a-z0-9_]+", norm) else "help"
+    if await redirect_to_private(
+        message, payload, "📖 Apri la guida",
+        notice="📖 La guida dettagliata si apre in chat privata.",
+    ):
+        return
+    if not await cooldown.guard(message, "spiega", settings.command_cooldown_seconds):
+        return
+
+    if not arg:
+        await message.answer(
+            "📘 <b>Spiega comando</b>\n\n"
+            "Uso: <code>/spiega_comando &lt;comando&gt;</code>\n"
+            "Esempio: <code>/spiega_comando daily</code>.\n\n"
+            "Per l'elenco completo usa /comandi."
+        )
+        return
+
+    is_admin = await is_bot_admin(message.bot, message.from_user.id)
+    await message.answer(render_command_or_hint(arg, is_admin))

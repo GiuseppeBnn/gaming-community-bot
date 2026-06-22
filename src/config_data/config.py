@@ -31,23 +31,46 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
+    # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
+    command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
+    event_create_cooldown_seconds: int = 5   # starting a quiz/poll/bet creation flow
 
     # Warn/strike system (admin moderation)
     warn_mute_threshold: int = 3       # active warnings → auto-mute
     warn_ban_threshold: int = 5        # active warnings → auto-ban
     warn_mute_duration_seconds: int = 3600
 
-    # XP progression (merit metric, kept separate from coins).
-    # XP is earned from admin-curated events (quiz) uncapped, plus a small *capped*
-    # daily participation quota so users can't farm XP from random actions.
+    # XP progression (merit metric, kept separate from coins). Two tiers:
+    #   * EVENT XP (uncapped): admin-gated events you can't spam — quizzes and bets.
+    #     These reward *participation first* and performance on top (see below), so
+    #     showing up earns XP even without winning.
+    #   * DAILY-QUOTA XP (capped): low-effort/recurring actions (/daily), bounded by
+    #     `xp_daily_participation_cap` per user per day so they can't be farmed.
     catalog_dir: str = "data"               # dir with optional trophies/ranks/cosmetics CSVs
-    xp_daily_participation_cap: int = 50     # max farmable XP per user per day
+    xp_daily_participation_cap: int = 50     # max farmable (capped) XP per user per day
     xp_per_daily_claim: int = 10             # capped XP granted on /daily
-    xp_per_bet_won: int = 15                 # capped XP granted on a winning bet
+    # Betting event XP (uncapped): placing a bet always pays participation XP; a
+    # winning bet pays the (larger) win bonus on top at resolution.
+    xp_per_bet_placed: int = 10              # participation XP for placing a bet
+    xp_per_bet_won: int = 25                 # extra XP when that bet wins
+    # Level curve (GTA-style): cost to go from level n to n+1 is
+    # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
+    xp_level_base: int = 100                 # XP to go from level 1 → 2
+    xp_level_growth: float = 1.15            # geometric growth per level (+15%)
 
     # Quiz mode
     quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers
-    quiz_xp_per_correct: int = 10      # XP awarded per correct answer (event XP, uncapped)
+    # Quiz event XP (uncapped). Every player who answers at least one question gets
+    # `quiz_xp_participation`; each correct answer adds `quiz_xp_per_correct`; the
+    # top-3 finishers get an extra podium bonus. Rewards participation, not just winning.
+    quiz_xp_participation: int = 20    # XP just for playing (≥ 1 answer)
+    quiz_xp_per_correct: int = 10      # XP per correct answer
+    quiz_xp_podium_first: int = 50     # extra XP for the 1st-place finisher
+    quiz_xp_podium_second: int = 30    # extra XP for the 2nd-place finisher
+    quiz_xp_podium_third: int = 20     # extra XP for the 3rd-place finisher
+    # Suggested per-question time limit in the creation flow (seconds; 0 = no limit).
+    # The admin picks the actual value when building the quiz.
+    quiz_default_time_limit_seconds: int = 30
     # Per-rank prize defaults (suggested in the creation flow)
     quiz_default_first: int = 1000
     quiz_default_second: int = 500
@@ -57,9 +80,28 @@ class Settings(BaseSettings):
     quiz_participation_floor_ratio: float = 0.2
     quiz_participation_floor_min: int = 1
 
+    # Shop cosmetics: how many purchased tags a user can keep active at once
+    # (they can switch among owned tags and combine several). Raise to allow more.
+    max_active_tags: int = 3
+
     # Scheduler (programmed quiz/poll/bet)
     scheduler_timezone: str = "Europe/Rome"
     scheduler_poll_interval: int = 20  # seconds between due-task checks
+
+    # Backup & state export (see §25). All optional: with the Telethon creds
+    # empty the chat archive stays disabled and the bot runs normally; the DB
+    # state export needs no Telegram access and always works.
+    backup_dir: str = "backups"                 # dir for snapshots + chat archive
+    backup_state_interval_hours: int = 24       # how often the loop exports DB state
+    backup_state_keep: int = 5                  # rotated state snapshots to retain
+    backup_chat_interval_hours: int = 168       # how often the loop extends the archive
+    backup_max_message_chars: int = 4096        # per-message text cap in the archive
+    # MTProto (Telethon) — reads the group history the Bot API cannot. The
+    # session string is a SENSITIVE full-account credential: keep it in the .env
+    # only, generate it once with scripts/login_telethon.py.
+    telegram_api_id: int = 0
+    telegram_api_hash: str = ""
+    telegram_session: str = ""
 
     @field_validator("admin_ids", mode="before")
     @classmethod

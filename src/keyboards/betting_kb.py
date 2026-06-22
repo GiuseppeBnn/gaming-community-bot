@@ -40,7 +40,7 @@ def get_options_keyboard(
     builder = InlineKeyboardBuilder()
     for opt in options:
         builder.button(
-            text=f"{opt.label} (x{opt.odds_multiplier:.1f}) — {opt.total_wagered} 🪙",
+            text=f"{opt.label} — {opt.total_wagered} 🪙",
             callback_data=f"bet_option:{event_id}:{opt.id}",
         )
     builder.button(text="🔙 Indietro", callback_data="bet:back")

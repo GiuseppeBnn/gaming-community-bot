@@ -1,8 +1,8 @@
-"""Unit tests for utils.text.esc — HTML escaping of user-controlled strings."""
+"""Unit tests for utils.text — HTML escaping and message chunking."""
 
 from __future__ import annotations
 
-from utils.text import esc
+from utils.text import TELEGRAM_MESSAGE_LIMIT, chunk_blocks, esc
 
 
 def test_escapes_angle_brackets_and_ampersand():
@@ -46,3 +46,47 @@ def test_injection_payload_is_neutralised():
     out = esc(payload)
     assert "<a" not in out
     assert "&lt;a" in out
+
+
+# --- chunk_blocks ----------------------------------------------------------
+
+
+def test_chunk_blocks_short_input_single_chunk():
+    blocks = ["a", "b", "c"]
+    assert chunk_blocks(blocks, sep="\n") == ["a\nb\nc"]
+
+
+def test_chunk_blocks_empty_input():
+    assert chunk_blocks([]) == []
+
+
+def test_chunk_blocks_splits_when_over_limit():
+    # 5 blocks of 30 chars, limit 100 → packs ~3 per chunk on "\n" joins.
+    blocks = ["x" * 30 for _ in range(5)]
+    chunks = chunk_blocks(blocks, sep="\n", limit=100)
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk) <= 100
+    # No block is lost or split.
+    rejoined = "\n".join(chunks)
+    assert rejoined.replace("\n", "") == "x" * 150
+
+
+def test_chunk_blocks_never_splits_a_block():
+    blocks = ["short", "y" * 80, "short"]
+    chunks = chunk_blocks(blocks, sep="\n", limit=50)
+    # The 80-char block exceeds the limit but is emitted whole, not cut.
+    assert any(block == "y" * 80 for chunk in chunks for block in chunk.split("\n"))
+
+
+def test_chunk_blocks_respects_separator_length():
+    chunks = chunk_blocks(["aaaa", "bbbb", "cccc"], sep="\n\n", limit=10)
+    for chunk in chunks:
+        assert len(chunk) <= 10
+
+
+def test_chunk_blocks_default_limit_under_telegram_max():
+    # A realistic over-limit catalogue stays within the hard Telegram ceiling.
+    blocks = [f"<b>Trofeo {i}</b> — descrizione di esempio" for i in range(200)]
+    for chunk in chunk_blocks(blocks, sep="\n\n"):
+        assert len(chunk) <= TELEGRAM_MESSAGE_LIMIT

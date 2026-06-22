@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 import config_data.config as cfg
-from database.models import AdminAction
+from database.models import AdminAction, User
 from handlers.admin import apply_warning
 from handlers.admin_dashboard import render_user_detail
 from services import admin_service
@@ -30,6 +30,14 @@ class _StubBot:
 
     async def restrict_chat_member(self, chat_id, user_id, permissions, **kw):
         self.restricted.append((chat_id, user_id))
+
+
+class _FailingBanBot(_StubBot):
+    """A bot whose group-removal always fails (e.g. target is a group admin / the
+    bot lacks rights) — the bot-level ban must still be applied."""
+
+    async def ban_chat_member(self, chat_id, user_id, **kw):
+        raise RuntimeError("Bad Request: user is an administrator of the chat")
 
 
 class TestApplyWarning:
@@ -70,6 +78,27 @@ class TestApplyWarning:
         assert count == 5
         assert "BAN automatico" in escalation
         assert bot.banned
+        banned = await session.scalar(select(User.is_banned).where(User.tg_id == 12))
+        assert banned is True  # dead to the bot, not just removed from the group
+
+    async def test_auto_ban_applies_even_if_group_removal_fails(
+        self, session, user_factory, monkeypatch
+    ):
+        # The group-kick fails (admin target / missing rights) but the bot-level ban
+        # must still land, otherwise the user keeps using the bot in private DM.
+        monkeypatch.setattr(cfg.settings, "warn_mute_threshold", 3)
+        monkeypatch.setattr(cfg.settings, "warn_ban_threshold", 5)
+        await user_factory(tg_id=13, coins=0)
+        bot = _FailingBanBot()
+        for _ in range(4):
+            await apply_warning(bot, session, 1, 13, -100123, None)
+        count, escalation = await apply_warning(bot, session, 1, 13, -100123, None)
+        await session.commit()
+        assert count == 5
+        assert "BAN automatico" in escalation
+        assert "non riuscita" in escalation  # the partial-failure note is surfaced
+        banned = await session.scalar(select(User.is_banned).where(User.tg_id == 13))
+        assert banned is True
 
 
 class TestRenderUserDetail:

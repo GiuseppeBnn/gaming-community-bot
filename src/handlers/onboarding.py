@@ -13,7 +13,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from database.models import User
+from database.models import Badge, User
+from handlers._trophy_announce import announce_trophies
 from keyboards.onboarding_kb import get_rules_keyboard
 from services import badge_service
 from utils.text import esc
@@ -25,7 +26,7 @@ _COMMUNITY_RULES = (
     "1️⃣ Rispetta sempre gli altri membri.\n"
     "2️⃣ Niente spam o contenuti inappropriati.\n"
     "3️⃣ Le scommesse sono solo per divertimento — nessun denaro reale.\n"
-    "4️⃣ Gli Aldueuri non hanno valore monetario.\n"
+    "4️⃣ I CoInn non hanno valore monetario.\n"
     "5️⃣ Gli admin hanno l'ultima parola sulle dispute.\n\n"
     "<i>Clicca il bottone per confermare di aver letto e accettare le regole.</i>"
 )
@@ -53,15 +54,19 @@ async def cb_accept_rules(
         user.onboarding_completed = True
         await db_session.commit()
 
-    _, is_new = await badge_service.award_badge(
+    user_badge, is_new = await badge_service.award_badge(
         db_session, callback.from_user.id, badge_service.BADGE_FIRST_STEPS
     )
     if is_new:
         await db_session.commit()
-
-    badge_text = (
-        "\n\n🏅 <b>Badge sbloccato:</b> 🚀 <i>Primi Passi</i> (+50 XP)" if is_new else ""
-    )
+        # Like every trophy, announce it in the group (tagging the user).
+        badge = (
+            await db_session.execute(
+                select(Badge).where(Badge.slug == badge_service.BADGE_FIRST_STEPS)
+            )
+        ).scalar_one_or_none()
+        if badge is not None:
+            await announce_trophies(callback.bot, db_session, callback.from_user.id, [badge])
 
     name = esc(callback.from_user.first_name)
     await callback.message.edit_text(
@@ -70,9 +75,9 @@ async def cb_accept_rules(
         f"💰 Usa /daily per il tuo primo premio giornaliero!\n\n"
         f"<b>Comandi disponibili:</b>\n"
         f"/profilo — Il tuo profilo\n"
-        f"/saldo — Saldo e movimenti\n"
+        f"/saldo — Saldo residuo\n"
         f"/scommesse — Scommesse aperte\n"
-        f"/traguardi — I tuoi badge\n"
-        f"/help — Tutti i comandi{badge_text}"
+        f"/trofei — I tuoi trofei\n"
+        f"/help — Tutti i comandi"
     )
     await callback.answer("🎮 Benvenuto!")

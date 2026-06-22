@@ -37,6 +37,24 @@ async def test_generate_completion_success(with_api_key):
         assert all("moderat" not in key.lower() for key in sent)
 
 
+async def test_default_temperature_in_payload(with_api_key):
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user")
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert sent["temperature"] == ai_service._TEMPERATURE
+
+
+async def test_custom_temperature_overrides_default(with_api_key):
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user", temperature=0.5)
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert sent["temperature"] == 0.5
+
+
 async def test_generate_completion_http_error(with_api_key):
     with aioresponses() as m:
         m.post(GROQ_URL, status=500, body="boom")

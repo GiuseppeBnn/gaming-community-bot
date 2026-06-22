@@ -38,6 +38,7 @@ from handlers.admin import apply_warning, render_audit, render_panel_help, rende
 from handlers.admin_betting import _show_event_list
 from handlers.leaderboard import render_board
 from handlers.quiz import close_quiz, open_quiz, start_quiz_creation
+from middlewares import ban_guard
 from keyboards.admin_dashboard_kb import (
     PAGE_SIZE,
     back_home_kb,
@@ -65,6 +66,10 @@ from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
+# 100%-admin router: gate every message/callback at the root (STEERING §8). The
+# per-handler filters + `adm:` deny catch-all stay as defense in depth.
+router.message.filter(IsAdminFilter())
+router.callback_query.filter(IsAdminCallbackFilter())
 
 _MAX_AMOUNT = 10_000_000
 _STATUS_MAP = {
@@ -446,6 +451,7 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
             return
         count, _esc = await apply_warning(bot, db_session, admin_id, tg_id, chat_id, None)
         await db_session.commit()
+        ban_guard.invalidate(tg_id)  # a warn may have auto-banned the user
         await callback.answer(f"⚠️ Warn registrato (#{count}).")
         await _show_detail_cb(callback, db_session, tg_id)
         return
@@ -458,10 +464,14 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
 
     success = True
     if action == "ban":
+        # Bot-level ban applies on the admin's intent regardless of the group-removal
+        # result, so a removed user can't keep using the bot in private. /sban reverses it.
+        # `success` stays False on a failed group-removal only to surface the warning
+        # toast (show_alert) — the bot-ban itself always lands.
         success, err = await moderation_service.ban(bot, chat_id, tg_id)
-        toast = "⛔ Utente bannato." if success else f"❌ {err}"
-        if success:
-            await admin_service.log_action(db_session, admin_id, "ban", target_tg_id=tg_id, group_id=chat_id)
+        toast = "⛔ Utente bannato (anche in privato)." if success else f"⛔ Bannato dal bot.\n⚠️ Rimozione dal gruppo non riuscita: {err}"
+        await admin_service.set_user_banned(db_session, tg_id, True)
+        await admin_service.log_action(db_session, admin_id, "ban", target_tg_id=tg_id, group_id=chat_id)
     elif action == "kick":
         success, err = await moderation_service.kick(bot, chat_id, tg_id)
         toast = "👢 Utente espulso." if success else f"❌ {err}"
@@ -471,6 +481,7 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         success, err = await moderation_service.unban(bot, chat_id, tg_id)
         toast = "✅ Utente sbannato." if success else f"❌ {err}"
         if success:
+            await admin_service.set_user_banned(db_session, tg_id, False)
             await admin_service.log_action(db_session, admin_id, "sban", target_tg_id=tg_id, group_id=chat_id)
     elif action == "unmute":
         success, err = await moderation_service.unmute(bot, chat_id, tg_id)
@@ -490,6 +501,8 @@ async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSes
         return
 
     await db_session.commit()
+    if action in ("ban", "sban"):
+        ban_guard.invalidate(tg_id)  # apply the new bot-ban state on the next update
     await callback.answer(toast, show_alert=not success)
     await _show_detail_cb(callback, db_session, tg_id)
 
@@ -648,15 +661,18 @@ async def render_user_detail(bot, db_session: AsyncSession, tg_id: int):
             status_line = f"\n👥 Stato gruppo: {_STATUS_MAP.get(member.status, member.status)}"
         except Exception:  # noqa: BLE001
             pass
-    rank = xp_service.rank_for_xp(u.xp)
+    level = xp_service.level_for_xp(u.xp).level
+    rank = xp_service.rank_for_level(level)
     rank_str = f"{rank.emoji} {esc(rank.name)}" if rank else "—"
-    tag_line = f"\n🏷️ Tag: {esc(u.cosmetic_tag)}" if u.cosmetic_tag else ""
+    from services.shop_service import render_active_tags
+    _tags = render_active_tags(u)
+    tag_line = f"\n🏷️ Tag: {esc(_tags)}" if _tags else ""
     text = (
         f"🪪 <b>{esc(u.full_name)}</b>\n\n"
         f"🔖 {username}\n"
         f"🆔 <code>{u.tg_id}</code>\n"
         f"💰 Saldo: <b>{dossier.coins:,} 🪙</b>\n"
-        f"⚡ XP: {u.xp:,} · 🎖️ Rango: {rank_str}{tag_line}\n"
+        f"⚡ Livello {level} · XP: {u.xp:,} · 🎖️ Rango: {rank_str}{tag_line}\n"
         f"🏆 Trofei: {dossier.badge_count}\n"
         f"🎲 Scommesse: {dossier.bet_count} (vinte: {u.bets_won})\n"
         f"⚠️ Warn attivi: <b>{dossier.active_warnings}</b>"

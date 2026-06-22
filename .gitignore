@@ -48,6 +48,11 @@ data/*
 *.log
 logs
 
+# Backup artifacts (state snapshots + chat archive) and any Telethon session file.
+backups/
+*.session
+*.session-journal
+
 # ---------------------------------------------------------------------------
 # Editor / tooling / OS
 # ---------------------------------------------------------------------------
@@ -57,3 +62,6 @@ logs
 opencode.json
 .DS_Store
 Thumbs.db
+
+
+note.txt
