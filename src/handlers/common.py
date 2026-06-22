@@ -65,7 +65,22 @@ async def cmd_start(
         # switch to private for an admin entry point (e.g. ?start=create_quiz):
         # otherwise the admin recognition further down is never reached.
         if not await is_bot_admin(message.bot, message.from_user.id):
-            await show_rules_prompt(message)
+            # Rules acceptance is strictly personal and must happen in PRIVATE.
+            # In a group the accept button is a single shared message that any
+            # other member could tap, completing THEIR onboarding (and grabbing
+            # the welcome trophy) in place of the user who ran /start. So in the
+            # group we only hand out a deep-link; the rules prompt is shown in
+            # private, where the "onboarding" payload re-enters this same gate.
+            if message.chat.type != ChatType.PRIVATE:
+                await redirect_to_private(
+                    message,
+                    "onboarding",
+                    button_text="🎮 Accetta le regole in privato",
+                    notice="🎮 Per entrare nell'Arena leggi e accetta le regole "
+                    "qui con me in privato.",
+                )
+            else:
+                await show_rules_prompt(message)
             return
 
     payload = command.args or ""
@@ -251,7 +266,6 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
 
     username_display = f"@{esc(user.username)}" if user.username else "N/D"
     badge_count = len(user.badges)
-    member_since = user.created_at.strftime("%d/%m/%Y")
 
     from services import consumable_service, xp_service
     from services.shop_service import render_active_tags
@@ -280,8 +294,7 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
     await reply_static(
         message,
         f"🎮 <b>{title}</b>\n\n"
-        f"🔖 <b>Username:</b> {username_display}\n"
-        f"📅 <b>Membro dal:</b> {member_since}\n\n"
+        f"🔖 <b>Username:</b> {username_display}\n\n"
         f"{tag_line}"
         f"{level_line}"
         f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"

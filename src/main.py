@@ -84,6 +84,7 @@ _GROUP_COMMANDS = [
     BotCommand(command="drama", description="Versione anime drammatica"),
     BotCommand(command="dialetto", description="Traduce in siciliano grezzo"),
     BotCommand(command="insulta", description="Blasta un utente taggato"),
+    BotCommand(command="alduino", description="🐲 Parla con Alduino, il drago della community"),
     BotCommand(command="comandi", description="Guida ai comandi"),
 ]
 
