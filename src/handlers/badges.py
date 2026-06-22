@@ -39,7 +39,7 @@ def _trophy_block(badge, *, earned: bool) -> str:
     tail = f" — {esc(desc)}" if desc else ""
     if earned:
         return f"✅ <b>{esc(badge.name)}</b>{tail}"
-    return f"🔒 <i>{esc(badge.name)}</i>{tail}"
+    return f"🔒 <b>{esc(badge.name)}</b>{tail}"
 
 
 def _grouped_trophy_blocks(badges, earned_ids: set[int]) -> list[str]:

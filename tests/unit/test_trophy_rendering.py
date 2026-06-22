@@ -30,7 +30,7 @@ class TestTrophyBlock:
     def test_locked_shows_name_and_description_only(self):
         b = _Badge(1, "Spiccioli", "Accumula 1.000 CoInn nel saldo.", "bronze")
         assert badges._trophy_block(b, earned=False) == (
-            "🔒 <i>Spiccioli</i> — Accumula 1.000 CoInn nel saldo."
+            "🔒 <b>Spiccioli</b> — Accumula 1.000 CoInn nel saldo."
         )
 
     def test_earned_uses_check_marker_and_bold(self):
@@ -63,11 +63,11 @@ class TestTrophyBlock:
         b = _Badge(1, "Senza testo", "", "bronze",
                    condition_type="balance", condition_value=1000)
         out = badges._trophy_block(b, earned=False)
-        assert out == "🔒 <i>Senza testo</i> — Raggiungi 1,000 CoInn"
+        assert out == "🔒 <b>Senza testo</b> — Raggiungi 1,000 CoInn"
 
     def test_blank_description_no_condition_omits_dash(self):
         b = _Badge(1, "Manuale", "", "bronze")
-        assert badges._trophy_block(b, earned=False) == "🔒 <i>Manuale</i>"
+        assert badges._trophy_block(b, earned=False) == "🔒 <b>Manuale</b>"
 
     def test_name_and_description_are_html_escaped(self):
         b = _Badge(1, "A<b>", "x & <y>", "bronze")
