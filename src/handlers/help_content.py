@@ -171,6 +171,14 @@ _COMMANDS: list[CommandDoc] = [
         details="L'AI confeziona un insulto originale e tagliente rivolto all'utente che tagghi. "
                 "Roba da adulti, niente peli sulla lingua.",
     ),
+    CommandDoc(
+        "alduino", "Parla col drago Alduino", "🤖 Intrattenimento AI",
+        usage="/alduino <messaggio>",
+        details="Scrivi a <b>Alduino</b>, il draghetto viola gamer della community: gli parli "
+                "direttamente e lui ti risponde a tono — gentile e premuroso, ma furbo e "
+                "sarcastico quando ci sta. Es. <code>/alduino consigliami un gioco</code> "
+                "(o rispondi a un messaggio).",
+    ),
     # --- ❓ Aiuto ---
     CommandDoc(
         "comandi", "Mostra la guida ai comandi", "❓ Aiuto",

@@ -9,6 +9,7 @@ No FSM states. Identity comes from Telegram (@username / first_name).
 """
 
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,6 +47,16 @@ async def show_rules_prompt(message: Message) -> None:
 async def cb_accept_rules(
     callback: CallbackQuery, db_session: AsyncSession
 ) -> None:
+    # Defense-in-depth: acceptance is personal and must be completed in PRIVATE.
+    # Never honor this callback from a group message (a stale/forwarded rules card
+    # there must not let a bystander accept "for" someone or grab the welcome
+    # trophy). cmd_start already keeps the rules card out of groups.
+    if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
+        await callback.answer(
+            "🔒 Accetta le regole in chat privata con me.", show_alert=True
+        )
+        return
+
     result = await db_session.execute(
         select(User).where(User.tg_id == callback.from_user.id)
     )

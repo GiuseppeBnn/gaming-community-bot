@@ -63,6 +63,8 @@ async def test_show_profilo_hides_telegram_id(session, user_factory):
     assert "Telegram ID" not in text
     assert "<code>321</code>" not in text  # the id itself is gone
     assert "777" in text                    # balance still shown
+    # "Membro dal" was misleading (first bot use, not real group-join) → removed.
+    assert "Membro dal" not in text
 
 
 async def test_cmd_saldo_answers_in_group_without_redirect(session, user_factory):

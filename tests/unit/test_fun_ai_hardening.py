@@ -139,3 +139,93 @@ async def test_fallback_message_on_ai_error(monkeypatch):
     text, _kwargs = msg.replies[-1]
     assert text == ai_service.AI_FALLBACK_MESSAGE
     fun_ai._last_used.clear()
+
+
+# ---------------------------------------------------------------------------
+# /alduino — self-contained, self-aware mascot persona (kept out of _STYLE)
+# ---------------------------------------------------------------------------
+
+async def _async_true(*args, **kwargs):
+    return True
+
+
+class _AlduinoMsg:
+    def __init__(self, chat_type="supergroup", reply_to=None):
+        self.bot = _StubBot()
+        self.chat = types.SimpleNamespace(id=1, type=chat_type)
+        self.from_user = types.SimpleNamespace(id=7)
+        self.reply_to_message = reply_to
+        self.replies: list[tuple[str, dict]] = []
+
+    async def reply(self, text, **kwargs):
+        self.replies.append((text, kwargs))
+
+
+def test_alduino_persona_isolated_from_style():
+    # The roast personas are untouched: Alduino's name/character lives ONLY in
+    # its own prompt, never leaking into the shared edgy _STYLE.
+    assert "Alduino" not in fun_ai._STYLE
+    assert "Alduino" in fun_ai._PROMPT_ALDUINO
+    assert "drago" in fun_ai._PROMPT_ALDUINO
+    # It carries its own prompt-injection guard (independent of _STYLE).
+    assert "FINE CONTENUTO" in fun_ai._PROMPT_ALDUINO
+
+
+async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
+    captured: dict[str, object] = {}
+
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
+        captured["system_prompt"] = system_prompt
+        captured["user_text"] = user_text
+        return "ciao, sono Alduino!"
+
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(fun_ai, "is_admin", _async_true)
+    fun_ai._last_used.clear()
+
+    msg = _AlduinoMsg()
+    await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="consigliami un gioco"))
+
+    assert captured["system_prompt"] is fun_ai._PROMPT_ALDUINO
+    assert fun_ai._CONTENT_OPEN in captured["user_text"]
+    assert "consigliami un gioco" in captured["user_text"]
+    fun_ai._last_used.clear()
+
+
+async def test_alduino_without_input_hints_without_calling_llm(monkeypatch):
+    called = False
+
+    async def fake_completion(*a, **k):
+        nonlocal called
+        called = True
+        return "x"
+
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(fun_ai, "is_admin", _async_true)
+    fun_ai._last_used.clear()
+
+    msg = _AlduinoMsg()
+    await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args=None))
+
+    assert not called  # no LLM call without input
+    assert msg.replies and "/alduino" in msg.replies[0][0]
+    fun_ai._last_used.clear()
+
+
+async def test_alduino_rejected_outside_group(monkeypatch):
+    called = False
+
+    async def fake_completion(*a, **k):
+        nonlocal called
+        called = True
+        return "x"
+
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    fun_ai._last_used.clear()
+
+    msg = _AlduinoMsg(chat_type="private")
+    await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="ciao"))
+
+    assert not called  # group-only guard fires first
+    assert msg.replies
+    fun_ai._last_used.clear()
