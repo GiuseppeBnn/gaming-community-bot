@@ -99,6 +99,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      # L'immagine containrrr (non più manutenuta) di default manda l'header API
+      # Docker 1.25, rifiutato dai daemon moderni (min 1.40). Forziamo una versione
+      # supportata: il client la sa parlare, va solo dichiarata esplicitamente.
+      DOCKER_API_VERSION: "1.41"
       WATCHTOWER_POLL_INTERVAL: 600        # 🕙 controlla ogni 10 minuti
       WATCHTOWER_LABEL_ENABLE: "true"      # aggiorna solo i container con enable=true
       WATCHTOWER_CLEANUP: "true"           # 🧹 rimuove la vecchia immagine dopo l'update
