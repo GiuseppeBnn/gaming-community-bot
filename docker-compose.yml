@@ -63,10 +63,56 @@ services:
       # would be owned by the host UID → the non-root botuser gets EACCES on write.
       # Backups are retrievable via the /backup·/esporta DM and `docker cp`.
       - bot_backups:/app/backups
+    # 🔄 Watchtower aggiorna SOLO i container con questa label (vedi servizio sotto).
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
     deploy:
       resources:
         limits:
           memory: 300M # 🔒 Massimo 300MB di RAM al Bot Python
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Auto-update del solo servizio `bot` (Watchtower).
+  #
+  # COSA FA: ogni 10 min controlla se il *tag* in esecuzione (es. …:latest-test)
+  # punta a un DIGEST diverso nel registry. Se sì → pull della nuova immagine,
+  # stop graceful del vecchio container, ricreazione con la STESSA config
+  # (volumi/env/network/label invariati), restart. Con CLEANUP la vecchia
+  # immagine viene rimossa subito → niente accumulo di versioni sul disco.
+  #
+  # PERCHÉ il digest e non "il secondo tag sha": `latest-test` è un puntatore
+  # mutabile; quando la CI lo ripubblica, il suo digest cambia — ed è esattamente
+  # ciò che Watchtower confronta. Più semplice e affidabile che leggere il tag
+  # sha-…-test, che resta utile solo come pin per il rollback manuale:
+  #   BOT_IMAGE=ghcr.io/<owner>/gaming-community-bot:sha-XXXXXXX-test
+  #   docker compose up -d
+  #
+  # SCOPE: aggiorna SOLO i container con label watchtower.enable=true → qui solo
+  # `bot`. db/redis (tag upstream fissi) e watchtower stesso NON vengono toccati.
+  #
+  # AUTH: il package GHCR è PUBBLICO → nessuna credenziale necessaria. (Se un
+  # domani lo rendi privato, aggiungi il volume `${HOME}/.docker/config.json:/config.json:ro`
+  # dopo aver fatto `docker login ghcr.io` sull'host.)
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_POLL_INTERVAL: 600        # 🕙 controlla ogni 10 minuti
+      WATCHTOWER_LABEL_ENABLE: "true"      # aggiorna solo i container con enable=true
+      WATCHTOWER_CLEANUP: "true"           # 🧹 rimuove la vecchia immagine dopo l'update
+      WATCHTOWER_NO_STARTUP_MESSAGE: "true"
+      TZ: ${SCHEDULER_TIMEZONE:-Europe/Rome}
+      # — Notifica Telegram opzionale a ogni update (riusa il bot) —
+      # WATCHTOWER_NOTIFICATIONS: shoutrrr
+      # WATCHTOWER_NOTIFICATION_URL: telegram://${BOT_TOKEN}@telegram?chats=<ADMIN_CHAT_ID>
+    networks:
+      - bot_network
+    deploy:
+      resources:
+        limits:
+          memory: 64M # 🔒 Watchtower è leggerissimo
 
 networks:
   bot_network:
