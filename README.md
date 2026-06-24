@@ -127,6 +127,20 @@ Tag immagine: `latest` (solo sul branch di default), nome del branch e SHA breve
 L'immagine è **multi-arch** (`linux/amd64` + `linux/arm64`): Docker tira automaticamente la
 variante giusta per la tua macchina (incluse Apple Silicon e i server ARM).
 
+**Auto-update (Watchtower):** il compose include un servizio `watchtower` che ogni
+**10 min** controlla se il tag in esecuzione (`BOT_IMAGE`, es. `…:latest-test`) punta a
+un **digest** nuovo nel registry. Se sì → pull, stop graceful del bot, ricreazione con la
+stessa config, restart, e **rimozione della vecchia immagine** (`--cleanup` → niente
+accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
+`com.centurylinklabs.watchtower.enable=true`); db/redis restano intatti.
+
+- **Auth:** il package GHCR è **pubblico** → nessuna credenziale necessaria. (Se lo rendi
+  privato, monta `~/.docker/config.json:/config.json:ro` nel servizio `watchtower` dopo un
+  `docker login ghcr.io` sull'host.)
+- **Rollback manuale:** punta `BOT_IMAGE` al tag immutabile precedente
+  (`…:sha-XXXXXXX-test`) e `docker compose up -d`.
+- **Intervallo:** `WATCHTOWER_POLL_INTERVAL` (secondi) nel compose.
+
 ---
 
 ## Comandi del Bot
