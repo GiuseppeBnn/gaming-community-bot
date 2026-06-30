@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 
 from aiogram import F, Router
-from aiogram.enums import ChatType
+from aiogram.enums import ChatType, ParseMode
 from aiogram.filters.command import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -536,6 +536,13 @@ async def fsm_amount(message: Message, state: FSMContext, db_session: AsyncSessi
             toast = f"⚡ XP impostati a {new_xp:,}."
         await db_session.commit()
         await state.clear()
+        if action == "xpgrant":
+            dm = f"⚡ Hai ricevuto <b>+{res.granted:,} XP</b> da un amministratore!"
+            if res.leveled_up:
+                dm += f"\n🎉 Sei salito al <b>livello {res.new_level}</b>!"
+            if res.new_rank:
+                dm += f"\n🎖️ Nuovo rango: <b>{esc(res.new_rank.emoji)} {esc(res.new_rank.name)}</b>!"
+            await _notify_dm(message.bot, tg_id, dm)
         await _show_detail_msg(message, db_session, tg_id, prefix=toast)
         return
 
@@ -546,6 +553,11 @@ async def fsm_amount(message: Message, state: FSMContext, db_session: AsyncSessi
             )
             await admin_service.log_action(db_session, admin_id, "credita", target_tg_id=tg_id, amount=amount)
             toast = f"✅ Accreditati {amount:,} 🪙."
+            await db_session.commit()
+            await state.clear()
+            await _notify_dm(message.bot, tg_id, f"💰 Hai ricevuto <b>{amount:,} CoInn</b> da un amministratore! 🪙")
+            await _show_detail_msg(message, db_session, tg_id, prefix=toast)
+            return
         elif action == "debit":
             await economy_service.debit(
                 db_session, tg_id, amount, TransactionType.admin_debit, f"Addebito dashboard da #{admin_id}"
@@ -628,6 +640,14 @@ async def fsm_reason(message: Message, state: FSMContext, db_session: AsyncSessi
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+async def _notify_dm(bot, tg_id: int, text: str) -> None:
+    """Best-effort DM to a user; silently ignored if the user never started the bot."""
+    try:
+        await bot.send_message(tg_id, text, parse_mode=ParseMode.HTML)
+    except Exception:  # noqa: BLE001
+        log.debug("DM notification to %s skipped (user may not have started the bot)", tg_id)
+
 
 def _parse_amount(text: str | None) -> int | None:
     try:
