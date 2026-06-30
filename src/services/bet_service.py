@@ -332,6 +332,22 @@ async def get_open_events(session: AsyncSession) -> list[BettingEvent]:
     return list(result.scalars().all())
 
 
+async def get_user_placed_event_ids(
+    session: AsyncSession, tg_id: int, event_ids: list[int]
+) -> set[int]:
+    """Return the subset of event_ids on which tg_id has a pending bet."""
+    if not event_ids:
+        return set()
+    result = await session.execute(
+        select(UserBet.event_id).where(
+            UserBet.user_tg_id == tg_id,
+            UserBet.event_id.in_(event_ids),
+            UserBet.status == BetStatus.pending.value,
+        )
+    )
+    return set(result.scalars().all())
+
+
 async def get_all_active_events(session: AsyncSession) -> list[BettingEvent]:
     """Returns open and locked events (not yet resolved or cancelled)."""
     result = await session.execute(

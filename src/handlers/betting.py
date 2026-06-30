@@ -124,18 +124,20 @@ async def cmd_scommesse(message: Message, db_session: AsyncSession, state: FSMCo
 
     if message.chat.type != "private":
         bot_info = await message.bot.get_me()
-        sent = await message.answer(
+        await message.answer(
             f"🎲 <b>{len(events)} scommess{'a aperta' if len(events) == 1 else 'e aperte'}</b>\n\n"
             "Tocca per scommettere in privato:",
             reply_markup=get_group_events_keyboard(events, bot_info.username),
         )
         return
 
+    event_ids = [e.id for e in events]
+    placed_ids = await bet_service.get_user_placed_event_ids(db_session, message.from_user.id, event_ids)
     await _clear_active_bet_msg(message.bot, message.chat.id, state)
     sent = await message.answer(
         f"🎲 <b>{len(events)} scommess{'a aperta' if len(events) == 1 else 'e aperte'}</b>\n\n"
         "Seleziona un evento:",
-        reply_markup=get_events_keyboard(events),
+        reply_markup=get_events_keyboard(events, placed_ids),
     )
     await state.update_data(bet_active_msg_id=sent.message_id)
 

@@ -21,12 +21,15 @@ def get_group_events_keyboard(events: list[BettingEvent], bot_username: str) -> 
     return builder.as_markup()
 
 
-def get_events_keyboard(events: list[BettingEvent]) -> InlineKeyboardMarkup:
+def get_events_keyboard(
+    events: list[BettingEvent], placed_ids: set[int] = frozenset()
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for event in events:
         total = sum(o.total_wagered for o in event.options)
+        prefix = "✅ " if event.id in placed_ids else ""
         builder.button(
-            text=f"#{event.id} {event.title[:30]} — {total} 🪙",
+            text=f"{prefix}#{event.id} {event.title[:30]} — {total} 🪙",
             callback_data=f"event:view:{event.id}",
         )
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
