@@ -4,7 +4,6 @@ Keyboards for the button-driven admin dashboard (callback namespace ``adm:*``).
 Callback grammar (kept well within Telegram's 64-byte limit):
   adm:home · adm:close
   adm:stats · adm:lead · adm:audit · adm:help
-  adm:quiz · adm:quiz:open:<id> · adm:quiz:close:<id> · adm:quiz:new
   adm:bets · adm:econ · adm:airdrop · adm:search
   adm:users:<page> · adm:user:<tg_id>
   adm:act:<action>:<tg_id>   (input-driven: credit/debit/setbal/mute/warn)
@@ -39,20 +38,6 @@ def back_home_kb() -> InlineKeyboardMarkup:
     b.button(text="⬅️ Home", callback_data="adm:home")
     b.button(text="✖ Chiudi", callback_data="adm:close")
     b.adjust(2)
-    return b.as_markup()
-
-
-def quiz_hub_kb(quizzes) -> InlineKeyboardMarkup:
-    """One action button per quiz (avvia / chiudi by status) + create + back."""
-    b = InlineKeyboardBuilder()
-    for q in quizzes:
-        if q.status == "running":
-            b.button(text=f"🏁 Chiudi #{q.id} {q.title[:24]}", callback_data=f"adm:quiz:close:{q.id}")
-        else:  # ready
-            b.button(text=f"▶️ Avvia #{q.id} {q.title[:24]}", callback_data=f"adm:quiz:open:{q.id}")
-    b.button(text="➕ Crea quiz", callback_data="adm:quiz:new")
-    b.button(text="⬅️ Home", callback_data="adm:home")
-    b.adjust(1)
     return b.as_markup()
 
 

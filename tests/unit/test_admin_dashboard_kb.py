@@ -10,7 +10,6 @@ from keyboards.admin_dashboard_kb import (
     back_home_kb,
     confirm_kb,
     home_kb,
-    quiz_hub_kb,
     user_detail_kb,
     users_kb,
 )
@@ -88,23 +87,6 @@ class TestUsersPicker:
         assert "adm:users:2" not in cbs
         assert "adm:search" in cbs
         assert "adm:home" in cbs
-
-
-class TestQuizHub:
-    def test_open_for_ready_close_for_running(self):
-        quizzes = [
-            SimpleNamespace(id=1, title="A", status="ready", questions=[1, 2]),
-            SimpleNamespace(id=2, title="B", status="running", questions=[1]),
-        ]
-        cbs = _cbs(quiz_hub_kb(quizzes))
-        assert "adm:quiz:open:1" in cbs
-        assert "adm:quiz:close:2" in cbs
-        assert "adm:quiz:new" in cbs
-        assert "adm:home" in cbs
-
-    def test_empty_still_has_create(self):
-        cbs = _cbs(quiz_hub_kb([]))
-        assert "adm:quiz:new" in cbs
 
 
 class TestConfirm:

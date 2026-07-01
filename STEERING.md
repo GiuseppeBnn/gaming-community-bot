@@ -608,7 +608,10 @@ aggiungere altro rumore (la risposta fresca è già lì).
 `/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/profilo`, `/quiz`, `/traguardi`, `/classifiche`, `/locanda`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
+> `/trasferisci` e `/catalogo_badge` (alias `/catalogo_trofei`) sono ora nel menù «/» **anche di gruppo**
+> (prima solo privato/admin). NB: il menù «/» è cachato dai client Telegram → dopo il deploy può servire
+> riaprire l'app per vederli (non serve rinominare il comando).
 
 > **`/help` → `/comandi`**: il comando canonico è ora `/comandi` (`/help` resta come alias nascosto +
 > deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
@@ -756,8 +759,10 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   Statistiche · Classifica · **🎬 Eventi** · 👥 Utenti · 💰 Economia · 🧾 Audit · ❓ Comandi.
   (Quiz e Scommesse non sono più voci separate: confluiscono nell'hub **Eventi** — §18.2.)
 - **Riuso, zero logica duplicata**: le viste riusano i renderer **pubblici** di `handlers/admin.py`
-  (`render_stats`/`render_leaderboard`/`render_audit`/`render_panel_help`); quiz → `open_quiz`/`close_quiz`/`start_quiz_creation`;
+  (`render_stats`/`render_leaderboard`/`render_audit`/`render_panel_help`);
   scommesse → `admin_betting._show_event_list`. Le azioni passano dagli **stessi service + `log_action`** dei comandi.
+  **Quiz/sondaggi/scommesse non sono più nella dashboard**: il bottone **🎬 Eventi** apre l'hub (`ev:home`, §18.2) —
+  il vecchio hub quiz (`adm:quiz*`, `quiz_hub_kb`) e l'avvio con un tap sono stati **rimossi**.
 - **Azioni su utente** (`👥 Utenti`, lista paginata + 🔍 ricerca → `adm:user:<tg>`): credita/addebita/set saldo,
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
   Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`adm:ask:…` → `adm:do:…`).
@@ -766,7 +771,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
 - **Gating**: ogni callback `adm:*` con `IsAdminCallbackFilter` + **catch-all deny** `adm:` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
   dopo `admin.router` in `main.py`.
-- **Grammatica callback** (≤ 64 byte): `adm:home|stats|lead|audit|help|close`, `adm:lead:<board>`, `adm:quiz[:open|close:<id>|:new]`,
+- **Grammatica callback** (≤ 64 byte): `adm:home|stats|lead|audit|help|close`, `adm:lead:<board>`,
   `adm:bets`, `adm:econ|airdrop|xpairdrop|search`, `adm:users:<page>`, `adm:user:<tg>`, `adm:act:<credit|debit|setbal|xpgrant|xpset|mute|warn>:<tg>`,
   `adm:ask:<ban|kick>:<tg>`, `adm:do:<…>:<tg>`.
 - Il vecchio pannello read-only `admin_panel:*` + `keyboards/admin_panel_kb.py` è **rimosso** (assorbito dalla dashboard).
@@ -785,15 +790,28 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   `if/elif` per tipo. Aggiungere un tipo = una nuova spec + una riga in `register_builtin`, **zero**
   modifiche a `events.py`/`schedule.py`. Le spec **non committano mai** (§5): committa il chiamante
   (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
-- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (schermata
-  «Avvia ora / Programma»), `ev:start:<type>:<id>`, `ev:sched:<type>:<id>`, `ev:close:<type>:<id>`,
-  `ev:new:<type>`, `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi
-  presente nel registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py`
-  con il suo gate admin di router (§8).
+- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (**schermata info**,
+  vedi sotto), `ev:start:<type>:<id>`, `ev:close:<type>:<id>`, `ev:del:<type>:<id>`, `ev:reset:<type>:<id>`,
+  `ev:sched:<type>:<id>`, `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
+  e `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi presente nel
+  registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py` con il suo gate
+  admin di router (§8).
+- **Schermata info + conferme (no avvio accidentale)**: cliccando un item (`ev:item`) si apre la sua
+  **scheda info** — non lo si avvia. Ogni azione impattante (avvia · chiudi · elimina · riproponi) passa
+  da uno step di conferma `ev:ask*` (Sì→esecutore, No→`ev:item`). La scheda è fornita dal tipo con i
+  metodi **opzionali** `render_detail`/`delete`/`reset` (l'hub li rileva via `getattr` e per i tipi che
+  non li implementano ricade sulla vecchia schermata «Avvia ora / Programma» + `ev:start`). Restano fuori
+  dal contratto `EventType` per non rompere `isinstance(et, EventType)`.
 - **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
   (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
   community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
   e `bet_service.activate_event` fa `draft→open`). `get_open_events`/`get_all_active_events` escludono i draft.
+- **Quiz persistenti**: l'hub quiz elenca via `quiz_service.list_manageable` **tutti** i quiz non-`draft`
+  (running → ready → **finished** come archivio, cap sugli ultimi N) — un quiz avviato/concluso **non
+  scompare** più. Dalla scheda info: `delete_quiz` (elimina quiz+domande+risposte e **annulla** i task
+  schedulati pendenti; lascia intatti `game_podiums`/`user_metrics`) e `reset_quiz` («Riproponi»: azzera
+  risposte/timestamp e riporta `finished→ready` per rigiocarlo). `list_ready` (ready+running) resta per
+  lo scheduling (`schedulable_items`).
 - **Avvia ora / Chiudi** (`spec.start_now`/`close_now`): quiz→`open_quiz`/`close_quiz`;
   poll→`send_poll` + `mark_used`; bet→`activate_event` + annuncio gruppo (`close_now` → `None`: nessuna
   chiusura). L'annuncio scommessa è centralizzato in `BetType._announce_open` (un'unica fonte per
@@ -824,8 +842,8 @@ conta il tempo minore** (poi l'ordine di arrivo).
 
 ### Creazione
 
-FSM admin in privato (redirect dal gruppo con deep-link `create_quiz`, oppure dalla dashboard
-`adm:quiz:new` che passa `creator_id` esplicito perché lì `message.from_user` è il bot): titolo →
+FSM admin in privato (redirect dal gruppo con deep-link `create_quiz`, oppure dall'hub Eventi
+`ev:new:quiz` che passa `creator_id` esplicito perché lì `message.from_user` è il bot): titolo →
 descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
 (inline) → spiegazione opzionale} → **riepilogo** {➕ Aggiungi · 🗑 Rimuovi ultima · ✅ Pubblica}.
 **Nessun timer.** A fine: quiz `ready`.
@@ -840,8 +858,9 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 ### Avvio & gioco
 
 - `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `quiz_<id>`) **poi**
-  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_quiz`, `/quiz` e
-  dallo scheduler. Caller committa.
+  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_quiz`, dall'hub Eventi
+  (`ev:start:quiz`, con conferma `ev:askstart`) e dallo scheduler. Caller committa. **`/quiz` (admin)**
+  non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
 - Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: gioca in privato, una domanda alla
   volta con **bottoni inline** (`quiz_ans:<quiz>:<question>:<opt>`). Alla risposta: feedback
   immediato (✅/❌ + spiegazione), poi domanda successiva. È **resumable** (riprende dalla domanda
@@ -865,8 +884,10 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
     comportamento **invariato** per i quiz vecchi.
   - XP (`_grant_xp`, evento uncapped): `quiz_xp_participation` a chiunque abbia ≥1 risposta,
     `+quiz_xp_per_correct` per corretta, `+quiz_xp_podium_first/second/third` ai primi 3.
-- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dalla dashboard
-  (`adm:quiz:close`) → `award_prizes` → `finished` → annuncio podio (🎖️ per le consolazioni).
+- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
+  (`ev:close:quiz`, con conferma `ev:askclose`) → `award_prizes` → `finished` → annuncio podio (🎖️ per le
+  consolazioni). Un quiz `finished` resta gestibile nell'hub: `ev:reset:quiz` («Riproponi») lo riporta a
+  `ready`, `ev:del:quiz` lo elimina.
 - `format_prize_summary(quiz)` riassume i premi nelle schede/annunci.
 
 ### Regole

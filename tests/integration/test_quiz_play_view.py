@@ -95,6 +95,12 @@ async def test_admin_gets_management_branch_not_play_view(session, monkeypatch):
     msg = _FakeMsg(uid=7, bot=bot)
     await quiz.cmd_quiz_list(msg, session)
 
-    # Admin path: management reply (no ready quizzes here), not the player view.
-    assert any("Nessun quiz pronto" in r for r in msg.replies)
+    # Admin path: the events-hub quiz management list (tap → detail, never a
+    # one-tap launch), not the player view. `_FakeMsg` has no `edit_text`, so
+    # `edit_or_send` falls back to `answer`.
+    assert msg.answers, "admin should get the management list"
+    text, kwargs = msg.answers[-1]
+    assert "Quiz" in text and "Creane uno" in text  # empty management list
+    cbs = [b.callback_data for row in kwargs["reply_markup"].inline_keyboard for b in row]
+    assert "ev:new:quiz" in cbs  # events-hub create button → management branch
     assert all("Nessun quiz attivo" not in a[0] for a in msg.answers)

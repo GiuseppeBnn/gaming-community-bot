@@ -773,36 +773,19 @@ async def _show_play_view(message: Message, db_session: AsyncSession) -> None:
 @router.message(Command("quiz"))
 async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
     # Public entry point. Non-admins get the "play" view (with a clear message
-    # when no quiz is active); admins get the management list. The admin branch is
-    # still gated by this in-handler is_admin check.
+    # when no quiz is active); admins get the events-hub management list. The admin
+    # branch is still gated by this in-handler is_admin check.
     if not await is_admin(message.bot, message.from_user.id):
         await _show_play_view(message, db_session)
         return
     if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
         return
-    quizzes = [q for q in await quiz_service.list_ready(db_session) if q.status == "ready"]
-    if not quizzes:
-        await message.reply("🧠 Nessun quiz pronto. Creane uno con /crea_quiz.")
-        return
-    b = InlineKeyboardBuilder()
-    for q in quizzes:
-        # Button text is not HTML-parsed → raw title is fine here.
-        b.button(
-            text=f"▶️ #{q.id} {q.title[:30]} ({len(q.questions)} dom.)",
-            callback_data=f"quiz:open:{q.id}",
-        )
-    b.adjust(1)
-    await message.reply("🧠 <b>Quiz pronti</b> — tocca per avviare:", reply_markup=b.as_markup())
+    # Management goes through the events hub: tapping a quiz opens its detail
+    # screen (info + avvia/programma/chiudi/riproponi/elimina, each with a
+    # confirmation) — never a one-tap launch (STEERING §18.2).
+    from handlers.event_types.quiz_type import QuizType
 
-
-@router.callback_query(F.data.startswith("quiz:open:"), IsAdminCallbackFilter())
-async def cb_quiz_open(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    quiz_id = int(callback.data.split(":")[2])
-    ok, msg = await open_quiz(callback.bot, db_session, quiz_id)
-    if ok:
-        await db_session.commit()
-        await callback.message.edit_text(f"🧠 Quiz #{quiz_id} avviato! Annuncio inviato nel gruppo. 🎬")
-    await callback.answer(msg, show_alert=not ok)
+    await QuizType().render_list(message, db_session)
 
 
 @router.message(Command("avvia_quiz"), IsAdminFilter())
