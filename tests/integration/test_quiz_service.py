@@ -7,7 +7,15 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 import services.quiz_service as qz
-from database.models import LedgerEntry, QuizAnswer, TransactionType, User, Wallet
+from database.models import (
+    LedgerEntry,
+    QuizAnswer,
+    QuizQuestion,
+    ScheduledTask,
+    TransactionType,
+    User,
+    Wallet,
+)
 
 
 async def _quiz(session, prize=0, n_questions=1, correct=0):
@@ -402,6 +410,106 @@ class TestExplicitPrizes:
         assert await self._coins(session, 1) == 1000
         assert await self._coins(session, 4) == 0
         assert all(a.kind == "podium" for a in awards)
+
+
+class TestManageableAndLifecycle:
+    """Quizzes are persistent objects: they survive as a manageable archive and can
+    be deleted or re-armed (Riproponi)."""
+
+    async def test_list_manageable_includes_finished_ordered(self, session):
+        # _quiz creates a `draft`; promote each to the status under test.
+        ready, _ = await _quiz(session)
+        running, _ = await _quiz(session)
+        finished, _ = await _quiz(session)
+        await qz.set_status(session, ready.id, "ready")
+        await qz.set_status(session, running.id, "running")
+        await qz.set_status(session, finished.id, "finished")
+        await session.commit()
+
+        got = await qz.list_manageable(session)
+        statuses = [q.status for q in got]
+        assert set(statuses) == {"running", "ready", "finished"}
+        # ordered running → ready → finished
+        assert statuses.index("running") < statuses.index("ready") < statuses.index("finished")
+        # list_ready still excludes finished (used for scheduling)
+        assert finished.id not in [q.id for q in await qz.list_ready(session)]
+
+    async def test_list_manageable_caps_finished(self, session):
+        for _ in range(12):
+            q, _ = await _quiz(session)
+            await qz.set_status(session, q.id, "finished")
+        await session.commit()
+        got = await qz.list_manageable(session, finished_limit=10)
+        assert len([q for q in got if q.status == "finished"]) == 10
+
+    async def test_delete_quiz_removes_questions_and_answers(self, session, user_factory):
+        await user_factory(tg_id=1)
+        quiz, qs = await _quiz(session, n_questions=2)
+        await qz.record_answer(session, quiz.id, qs[0].id, 1, 0)
+        await session.commit()
+
+        assert await qz.delete_quiz(session, quiz.id) is True
+        await session.commit()
+        assert await qz.get_quiz(session, quiz.id) is None
+        assert (await session.execute(
+            select(QuizAnswer).where(QuizAnswer.quiz_id == quiz.id)
+        )).first() is None
+        assert (await session.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)
+        )).first() is None
+
+    async def test_delete_quiz_cancels_pending_task(self, session):
+        quiz, _ = await _quiz(session)
+        session.add(ScheduledTask(
+            task_type="quiz", ref_id=quiz.id, run_at=datetime.utcnow(),
+            status="pending", created_by_tg_id=9,
+        ))
+        await session.commit()
+        assert await qz.delete_quiz(session, quiz.id) is True
+        await session.commit()
+        task = (await session.execute(
+            select(ScheduledTask).where(ScheduledTask.ref_id == quiz.id)
+        )).scalar_one()
+        assert task.status == "cancelled"
+
+    async def test_delete_missing_quiz_returns_false(self, session):
+        assert await qz.delete_quiz(session, 999999) is False
+
+    async def test_reset_quiz_requires_finished(self, session):
+        quiz, _ = await _quiz(session)
+        await qz.set_status(session, quiz.id, "ready")  # not finished → can't reset
+        await session.commit()
+        assert await qz.reset_quiz(session, quiz.id) is False
+
+    async def test_reset_quiz_wipes_answers_and_rearms(self, session, user_factory):
+        await user_factory(tg_id=1)
+        quiz, qs = await _quiz(session, n_questions=1)
+        await qz.record_answer(session, quiz.id, qs[0].id, 1, 0)
+        await qz.set_status(session, quiz.id, "running")
+        await qz.set_status(session, quiz.id, "finished")
+        await session.commit()
+
+        assert await qz.reset_quiz(session, quiz.id) is True
+        await session.commit()
+        reloaded = await qz.get_quiz(session, quiz.id)
+        assert reloaded.status == "ready"
+        assert reloaded.started_at is None and reloaded.finished_at is None
+        assert (await session.execute(
+            select(QuizAnswer).where(QuizAnswer.quiz_id == quiz.id)
+        )).first() is None
+        # questions survive a reset (only answers/timestamps are wiped)
+        assert len(reloaded.questions) == 1
+
+    async def test_answer_stats_counts_participants_and_answers(self, session, user_factory):
+        for uid in (1, 2):
+            await user_factory(tg_id=uid)
+        quiz, qs = await _quiz(session, n_questions=2)
+        await qz.record_answer(session, quiz.id, qs[0].id, 1, 0)
+        await qz.record_answer(session, quiz.id, qs[1].id, 1, 0)
+        await qz.record_answer(session, quiz.id, qs[0].id, 2, 0)
+        await session.commit()
+        participants, answers = await qz.answer_stats(session, quiz.id)
+        assert participants == 2 and answers == 3
 
 
 class TestCloseQuizTriviaEvents:

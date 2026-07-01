@@ -161,3 +161,59 @@ class TestPollCreationFlow:
         assert await state.get_state() == PollTemplateStates.question.state
         assert bot.polls == []  # nothing published
         assert message.replies  # prompted for the question
+
+
+class TestQuizEventType:
+    """Quizzes are persistent objects in the hub: the list routes every item to its
+    detail screen (never a one-tap launch), and each impactful action goes through
+    an ``ev:ask*`` confirmation step."""
+
+    @staticmethod
+    def _cbs(kb) -> list[str]:
+        return [b.callback_data for row in kb.inline_keyboard for b in row]
+
+    async def _quiz(self, session, *, status="ready", title="Quiz"):
+        import services.quiz_service as qz
+
+        quiz = await qz.create_quiz(session, 9, title, "d")  # created as `draft`
+        await qz.add_question(session, quiz.id, "Q", ["a", "b"], 0, None)
+        await qz.set_status(session, quiz.id, status)
+        await session.commit()
+        return quiz
+
+    async def test_render_list_shows_all_statuses_and_routes_to_detail(self, session):
+        from handlers.event_types.quiz_type import QuizType
+
+        ready = await self._quiz(session, status="ready", title="R")
+        running = await self._quiz(session, status="running", title="G")
+        finished = await self._quiz(session, status="finished", title="F")
+
+        message = _FakeMessage("", _FakeBot())
+        await QuizType().render_list(message, session)
+        _text, kb = message.replies[-1]
+        cbs = self._cbs(kb)
+        for q in (ready, running, finished):
+            assert f"ev:item:quiz:{q.id}" in cbs         # tap → detail, not launch
+        assert not any(c.startswith("ev:start:") for c in cbs)
+
+    async def test_render_detail_ready_confirms_start_and_offers_delete(self, session):
+        from handlers.event_types.quiz_type import QuizType
+
+        quiz = await self._quiz(session, status="ready")
+        message = _FakeMessage("", _FakeBot())
+        await QuizType().render_detail(message, session, quiz.id)
+        cbs = self._cbs(message.replies[-1][1])
+        assert f"ev:askstart:quiz:{quiz.id}" in cbs      # start is confirmed
+        assert f"ev:sched:quiz:{quiz.id}" in cbs
+        assert f"ev:askdel:quiz:{quiz.id}" in cbs
+        assert not any(c.startswith("ev:start:") for c in cbs)  # no one-tap launch
+
+    async def test_render_detail_finished_offers_reset_and_delete(self, session):
+        from handlers.event_types.quiz_type import QuizType
+
+        quiz = await self._quiz(session, status="finished")
+        message = _FakeMessage("", _FakeBot())
+        await QuizType().render_detail(message, session, quiz.id)
+        cbs = self._cbs(message.replies[-1][1])
+        assert f"ev:askreset:quiz:{quiz.id}" in cbs
+        assert f"ev:askdel:quiz:{quiz.id}" in cbs

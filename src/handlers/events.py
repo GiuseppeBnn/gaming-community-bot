@@ -125,16 +125,58 @@ async def cb_list(callback: CallbackQuery, db_session: AsyncSession) -> None:
 
 
 @router.callback_query(F.data.startswith("ev:item:"), IsAdminCallbackFilter())
-async def cb_item(callback: CallbackQuery) -> None:
+async def cb_item(callback: CallbackQuery, db_session: AsyncSession) -> None:
     _, _, task_type, raw = callback.data.split(":")
     et = event_types.get(task_type)
     if et is None or not raw.isdigit():
         await callback.answer()
         return
+    # Types that provide a detail/info screen (e.g. quiz) show it — tapping an item
+    # never launches it. Types without one keep the generic "avvia/programma" screen.
+    render_detail = getattr(et, "render_detail", None)
+    if render_detail is not None:
+        await render_detail(callback.message, db_session, int(raw))
+    else:
+        await edit_or_send(
+            callback.message,
+            f"{et.hub_label} #{raw}\n\nVuoi avviarlo subito nel gruppo o programmarlo?",
+            _item_kb(task_type, int(raw)),
+        )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Confirmation gate — every impactful action asks "sicuro?" first (no accidental
+# start/close/delete). Yes routes to the executor callback; No back to the detail.
+# ---------------------------------------------------------------------------
+
+# action → (executor prefix, prompt verb, yes-button label)
+_CONFIRM: dict[str, tuple[str, str, str]] = {
+    "askstart": ("ev:start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
+    "askclose": ("ev:close", "chiudere ora (pubblica il podio)", "🏁 Sì, chiudi"),
+    "askdel": ("ev:del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
+    "askreset": ("ev:reset", "riproporre (azzera risposte e premi)", "🔁 Sì, riproponi"),
+}
+
+
+@router.callback_query(F.data.startswith("ev:ask"), IsAdminCallbackFilter())
+async def cb_confirm(callback: CallbackQuery) -> None:
+    _, action, task_type, raw = callback.data.split(":")
+    conf = _CONFIRM.get(action)
+    et = event_types.get(task_type)
+    if conf is None or et is None or not raw.isdigit():
+        await callback.answer()
+        return
+    exec_prefix, verb, yes_text = conf
     await edit_or_send(
         callback.message,
-        f"{et.hub_label} #{raw}\n\nVuoi avviarlo subito nel gruppo o programmarlo?",
-        _item_kb(task_type, int(raw)),
+        f"⚠️ Vuoi {verb} <b>{et.hub_label} #{raw}</b>?",
+        confirm_cancel_kb(
+            f"{exec_prefix}:{task_type}:{raw}",
+            f"ev:item:{task_type}:{raw}",
+            yes_text=yes_text,
+            no_text="⬅️ No, indietro",
+        ),
     )
     await callback.answer()
 
@@ -172,6 +214,44 @@ async def cb_close(callback: CallbackQuery, db_session: AsyncSession) -> None:
         await db_session.commit()
     await callback.answer(res.message, show_alert=res.alert)
     await et.render_list(callback.message, db_session)
+
+
+@router.callback_query(F.data.startswith("ev:del:"), IsAdminCallbackFilter())
+async def cb_delete(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    _, _, task_type, raw = callback.data.split(":")
+    et = event_types.get(task_type)
+    delete = getattr(et, "delete", None) if et is not None else None
+    if delete is None or not raw.isdigit():
+        await callback.answer()
+        return
+    res = await delete(db_session, int(raw))
+    if res.ok:
+        await db_session.commit()  # spec mutated but never commits (STEERING §5)
+    await callback.answer(res.message, show_alert=res.alert)
+    await et.render_list(callback.message, db_session)  # item is gone → back to list
+
+
+@router.callback_query(F.data.startswith("ev:reset:"), IsAdminCallbackFilter())
+async def cb_reset(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    _, _, task_type, raw = callback.data.split(":")
+    et = event_types.get(task_type)
+    reset = getattr(et, "reset", None) if et is not None else None
+    if reset is None or not raw.isdigit():
+        await callback.answer()
+        return
+    res = await reset(db_session, int(raw))
+    if res is None:  # type isn't re-runnable
+        await callback.answer()
+        return
+    if res.ok:
+        await db_session.commit()
+    await callback.answer(res.message, show_alert=res.alert)
+    # Still exists (now `ready` again) → refresh its detail if the type has one.
+    render_detail = getattr(et, "render_detail", None)
+    if render_detail is not None:
+        await render_detail(callback.message, db_session, int(raw))
+    else:
+        await et.render_list(callback.message, db_session)
 
 
 # ---------------------------------------------------------------------------

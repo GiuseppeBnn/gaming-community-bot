@@ -2,13 +2,14 @@
 Button-driven admin dashboard (namespace ``adm:*``).
 
 A full inline UI so admins can run everything without typing commands: stats,
-leaderboard, audit, quiz launch/close/create, airdrop, and per-user actions
-(credit/debit/set balance, ban/kick/sban, mute/unmute, warn/unwarn) via a
-paginated user picker.
+leaderboard, audit, airdrop, and per-user actions (credit/debit/set balance,
+ban/kick/sban, mute/unmute, warn/unwarn) via a paginated user picker. Events
+(quiz · sondaggi · scommesse) live in their own hub (handlers/events.py, ``ev:*``),
+reached from the "🎬 Eventi" button.
 
 It does NOT reimplement business logic: every action goes through the same
-service layer + audit log as the text commands (handlers/admin.py,
-handlers/quiz.py, services/*), so the two paths behave identically. Mutating
+service layer + audit log as the text commands (handlers/admin.py, services/*),
+so the two paths behave identically. Mutating
 callbacks are gated by IsAdminCallbackFilter, with a catch-all ``adm:`` deny at
 the bottom — mirroring handlers/admin.py and handlers/admin_betting.py.
 """
@@ -37,7 +38,6 @@ from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers.admin import apply_warning, render_audit, render_panel_help, render_stats
 from handlers.admin_betting import _show_event_list
 from handlers.leaderboard import render_board
-from handlers.quiz import close_quiz, open_quiz, start_quiz_creation
 from middlewares import ban_guard
 from keyboards.admin_dashboard_kb import (
     PAGE_SIZE,
@@ -48,7 +48,6 @@ from keyboards.admin_dashboard_kb import (
     econ_kb,
     home_kb,
     lead_kb,
-    quiz_hub_kb,
     skip_or_cancel_reason_kb,
     user_detail_kb,
     users_kb,
@@ -58,7 +57,6 @@ from services import (
     economy_service,
     group_registry,
     moderation_service,
-    quiz_service,
     xp_service,
 )
 from services.xp_service import XpSource
@@ -179,60 +177,6 @@ async def cb_close(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.message.delete()
     except Exception:  # noqa: BLE001
         pass
-    await callback.answer()
-
-
-# ---------------------------------------------------------------------------
-# Quiz hub
-# ---------------------------------------------------------------------------
-
-async def _render_quiz_hub(message: Message, db_session: AsyncSession) -> None:
-    quizzes = await quiz_service.list_ready(db_session)  # ready + running
-    if not quizzes:
-        text = "🧠 <b>Quiz</b>\n\n<i>Nessun quiz pronto o in corso. Creane uno!</i>"
-    else:
-        lines = ["🧠 <b>Quiz</b>\n"]
-        for q in quizzes:
-            status = {"ready": "🟡 pronto", "running": "🟢 in corso"}.get(q.status, q.status)
-            lines.append(
-                f"#{q.id} <b>{esc(q.title)}</b> — {status} · {len(q.questions)} dom.\n"
-                f"   💰 {quiz_service.format_prize_summary(q)}"
-            )
-        text = "\n".join(lines)
-    try:
-        await message.edit_text(text, reply_markup=quiz_hub_kb(quizzes))
-    except Exception:  # noqa: BLE001
-        await message.answer(text, reply_markup=quiz_hub_kb(quizzes))
-
-
-@router.callback_query(F.data == "adm:quiz", IsAdminCallbackFilter())
-async def cb_quiz_hub(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    await state.clear()
-    await _render_quiz_hub(callback.message, db_session)
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("adm:quiz:open:"), IsAdminCallbackFilter())
-async def cb_quiz_open(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    quiz_id = int(callback.data.split(":")[3])
-    ok, msg = await open_quiz(callback.bot, db_session, quiz_id)
-    if ok:
-        await db_session.commit()
-    await callback.answer(msg, show_alert=not ok)
-    await _render_quiz_hub(callback.message, db_session)
-
-
-@router.callback_query(F.data.startswith("adm:quiz:close:"), IsAdminCallbackFilter())
-async def cb_quiz_close(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    quiz_id = int(callback.data.split(":")[3])
-    ok, msg = await close_quiz(callback.bot, db_session, quiz_id)
-    await callback.answer("🏁 Quiz chiuso. Podio pubblicato." if ok else msg, show_alert=not ok)
-    await _render_quiz_hub(callback.message, db_session)
-
-
-@router.callback_query(F.data == "adm:quiz:new", IsAdminCallbackFilter())
-async def cb_quiz_new(callback: CallbackQuery, state: FSMContext) -> None:
-    await start_quiz_creation(callback.message, state, creator_id=callback.from_user.id)
     await callback.answer()
 
 

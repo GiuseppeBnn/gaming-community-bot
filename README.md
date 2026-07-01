@@ -164,7 +164,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 | Comando | Descrizione |
 | --- | --- |
-| **`/admin`** | **Dashboard a bottoni** (stats, classifica, audit, quiz, scommesse, utenti, economia) |
+| **`/admin`** | **Dashboard a bottoni** (stats, classifica, audit, 🎬 eventi, utenti, economia) |
 | `/credita` · `/addebita` · `/setsaldo` · `/airdrop` · `/saldo_di` | Valuta |
 | `/dai_xp` · `/set_xp` | Assegna / imposta gli XP di un utente (gestione XP solo admin) |
 | `/ban` · `/sban` · `/kick` · `/mute [10m]` · `/unmute` | Moderazione (reply o @user/ID) |
@@ -177,10 +177,15 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 ### Quiz a premi
 
-Creazione guidata (`/crea_quiz` o dalla dashboard) con tasti **« Indietro »**, premi
+Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
 **personalizzabili** per 1°/2°/3°, un **premio di consolazione a scendere** con **minimo
 garantito** per *tutti* i finisher, e una schermata di riepilogo prima di pubblicare. Si
 gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
+
+I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la **scheda info**
+(non si avviano con un tap) e da lì si sceglie **Avvia · Programma · Chiudi · Riproponi · Elimina**,
+sempre **con conferma**. Un quiz concluso resta come archivio finché non lo elimini, e «Riproponi»
+lo azzera per rigiocarlo.
 
 ---
 

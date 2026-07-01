@@ -80,6 +80,24 @@ class EventType(Protocol):
         the type has no close action."""
         ...
 
+    # ------------------------------------------------------------------
+    # Optional capabilities. The events hub probes these with ``getattr`` and
+    # falls back to the generic item screen for types that don't implement them,
+    # so they are deliberately NOT part of the required contract above — adding
+    # them here would break ``isinstance(et, EventType)`` for types that opt out.
+    #
+    #   async def render_detail(self, message, db_session, item_id) -> None
+    #       Info/detail screen (title, status, stats, …) with status-aware action
+    #       buttons that route through the ``ev:ask*`` confirmation steps.
+    #
+    #   async def delete(self, db_session, item_id) -> StartResult
+    #       Permanently delete the item (mutates, never commits).
+    #
+    #   async def reset(self, db_session, item_id) -> StartResult | None
+    #       Re-arm a finished item so it can run again ("Riproponi"); ``None`` when
+    #       the type is not re-runnable.
+    # ------------------------------------------------------------------
+
 
 _REGISTRY: dict[str, EventType] = {}
 

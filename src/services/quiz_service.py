@@ -15,13 +15,19 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import Integer, func, select
+from sqlalchemy import Integer, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from config_data.config import settings
-from database.models import Quiz, QuizAnswer, QuizQuestion, TransactionType
+from database.models import (
+    Quiz,
+    QuizAnswer,
+    QuizQuestion,
+    ScheduledTask,
+    TransactionType,
+)
 from services import economy_service, xp_service
 from services.xp_service import XpSource
 
@@ -179,6 +185,26 @@ async def list_ready(session: AsyncSession) -> list[Quiz]:
     return list(result.scalars().all())
 
 
+async def list_manageable(session: AsyncSession, *, finished_limit: int = 10) -> list[Quiz]:
+    """All non-``draft`` quizzes for the admin events hub — quizzes persist as
+    standalone objects instead of vanishing after a run.
+
+    Ordered running → ready → finished (recent first). Finished quizzes are kept
+    as an archive but capped to ``finished_limit`` so the list can't grow unbounded.
+    """
+    result = await session.execute(
+        select(Quiz)
+        .where(Quiz.status.in_(("ready", "running", "finished")))
+        .options(selectinload(Quiz.questions))
+        .order_by(Quiz.created_at.desc())
+    )
+    quizzes = list(result.scalars().all())
+    active = [q for q in quizzes if q.status in ("running", "ready")]
+    active.sort(key=lambda q: 0 if q.status == "running" else 1)  # running first (stable)
+    finished = [q for q in quizzes if q.status == "finished"][:finished_limit]
+    return active + finished
+
+
 async def set_status(session: AsyncSession, quiz_id: int, status: str) -> None:
     quiz = (await session.execute(select(Quiz).where(Quiz.id == quiz_id))).scalar_one_or_none()
     if quiz is None:
@@ -188,6 +214,65 @@ async def set_status(session: AsyncSession, quiz_id: int, status: str) -> None:
         quiz.started_at = _now()
     if status == "finished" and quiz.finished_at is None:
         quiz.finished_at = _now()
+
+
+async def delete_quiz(session: AsyncSession, quiz_id: int) -> bool:
+    """Permanently remove a quiz and its play data. Returns True if it existed.
+
+    Answers are deleted explicitly (they have no ORM relationship to the quiz, only
+    an indexed ``quiz_id`` — so we can't rely on the SQLite FK cascade being on);
+    questions cascade via the ``Quiz.questions`` relationship. Any *pending* scheduled
+    launch of this quiz is cancelled so the scheduler won't fire on a missing quiz.
+    Historical progress rows (``game_podiums`` / ``user_metrics``, keyed by ``ref_id``)
+    are intentionally left intact.
+    """
+    quiz = await get_quiz(session, quiz_id)
+    if quiz is None:
+        return False
+    await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
+    await session.execute(
+        update(ScheduledTask)
+        .where(
+            ScheduledTask.task_type == "quiz",
+            ScheduledTask.ref_id == quiz_id,
+            ScheduledTask.status == "pending",
+        )
+        .values(status="cancelled")
+    )
+    await session.delete(quiz)
+    await session.flush()
+    return True
+
+
+async def reset_quiz(session: AsyncSession, quiz_id: int) -> bool:
+    """Re-run a finished quiz ("Riproponi"): wipe answers/timestamps and set it
+    back to ``ready`` so it can be launched again. Only allowed on a ``finished``
+    quiz. Returns False if the quiz is missing or not finished.
+    """
+    quiz = await get_quiz(session, quiz_id, for_update=True)
+    if quiz is None or quiz.status != "finished":
+        return False
+    await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
+    for question in quiz.questions:
+        question.tg_poll_id = None
+        question.sent_at = None
+    quiz.started_at = None
+    quiz.finished_at = None
+    quiz.status = "ready"
+    await session.flush()
+    return True
+
+
+async def answer_stats(session: AsyncSession, quiz_id: int) -> tuple[int, int]:
+    """(distinct participants, total answers) recorded for a quiz — for the detail view."""
+    row = (
+        await session.execute(
+            select(func.count(func.distinct(QuizAnswer.user_tg_id)), func.count())
+            .select_from(QuizAnswer)
+            .where(QuizAnswer.quiz_id == quiz_id)
+        )
+    ).one()
+    return int(row[0] or 0), int(row[1] or 0)
 
 
 # ---------------------------------------------------------------------------

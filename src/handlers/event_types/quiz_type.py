@@ -14,10 +14,21 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
-from services import quiz_service
+from services import quiz_service, schedule_service
 from utils.text import esc
 
 from .base import StartResult, edit_or_send
+
+# Status → (dot, human label) for the list and detail header.
+_STATUS = {
+    "running": ("🟢", "in corso"),
+    "ready": ("🟡", "pronto"),
+    "finished": ("🏁", "concluso"),
+}
+
+
+def _fmt_dt(dt) -> str:
+    return schedule_service.to_local(dt).strftime("%d/%m %H:%M") if dt else "—"
 
 
 class QuizType:
@@ -26,22 +37,81 @@ class QuizType:
     create_label = "➕ Crea quiz"
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
-        quizzes = await quiz_service.list_ready(db_session)  # ready + running
+        # Quizzes are persistent objects: show ready/running AND the recent
+        # finished ones (archive) — tapping any of them opens its detail screen,
+        # never starts it (STEERING §18.2, no accidental launch).
+        quizzes = await quiz_service.list_manageable(db_session)
         b = InlineKeyboardBuilder()
         lines = ["🧠 <b>Quiz</b>\n"]
         for q in quizzes:
-            if q.status == "running":
-                lines.append(f"🟢 #{q.id} {esc(q.title)} — <i>in corso</i>")
-                b.button(text=f"🏁 Chiudi #{q.id}", callback_data=f"ev:close:quiz:{q.id}")
-            else:
-                lines.append(f"🟡 #{q.id} {esc(q.title)} — <i>pronto</i>")
-                b.button(text=f"⚙️ #{q.id} {q.title[:22]}", callback_data=f"ev:item:quiz:{q.id}")
+            dot, label = _STATUS.get(q.status, ("•", q.status))
+            lines.append(f"{dot} #{q.id} {esc(q.title)} — <i>{label}</i>")
+            b.button(text=f"{dot} #{q.id} {q.title[:22]}", callback_data=f"ev:item:quiz:{q.id}")
         if not quizzes:
             lines.append("<i>Nessun quiz. Creane uno.</i>")
         b.button(text="➕ Crea quiz", callback_data="ev:new:quiz")
         b.button(text="⬅️ Eventi", callback_data="ev:home")
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
+
+    async def render_detail(
+        self, message: Message, db_session: AsyncSession, item_id: int
+    ) -> None:
+        """Info screen for a single quiz with status-aware actions. Every impactful
+        action (avvia / chiudi / elimina / riproponi) routes through an ``ev:ask*``
+        confirmation — no one-tap launch."""
+        quiz = await quiz_service.get_quiz(db_session, item_id)
+        if quiz is None:
+            b = InlineKeyboardBuilder()
+            b.button(text="⬅️ Indietro", callback_data="ev:list:quiz")
+            await edit_or_send(message, "⚠️ Quiz non trovato (eliminato?).", b.as_markup())
+            return
+
+        dot, label = _STATUS.get(quiz.status, ("•", quiz.status))
+        lines = [
+            f"{dot} <b>{esc(quiz.title)}</b> — <i>{label}</i>",
+        ]
+        if quiz.description:
+            lines.append(f"\n{esc(quiz.description)}")
+        lines.append(
+            f"\n📋 {len(quiz.questions)} domande · 🏆 {quiz_service.format_prize_summary(quiz)}"
+        )
+        if quiz.status in ("running", "finished"):
+            participants, answers = await quiz_service.answer_stats(db_session, item_id)
+            finishers = len(await quiz_service.podium(db_session, item_id))
+            lines.append(f"👥 {participants} partecipanti · ✍️ {answers} risposte · 🏁 {finishers} finisher")
+        if quiz.started_at:
+            lines.append(f"▶️ Avviato: {_fmt_dt(quiz.started_at)}")
+        if quiz.finished_at:
+            lines.append(f"🏁 Concluso: {_fmt_dt(quiz.finished_at)}")
+
+        b = InlineKeyboardBuilder()
+        if quiz.status == "ready":
+            b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:quiz:{item_id}")
+            b.button(text="🗓️ Programma", callback_data=f"ev:sched:quiz:{item_id}")
+            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
+        elif quiz.status == "running":
+            b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:quiz:{item_id}")
+            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
+        else:  # finished
+            b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:quiz:{item_id}")
+            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
+        b.button(text="⬅️ Indietro", callback_data="ev:list:quiz")
+        b.adjust(2, 1)  # action pair per row, then Elimina/Indietro on their own rows
+        await edit_or_send(message, "\n".join(lines), b.as_markup())
+
+    async def delete(self, db_session: AsyncSession, item_id: int) -> StartResult:
+        ok = await quiz_service.delete_quiz(db_session, item_id)
+        return StartResult(ok, "🗑️ Quiz eliminato." if ok else "Quiz non trovato.", alert=not ok)
+
+    async def reset(self, db_session: AsyncSession, item_id: int) -> StartResult | None:
+        ok = await quiz_service.reset_quiz(db_session, item_id)
+        return StartResult(
+            ok,
+            "🔁 Quiz riproposto: risposte azzerate, di nuovo pronto." if ok
+            else "Impossibile riproporre (solo i quiz conclusi).",
+            alert=not ok,
+        )
 
     async def schedulable_items(self, db_session: AsyncSession) -> list[tuple[int, str]]:
         return [
