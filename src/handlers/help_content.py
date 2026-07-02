@@ -174,10 +174,10 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc(
         "alduino", "Parla col drago Alduino", "🤖 Intrattenimento AI",
         usage="/alduino <messaggio>",
-        details="Scrivi a <b>Alduino</b>, il draghetto viola gamer della community: gli parli "
-                "direttamente e lui ti risponde a tono — gentile e premuroso, ma furbo e "
-                "sarcastico quando ci sta. Es. <code>/alduino consigliami un gioco</code> "
-                "(o rispondi a un messaggio).",
+        details="Scrivi a <b>Alduino</b>, il draghetto viola paffuto della community: gamer "
+                "gasatissimo, ottimista e un po' tontolone, con la battuta sempre pronta e il "
+                "trash-talking bonario di un amico in lobby. Gli parli e lui ti risponde a tono. "
+                "Es. <code>/alduino consigliami un gioco</code> (o rispondi a un messaggio).",
     ),
     # --- ❓ Aiuto ---
     CommandDoc(
