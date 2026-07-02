@@ -55,6 +55,9 @@ _MIGRATIONS: list[str] = [
     # ALTER TYPE to the same type is a no-op → idempotent like the entries above.
     "ALTER TABLE wallets ALTER COLUMN coins TYPE BIGINT",
     "ALTER TABLE ledger ALTER COLUMN amount TYPE BIGINT",
+    # betting_events: timed betting window (NULL = illimitata) + armed close deadline.
+    "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS betting_window_seconds INTEGER",
+    "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
 ]
 
 

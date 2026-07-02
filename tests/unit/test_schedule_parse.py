@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.schedule_service import parse_run_at, to_local
+from services.schedule_service import parse_duration, parse_run_at, to_local
 
 
 class TestParseRunAt:
@@ -35,6 +35,29 @@ class TestParseRunAt:
     def test_zero_relative_raises(self):
         with pytest.raises(ValueError):
             parse_run_at("0m")
+
+
+class TestParseDuration:
+    def test_minutes_hours_days_to_seconds(self):
+        assert parse_duration("30m") == 30 * 60
+        assert parse_duration("2h") == 2 * 3600
+        assert parse_duration("1d") == 86400
+
+    def test_case_insensitive_and_trimmed(self):
+        assert parse_duration("  45M ") == 45 * 60
+
+    def test_absolute_format_rejected(self):
+        # parse_duration only accepts a relative span, not an absolute instant.
+        with pytest.raises(ValueError):
+            parse_duration("2026-01-01 10:00")
+
+    def test_garbage_raises(self):
+        with pytest.raises(ValueError):
+            parse_duration("un po'")
+
+    def test_zero_raises(self):
+        with pytest.raises(ValueError):
+            parse_duration("0m")
 
 
 class TestToLocal:

@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 import services.bet_service as bet_svc
-from database.models import BettingEvent, BetStatus, EventStatus, User, UserBet
+from database.models import (
+    BettingEvent,
+    BettingOption,
+    BetStatus,
+    EventStatus,
+    ScheduledTask,
+    User,
+    UserBet,
+)
 from exceptions.economy import (
     AlreadyBetError,
     BettingClosedError,
@@ -15,6 +25,7 @@ from exceptions.economy import (
     InsufficientFundsError,
 )
 from exceptions.economy import EventAlreadySettledError
+from services import schedule_service
 
 
 # ---------------------------------------------------------------------------
@@ -503,3 +514,94 @@ class TestBetXp:
 
         assert await self._xp(session, 1) == 35  # 10 placed + 25 won, not clipped by cap=5
         assert await self._xp(session, 2) == 10  # loser keeps only the participation XP
+
+
+# ---------------------------------------------------------------------------
+# Betting window (timed auto-close)
+# ---------------------------------------------------------------------------
+
+async def _open_event_with_window(session, window_seconds, *, status=EventStatus.open.value):
+    event = await bet_svc.create_event(
+        session,
+        creator_tg_id=1,
+        title="Timed",
+        description="d",
+        options=[{"label": "A"}, {"label": "B"}],
+        status=status,
+        window_seconds=window_seconds,
+    )
+    await session.commit()
+    return event
+
+
+class TestBettingWindow:
+    async def test_open_with_window_arms_deadline(self, session, user_factory):
+        await user_factory(tg_id=1)
+        before = schedule_service.utcnow()
+        event = await _open_event_with_window(session, 900)  # 15 min
+
+        assert event.betting_window_seconds == 900
+        assert event.closes_at is not None
+        assert timedelta(minutes=14) < event.closes_at - before < timedelta(minutes=16)
+
+    async def test_unlimited_window_leaves_no_deadline(self, session, user_factory):
+        await user_factory(tg_id=1)
+        event = await _open_event_with_window(session, None)
+        assert event.closes_at is None
+
+    async def test_draft_arms_only_on_activation(self, session, user_factory):
+        await user_factory(tg_id=1)
+        event = await _open_event_with_window(session, 1800, status=EventStatus.draft.value)
+        assert event.closes_at is None  # still a draft, window not started
+
+        activated = await bet_svc.activate_event(session, event.id)
+        await session.commit()
+        assert activated.closes_at is not None
+
+    async def test_schedule_close_creates_pending_lock_task(self, session, user_factory):
+        await user_factory(tg_id=1)
+        event = await _open_event_with_window(session, 900)
+
+        task = await bet_svc.schedule_close(session, event, created_by_tg_id=1, group_id=123)
+        await session.commit()
+
+        assert task is not None
+        assert task.task_type == "bet"
+        assert task.ref_id == event.id
+        assert task.status == "pending"
+        assert task.run_at == event.closes_at
+        assert schedule_service.task_payload(task) == {"action": "lock"}
+
+    async def test_schedule_close_noop_for_unlimited(self, session, user_factory):
+        await user_factory(tg_id=1)
+        event = await _open_event_with_window(session, None)
+        assert await bet_svc.schedule_close(session, event, 1, 123) is None
+
+    async def test_place_bet_rejected_after_deadline(self, session, user_factory):
+        await user_factory(tg_id=1, coins=1000)
+        event = await _open_event_with_window(session, 900)
+        # Force the window shut without changing status (scheduler tick not yet fired).
+        event.closes_at = schedule_service.utcnow() - timedelta(seconds=1)
+        await session.commit()
+
+        option = (
+            await session.execute(select(BettingOption).where(BettingOption.event_id == event.id))
+        ).scalars().first()
+        with pytest.raises(BettingClosedError):
+            await bet_svc.place_bet(session, 1, event.id, option.id, 100)
+
+    async def test_cancel_pending_close_cancels_lock_task(self, session, user_factory):
+        await user_factory(tg_id=1)
+        event = await _open_event_with_window(session, 900)
+        task = await bet_svc.schedule_close(session, event, 1, 123)
+        await session.commit()
+        task_id = task.id
+
+        await bet_svc.cancel_pending_close(session, event.id)
+        await session.commit()
+
+        session.expire_all()
+        reloaded = (
+            await session.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+        ).scalar_one()
+        assert reloaded.status == "cancelled"

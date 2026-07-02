@@ -61,7 +61,7 @@ Campi importanti:
 - `quiz_default_prize: int` (default 1000, **legacy** pool) — modalità quiz
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
-- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
+- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); `bet_default_window_minutes` (60, preset suggerito + fallback finestra puntate); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -86,7 +86,9 @@ badges          (id PK, slug unique, name, description, icon_emoji, category,
 user_badges     (id PK, user_tg_id FK, badge_id FK, earned_at, notified)
                 UniqueConstraint(user_tg_id, badge_id)
 betting_events  (id PK, title, description, creator_tg_id FK, status, resolution_option_id,
-                 created_at, locked_at, resolved_at)
+                 betting_window_seconds, closes_at, created_at, locked_at, resolved_at)
+                 ← betting_window_seconds = finestra scelta alla creazione (NULL/0 = illimitata);
+                   closes_at = scadenza armata all'apertura (= utcnow()+window), auto-lock via scheduler
 betting_options (id PK, event_id FK, label, odds_multiplier, total_wagered)
 user_bets       (id PK, user_tg_id FK, event_id FK, option_id FK, amount,
                  potential_win, status, placed_at, settled_at)
@@ -592,6 +594,8 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `BetCreationStates.waiting_for_title` | `handlers/betting.py` | |
 | `BetCreationStates.waiting_for_description` | `handlers/betting.py` | |
 | `BetCreationStates.waiting_for_options` | `handlers/betting.py` | |
+| `BetCreationStates.waiting_for_window` | `handlers/betting.py` | finestra puntate: preset (`bet:win:<sec>`)/♾️ (`bet:win:0`)/✏️ custom → crea l'evento |
+| `BetCreationStates.waiting_for_window_custom` | `handlers/betting.py` | durata custom (`schedule_service.parse_duration`, 30m/2h/1d) |
 | `BetCustomAmountState.waiting_for_amount` | `handlers/betting.py` | |
 | `QuizCreationStates.*` | `handlers/quiz.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
@@ -816,6 +820,16 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   poll→`send_poll` + `mark_used`; bet→`activate_event` + annuncio gruppo (`close_now` → `None`: nessuna
   chiusura). L'annuncio scommessa è centralizzato in `BetType._announce_open` (un'unica fonte per
   avvia-ora **e** scheduler).
+- **Finestra scommesse (auto-chiusura)**: la durata si sceglie **alla creazione** (step
+  `BetCreationStates.waiting_for_window`, preset/custom/♾️ illimitata → `betting_window_seconds`,
+  `NULL/0` = illimitata). All'apertura (`activate_event`/`create_event` open) `bet_service.arm_close`
+  arma `closes_at = utcnow()+window`; `bet_service.schedule_close` programma l'auto-lock riusando
+  **`task_type="bet"` con payload `{"action":"lock"}`** (nessun nuovo tipo). A scadenza
+  `BetType.execute_scheduled` fa `lock_event` + annuncio «⏰ Scommesse chiuse» (o `TaskSkip` se già
+  chiusa). `place_bet` rifiuta comunque oltre `closes_at` (guardia difensiva sul tick ~20s). Chiudendo/
+  risolvendo/annullando a mano, i tre confirm-handler di `admin_betting` chiamano
+  `bet_service.cancel_pending_close` per non lasciare il task orfano. La lista `/scommesse` (privata **e**
+  gruppo) marca «✅» le scommesse già giocate dall'utente (`get_user_placed_event_ids`).
 - **Programma**: `handlers.schedule.start_schedule_for(type, ref_id, label)` → stato unico
   `ScheduleStates.event_runat` → `schedule_task(type, ref_id)`. `execute_task` delega a
   `spec.execute_scheduled`, che gestisce **`ref_id`** (nuovo: carica PollTemplate / attiva draft) con
@@ -911,9 +925,13 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
   `event_types.get(task.task_type).execute_scheduled(...)`** (tipo ignoto → `RuntimeError`). Le spec:
-  `bet` → `activate_event` (o `create_event` da payload legacy) + annuncio gruppo; `quiz` →
+  `bet` → `activate_event` (o `create_event` da payload legacy) + annuncio gruppo, **oppure** auto-lock
+  se `payload.action == "lock"` (chiude la finestra puntate → `locked`); `quiz` →
   `open_quiz` (annuncia + apre); `poll` → `bot.send_poll` nel gruppo. Le spec **non committano** (il
   `scheduler_loop` committa dopo `mark_done`/`mark_failed`).
+- `parse_duration(text)` (30m/2h/1d → secondi): **durata** relativa (non un istante), usata dallo step
+  finestra puntate. La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
+  `payload.action="lock"` armato all'apertura (§18.2) — stesso registry, nessun task-type nuovo.
 - Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
