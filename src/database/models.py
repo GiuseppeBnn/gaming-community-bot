@@ -336,6 +336,9 @@ class Quiz(Base):
     prize_third: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     prize_consolation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     prize_min: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Per-user display randomization, chosen once at creation (§19).
+    randomize_questions: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    randomize_answers: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

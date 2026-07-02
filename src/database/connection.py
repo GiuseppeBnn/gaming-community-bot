@@ -58,6 +58,9 @@ _MIGRATIONS: list[str] = [
     # betting_events: timed betting window (NULL = illimitata) + armed close deadline.
     "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS betting_window_seconds INTEGER",
     "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    # quizzes: per-user display randomization of question/answer order (added after initial deploy)
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_questions BOOLEAN NOT NULL DEFAULT false",
+    "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_answers BOOLEAN NOT NULL DEFAULT false",
 ]
 
 

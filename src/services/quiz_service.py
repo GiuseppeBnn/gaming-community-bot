@@ -12,6 +12,7 @@ Follows STEERING §5: no commits here — the caller owns the transaction.
 from __future__ import annotations
 
 import json
+import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -88,6 +89,8 @@ async def create_quiz(
     prize_third: int = 0,
     prize_consolation: int = 0,
     prize_min: int = 0,
+    randomize_questions: bool = False,
+    randomize_answers: bool = False,
 ) -> Quiz:
     quiz = Quiz(
         title=title[:256],
@@ -100,6 +103,8 @@ async def create_quiz(
         prize_third=max(0, prize_third),
         prize_consolation=max(0, prize_consolation),
         prize_min=max(0, prize_min),
+        randomize_questions=randomize_questions,
+        randomize_answers=randomize_answers,
     )
     session.add(quiz)
     await session.flush()
@@ -161,6 +166,34 @@ def time_limit_seconds(quiz: Quiz) -> int:
     same limit on every question. 0 when the quiz has no questions yet.
     """
     return quiz.questions[0].open_period if quiz.questions else 0
+
+
+def user_question_order(quiz: Quiz, user_tg_id: int) -> list[QuizQuestion]:
+    """Question order as seen by one player.
+
+    Deterministic per (quiz, run, user) so resuming after a bot restart shows the
+    same order, but a "Riproponi" re-run (which clears ``started_at``) reshuffles.
+    Identity order (creation order) when ``randomize_questions`` is off.
+    """
+    if not quiz.randomize_questions:
+        return quiz.questions
+    order = list(quiz.questions)
+    random.Random((quiz.id, quiz.started_at, user_tg_id)).shuffle(order)
+    return order
+
+
+def user_option_order(quiz: Quiz, question: QuizQuestion, user_tg_id: int) -> list[tuple[int, str]]:
+    """Answer options for one player as ``(real_index, text)`` pairs, in display order.
+
+    ``real_index`` always refers to the stored order (matches ``correct_option_id``),
+    so callers can use it directly as the answer's callback payload regardless of
+    display order. Identity order when ``randomize_answers`` is off.
+    """
+    pairs = list(enumerate(question_options(question)))
+    if not quiz.randomize_answers:
+        return pairs
+    random.Random((quiz.id, question.id, user_tg_id)).shuffle(pairs)
+    return pairs
 
 
 async def get_quiz(
