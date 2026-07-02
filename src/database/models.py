@@ -175,6 +175,11 @@ class BettingEvent(Base):
     )
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     resolution_option_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Betting window: chosen at creation (NULL/0 = illimitata, only manual lock).
+    # ``closes_at`` is armed at open-time (= utcnow() + window) and auto-locks the
+    # event via a ScheduledTask; NULL while draft or if the window is unlimited.
+    betting_window_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    closes_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     locked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

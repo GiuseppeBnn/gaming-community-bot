@@ -187,6 +187,16 @@ I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la *
 sempre **con conferma**. Un quiz concluso resta come archivio finché non lo elimini, e «Riproponi»
 lo azzera per rigiocarlo.
 
+### Scommesse (stile Twitch)
+
+Payout **proporzionale** al pool (stile Twitch) e una sola scommessa per utente per evento.
+Alla creazione si sceglie la **finestra temporale** entro cui si può puntare (preset
+**15m/30m/1h/3h**, durata personalizzata, oppure **♾️ illimitata**). All'avvio parte il
+conto alla rovescia: allo scadere la scommessa **si chiude da sola** (non accetta più puntate)
+e resta in attesa che un admin **dichiari il vincitore** dal pannello `/gestisci_scommesse`.
+Con «illimitata» la chiusura resta manuale, come prima. Nella lista `/scommesse` una scommessa
+su cui hai già puntato è marcata **✅**, così lo vedi subito.
+
 ---
 
 ## XP, Trofei, Ranghi e Tag
@@ -281,6 +291,7 @@ gaming-community-bot/
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
 | `XP_PER_BET_PLACED` | `10` | XP (evento) per aver piazzato una scommessa |
 | `XP_PER_BET_WON` | `25` | XP (evento) extra se la scommessa vince |
+| `BET_DEFAULT_WINDOW_MINUTES` | `60` | preset suggerito + fallback della finestra puntate |
 | `QUIZ_XP_PARTICIPATION` | `20` | XP (evento) per aver giocato il quiz (≥1 risposta) |
 | `QUIZ_XP_PER_CORRECT` | `10` | XP (evento) per ogni risposta corretta |
 | `QUIZ_XP_PODIUM_FIRST` / `_SECOND` / `_THIRD` | `50` / `30` / `20` | bonus podio quiz |

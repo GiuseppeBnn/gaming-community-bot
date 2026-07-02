@@ -182,6 +182,8 @@ async def cb_admin_confirm_lock(callback: CallbackQuery, db_session: AsyncSessio
 
     try:
         await bet_service.lock_event(db_session, event_id)
+        # Manual lock pre-empts the timed auto-lock: drop its pending task.
+        await bet_service.cancel_pending_close(db_session, event_id)
         await db_session.commit()
     except EventNotFoundError:
         await callback.answer("❌ Evento non trovato.", show_alert=True)
@@ -291,6 +293,9 @@ async def cb_admin_confirm_resolve(
 
     try:
         summary = await bet_service.resolve_event(db_session, event_id, option_id)
+        # Resolving straight from `open` (before any lock) leaves a pending auto-lock
+        # task orphaned — cancel it so the scheduler doesn't later no-op on it.
+        await bet_service.cancel_pending_close(db_session, event_id)
         await db_session.commit()
     except EventNotFoundError:
         await callback.answer("❌ Evento non trovato.", show_alert=True)
@@ -398,6 +403,7 @@ async def cb_admin_confirm_cancel(
 
     try:
         result = await bet_service.cancel_event(db_session, event_id)
+        await bet_service.cancel_pending_close(db_session, event_id)
         await db_session.commit()
     except EventNotFoundError:
         await callback.answer("❌ Evento non trovato.", show_alert=True)

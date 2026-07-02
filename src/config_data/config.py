@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # winning bet pays the (larger) win bonus on top at resolution.
     xp_per_bet_placed: int = 10              # participation XP for placing a bet
     xp_per_bet_won: int = 25                 # extra XP when that bet wins
+    # Betting window: default minutes the pre-selected preset suggests at creation, and
+    # the defensive fallback if the window step is somehow bypassed (0 = illimitata).
+    bet_default_window_minutes: int = 60
     # Level curve (GTA-style): cost to go from level n to n+1 is
     # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
     xp_level_base: int = 100                 # XP to go from level 1 → 2

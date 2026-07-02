@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import select, update
@@ -13,6 +13,7 @@ from database.models import (
     BettingEvent,
     BettingOption,
     EventStatus,
+    ScheduledTask,
     TransactionType,
     User,
     UserBet,
@@ -24,7 +25,7 @@ from exceptions.economy import (
     EventAlreadySettledError,
     EventNotFoundError,
 )
-from services import economy_service, xp_service
+from services import economy_service, schedule_service, xp_service
 from services.xp_service import XpSource
 
 
@@ -35,15 +36,21 @@ async def create_event(
     description: str,
     options: list[dict],
     status: str = EventStatus.open.value,
+    window_seconds: int | None = None,
 ) -> BettingEvent:
     """Create a betting event. Defaults to ``open`` (the community flow); pass
     ``status=EventStatus.draft.value`` to pre-create one for the Events hub, to be
-    activated/scheduled later."""
+    activated/scheduled later.
+
+    ``window_seconds`` is the betting window chosen at creation (``None``/0 =
+    illimitata, only manual lock). If the event is created already ``open``, the
+    close deadline is armed here; a draft arms it later, at ``activate_event``."""
     event = BettingEvent(
         title=title,
         description=description,
         creator_tg_id=creator_tg_id,
         status=status,
+        betting_window_seconds=window_seconds,
     )
     session.add(event)
     await session.flush()
@@ -56,12 +63,64 @@ async def create_event(
                 odds_multiplier=float(opt.get("odds", 2.0)),
             )
         )
+    if status == EventStatus.open.value:
+        arm_close(event)
     return event
+
+
+def arm_close(event: BettingEvent) -> None:
+    """Arm the auto-close deadline for a freshly-opened event:
+    ``closes_at = now + betting_window_seconds``. A NULL/0 window means illimitata
+    (no auto-close), so ``closes_at`` is left unset. Pure helper (no DB access)."""
+    window = event.betting_window_seconds
+    if window and window > 0:
+        event.closes_at = schedule_service.utcnow() + timedelta(seconds=window)
+
+
+async def schedule_close(
+    session: AsyncSession,
+    event: BettingEvent,
+    created_by_tg_id: int,
+    group_id: int | None,
+) -> ScheduledTask | None:
+    """If the event has an armed deadline, schedule its auto-lock. Reuses
+    ``task_type="bet"`` with payload ``{"action": "lock"}`` so the scheduler
+    dispatches it through the same ``BetType`` spec — no new task type, no per-type
+    branching in the loop (STEERING §18.2). Returns the task, or ``None`` if the
+    window is illimitata. No commit (§5)."""
+    if event.closes_at is None:
+        return None
+    return await schedule_service.schedule_task(
+        session,
+        task_type="bet",
+        run_at=event.closes_at,
+        created_by_tg_id=created_by_tg_id,
+        group_id=group_id,
+        ref_id=event.id,
+        payload={"action": "lock"},
+    )
+
+
+async def cancel_pending_close(session: AsyncSession, event_id: int) -> None:
+    """Cancel any pending auto-lock task for this event (the admin locked/resolved/
+    cancelled it by hand before the window elapsed), so the scheduler doesn't later
+    fire a no-op and DM the admin about a skipped task. No commit (§5)."""
+    result = await session.execute(
+        select(ScheduledTask).where(
+            ScheduledTask.task_type == "bet",
+            ScheduledTask.ref_id == event_id,
+            ScheduledTask.status == "pending",
+        )
+    )
+    for task in result.scalars().all():
+        if schedule_service.task_payload(task).get("action") == "lock":
+            task.status = "cancelled"
 
 
 async def activate_event(session: AsyncSession, event_id: int) -> BettingEvent:
     """Transition a ``draft`` event to ``open`` so members can bet. Idempotent for
-    an already-open event; raises if it was locked/resolved/cancelled."""
+    an already-open event; raises if it was locked/resolved/cancelled. Arms the
+    auto-close deadline on the draft→open transition."""
     event = (
         await session.execute(select(BettingEvent).where(BettingEvent.id == event_id))
     ).scalar_one_or_none()
@@ -72,6 +131,7 @@ async def activate_event(session: AsyncSession, event_id: int) -> BettingEvent:
     if event.status != EventStatus.draft.value:
         raise EventAlreadySettledError(event_id, event.status)
     event.status = EventStatus.open.value
+    arm_close(event)
     return event
 
 
@@ -106,6 +166,11 @@ async def place_bet(
         raise EventNotFoundError(event_id)
     if event.status != EventStatus.open.value:
         raise BettingClosedError(event_id, event.status)
+    # Betting window: reject once the deadline has passed even if the scheduler's
+    # auto-lock tick (~poll interval) hasn't flipped the status to `locked` yet, so
+    # the window is honoured to the second on the user's side.
+    if event.closes_at is not None and schedule_service.utcnow() >= event.closes_at:
+        raise BettingClosedError(event_id, "closed")
 
     option = next((o for o in event.options if o.id == option_id), None)
     if option is None:

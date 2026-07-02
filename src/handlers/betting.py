@@ -26,6 +26,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     Message,
 )
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -47,7 +48,7 @@ from keyboards.betting_kb import (
 from config_data.config import settings
 from handlers._trophy_announce import announce_trophies
 from keyboards.common_kb import confirm_cancel_kb
-from services import badge_service, bet_service
+from services import badge_service, bet_service, group_registry, schedule_service
 from utils import cooldown
 from utils.text import esc
 
@@ -64,6 +65,46 @@ class BetCreationStates(StatesGroup):
     waiting_for_title = State()
     waiting_for_description = State()
     waiting_for_options = State()
+    waiting_for_window = State()          # pick the betting-window duration (preset)
+    waiting_for_window_custom = State()   # or type a custom duration (30m/2h/1d)
+
+
+# Betting-window presets offered at creation (label, seconds). 0 / illimitata is a
+# separate button; a custom value is parsed via schedule_service.parse_duration.
+_WINDOW_PRESETS: list[tuple[str, int]] = [
+    ("15m", 15 * 60),
+    ("30m", 30 * 60),
+    ("1h", 60 * 60),
+    ("3h", 3 * 60 * 60),
+]
+
+
+def _window_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for label, sec in _WINDOW_PRESETS:
+        b.button(text=f"⏱️ {label}", callback_data=f"bet:win:{sec}")
+    b.button(text="✏️ Personalizzata", callback_data="bet:win:custom")
+    b.button(text="♾️ Illimitata", callback_data="bet:win:0")
+    b.button(text="❌ Annulla", callback_data="bet:cancel_creation")
+    b.adjust(2, 2, 1, 1, 1)
+    return b.as_markup()
+
+
+def _window_label(window_seconds: int | None) -> str:
+    """Human label for the chosen betting window (used in confirmations)."""
+    if not window_seconds:
+        return "♾️ illimitata (chiusura manuale)"
+    minutes = window_seconds // 60
+    return f"{minutes // 60}h" if minutes % 60 == 0 else f"{minutes}m"
+
+
+def _deadline_block(event: BettingEvent) -> str:
+    """A ready-to-embed «⏳ Chiude alle …» line for the user's bet view (empty when
+    the window is illimitata), so a player knows the cutoff before betting."""
+    if event.closes_at is None:
+        return ""
+    when = schedule_service.to_local(event.closes_at).strftime("%d/%m %H:%M")
+    return f"⏳ Chiude alle <b>{when}</b>\n\n"
 
 
 class BetCustomAmountState(StatesGroup):
@@ -122,17 +163,18 @@ async def cmd_scommesse(message: Message, db_session: AsyncSession, state: FSMCo
         )
         return
 
+    event_ids = [e.id for e in events]
+    placed_ids = await bet_service.get_user_placed_event_ids(db_session, message.from_user.id, event_ids)
+
     if message.chat.type != "private":
         bot_info = await message.bot.get_me()
         await message.answer(
             f"🎲 <b>{len(events)} scommess{'a aperta' if len(events) == 1 else 'e aperte'}</b>\n\n"
             "Tocca per scommettere in privato:",
-            reply_markup=get_group_events_keyboard(events, bot_info.username),
+            reply_markup=get_group_events_keyboard(events, bot_info.username, placed_ids),
         )
         return
 
-    event_ids = [e.id for e in events]
-    placed_ids = await bet_service.get_user_placed_event_ids(db_session, message.from_user.id, event_ids)
     await _clear_active_bet_msg(message.bot, message.chat.id, state)
     sent = await message.answer(
         f"🎲 <b>{len(events)} scommess{'a aperta' if len(events) == 1 else 'e aperte'}</b>\n\n"
@@ -169,7 +211,7 @@ async def cmd_crea_scommessa(message: Message, state: FSMContext) -> None:
     await state.set_state(BetCreationStates.waiting_for_title)
     await message.answer(
         "🎲 <b>Crea una nuova scommessa</b>\n\n"
-        "<b>Step 1/3</b> — Invia il titolo dell'evento (max 200 caratteri):",
+        "<b>Step 1/4</b> — Invia il titolo dell'evento (max 200 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )
 
@@ -209,7 +251,7 @@ async def fsm_bet_title(message: Message, state: FSMContext) -> None:
     await state.set_state(BetCreationStates.waiting_for_description)
     await message.answer(
         f"✅ Titolo: <b>{esc(title)}</b>\n\n"
-        "<b>Step 2/3</b> — Invia una breve descrizione (max 500 caratteri):",
+        "<b>Step 2/4</b> — Invia una breve descrizione (max 500 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )
 
@@ -223,16 +265,14 @@ async def fsm_bet_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=description)
     await state.set_state(BetCreationStates.waiting_for_options)
     await message.answer(
-        "<b>Step 3/3</b> — Invia le opzioni, <b>una per riga</b> (min 2, max 8).\n\n"
+        "<b>Step 3/4</b> — Invia le opzioni, <b>una per riga</b> (min 2, max 8).\n\n"
         "Esempio:\n<code>Squadra A\nSquadra B\nPareggio</code>",
         reply_markup=_cancel_creation_kb(),
     )
 
 
 @router.message(BetCreationStates.waiting_for_options, ~F.text.startswith("/"))
-async def fsm_bet_options(
-    message: Message, state: FSMContext, db_session: AsyncSession
-) -> None:
+async def fsm_bet_options(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     options = [o.strip() for o in raw.splitlines() if o.strip()]
     if len(options) < 2:
@@ -246,29 +286,89 @@ async def fsm_bet_options(
             await message.answer("⚠️ Ogni opzione deve essere max 100 caratteri.", reply_markup=_cancel_creation_kb())
             return
 
+    # Options are stashed; the event is created only after the window step, so the
+    # betting deadline is baked in from the start (draft carries it to activation).
+    await state.update_data(options=options)
+    await state.set_state(BetCreationStates.waiting_for_window)
+    opts_text = "\n".join(f"• {esc(o)}" for o in options)
+    await message.answer(
+        f"✅ Opzioni:\n{opts_text}\n\n"
+        f"<b>Step 4/4</b> — Per quanto tempo si potrà scommettere <b>dopo l'avvio</b>?\n"
+        f"Scegli un preset, «Personalizzata» (<code>30m</code>/<code>2h</code>/<code>1d</code>) "
+        f"o «Illimitata» (chiudi tu a mano, come prima).",
+        reply_markup=_window_kb(),
+    )
+
+
+@router.callback_query(BetCreationStates.waiting_for_window, F.data.startswith("bet:win:"))
+async def cb_bet_window(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    raw = callback.data.split(":")[2]
+    if raw == "custom":
+        await state.set_state(BetCreationStates.waiting_for_window_custom)
+        await callback.message.edit_text(
+            "✏️ Invia la durata della finestra: <code>30m</code>, <code>2h</code> oppure <code>1d</code>.",
+            reply_markup=_cancel_creation_kb(),
+        )
+        await callback.answer()
+        return
+    sec = int(raw)  # 0 = illimitata
+    await _finalize_bet_creation(callback.message, state, db_session, sec or None, callback.from_user.id)
+    await callback.answer()
+
+
+@router.message(BetCreationStates.waiting_for_window_custom, ~F.text.startswith("/"))
+async def fsm_bet_window_custom(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    try:
+        sec = schedule_service.parse_duration(message.text or "")
+    except ValueError as e:
+        await message.answer(f"⚠️ {e}", reply_markup=_cancel_creation_kb())
+        return
+    await _finalize_bet_creation(message, state, db_session, sec, message.from_user.id)
+
+
+async def _finalize_bet_creation(
+    message: Message,
+    state: FSMContext,
+    db_session: AsyncSession,
+    window_seconds: int | None,
+    creator_id: int,
+) -> None:
+    """Create the event (draft or open) with the chosen betting window, then confirm.
+    ``message`` is the surface to reply on (a callback's message or the user's text);
+    ``creator_id`` is passed explicitly since a callback's message is authored by the bot."""
     data = await state.get_data()
     title = data["title"]
     description = data["description"]
+    options = data["options"]
     as_draft = bool(data.get("bet_as_draft", False))
 
     event = await bet_service.create_event(
         db_session,
-        creator_tg_id=message.from_user.id,
+        creator_tg_id=creator_id,
         title=title,
         description=description,
         options=[{"label": o} for o in options],
         status=EventStatus.draft.value if as_draft else EventStatus.open.value,
+        window_seconds=window_seconds,
     )
+    # Direct-open (community) path: the event is already open → arm+schedule its
+    # auto-lock now. A draft arms/schedules later, when it's activated from the hub.
+    if not as_draft:
+        await bet_service.schedule_close(
+            db_session, event, creator_id, group_registry.get_group_id() or None
+        )
     await db_session.commit()
     await state.clear()
 
     opts_text = "\n".join(f"• {esc(o)}" for o in options)
+    window_line = _window_label(window_seconds)
     if as_draft:
         await message.answer(
             f"✅ <b>Scommessa creata in bozza!</b>\n\n"
             f"<b>#{event.id} {esc(title)}</b>\n"
             f"{esc(description)}\n\n"
             f"<b>Opzioni:</b>\n{opts_text}\n\n"
+            f"⏳ Finestra puntate: <b>{window_line}</b>\n\n"
             f"Avviala subito o programmala dagli 🎬 Eventi (/admin → Eventi → Scommesse)."
         )
     else:
@@ -277,6 +377,7 @@ async def fsm_bet_options(
             f"<b>#{event.id} {esc(title)}</b>\n"
             f"{esc(description)}\n\n"
             f"<b>Opzioni:</b>\n{opts_text}\n\n"
+            f"⏳ Finestra puntate: <b>{window_line}</b>\n\n"
             f"Usa /scommesse per vederla."
         )
 
@@ -299,7 +400,7 @@ async def start_bet_creation(
     )
     await message.answer(
         f"{intro}\n\n"
-        "<b>Step 1/3</b> — Invia il titolo dell'evento (max 200 caratteri):",
+        "<b>Step 1/4</b> — Invia il titolo dell'evento (max 200 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )
 
@@ -324,6 +425,7 @@ async def start_bet_view(
         f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
         f"<i>{esc(event.description)}</i>\n\n"
         f"💰 Pool totale: <b>{total} 🪙</b>\n\n"
+        f"{_deadline_block(event)}"
         "Scegli un'opzione:",
         reply_markup=get_options_keyboard(event_id, event.options),
     )
@@ -377,6 +479,7 @@ async def cb_event_view(callback: CallbackQuery, db_session: AsyncSession, state
         f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
         f"<i>{esc(event.description)}</i>\n\n"
         f"💰 Pool totale: <b>{total} 🪙</b>\n\n"
+        f"{_deadline_block(event)}"
         "Scegli un'opzione:",
         reply_markup=get_options_keyboard(event_id, event.options),
     )

@@ -59,18 +59,27 @@ class BetType:
             event = await bet_service.activate_event(db_session, item_id)
         except Exception as e:  # noqa: BLE001 — surface the reason to the admin
             return StartResult(False, f"⚠️ {e}", alert=True)
+        # activate_event armed event.closes_at from the window; schedule its auto-lock.
+        await bet_service.schedule_close(
+            db_session, event, event.creator_tg_id, group_registry.get_group_id() or None
+        )
         await self._announce_open(bot, db_session, event)
         return StartResult(True, "🎲 Scommessa avviata nel gruppo!")
 
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
     ) -> None:
-        # New model: ref_id → activate a pre-created draft event. Legacy: payload.
+        payload = schedule_service.task_payload(task)
+        # Auto-lock task (payload action=lock): close the betting window, don't open.
+        if payload.get("action") == "lock":
+            await self._auto_lock(bot, session, task)
+            return
+
+        # Open path — New model: ref_id → activate a pre-created draft event. Legacy: payload.
         if task.ref_id:
             event = await bet_service.activate_event(session, task.ref_id)
             description = event.description
         else:
-            payload = schedule_service.task_payload(task)
             event = await bet_service.create_event(
                 session,
                 creator_tg_id=task.created_by_tg_id,
@@ -80,12 +89,35 @@ class BetType:
             )
             description = payload.get("description", "")
         await session.flush()
+        # activate_event/create_event armed event.closes_at from the window; schedule
+        # the follow-up auto-lock (picked up on a later scheduler tick).
+        await bet_service.schedule_close(session, event, task.created_by_tg_id, group_id)
         await self._announce_open(bot, session, event, description)
+
+    async def _auto_lock(self, bot, session: AsyncSession, task: ScheduledTask) -> None:
+        """Execute a due auto-lock: close the betting window (→ ``locked``). If the
+        bet is no longer open (admin locked/resolved/cancelled it first) it's a no-op
+        skip, not a failure."""
+        event = await bet_service.get_event_detail(session, task.ref_id)
+        if event is None:
+            raise RuntimeError(f"Scommessa #{task.ref_id} non trovata.")
+        if event.status != "open":
+            raise schedule_service.TaskSkip(
+                "la scommessa non era più aperta, chiusura automatica saltata."
+            )
+        await bet_service.lock_event(session, event.id)
+        await self._announce_closed(bot, session, event)
 
     async def close_now(
         self, bot, db_session: AsyncSession, item_id: int
     ) -> StartResult | None:
         return None
+
+    def _deadline_line(self, event: BettingEvent) -> str:
+        if event.closes_at is None:
+            return "♾️ Puntate aperte senza scadenza."
+        when = schedule_service.to_local(event.closes_at).strftime("%d/%m %H:%M")
+        return f"⏳ <b>Chiude alle {when}</b> — poi le puntate si bloccano."
 
     async def _announce_open(
         self, bot, session: AsyncSession, event: BettingEvent, description: str | None = None
@@ -102,7 +134,8 @@ class BetType:
                 bot,
                 session,
                 f"🎲 <b>Nuova scommessa aperta!</b>\n\n"
-                f"<b>{esc(event.title)}</b>\n{esc(description)}",
+                f"<b>{esc(event.title)}</b>\n{esc(description)}\n\n"
+                f"{self._deadline_line(event)}",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(
                         text="🎯 Scommetti",
@@ -112,3 +145,20 @@ class BetType:
             )
         except Exception:  # noqa: BLE001
             log.warning("Annuncio scommessa #%s fallito", event.id)
+
+    async def _announce_closed(
+        self, bot, session: AsyncSession, event: BettingEvent
+    ) -> None:
+        """Best-effort group notice that the betting window has closed."""
+        if group_registry.get_group_id() == 0:
+            return
+        try:
+            await group_registry.send_group_message(
+                bot,
+                session,
+                f"⏰ <b>Scommesse chiuse!</b>\n\n"
+                f"<b>{esc(event.title)}</b>\n"
+                f"Le puntate sono terminate. In attesa del risultato…",
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("Annuncio chiusura scommessa #%s fallito", event.id)

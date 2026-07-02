@@ -66,6 +66,24 @@ def parse_run_at(text: str, tz_name: str | None = None) -> datetime:
     return target_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def parse_duration(text: str) -> int:
+    """Parse a relative duration ('30m'/'2h'/'1d') into seconds.
+
+    Unlike ``parse_run_at`` (which yields an absolute instant), this returns a plain
+    duration — used by the betting-window creation step. Raises ``ValueError`` on
+    unparseable input or a non-positive duration.
+    """
+    rel = _REL_RE.match((text or "").strip())
+    if not rel:
+        raise ValueError(
+            "Formato non valido. Usa <code>30m</code>, <code>2h</code> oppure <code>1d</code>."
+        )
+    seconds = int(rel.group(1)) * _REL_UNIT[rel.group(2).lower()]
+    if seconds <= 0:
+        raise ValueError("La durata deve essere positiva.")
+    return seconds
+
+
 def to_local(dt: datetime) -> datetime:
     """Convert a naive UTC datetime (as stored in the DB) to the configured local
     timezone, for display. Inverse of ``parse_run_at``; returns a naive datetime so
