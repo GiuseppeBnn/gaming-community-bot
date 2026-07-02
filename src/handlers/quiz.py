@@ -62,6 +62,7 @@ class QuizCreationStates(StatesGroup):
     waiting_prize_third = State()
     waiting_prize_consolation = State()
     waiting_time_limit = State()
+    waiting_randomize = State()
     waiting_question_text = State()
     waiting_question_options = State()
     waiting_correct = State()
@@ -147,6 +148,18 @@ def _time_limit_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def _randomize_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🔀 Domande", callback_data="quiz_new:rnd:q")
+    b.button(text="🔀 Risposte", callback_data="quiz_new:rnd:a")
+    b.button(text="🔀 Entrambe", callback_data="quiz_new:rnd:both")
+    b.button(text="🚫 Nessuna", callback_data="quiz_new:rnd:none")
+    b.button(text="⬅️ Indietro", callback_data="quiz_new:back")
+    b.button(text="❌ Annulla", callback_data="quiz_new:cancel")
+    b.adjust(2, 2, 2)
+    return b.as_markup()
+
+
 def _correct_kb(options: list[str]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
@@ -176,10 +189,15 @@ def _review_kb(question_count: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def _question_kb(quiz_id: int, question_id: int, options: list[str]) -> InlineKeyboardMarkup:
+def _question_kb(
+    quiz_id: int, question_id: int, ordered_options: list[tuple[int, str]]
+) -> InlineKeyboardMarkup:
+    """``ordered_options`` are ``(real_index, text)`` pairs, already in display order —
+    the callback always carries ``real_index`` so answer recording is unaffected by
+    display-order randomization (§19)."""
     b = InlineKeyboardBuilder()
-    for i, opt in enumerate(options):
-        b.button(text=opt[:40], callback_data=f"quiz_ans:{quiz_id}:{question_id}:{i}")
+    for real_idx, opt in ordered_options:
+        b.button(text=opt[:40], callback_data=f"quiz_ans:{quiz_id}:{question_id}:{real_idx}")
     b.adjust(1)
     return b.as_markup()
 
@@ -323,6 +341,17 @@ async def _prompt_time_limit(message: Message, state: FSMContext) -> None:
     )
 
 
+async def _prompt_randomize(message: Message, state: FSMContext) -> None:
+    await state.set_state(QuizCreationStates.waiting_randomize)
+    await message.answer(
+        "🔀 <b>Domande e risposte casuali</b>\n\n"
+        "Vuoi che ogni giocatore veda le <b>domande</b> in un ordine diverso, le "
+        "<b>risposte</b> di ogni domanda in un ordine diverso, entrambe, o nessuna delle due "
+        "(ordine invariato per tutti)?",
+        reply_markup=_randomize_kb(),
+    )
+
+
 async def _prompt_question_text(message: Message, state: FSMContext, first: bool = False) -> None:
     await state.set_state(QuizCreationStates.waiting_question_text)
     data = await state.get_data()
@@ -360,6 +389,16 @@ async def _prompt_explanation(message: Message, state: FSMContext) -> None:
     )
 
 
+def _randomize_summary(randomize_questions: bool, randomize_answers: bool) -> str:
+    if randomize_questions and randomize_answers:
+        return "domande e risposte"
+    if randomize_questions:
+        return "solo domande"
+    if randomize_answers:
+        return "solo risposte"
+    return "nessuna"
+
+
 async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     await state.set_state(QuizCreationStates.reviewing)
     data = await state.get_data()
@@ -370,6 +409,7 @@ async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncS
     lines.append(f"💰 Premi: {quiz_service.format_prize_summary(quiz)}")
     tl = data.get("time_limit", 0)
     lines.append(f"⏱️ Tempo: {f'{tl}s per domanda' if tl else 'nessun limite'}")
+    lines.append(f"🔀 Casualità: {_randomize_summary(quiz.randomize_questions, quiz.randomize_answers)}")
     lines.append(f"\n❓ <b>Domande ({len(quiz.questions)}):</b>")
     for i, q in enumerate(quiz.questions, 1):
         lines.append(f"{i}. {esc(q.text[:50])}")
@@ -500,7 +540,7 @@ async def _advance_prize(message: Message, state: FSMContext, key: str, value: i
 async def cb_time_limit(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
     value = int(callback.data.split(":")[2])
     await state.update_data(time_limit=value)
-    await _finalize_prizes_and_create(callback.message, state, db_session)
+    await _prompt_randomize(callback.message, state)
     await callback.answer()
 
 
@@ -533,7 +573,32 @@ async def fsm_time_limit(message: Message, state: FSMContext, db_session: AsyncS
         )
         return
     await state.update_data(time_limit=value)
-    await _finalize_prizes_and_create(message, state, db_session)
+    await _prompt_randomize(message, state)
+
+
+# ---------------------------------------------------------------------------
+# Randomize questions/answers
+# ---------------------------------------------------------------------------
+
+_RANDOMIZE_CHOICES = {
+    "q": (True, False),
+    "a": (False, True),
+    "both": (True, True),
+    "none": (False, False),
+}
+
+
+@router.callback_query(
+    QuizCreationStates.waiting_randomize, F.data.startswith("quiz_new:rnd:"), IsAdminCallbackFilter()
+)
+async def cb_randomize(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    choice = callback.data.split(":")[2]
+    randomize_questions, randomize_answers = _RANDOMIZE_CHOICES[choice]
+    await state.update_data(
+        randomize_questions=randomize_questions, randomize_answers=randomize_answers
+    )
+    await _finalize_prizes_and_create(callback.message, state, db_session)
+    await callback.answer()
 
 
 async def _finalize_prizes_and_create(
@@ -551,6 +616,8 @@ async def _finalize_prizes_and_create(
         prize_third=data.get("prize_third", 0),
         prize_consolation=consolation,
         prize_min=quiz_service.participation_floor(consolation),
+        randomize_questions=data.get("randomize_questions", False),
+        randomize_answers=data.get("randomize_answers", False),
     )
     await db_session.commit()
     await state.update_data(quiz_id=quiz.id, saved_count=0)
@@ -689,6 +756,7 @@ _BACK_PROMPTERS = {
     QuizCreationStates.waiting_prize_consolation.state:
         partial(_prompt_prize_step, step_state=QuizCreationStates.waiting_prize_third),
     QuizCreationStates.waiting_time_limit.state: _prompt_prize_mode,
+    QuizCreationStates.waiting_randomize.state: _prompt_time_limit,
     QuizCreationStates.waiting_question_options.state: _prompt_question_text,
     QuizCreationStates.waiting_correct.state: _prompt_question_options,
     QuizCreationStates.waiting_explanation.state: _prompt_correct,
@@ -999,15 +1067,15 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
 
 
 async def _present_question(bot: Bot, chat_id: int, user_tg_id: int, quiz, index: int) -> None:
-    """Send question #index to the user and arm its countdown (if a limit is set)."""
-    question = quiz.questions[index]
-    options = quiz_service.question_options(question)
+    """Send question #index (in this user's order) and arm its countdown (if a limit is set)."""
+    question = quiz_service.user_question_order(quiz, user_tg_id)[index]
+    ordered_options = quiz_service.user_option_order(quiz, question, user_tg_id)
     limit = question.open_period
     hint = f"\n\n⏱️ <i>Hai {limit} secondi</i>" if limit > 0 else ""
     sent = await bot.send_message(
         chat_id,
         f"❓ <b>Domanda {index + 1}/{len(quiz.questions)}</b>\n\n{esc(question.text)}{hint}",
-        reply_markup=_question_kb(quiz.id, question.id, options),
+        reply_markup=_question_kb(quiz.id, question.id, ordered_options),
     )
 
     key = _play_key(quiz.id, user_tg_id)
@@ -1119,12 +1187,15 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
         return
 
     user_tg_id = callback.from_user.id
-    # Enforce sequential play: only the user's current question is answerable.
+    # Enforce sequential play: only the user's current question (in THEIR order,
+    # which may be randomized — §19) is answerable.
+    order = quiz_service.user_question_order(quiz, user_tg_id)
+    idx_in_order = next((i for i, q in enumerate(order) if q.id == question.id), -1)
     done_before = await quiz_service.answered_count(db_session, quiz_id, user_tg_id)
-    if question.position != done_before:
+    if idx_in_order != done_before:
         await callback.answer(
             "Hai già risposto a questa domanda."
-            if question.position < done_before
+            if idx_in_order < done_before
             else "Rispondi prima alla domanda corrente."
         )
         return
