@@ -178,7 +178,8 @@ def user_question_order(quiz: Quiz, user_tg_id: int) -> list[QuizQuestion]:
     if not quiz.randomize_questions:
         return quiz.questions
     order = list(quiz.questions)
-    random.Random((quiz.id, quiz.started_at, user_tg_id)).shuffle(order)
+    seed = f"{quiz.id}:{quiz.started_at.isoformat() if quiz.started_at else ''}:{user_tg_id}"
+    random.Random(seed).shuffle(order)
     return order
 
 
@@ -192,7 +193,8 @@ def user_option_order(quiz: Quiz, question: QuizQuestion, user_tg_id: int) -> li
     pairs = list(enumerate(question_options(question)))
     if not quiz.randomize_answers:
         return pairs
-    random.Random((quiz.id, question.id, user_tg_id)).shuffle(pairs)
+    seed = f"{quiz.id}:{question.id}:{user_tg_id}"
+    random.Random(seed).shuffle(pairs)
     return pairs
 
 
