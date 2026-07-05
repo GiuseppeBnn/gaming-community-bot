@@ -155,6 +155,63 @@ async def delete_last_question(session: AsyncSession, quiz_id: int) -> int:
     return await total_questions(session, quiz_id)
 
 
+async def get_question(session: AsyncSession, question_id: int) -> QuizQuestion | None:
+    return (
+        await session.execute(select(QuizQuestion).where(QuizQuestion.id == question_id))
+    ).scalar_one_or_none()
+
+
+# Sentinel so ``update_question`` can tell "leave the explanation as is" apart from
+# "clear the explanation" (``None``).
+_UNSET = object()
+
+
+async def update_question(
+    session: AsyncSession,
+    question_id: int,
+    *,
+    text: str | None = None,
+    options: list[str] | None = None,
+    correct_option_id: int | None = None,
+    explanation=_UNSET,
+) -> bool:
+    """Edit a single question in place. No commit (STEERING §5).
+
+    Returns ``False`` if the question is missing or its quiz is **not editable**:
+    only quizzes still in ``ready`` may be edited, so a running/finished quiz (whose
+    recorded answers reference the stored option order) can never be corrupted.
+
+    Partial update — only the passed fields change. ``explanation`` uses a sentinel
+    so ``None`` (clear it) is distinguishable from "not passed". When ``options``
+    change the caller re-picks ``correct_option_id`` (indices may shift); either way
+    the correct index is validated against the resulting option list.
+    """
+    question = await get_question(session, question_id)
+    if question is None:
+        return False
+    quiz = (
+        await session.execute(select(Quiz).where(Quiz.id == question.quiz_id))
+    ).scalar_one_or_none()
+    if quiz is None or quiz.status != "ready":
+        return False
+
+    new_options = question_options(question) if options is None else options
+    new_correct = question.correct_option_id if correct_option_id is None else correct_option_id
+    if not (0 <= new_correct < len(new_options)):
+        return False
+
+    if text is not None:
+        question.text = text[:300]
+    if options is not None:
+        question.options_json = json.dumps(new_options, ensure_ascii=False)
+    if options is not None or correct_option_id is not None:
+        question.correct_option_id = new_correct
+    if explanation is not _UNSET:
+        question.explanation = (explanation or None) and explanation[:200]
+    await session.flush()
+    return True
+
+
 def question_options(question: QuizQuestion) -> list[str]:
     return json.loads(question.options_json)
 

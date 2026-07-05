@@ -89,6 +89,7 @@ class QuizType:
         if quiz.status == "ready":
             b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:quiz:{item_id}")
             b.button(text="🗓️ Programma", callback_data=f"ev:sched:quiz:{item_id}")
+            b.button(text="✏️ Modifica domande", callback_data=f"quiz_edit:nav:{item_id}:0")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
         elif quiz.status == "running":
             b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:quiz:{item_id}")
