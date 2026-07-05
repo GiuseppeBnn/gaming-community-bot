@@ -68,6 +68,83 @@ class TestCreateAddQuestion:
         assert len(got.questions) == len(qs)
 
 
+class TestUpdateQuestion:
+    async def _ready_quiz(self, session, n_questions=1):
+        quiz, qs = await _quiz(session, n_questions=n_questions)
+        await qz.set_status(session, quiz.id, "ready")
+        await session.commit()
+        return quiz, qs
+
+    async def test_get_question(self, session):
+        _, qs = await self._ready_quiz(session)
+        got = await qz.get_question(session, qs[0].id)
+        assert got is not None and got.id == qs[0].id
+        assert await qz.get_question(session, 999999) is None
+
+    async def test_update_text_only(self, session):
+        quiz, qs = await self._ready_quiz(session)
+        ok = await qz.update_question(session, qs[0].id, text="Nuova domanda?")
+        await session.commit()
+        assert ok is True
+        got = await qz.get_question(session, qs[0].id)
+        assert got.text == "Nuova domanda?"
+        # options/correct/explanation untouched
+        assert qz.question_options(got) == ["Roma", "Milano", "Napoli"]
+        assert got.explanation == "È Roma"
+
+    async def test_update_explanation_can_clear(self, session):
+        quiz, qs = await self._ready_quiz(session)
+        assert await qz.update_question(session, qs[0].id, explanation=None) is True
+        await session.commit()
+        assert (await qz.get_question(session, qs[0].id)).explanation is None
+
+    async def test_update_explanation_not_passed_is_kept(self, session):
+        quiz, qs = await self._ready_quiz(session)
+        await qz.update_question(session, qs[0].id, text="X cambiata")
+        await session.commit()
+        assert (await qz.get_question(session, qs[0].id)).explanation == "È Roma"
+
+    async def test_update_options_with_new_correct(self, session):
+        quiz, qs = await self._ready_quiz(session)
+        ok = await qz.update_question(
+            session, qs[0].id, options=["A", "B", "C", "D"], correct_option_id=3
+        )
+        await session.commit()
+        assert ok is True
+        got = await qz.get_question(session, qs[0].id)
+        assert qz.question_options(got) == ["A", "B", "C", "D"]
+        assert got.correct_option_id == 3
+
+    async def test_correct_out_of_range_rejected(self, session):
+        quiz, qs = await self._ready_quiz(session)
+        ok = await qz.update_question(
+            session, qs[0].id, options=["A", "B"], correct_option_id=5
+        )
+        assert ok is False
+        # nothing persisted
+        got = await qz.get_question(session, qs[0].id)
+        assert qz.question_options(got) == ["Roma", "Milano", "Napoli"]
+
+    async def test_shrinking_options_below_old_correct_needs_new_correct(self, session):
+        # Old correct was index 2; shrinking to 2 options without a new correct would
+        # leave correct_option_id=2 out of range → rejected.
+        quiz, qs = await self._ready_quiz(session)
+        await qz.update_question(session, qs[0].id, correct_option_id=2)
+        await session.commit()
+        ok = await qz.update_question(session, qs[0].id, options=["A", "B"])
+        assert ok is False
+
+    async def test_rejected_when_not_ready(self, session):
+        quiz, qs = await _quiz(session)  # stays draft
+        assert await qz.update_question(session, qs[0].id, text="nope") is False
+        await qz.set_status(session, quiz.id, "running")
+        await session.commit()
+        assert await qz.update_question(session, qs[0].id, text="nope") is False
+
+    async def test_missing_question_returns_false(self, session):
+        assert await qz.update_question(session, 999999, text="x") is False
+
+
 class TestRecordAnswer:
     async def test_correct_and_dedup(self, session, user_factory):
         await user_factory(tg_id=1)
