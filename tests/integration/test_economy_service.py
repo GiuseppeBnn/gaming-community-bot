@@ -7,6 +7,7 @@ from conftest.py). Service functions never commit — the test commits after cal
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -19,6 +20,23 @@ from exceptions.economy import (
     SelfTransferError,
     WalletNotFoundError,
 )
+from utils import daytime
+
+_ROME = ZoneInfo("Europe/Rome")
+
+
+def _utc_of(local: str) -> datetime:
+    """Rome wall-clock ``"YYYY-MM-DD HH:MM"`` → naive UTC (the storage format).
+
+    The /daily rules are about *local* midnight, so the tests are written in the
+    wall-clock terms a member actually experiences and converted here.
+    """
+    return (
+        datetime.strptime(local, "%Y-%m-%d %H:%M")
+        .replace(tzinfo=_ROME)
+        .astimezone(timezone.utc)
+        .replace(tzinfo=None)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +261,19 @@ class TestTransfer:
 # ---------------------------------------------------------------------------
 
 class TestClaimDaily:
+    @pytest.fixture(autouse=True)
+    def _pin_env(self, monkeypatch):
+        """Hermetic: never let a local .env change the window under test."""
+        monkeypatch.setattr(settings, "scheduler_timezone", "Europe/Rome")
+        monkeypatch.setattr(settings, "daily_min_hours", 6)
+
+    @pytest.fixture
+    def freeze_now(self, monkeypatch):
+        """Pin ``daytime.utc_now()`` to a Rome wall-clock instant."""
+        def _freeze(local: str) -> None:
+            monkeypatch.setattr(daytime, "utc_now", lambda: _utc_of(local))
+        return _freeze
+
     async def test_first_claim_credits_reward(self, session, user_factory):
         _, wallet = await user_factory(tg_id=1, coins=0)
 
@@ -259,36 +290,123 @@ class TestClaimDaily:
         assert streak == 1
         assert user.daily_streak == 1
 
-    async def test_consecutive_claim_increments_streak(self, session, user_factory):
+    # -- claim window: one per LOCAL calendar day AND >= daily_min_hours apart --
+
+    async def test_same_day_retry_blocked_even_past_the_min_gap(
+        self, session, user_factory, freeze_now
+    ):
+        """Regression guard for the "claim every 6h" bug.
+
+        The minimum gap must never be a *second way in*: here 7h50 have elapsed
+        (well past the 6h gap) but it is still the same calendar day → blocked.
+        Had the two rules been ORed instead of ANDed, this would pass.
+        """
         user, _ = await user_factory(tg_id=1, coins=0)
-        # Simulate a claim 25h ago (within the 48h streak window but past 24h cooldown)
-        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=25)
-        user.daily_streak = 3
+        user.last_daily_claim = _utc_of("2026-06-15 00:10")
         await session.commit()
+        freeze_now("2026-06-15 08:00")
 
-        _, streak = await eco.claim_daily(session, 1)
-        assert streak == 4
+        with pytest.raises(DailyAlreadyClaimedError):
+            await eco.claim_daily(session, 1)
 
-    async def test_streak_resets_after_48h_gap(self, session, user_factory):
+    async def test_blocked_just_after_midnight_when_min_gap_not_elapsed(
+        self, session, user_factory, freeze_now
+    ):
+        """A 23:00 claim must not be followed by another one at 00:30."""
         user, _ = await user_factory(tg_id=1, coins=0)
-        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=49)
-        user.daily_streak = 5
+        user.last_daily_claim = _utc_of("2026-06-15 23:00")
         await session.commit()
-
-        _, streak = await eco.claim_daily(session, 1)
-        assert streak == 1
-
-    async def test_raises_daily_already_claimed_within_cooldown(self, session, user_factory):
-        user, _ = await user_factory(tg_id=1, coins=0)
-        # Claim 10h ago — still within 24h cooldown
-        user.last_daily_claim = datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(hours=10)
-        await session.commit()
+        freeze_now("2026-06-16 00:30")
 
         with pytest.raises(DailyAlreadyClaimedError) as exc:
             await eco.claim_daily(session, 1)
 
-        assert exc.value.hours_remaining > 0
-        assert exc.value.hours_remaining < 24
+        # Next slot is 05:00 (23:00 + 6h), i.e. 4h30 away — not "24h - elapsed".
+        assert exc.value.seconds_remaining == int(timedelta(hours=4, minutes=30).total_seconds())
+
+    async def test_allowed_after_midnight_once_min_gap_elapsed(
+        self, session, user_factory, freeze_now
+    ):
+        user, wallet = await user_factory(tg_id=1, coins=0)
+        user.last_daily_claim = _utc_of("2026-06-15 23:00")
+        await session.commit()
+        freeze_now("2026-06-16 05:00")
+
+        reward, _ = await eco.claim_daily(session, 1)
+        await session.commit()
+        assert wallet.coins == reward
+
+    async def test_allowed_right_after_midnight_when_previous_claim_was_early(
+        self, session, user_factory, freeze_now
+    ):
+        """Claimed at 08:00, so by 00:01 the next day both rules are satisfied."""
+        user, _ = await user_factory(tg_id=1, coins=0)
+        user.last_daily_claim = _utc_of("2026-06-15 08:00")
+        await session.commit()
+        freeze_now("2026-06-16 00:01")
+
+        reward, _ = await eco.claim_daily(session, 1)
+        assert reward == settings.daily_reward_coins
+
+    async def test_midnight_boundary_is_local_not_utc(
+        self, session, user_factory, freeze_now
+    ):
+        """00:30 local on 16 June is still 22:30 UTC on the 15th (CEST, +2).
+
+        A UTC-based day comparison would see the same UTC day as the 08:00 claim
+        and refuse; the local-midnight rule correctly allows it.
+        """
+        user, _ = await user_factory(tg_id=1, coins=0)
+        user.last_daily_claim = _utc_of("2026-06-15 08:00")
+        user.daily_streak = 2
+        await session.commit()
+
+        now = _utc_of("2026-06-16 00:30")
+        # Same UTC day (both fall on the 15th) → a UTC rule would refuse...
+        assert user.last_daily_claim.date() == now.date()
+        # ...but they are different LOCAL days, which is what must count.
+        assert daytime.local_day(user.last_daily_claim) != daytime.local_day(now)
+
+        freeze_now("2026-06-16 00:30")
+        _, streak = await eco.claim_daily(session, 1)
+        assert streak == 3
+
+    async def test_min_gap_can_never_cost_a_day(self):
+        """The latest possible claim still leaves the whole next day available."""
+        latest = _utc_of("2026-06-15 23:59")
+        next_allowed = max(
+            daytime.next_local_midnight(latest),
+            latest + timedelta(hours=settings.daily_min_hours),
+        )
+        assert daytime.local_day(next_allowed) == daytime.local_day(latest) + timedelta(days=1)
+
+    # -- streak: continues only if the previous claim was YESTERDAY --
+
+    async def test_streak_increments_on_consecutive_days(
+        self, session, user_factory, freeze_now
+    ):
+        user, _ = await user_factory(tg_id=1, coins=0)
+        user.last_daily_claim = _utc_of("2026-06-15 10:00")
+        user.daily_streak = 3
+        await session.commit()
+        freeze_now("2026-06-16 10:00")
+
+        _, streak = await eco.claim_daily(session, 1)
+        assert streak == 4
+        assert user.daily_streak == 4
+
+    async def test_streak_resets_when_a_day_is_skipped(
+        self, session, user_factory, freeze_now
+    ):
+        """Missed the whole 16th → the streak is gone, exactly as intended."""
+        user, _ = await user_factory(tg_id=1, coins=0)
+        user.last_daily_claim = _utc_of("2026-06-15 10:00")
+        user.daily_streak = 5
+        await session.commit()
+        freeze_now("2026-06-17 10:00")
+
+        _, streak = await eco.claim_daily(session, 1)
+        assert streak == 1
 
     async def test_raises_wallet_not_found_for_unknown_user(self, session):
         with pytest.raises(WalletNotFoundError):

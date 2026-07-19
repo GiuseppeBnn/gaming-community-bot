@@ -111,9 +111,11 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
         reward, streak = await economy_service.claim_daily(db_session, message.from_user.id)
         await db_session.commit()
     except DailyAlreadyClaimedError as e:
+        # Neutral wording: the block can be either "already claimed today" or the
+        # minimum gap after a late-night claim, so don't assert which one it is.
         await message.reply(
-            f"⏰ Hai già riscosso il premio oggi.\n"
-            f"Riprova tra <b>{format_duration(e.seconds_remaining)}</b>."
+            f"⏰ Premio giornaliero già riscosso.\n"
+            f"Torna tra <b>{format_duration(e.seconds_remaining)}</b>."
         )
         return
     except WalletNotFoundError:

@@ -52,6 +52,7 @@ Campi importanti:
 - `group_id: int` — **0 significa "non configurato"** → GroupMemberMiddleware bypassa tutto
 - `admin_ids: list[int]` — parse da stringa CSV via `@field_validator`
 - `daily_reward_coins: int` — **NON `daily_reward`** — matcha la `.env`
+- `daily_min_hours: int` (default 6) — gap minimo dall'ultima riscossione, **in AND** con il reset di mezzanotte del `/daily` (§10.a). Tenere **< 24**
 - `fsm_storage: str` — `"memory"` | `"redis"`
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
@@ -327,6 +328,37 @@ La preview (stima) per l'utente nella schermata di conferma usa la stessa formul
 
 ---
 
+## 10.a Premio giornaliero (`/daily`)
+
+`services/economy_service.py::claim_daily` — **una riscossione per giorno di calendario**, con
+reset a **mezzanotte locale** (non 24h rolling, che faceva slittare l'orario di giorno in giorno
+finché l'utente sbatteva contro la mezzanotte e perdeva la streak senza colpa).
+
+Due regole **in AND**:
+
+1. **Nuovo giorno locale** rispetto all'ultima riscossione (mezzanotte in `scheduler_timezone`).
+2. Almeno **`settings.daily_min_hours`** (default 6) dall'ultima riscossione.
+
+La (2) esiste **solo** per impedire il doppio claim 23:59 → 00:01: **non** è una via alternativa.
+
+> ⚠️ **Regola di implementazione.** Le due condizioni sono espresse come **una sola soglia**
+> `next_allowed = max(next_local_midnight(last), last + daily_min_hours)` e mai come due booleani:
+> un `or` al posto dell'`and` trasformerebbe il gap minimo in "riscuoti ogni 6 ore". Con il `max()`
+> l'AND è **strutturale** e non si può sbagliare. La stessa soglia dà anche i secondi residui
+> dell'errore `DailyAlreadyClaimedError` (mai `24h - elapsed`).
+
+**Invariante:** `daily_min_hours < 24` ⇒ il gap non può mai costare un giorno. Il claim più tardi
+possibile (23:59) sblocca alle 05:59 del giorno dopo, sempre dentro quel giorno.
+
+**Streak:** prosegue **solo se la riscossione precedente è di *ieri*** (giorno locale); saltare un
+giorno intero la azzera a 1. (Un secondo claim nello stesso giorno non arriva mai al calcolo.)
+
+Il "giorno" viene da **`utils/daytime`**, unica fonte di verità condivisa con il tetto XP
+giornaliero (§12.1): timestamp salvati naive-UTC, confronti fatti sul giorno **locale**, DST
+gestito da `zoneinfo`. Calcolare il giorno in UTC farebbe scattare il reset all'01:00/02:00 italiane.
+
+---
+
 ## 11. Locanda — cosmetici + consumabili
 
 File: `services/shop_service.py` (cosmetici) · `services/consumable_service.py` (consumabili) ·
@@ -502,8 +534,10 @@ mostrano accanto al livello (`⚡ Livello N · 🎖️ Tier`). Sito di display u
 
 **Tetto giornaliero** (anti-farm): le sorgenti `capped=True` accreditano al massimo
 `xp_daily_participation_cap` per utente al giorno, contato in `User.xp_today`/`xp_today_date`
-(reset automatico al cambio data). Gli **eventi admin** (quiz e scommesse) sono uncapped perché
-curati e non spammabili (1 sola scommessa per evento, quiz aperti dall'admin).
+(reset automatico al cambio data). Il "giorno" è quello **locale** di `utils/daytime`
+(mezzanotte in `scheduler_timezone`), lo **stesso** confine del `/daily` (§10.a): nel bot
+esiste **una sola** nozione di giorno. Gli **eventi admin** (quiz e scommesse) sono uncapped
+perché curati e non spammabili (1 sola scommessa per evento, quiz aperti dall'admin).
 
 **Rank-up / level-up:** `grant_xp` ricalcola tier e livello; restituisce il **tier-up** in
 `new_rank` (+ aggiorna `User.rank_slug`) e il **level-up** in `new_level`/`leveled_up` (derivato,

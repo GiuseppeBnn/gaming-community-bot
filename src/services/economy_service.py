@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+import math
+from datetime import timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,8 +14,8 @@ from exceptions.economy import (
     SelfTransferError,
     WalletNotFoundError,
 )
+from utils import daytime
 
-_DAILY_COOLDOWN = timedelta(hours=24)
 _MIN_TRANSFER = 1
 _MAX_TRANSFER = 1_000_000
 
@@ -155,11 +156,20 @@ async def claim_daily(
     tg_id: int,
 ) -> tuple[int, int]:
     """Award the daily reward. Returns (reward_amount, new_streak).
-    Raises DailyAlreadyClaimedError if called within the cooldown window.
+    Raises DailyAlreadyClaimedError if the claim window is not open yet.
     Does NOT commit — caller is responsible for the commit.
+
+    Window: the reward resets at **local midnight** (one claim per calendar day)
+    AND at least `settings.daily_min_hours` must have elapsed since the previous
+    claim — the second rule exists only to stop a 23:59 claim from being followed
+    by another at 00:01.
+
+    Both rules are expressed as a single `next_allowed` threshold rather than two
+    booleans: an OR there would let people claim every N hours, so the AND is made
+    structural (a max() of the two instants) and cannot be written wrong.
     """
     # Lock the user row: the read-check-write on last_daily_claim must be atomic
-    # or two concurrent /daily calls could both pass the cooldown check.
+    # or two concurrent /daily calls could both pass the check.
     result = await session.execute(
         select(User).where(User.tg_id == tg_id).with_for_update()
     )
@@ -167,17 +177,21 @@ async def claim_daily(
     if user is None:
         raise WalletNotFoundError(tg_id)
 
-    now = datetime.now(tz=timezone.utc).replace(tzinfo=None)
+    now = daytime.utc_now()
+    last = user.last_daily_claim
 
-    if user.last_daily_claim is not None:
-        last = user.last_daily_claim
-        elapsed = now - last
-        if elapsed < _DAILY_COOLDOWN:
-            remaining_seconds = int((_DAILY_COOLDOWN - elapsed).total_seconds())
-            raise DailyAlreadyClaimedError(seconds_remaining=remaining_seconds)
+    if last is not None:
+        next_allowed = max(
+            daytime.next_local_midnight(last),          # new calendar day
+            last + timedelta(hours=settings.daily_min_hours),  # min gap
+        )
+        if now < next_allowed:
+            remaining = math.ceil((next_allowed - now).total_seconds())
+            raise DailyAlreadyClaimedError(seconds_remaining=remaining)
 
-    # Determine new streak before updating last_daily_claim
-    if user.last_daily_claim is not None and (now - user.last_daily_claim) < timedelta(hours=48):
+    # Streak continues only if the previous claim was *yesterday*: skipping a
+    # whole calendar day breaks it. (A same-day claim can't reach this point.)
+    if last is not None and daytime.local_day(last) == daytime.local_day(now) - timedelta(days=1):
         new_streak = (user.daily_streak or 0) + 1
     else:
         new_streak = 1
