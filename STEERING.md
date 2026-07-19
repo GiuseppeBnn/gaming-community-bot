@@ -286,14 +286,22 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `profilo` | `common.cmd_start` → `common.show_profilo` | Profilo personale (back-compat) |
 | `traguardi` | `common.cmd_start` → `badges.show_traguardi` | Trofei personali (redirect privacy) |
 | `daily` | `common.cmd_start` → `economy.show_saldo` | Fallback `/daily` da gruppo (DM fallito) |
+| `scommesse` | `common.cmd_start` → `betting.show_events_private` | Lista scommesse aperte (redirect privacy) |
 
 `/profilo` e `/saldo` sono **pubblici**: rispondono in chiaro anche nel gruppo (decisione di
 prodotto — il saldo è visibile a tutti), con l'**anti-flood "sostituisci"** di `utils/static_reply`
 (§14, una sola risposta viva per utente+comando). `/profilo` **non** mostra mai il Telegram ID
 (resta esclusiva del dossier admin `/info`). I comandi che mostrano **dati personali** ancora
 **redirezionati** in privato (`handlers/_privacy.redirect_to_private`, bottone deep-link) sono
-`/storico`, `/traguardi`, `/locanda`, `/classifiche`. `/daily` riscuote subito in gruppo con un
-**ack minimale** e manda i dettagli (streak/XP/rank) via **DM best-effort**.
+`/storico`, `/traguardi`, `/locanda`, `/classifiche`, **`/scommesse`**. `/daily` riscuote subito in
+gruppo con un **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best-effort**.
+
+> **`/scommesse` è privato** (dalla revisione privacy): la lista marca con «✅ Hai già scommesso»
+> gli eventi su cui *chi ha lanciato il comando* ha puntato. In gruppo quel messaggio è leggibile da
+> tutti — inclusi utenti che non hanno mai scommesso — quindi era un leak di dati personali. La
+> vecchia `betting_kb.get_group_events_keyboard` (bottoni URL con le spunte, postati nel gruppo) è
+> stata **rimossa**; il ramo privato vive in `betting.show_events_private`, condiviso fra il comando
+> e il deep-link `scommesse`.
 
 I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
 comandi (`/crea_quiz`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
@@ -627,7 +635,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 > «Nessun quiz attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
 > redirect al pannello). Gli handler di gestione restano gated.
 
-> **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/locanda` · `/classifiche`
+> **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/locanda` · `/classifiche` · `/scommesse`
 > **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
 > switcher + tasto Chiudi → chiunque poteva chiuderla, ora è privata). `/profilo` e `/saldo` sono invece
 > **pubblici** (rispondono in chiaro nel gruppo, anti-flood "sostituisci" §14; `/profilo` senza Telegram
@@ -869,6 +877,29 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 - **Navigazione**: ogni step ha «⬅️ Indietro» (`quiz_new:back`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
+- **Limiti di lunghezza**: costanti in cima a `handlers/quiz.py` — `_MAX_TITLE` (256), `_MAX_DESC`
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
+  verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
+  divergere da quello imposto. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
+  indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
+  già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
+  `quiz_service` sono solo la **rete di sicurezza** allineata alle colonne DB.
+
+### Prova admin (dry-run, §19.b)
+
+Un admin può **giocare un quiz `ready`** — dopo «✅ Pubblica», prima di avviarlo — per verificare
+testi, opzioni e spiegazioni sul campo. Ingressi: bottone «🧪 Prova il quiz» nel messaggio «Quiz
+pronto!» e «🧪 Prova» nel dettaglio dell'hub Eventi.
+
+**Invariante:** la prova è **interamente in memoria** (`_TRY: dict[(quiz_id, admin_id), _TryCtx]`) e
+**non scrive nessuna riga `quiz_answers`**. Quindi non può raggiungere podio, premi, XP o
+`game_podiums`: l'isolamento è **strutturale**, non un filtro da ricordarsi in ogni query (era
+l'alternativa scartata: colonna `is_test` + filtro in ~6 punti). Namespace callback **`quiz_try:*`**,
+disgiunto da `quiz_ans:*`, così una risposta di prova non può finire nel recorder vero. Handler
+gated **singolarmente** (`quiz.router` è misto, §8). Nessun timer in prova (il vero limite è
+comunicato a schermo). Ogni messaggio porta il marker 🧪 e il riepilogo finale dichiara
+esplicitamente che nulla è stato salvato.
 
 ### Avvio & gioco
 

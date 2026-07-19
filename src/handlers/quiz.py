@@ -49,9 +49,48 @@ log = logging.getLogger(__name__)
 router = Router()
 
 _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
+
+# Length caps for every free-text field of a quiz. Single source of truth: the
+# prompts, the validation and the edit flow all read these, so the number an admin
+# is told can never drift from the number actually enforced. Inputs over the cap
+# are REJECTED with the real count, never silently truncated — a truncated
+# question only shows up once the quiz is already live.
+_MAX_TITLE = 256
+_MAX_DESC = 1024
+_MAX_QUESTION = 300
+_MAX_OPTION = 100
+_MAX_EXPLANATION = 200
+
 # Quiz management (list/start/close) is admin-only AND private-only: in a group it
 # redirects to the private dashboard. Creation already redirects via /crea_quiz.
 _QUIZ_PRIVATE_NOTICE = "🧠 Gestisci i quiz in chat privata col bot."
+
+
+def _too_long(text: str, cap: int, subject: str) -> str | None:
+    """Error message if `text` exceeds `cap`, else None. `subject` is the already
+    gender-agreed Italian phrase (e.g. "Il titolo è troppo lungo"). Reports the
+    actual length and how much to cut, so the admin doesn't have to count."""
+    if len(text) <= cap:
+        return None
+    return (
+        f"⚠️ {subject}: <b>{len(text)}/{cap}</b> caratteri.\n"
+        f"Accorcia di {len(text) - cap} e reinvia."
+    )
+
+
+def _options_error(options: list[str]) -> str | None:
+    """Validate a parsed option list (count + per-option length). Shared by the
+    creation and the edit flow so both enforce exactly the same rules."""
+    if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
+        return f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga)."
+    long_ones = [(i, o) for i, o in enumerate(options, start=1) if len(o) > _MAX_OPTION]
+    if long_ones:
+        detail = "\n".join(f"• opzione {i}: {len(o)}/{_MAX_OPTION}" for i, o in long_ones)
+        return (
+            f"⚠️ Ogni opzione può essere al massimo <b>{_MAX_OPTION}</b> caratteri.\n{detail}\n"
+            "Accorcia e reinvia tutte le opzioni."
+        )
+    return None
 
 
 class QuizCreationStates(StatesGroup):
@@ -279,7 +318,7 @@ async def _prompt_title(message: Message, state: FSMContext) -> None:
     hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
         "🧠 <b>Crea un nuovo quiz</b>\n\n"
-        "<b>Step 1/3</b> — Invia il <b>titolo</b> del quiz (max 256 caratteri):" + hint,
+        f"<b>Step 1/3</b> — Invia il <b>titolo</b> del quiz (max {_MAX_TITLE} caratteri):" + hint,
         reply_markup=_cancel_kb(),
     )
 
@@ -289,7 +328,8 @@ async def _prompt_description(message: Message, state: FSMContext) -> None:
     current = (await state.get_data()).get("description")
     hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
-        "<b>Step 2/3</b> — Invia una breve <b>descrizione</b> (o «-» per saltare):" + hint,
+        f"<b>Step 2/3</b> — Invia una breve <b>descrizione</b>, max {_MAX_DESC} caratteri "
+        "(o «-» per saltare):" + hint,
         reply_markup=_back_cancel_kb(),
     )
 
@@ -360,7 +400,8 @@ async def _prompt_question_text(message: Message, state: FSMContext, first: bool
     intro = "🧠 <b>Quiz creato!</b>\n\n" if first else ""
     kb = _back_to_review_kb() if data.get("saved_count", 0) > 0 else _cancel_kb()
     await message.answer(
-        f"{intro}<b>Domanda {n}</b> — Invia il <b>testo della domanda</b> (max 300 caratteri):",
+        f"{intro}<b>Domanda {n}</b> — Invia il <b>testo della domanda</b> "
+        f"(max {_MAX_QUESTION} caratteri):",
         reply_markup=kb,
     )
 
@@ -370,7 +411,8 @@ async def _prompt_question_options(message: Message, state: FSMContext) -> None:
     current = (await state.get_data()).get("q_options")
     hint = f"\n<i>Attuali: {esc(', '.join(current))}</i>" if current else ""
     await message.answer(
-        f"Invia le <b>opzioni</b>, una per riga (min {_MIN_OPTIONS}, max {_MAX_OPTIONS}):\n\n"
+        f"Invia le <b>opzioni</b>, una per riga (min {_MIN_OPTIONS}, max {_MAX_OPTIONS}, "
+        f"max {_MAX_OPTION} caratteri ciascuna):\n\n"
         "<i>Esempio:\n<code>Roma\nMilano\nNapoli</code></i>" + hint,
         reply_markup=_back_cancel_kb(),
     )
@@ -385,7 +427,8 @@ async def _prompt_correct(message: Message, state: FSMContext) -> None:
 async def _prompt_explanation(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_explanation)
     await message.answer(
-        "💡 Invia una <b>spiegazione</b> (mostrata dopo la risposta, max 200 caratteri) oppure salta:",
+        f"💡 Invia una <b>spiegazione</b> (mostrata dopo la risposta, max {_MAX_EXPLANATION} "
+        "caratteri) oppure salta:",
         reply_markup=_explanation_kb(),
     )
 
@@ -442,9 +485,12 @@ async def cb_review(callback: CallbackQuery, state: FSMContext, db_session: Asyn
 
 @router.message(QuizCreationStates.waiting_title, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_title(message: Message, state: FSMContext) -> None:
-    title = (message.text or "").strip()[:256]
+    title = (message.text or "").strip()
     if len(title) < 3:
         await message.answer("⚠️ Il titolo deve avere almeno 3 caratteri.", reply_markup=_cancel_kb())
+        return
+    if err := _too_long(title, _MAX_TITLE, "Il titolo è troppo lungo"):
+        await message.answer(err, reply_markup=_cancel_kb())
         return
     await state.update_data(title=title)
     await _prompt_description(message, state)
@@ -452,7 +498,10 @@ async def fsm_title(message: Message, state: FSMContext) -> None:
 
 @router.message(QuizCreationStates.waiting_description, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_description(message: Message, state: FSMContext) -> None:
-    desc = (message.text or "").strip()[:1024]
+    desc = (message.text or "").strip()
+    if err := _too_long(desc, _MAX_DESC, "La descrizione è troppo lunga"):
+        await message.answer(err, reply_markup=_back_cancel_kb())
+        return
     if desc == "-":
         desc = ""
     await state.update_data(description=desc)
@@ -631,9 +680,12 @@ async def _finalize_prizes_and_create(
 
 @router.message(QuizCreationStates.waiting_question_text, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_question_text(message: Message, state: FSMContext) -> None:
-    text = (message.text or "").strip()[:300]
+    text = (message.text or "").strip()
     if len(text) < 3:
         await message.answer("⚠️ La domanda deve avere almeno 3 caratteri.", reply_markup=_cancel_kb())
+        return
+    if err := _too_long(text, _MAX_QUESTION, "La domanda è troppo lunga"):
+        await message.answer(err, reply_markup=_cancel_kb())
         return
     await state.update_data(q_text=text)
     await _prompt_question_options(message, state)
@@ -642,14 +694,8 @@ async def fsm_question_text(message: Message, state: FSMContext) -> None:
 @router.message(QuizCreationStates.waiting_question_options, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_question_options(message: Message, state: FSMContext) -> None:
     options = [o.strip() for o in (message.text or "").splitlines() if o.strip()]
-    if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga).",
-            reply_markup=_back_cancel_kb(),
-        )
-        return
-    if any(len(o) > 100 for o in options):
-        await message.answer("⚠️ Ogni opzione deve essere max 100 caratteri.", reply_markup=_back_cancel_kb())
+    if err := _options_error(options):
+        await message.answer(err, reply_markup=_back_cancel_kb())
         return
     await state.update_data(q_options=options)
     await _prompt_correct(message, state)
@@ -669,7 +715,10 @@ async def cb_correct(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(QuizCreationStates.waiting_explanation, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_explanation(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
-    explanation = (message.text or "").strip()[:200]
+    explanation = (message.text or "").strip()
+    if err := _too_long(explanation, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
+        await message.answer(err, reply_markup=_explanation_kb())
+        return
     await _save_question(message, state, db_session, explanation)
 
 
@@ -734,13 +783,19 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: Asy
     await quiz_service.set_status(db_session, quiz_id, "ready")
     await db_session.commit()
     await state.clear()
+    b = InlineKeyboardBuilder()
+    b.button(text="🧪 Prova il quiz", callback_data=f"quiz_try:start:{quiz.id}")
+    b.adjust(1)
     await callback.message.answer(
         f"🎉 <b>Quiz pronto!</b>\n\n"
         f"🧠 <b>#{quiz.id} {esc(quiz.title)}</b>\n"
         f"❓ Domande: <b>{len(quiz.questions)}</b>\n"
         f"💰 Premi: {quiz_service.format_prize_summary(quiz)}\n\n"
         f"Avvialo nel gruppo con <code>/avvia_quiz {quiz.id}</code> o <code>/quiz</code>, "
-        f"oppure dalla dashboard <code>/admin</code>."
+        f"oppure dalla dashboard <code>/admin</code>.\n\n"
+        f"<i>Prima di avviarlo puoi provarlo tu: la prova non viene salvata "
+        f"e non conta in classifica.</i>",
+        reply_markup=b.as_markup(),
     )
     await callback.answer("✅ Quiz pronto!")
 
@@ -934,7 +989,7 @@ async def cb_edit_text(callback: CallbackQuery, state: FSMContext, db_session: A
         return
     await state.set_state(QuizEditStates.editing_text)
     await callback.message.answer(
-        "✏️ Invia il <b>nuovo testo</b> della domanda (max 300 caratteri):\n\n"
+        f"✏️ Invia il <b>nuovo testo</b> della domanda (max {_MAX_QUESTION} caratteri):\n\n"
         f"<i>Attuale: {esc(q.text)}</i>",
         reply_markup=_edit_cancel_kb(),
     )
@@ -943,9 +998,12 @@ async def cb_edit_text(callback: CallbackQuery, state: FSMContext, db_session: A
 
 @router.message(QuizEditStates.editing_text, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_edit_text(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
-    text = (message.text or "").strip()[:300]
+    text = (message.text or "").strip()
     if len(text) < 3:
         await message.answer("⚠️ La domanda deve avere almeno 3 caratteri.", reply_markup=_edit_cancel_kb())
+        return
+    if err := _too_long(text, _MAX_QUESTION, "La domanda è troppo lunga"):
+        await message.answer(err, reply_markup=_edit_cancel_kb())
         return
     data = await state.get_data()
     if data.get("edit_redo"):  # first step of a full-question redo → collect and continue
@@ -967,7 +1025,8 @@ async def cb_edit_expl(callback: CallbackQuery, state: FSMContext, db_session: A
     await state.set_state(QuizEditStates.editing_explanation)
     current = f"\n\n<i>Attuale: {esc(q.explanation)}</i>" if q.explanation else ""
     await callback.message.answer(
-        "💡 Invia la <b>nuova spiegazione</b> (max 200 caratteri), «-» per rimuoverla:" + current,
+        f"💡 Invia la <b>nuova spiegazione</b> (max {_MAX_EXPLANATION} caratteri), "
+        "«-» per rimuoverla:" + current,
         reply_markup=_edit_cancel_kb(),
     )
     await callback.answer()
@@ -976,7 +1035,10 @@ async def cb_edit_expl(callback: CallbackQuery, state: FSMContext, db_session: A
 @router.message(QuizEditStates.editing_explanation, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_edit_explanation(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     raw = (message.text or "").strip()
-    explanation = None if raw == "-" else raw[:200]
+    if err := _too_long(raw, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
+        await message.answer(err, reply_markup=_edit_cancel_kb())
+        return
+    explanation = None if raw == "-" else raw
     data = await state.get_data()
     if data.get("edit_redo"):  # final step of a redo → save everything at once
         await _save_redo(message, state, db_session, explanation)
@@ -994,7 +1056,8 @@ async def _prompt_edit_options(message: Message, state: FSMContext, current: lis
     await state.set_state(QuizEditStates.editing_options)
     hint = f"\n\n<i>Attuali: {esc(', '.join(current))}</i>" if current else ""
     await message.answer(
-        f"✏️ Invia le <b>opzioni</b>, una per riga (min {_MIN_OPTIONS}, max {_MAX_OPTIONS}):" + hint,
+        f"✏️ Invia le <b>opzioni</b>, una per riga (min {_MIN_OPTIONS}, max {_MAX_OPTIONS}, "
+        f"max {_MAX_OPTION} caratteri ciascuna):" + hint,
         reply_markup=_edit_cancel_kb(),
     )
 
@@ -1013,14 +1076,8 @@ async def cb_edit_opts(callback: CallbackQuery, state: FSMContext, db_session: A
 @router.message(QuizEditStates.editing_options, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_edit_options(message: Message, state: FSMContext) -> None:
     options = [o.strip() for o in (message.text or "").splitlines() if o.strip()]
-    if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
-        await message.answer(
-            f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga).",
-            reply_markup=_edit_cancel_kb(),
-        )
-        return
-    if any(len(o) > 100 for o in options):
-        await message.answer("⚠️ Ogni opzione deve essere max 100 caratteri.", reply_markup=_edit_cancel_kb())
+    if err := _options_error(options):
+        await message.answer(err, reply_markup=_edit_cancel_kb())
         return
     await state.update_data(edit_options=options)
     await state.set_state(QuizEditStates.editing_correct)
@@ -1562,4 +1619,190 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
         await callback.message.answer(feedback)
 
     await _advance_or_finish(callback.bot, callback.message.chat.id, user_tg_id, quiz, db_session)
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Test run — admin dry-run of a `ready` quiz (§19.b)
+# ---------------------------------------------------------------------------
+#
+# Lets an admin play a quiz after publishing it but before starting it, to check
+# wording, options and explanations for real. The whole flow is IN-MEMORY: it
+# never writes a `quiz_answers` row, so a test run can't reach the podium, the
+# prizes, the XP or `game_podiums` — the isolation is structural, not a filter
+# someone has to remember to apply on every query.
+#
+# Separate callback namespace (`quiz_try:*` vs `quiz_ans:*`) so a test answer can
+# never be routed into the real recorder. Admin-gated per handler: quiz.router is
+# mixed (public `quiz_ans:*`), so it cannot carry a router-level filter (§8).
+
+
+@dataclass
+class _TryCtx:
+    """One admin's test run. Lives only in memory and dies with the process — a
+    lost run costs nothing, so there is no persistence to justify."""
+    quiz_id: int
+    order: list[int]                  # question ids, in this run's display order
+    index: int = 0                    # how many questions are already answered
+    correct: int = 0
+
+
+_TRY: dict[tuple[int, int], _TryCtx] = {}
+
+_TRY_BANNER = "🧪 <b>MODALITÀ PROVA</b> — nulla viene salvato né conta in classifica."
+
+
+def _try_key(quiz_id: int, admin_tg_id: int) -> tuple[int, int]:
+    return (quiz_id, admin_tg_id)
+
+
+def _try_question_kb(
+    quiz_id: int, question_id: int, ordered_options: list[tuple[int, str]]
+) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for real_idx, opt in ordered_options:
+        b.button(text=opt[:40], callback_data=f"quiz_try:ans:{quiz_id}:{question_id}:{real_idx}")
+    b.button(text="⏹ Esci dalla prova", callback_data=f"quiz_try:stop:{quiz_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def start_quiz_try(message: Message, db_session: AsyncSession, quiz_id: int) -> None:
+    """Begin (or restart) an admin test run of a `ready` quiz."""
+    quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    if quiz is None or not quiz.questions:
+        await message.answer("⚠️ Quiz non trovato.")
+        return
+    if quiz.status != "ready":
+        await message.answer(
+            "🧪 La prova è disponibile solo per un quiz <b>pronto</b> e non ancora avviato."
+        )
+        return
+
+    admin_id = message.from_user.id
+    # `started_at` is still NULL here, so the randomization seed is stable for the
+    # whole test run — the admin sees one coherent order, not a reshuffle per question.
+    order = [q.id for q in quiz_service.user_question_order(quiz, admin_id)]
+    _TRY[_try_key(quiz_id, admin_id)] = _TryCtx(quiz_id=quiz_id, order=order)
+
+    limit = quiz_service.time_limit_seconds(quiz)
+    timing = (
+        f"Nel quiz vero ogni domanda avrà <b>{limit} secondi</b>; in prova non c'è timer."
+        if limit > 0
+        else "Nessun limite di tempo, come nel quiz vero."
+    )
+    await message.answer(
+        f"{_TRY_BANNER}\n\n🧠 <b>{esc(quiz.title)}</b>\n<i>{timing}</i>"
+    )
+    await _present_try_question(message, db_session, quiz, admin_id)
+
+
+async def _present_try_question(
+    message: Message, db_session: AsyncSession, quiz, admin_id: int
+) -> None:
+    ctx = _TRY.get(_try_key(quiz.id, admin_id))
+    if ctx is None:
+        return
+    question = next((q for q in quiz.questions if q.id == ctx.order[ctx.index]), None)
+    if question is None:  # question deleted mid-run
+        await _finish_try(message, quiz, admin_id)
+        return
+    ordered_options = quiz_service.user_option_order(quiz, question, admin_id)
+    await message.answer(
+        f"🧪 <b>Domanda {ctx.index + 1}/{len(ctx.order)}</b>\n\n{esc(question.text)}",
+        reply_markup=_try_question_kb(quiz.id, question.id, ordered_options),
+    )
+
+
+async def _finish_try(message: Message, quiz, admin_id: int) -> None:
+    ctx = _TRY.pop(_try_key(quiz.id, admin_id), None)
+    total = len(ctx.order) if ctx else 0
+    correct = ctx.correct if ctx else 0
+    b = InlineKeyboardBuilder()
+    b.button(text="🔁 Riprova", callback_data=f"quiz_try:start:{quiz.id}")
+    b.adjust(1)
+    await message.answer(
+        f"🧪 <b>Prova completata</b>\n\n"
+        f"Risultato: <b>{correct}/{total}</b> corrette.\n\n"
+        f"<i>Nessun dato è stato salvato: il quiz è ancora pronto da avviare "
+        f"e la classifica è intatta.</i>",
+        reply_markup=b.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("quiz_try:start:"), IsAdminCallbackFilter())
+async def cb_try_start(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    quiz_id = int(callback.data.split(":")[2])
+    await start_quiz_try(callback.message, db_session, quiz_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("quiz_try:stop:"), IsAdminCallbackFilter())
+async def cb_try_stop(callback: CallbackQuery) -> None:
+    quiz_id = int(callback.data.split(":")[2])
+    _TRY.pop(_try_key(quiz_id, callback.from_user.id), None)
+    try:
+        await callback.message.edit_text("🧪 Prova interrotta. Nessun dato salvato.")
+    except Exception:  # noqa: BLE001 — message may be too old to edit
+        await callback.message.answer("🧪 Prova interrotta. Nessun dato salvato.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("quiz_try:ans:"), IsAdminCallbackFilter())
+async def cb_try_answer(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    try:
+        _, _, raw_quiz, raw_q, raw_opt = callback.data.split(":")
+        quiz_id, question_id, opt_idx = int(raw_quiz), int(raw_q), int(raw_opt)
+    except (ValueError, IndexError):
+        await callback.answer("Dati non validi.", show_alert=True)
+        return
+
+    admin_id = callback.from_user.id
+    ctx = _TRY.get(_try_key(quiz_id, admin_id))
+    if ctx is None:
+        await callback.answer("🧪 Prova scaduta. Riavviala dal quiz.", show_alert=True)
+        return
+    if ctx.order[ctx.index] != question_id:
+        await callback.answer("Hai già risposto a questa domanda.")
+        return
+
+    quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    if quiz is None or quiz.status != "ready":
+        _TRY.pop(_try_key(quiz_id, admin_id), None)
+        await callback.answer("⚠️ Il quiz non è più in prova.", show_alert=True)
+        return
+    question = next((q for q in quiz.questions if q.id == question_id), None)
+    if question is None:
+        await callback.answer("Domanda non valida.", show_alert=True)
+        return
+    options = quiz_service.question_options(question)
+    if not (0 <= opt_idx < len(options)):
+        await callback.answer("Opzione non valida.", show_alert=True)
+        return
+
+    is_correct = opt_idx == question.correct_option_id
+    ctx.index += 1
+    ctx.correct += int(is_correct)
+
+    chosen = esc(options[opt_idx])
+    if is_correct:
+        feedback = f"✅ <b>Esatto!</b> — {chosen}"
+    else:
+        feedback = (
+            f"❌ <b>Sbagliato.</b> Hai scelto: {chosen}\n"
+            f"✅ Giusta: <b>{esc(options[question.correct_option_id])}</b>"
+        )
+    if question.explanation:
+        feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
+    else:
+        feedback += "\n\n<i>(nessuna spiegazione impostata)</i>"
+    try:
+        await callback.message.edit_text(f"🧪 ❓ {esc(question.text)}\n\n{feedback}")
+    except Exception:  # noqa: BLE001 — editing may fail if message is too old
+        await callback.message.answer(feedback)
+
+    if ctx.index >= len(ctx.order):
+        await _finish_try(callback.message, quiz, admin_id)
+    else:
+        await _present_try_question(callback.message, db_session, quiz, admin_id)
     await callback.answer()

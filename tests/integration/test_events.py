@@ -206,6 +206,7 @@ class TestQuizEventType:
         assert f"ev:askstart:quiz:{quiz.id}" in cbs      # start is confirmed
         assert f"ev:sched:quiz:{quiz.id}" in cbs
         assert f"ev:askdel:quiz:{quiz.id}" in cbs
+        assert f"quiz_try:start:{quiz.id}" in cbs        # dry-run before going live
         assert not any(c.startswith("ev:start:") for c in cbs)  # no one-tap launch
 
     async def test_render_detail_finished_offers_reset_and_delete(self, session):
