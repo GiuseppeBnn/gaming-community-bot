@@ -9,7 +9,6 @@ from keyboards.betting_kb import (
     get_amount_keyboard,
     get_confirm_bet_keyboard,
     get_events_keyboard,
-    get_group_events_keyboard,
     get_options_keyboard,
 )
 from keyboards.shop_kb import (
@@ -44,36 +43,6 @@ def _make_event(id: int = 1, title: str = "Test Event", options_wagered: list[in
     ]
     bets = []
     return SimpleNamespace(id=id, title=title, options=opts, user_bets=bets)
-
-
-# ---------------------------------------------------------------------------
-# get_group_events_keyboard
-# ---------------------------------------------------------------------------
-
-class TestGroupEventsKeyboard:
-    def test_one_button_per_event(self):
-        events = [_make_event(1), _make_event(2)]
-        kb = get_group_events_keyboard(events, "mybot")
-        buttons = _flat_buttons(kb)
-        assert len(buttons) == 2
-
-    def test_button_is_url(self):
-        events = [_make_event(id=3)]
-        kb = get_group_events_keyboard(events, "gamebot")
-        btn = _flat_buttons(kb)[0]
-        assert btn.url is not None
-        assert "gamebot" in btn.url
-        assert "3" in btn.url
-
-    def test_url_uses_start_deep_link(self):
-        events = [_make_event(id=5)]
-        kb = get_group_events_keyboard(events, "mybot")
-        btn = _flat_buttons(kb)[0]
-        assert "start=bet_5" in btn.url
-
-    def test_empty_events(self):
-        kb = get_group_events_keyboard([], "mybot")
-        assert _flat_buttons(kb) == []
 
 
 # ---------------------------------------------------------------------------

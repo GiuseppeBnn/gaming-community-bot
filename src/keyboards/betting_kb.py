@@ -9,26 +9,10 @@ _CLOSE_TEXT = "✖ Chiudi"
 _CLOSE_CB = "bet:close"
 
 
-def get_group_events_keyboard(
-    events: list[BettingEvent],
-    bot_username: str,
-    placed_ids: set[int] = frozenset(),
-) -> InlineKeyboardMarkup:
-    """URL buttons for group messages — tap opens private chat deep-link. Events the
-    user has already bet on are marked «✅ », like the private list, so they see it
-    upfront instead of only after opening the private chat."""
-    builder = InlineKeyboardBuilder()
-    for event in events:
-        if event.id in placed_ids:
-            text = f"✅ Hai già scommesso su #{event.id} {event.title[:22]}"
-        else:
-            text = f"🎲 Scommetti su #{event.id} {event.title[:22]}"
-        builder.button(
-            text=text,
-            url=f"https://t.me/{bot_username}?start=bet_{event.id}",
-        )
-    builder.adjust(1)
-    return builder.as_markup()
+# NOTE: the former `get_group_events_keyboard` (URL buttons posted in the group)
+# was removed: it marked «✅ Hai già scommesso» per event based on the *caller's*
+# bets, inside a message everyone in the group could read. /scommesse is now
+# private-only and redirects from the group (§9).
 
 
 def get_events_keyboard(

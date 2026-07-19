@@ -184,6 +184,10 @@ async def cmd_start(
         from handlers.leaderboard import show_board_private
         await show_board_private(message, db_session)
         return
+    if payload == "scommesse":
+        from handlers.betting import show_events_private
+        await show_events_private(message, db_session, state)
+        return
 
     # Deep-links: admin backup / state export (redirected from the group)
     if payload in ("backup", "esporta"):

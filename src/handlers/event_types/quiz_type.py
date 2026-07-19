@@ -90,6 +90,7 @@ class QuizType:
             b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:quiz:{item_id}")
             b.button(text="🗓️ Programma", callback_data=f"ev:sched:quiz:{item_id}")
             b.button(text="✏️ Modifica domande", callback_data=f"quiz_edit:nav:{item_id}:0")
+            b.button(text="🧪 Prova", callback_data=f"quiz_try:start:{item_id}")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
         elif quiz.status == "running":
             b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:quiz:{item_id}")
@@ -98,7 +99,7 @@ class QuizType:
             b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:quiz:{item_id}")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
         b.button(text="⬅️ Indietro", callback_data="ev:list:quiz")
-        b.adjust(2, 1)  # action pair per row, then Elimina/Indietro on their own rows
+        b.adjust(2, 2, 1)  # action pairs per row, then Elimina/Indietro on their own rows
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
     async def delete(self, db_session: AsyncSession, item_id: int) -> StartResult:
