@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import select
@@ -34,6 +33,7 @@ from config_data.config import settings
 from database.models import User
 from services import catalog_loader
 from services.catalog_loader import Rank
+from utils import daytime
 
 log = logging.getLogger(__name__)
 
@@ -176,7 +176,9 @@ async def grant_xp(
     granted = amount
 
     if capped:
-        today = datetime.now(timezone.utc).date().isoformat()
+        # Same local-midnight boundary as /daily (utils.daytime), so the bot has
+        # one single notion of "day" instead of two drifting 1-2h apart.
+        today = daytime.local_today().isoformat()
         if user.xp_today_date != today:
             user.xp_today = 0
             user.xp_today_date = today

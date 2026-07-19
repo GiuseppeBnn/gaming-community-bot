@@ -16,6 +16,7 @@ from __future__ import annotations
 import difflib
 from dataclasses import dataclass, field
 
+from config_data.config import settings
 from utils.text import esc
 
 
@@ -73,11 +74,13 @@ _COMMANDS: list[CommandDoc] = [
         details="L'elenco esteso di tutte le tue entrate e uscite di CoInn, dalla più recente.",
     ),
     CommandDoc(
-        "daily", "Premio giornaliero (ogni 24h)", "👤 Profilo & Economia",
+        "daily", "Premio giornaliero (si azzera a mezzanotte)", "👤 Profilo & Economia",
         usage="/daily",
-        details="Riscuoti il premio in CoInn. Si può riscuotere una volta ogni 24 ore: se "
-                "riprovi prima, il bot ti dice quanto manca. Riscuoterlo in giorni consecutivi "
-                "aumenta la tua <i>streak</i>.",
+        details="Riscuoti il premio in CoInn: <b>uno al giorno</b>, e il giorno si azzera a "
+                "<b>mezzanotte</b>. Se hai riscosso a tarda notte devono comunque passare almeno "
+                f"<b>{settings.daily_min_hours} ore</b> dall'ultima volta. Se riprovi prima, il "
+                "bot ti dice quanto manca. Riscuoterlo in giorni consecutivi aumenta la tua "
+                "<i>streak</i>: <b>saltare un giorno la azzera</b>.",
     ),
     CommandDoc(
         "trasferisci", "Manda CoInn a un altro utente", "👤 Profilo & Economia",

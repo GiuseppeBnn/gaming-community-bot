@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     admin_ids: Annotated[list[int], NoDecode] = []
 
     daily_reward_coins: int = 100
+    # /daily resets at local midnight (scheduler_timezone). This is the extra
+    # minimum gap since the previous claim, ANDed with the midnight rule so a
+    # 23:59 claim can't be followed by another one at 00:01. Must stay < 24h,
+    # otherwise it could push the next claim past a whole day and cost a streak.
+    daily_min_hours: int = 6
 
     fsm_storage: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
