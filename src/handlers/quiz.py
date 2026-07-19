@@ -1667,8 +1667,19 @@ def _try_question_kb(
     return b.as_markup()
 
 
-async def start_quiz_try(message: Message, db_session: AsyncSession, quiz_id: int) -> None:
-    """Begin (or restart) an admin test run of a `ready` quiz."""
+async def start_quiz_try(
+    message: Message, db_session: AsyncSession, quiz_id: int, admin_id: int
+) -> None:
+    """Begin (or restart) an admin test run of a `ready` quiz.
+
+    ``admin_id`` is passed in explicitly and has NO default on purpose: every entry
+    point reaches this through a button on a message the BOT sent, so
+    ``message.from_user`` is the bot, not the admin who tapped (same trap as
+    ``ev:new:quiz`` passing ``creator_id``, §19). Deriving the identity from
+    `message` here stored the run under the bot's id while the answer handler
+    looked it up under the admin's — every answer was refused as "Prova scaduta".
+    Keep it a required parameter so a future entry point must state who is acting.
+    """
     quiz = await quiz_service.get_quiz(db_session, quiz_id)
     if quiz is None or not quiz.questions:
         await message.answer("⚠️ Quiz non trovato.")
@@ -1679,7 +1690,6 @@ async def start_quiz_try(message: Message, db_session: AsyncSession, quiz_id: in
         )
         return
 
-    admin_id = message.from_user.id
     # `started_at` is still NULL here, so the randomization seed is stable for the
     # whole test run — the admin sees one coherent order, not a reshuffle per question.
     order = [q.id for q in quiz_service.user_question_order(quiz, admin_id)]
@@ -1733,7 +1743,9 @@ async def _finish_try(message: Message, quiz, admin_id: int) -> None:
 @router.callback_query(F.data.startswith("quiz_try:start:"), IsAdminCallbackFilter())
 async def cb_try_start(callback: CallbackQuery, db_session: AsyncSession) -> None:
     quiz_id = int(callback.data.split(":")[2])
-    await start_quiz_try(callback.message, db_session, quiz_id)
+    # `callback.from_user` is the admin who tapped; `callback.message.from_user`
+    # would be the bot that posted the button (see start_quiz_try's docstring).
+    await start_quiz_try(callback.message, db_session, quiz_id, callback.from_user.id)
     await callback.answer()
 
 
