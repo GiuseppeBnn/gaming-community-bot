@@ -901,6 +901,17 @@ gated **singolarmente** (`quiz.router` è misto, §8). Nessun timer in prova (il
 comunicato a schermo). Ogni messaggio porta il marker 🧪 e il riepilogo finale dichiara
 esplicitamente che nulla è stato salvato.
 
+> **Identità dell'attore — `admin_id` esplicito.** `start_quiz_try` riceve `admin_id` come
+> parametro **obbligatorio, senza default**, e **non** lo deriva mai da `message.from_user`: il
+> bottone «🧪 Prova» vive sempre su un messaggio inviato dal *bot*, quindi lì `from_user` **è il
+> bot** (stessa trappola di `ev:new:quiz` col `creator_id`). Un bug reale: la prova finiva in `_TRY`
+> sotto l'id del bot mentre `cb_try_answer`/`cb_try_stop` la cercavano sotto quello dell'admin →
+> ogni risposta rifiutata con «Prova scaduta» e la voce orfana mai ripulita. **Regola: nei flussi
+> avviati da callback, l'identità viene solo da `callback.from_user`**, propagata esplicitamente.
+> Corollario per i test: esercitare i **veri entry point** (`cb_try_*`) con un messaggio autored
+> dal bot — un fake message intestato all'admin è una forma che in produzione non esiste e maschera
+> proprio questa classe di bug (`tests/integration/test_quiz_try.py`).
+
 ### Avvio & gioco
 
 - `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `quiz_<id>`) **poi**
