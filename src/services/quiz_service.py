@@ -648,7 +648,9 @@ async def award_prizes(session: AsyncSession, quiz_id: int) -> list[PrizeAward]:
                 await _pay(row.user_tg_id, coins, i + 1, "podium", f"podio #{i + 1}")
         others = ranked[3:]
         schedule = consolation_amounts(len(others), quiz.prize_consolation, quiz.prize_min)
-        for offset, (row, coins) in enumerate(zip(others, schedule)):
+        # strict=True: `schedule` is built with len(others) entries, so a length
+        # mismatch would mean silently paying a subset of the finishers.
+        for offset, (row, coins) in enumerate(zip(others, schedule, strict=True)):
             if coins > 0:
                 rank = offset + 4
                 await _pay(row.user_tg_id, coins, rank, "consolation", f"consolazione #{rank}")

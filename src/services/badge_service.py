@@ -282,7 +282,7 @@ async def check_and_award_milestones(
         if ct == "shop_purchases":
             return cv is not None and consumable_service.total_purchases(counts) >= cv
         if ct == "event_count":
-            return cv is not None and bool(cp) and events.get(cp, 0) >= cv
+            return cv is not None and bool(cp) and events.get(cp or "", 0) >= cv
         if ct == "catalog_complete":
             consumables = catalog_loader.get_consumables()
             cosmetics = catalog_loader.get_cosmetics()
@@ -307,8 +307,10 @@ async def check_and_award_milestones(
             tally = podium.get(cp or "any", progress_service.PodiumTally())
             return cv is not None and tally.first_places >= cv
         if ct == "collection":
-            required = [s for s in (cp or "").split(";") if s]
-            return bool(required) and all(s in earned_slugs for s in required)
+            # Set (not list) so this reads exactly like the `all_trophies` branch
+            # above — same subset test, one shape for "required slugs".
+            required = {s for s in (cp or "").split(";") if s}
+            return bool(required) and required <= earned_slugs
         return False
 
     newly_earned: list[Badge] = []

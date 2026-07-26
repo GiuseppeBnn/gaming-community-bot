@@ -23,7 +23,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ class GzipMemberWriter:
         self.path = Path(path)
         self.start_offset = 0
         self.records = 0
-        self._fileobj = None
+        self._fileobj: IO[bytes] | None = None
         self._gz: gzip.GzipFile | None = None
 
     def open(self) -> "GzipMemberWriter":

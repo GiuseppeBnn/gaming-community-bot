@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     UniqueConstraint,
@@ -106,6 +107,17 @@ class Wallet(Base):
 
 class LedgerEntry(Base):
     __tablename__ = "ledger"
+
+    # `ledger` is the fastest-growing table and had no index beyond the PK, so
+    # every /storico was a full scan + sort. get_history filters
+    # `from_tg_id = X OR to_tg_id = X` then orders by created_at desc, so the
+    # useful shape is TWO composite indexes (one per side of the OR) rather than
+    # three single-column ones: Postgres can BitmapOr the two, and each already
+    # carries created_at for the sort.
+    __table_args__ = (
+        Index("ix_ledger_from_created", "from_tg_id", "created_at"),
+        Index("ix_ledger_to_created", "to_tg_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     from_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

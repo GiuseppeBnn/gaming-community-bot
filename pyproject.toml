@@ -22,3 +22,36 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 show_missing = true
+# Ratchet, not a target: pinned just under the current 58% so the number can
+# only go up. Raise it when a phase lands, never lower it to make CI pass.
+fail_under = 57
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+# Deliberately narrow: these rules are at ZERO findings on the current codebase,
+# so the gate installs clean and every future failure is a real regression
+# instead of pre-existing noise everyone learns to ignore.
+#   E9      syntax/indentation errors
+#   F       pyflakes — undefined names, dead imports, broken f-strings
+#   B       bugbear — mutable defaults, bad except/raise, unstrict zip
+#   ASYNC   blocking I/O inside async def (this is an async bot: real stalls)
+# Widening later (I=import order, UP=pyupgrade, SIM, BLE) is ~130 mostly
+# cosmetic autofixes — worth one dedicated commit, not worth blocking CI today.
+select = ["E9", "F", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+# Non-strict on purpose. The point is not type purity, it's that the checker
+# runs at zero findings so new code can't silently regress. `disallow_untyped_defs`
+# stays OFF until the handler layer is annotated.
+ignore_missing_imports = true
+warn_unused_ignores = true
+# Checked packages: the money/data layer. Handlers are excluded for now — they
+# are the least annotated and the noisiest; add them per-module as they migrate.
+files = ["src/services", "src/database", "src/utils", "src/config_data", "src/filters"]

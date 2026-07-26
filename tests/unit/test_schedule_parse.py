@@ -36,6 +36,13 @@ class TestParseRunAt:
         with pytest.raises(ValueError):
             parse_run_at("0m")
 
+    def test_absurd_relative_raises_instead_of_overflowing(self):
+        # Public/admin chat input: without the cap this reached
+        # `datetime + timedelta(seconds=8.6e13)` and died with OverflowError,
+        # which no handler catches (ValueError is the one that's handled).
+        with pytest.raises(ValueError):
+            parse_run_at("999999999d")
+
 
 class TestParseDuration:
     def test_minutes_hours_days_to_seconds(self):
@@ -58,6 +65,16 @@ class TestParseDuration:
     def test_zero_raises(self):
         with pytest.raises(ValueError):
             parse_duration("0m")
+
+    def test_absurd_duration_raises_instead_of_overflowing_int32(self):
+        # /crea_scommessa feeds this into betting_window_seconds (int32): on
+        # Postgres an uncapped value is "integer out of range" at commit time,
+        # i.e. after the user was already told the bet was created.
+        with pytest.raises(ValueError):
+            parse_duration("999999999d")
+
+    def test_cap_boundary_is_accepted(self):
+        assert parse_duration("365d") == 365 * 86400
 
 
 class TestToLocal:

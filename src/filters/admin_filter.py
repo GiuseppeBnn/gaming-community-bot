@@ -66,11 +66,20 @@ async def _all_members_are_admins(bot: Bot, group_id: int, admin_count: int) -> 
     return total >= 3 and admin_count >= total
 
 
-async def is_admin(bot: Bot, user_id: int) -> bool:
+async def is_admin(bot: Bot | None, user_id: int) -> bool:
+    """True if `user_id` is a bot admin. Fails **closed** on any uncertainty.
+
+    `bot` is typed optional because every caller passes `message.bot` /
+    `callback.bot`, which aiogram types as `Bot | None`. Without the explicit
+    guard below the None case still "worked", but only because the broad
+    `except Exception` in `_telegram_admin_ids` swallowed the AttributeError —
+    i.e. the authorization outcome depended on an incidental catch. Now the
+    fail-closed path is stated, not inherited.
+    """
     if user_id in settings.admin_ids:
         return True
     group_id = group_registry.get_group_id()
-    if group_id == 0:
+    if group_id == 0 or bot is None:
         return False
     return user_id in await _telegram_admin_ids(bot, group_id)
 

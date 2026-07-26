@@ -208,7 +208,9 @@ async def place_bet(
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        raise AlreadyBetError(user_tg_id, event_id)
+        # `from None`: the IntegrityError is the *expected* signal of the unique
+        # constraint firing, not an error while handling one — don't chain it.
+        raise AlreadyBetError(user_tg_id, event_id) from None
 
     # Event XP for participating (placing a bet), uncapped — once per event, since a
     # second bet on the same event raises AlreadyBetError above. The (larger) win

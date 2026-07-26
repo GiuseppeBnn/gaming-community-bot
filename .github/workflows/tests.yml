@@ -36,6 +36,14 @@ jobs:
           DB_URL: "sqlite+aiosqlite:///:memory:"
         run: pytest --cov=src --cov-report=xml --cov-report=term-missing
 
+      # Static gates run AFTER the suite on purpose: a lint nit must never hide a
+      # failing test in the log. Both are configured in pyproject.toml.
+      - name: Lint (ruff)
+        run: ruff check src/
+
+      - name: Type check (mypy)
+        run: mypy
+
       - name: Upload coverage report
         uses: codecov/codecov-action@v4
         with:

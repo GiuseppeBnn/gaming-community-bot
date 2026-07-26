@@ -24,6 +24,7 @@ from handlers import (
     betting,
     common,
     economy,
+    errors,
     event_types,
     events,
     fun_ai,
@@ -196,6 +197,11 @@ async def main() -> None:
     dp.include_router(backup.router)
     dp.include_router(fun_ai.router)
     dp.include_router(common.router)
+
+    # Global fallback for anything that escapes a handler: logs with context and
+    # replies to the user instead of leaving the bot silent. On the dispatcher
+    # (not a router) so it covers every handler registered above.
+    dp.errors.register(errors.on_error)
 
     await bot.set_my_commands(_PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(_GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())

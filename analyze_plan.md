@@ -1,333 +1,299 @@
-# Roadmap di evoluzione strutturale — gaming-community-bot
+# Roadmap di evoluzione strutturale — gaming-community-bot (v2, verificata)
 
-> **Branch di lavoro: `test`.** `main` è allineato a `origin/main`.
+> Branch di lavoro: `test_giu`. Versione precedente di questo documento: git `e707867`.
+>
+> **Cosa cambia rispetto alla v1.** La v1 era una buona diagnosi con misure sbagliate.
+> Ogni numero qui sotto è stato rimisurato eseguendo gli strumenti, non con `grep`.
+> Tre raccomandazioni della v1 si sono rivelate infondate e sono state rimosse; una
+> era attivamente pericolosa. La Fase 0 è **già fatta** (vedi in fondo).
 
-## Principio guida: non reinventare la ruota
+## Il criterio aggiunto: costo cognitivo
 
-Prima di scrivere una sola astrazione custom, la domanda è: **esiste già, ed è
-collaudata?** Nella maggior parte dei casi qui la risposta è sì, e spesso **la
-dipendenza è già installata**. Sintesi delle scelte, prima delle fasi:
+La v1 ordinava per rischio/costo. Manca un asse che per un progetto a manutentore
+singolo conta di più: **quanti concetti nuovi devo tenere in testa dopo**. Un fix che
+usa un pattern già presente nel repo costa zero; una dipendenza nuova con un
+toolchain proprio (Alembic, Babel) costa per sempre. Ogni voce qui sotto è etichettata.
 
-| Problema | Soluzione custom (da NON fare) | Soluzione collaudata | Già installato? |
-|---|---|---|---|
-| Parsing callback data | helper `split(":")` custom | **`aiogram.filters.callback_data.CallbackData`** — factory tipizzata, pydantic-backed, valida i campi e gestisce il limite 64 byte | **sì**, aiogram 3.13 |
-| Confine transazionale | decoratore `@transactional` custom | estendere **`DbSessionMiddleware`** — è il pattern raccomandato da aiogram: la middleware apre la sessione e committa in uscita | **sì**, esiste già in `src/middlewares/db_middleware.py` |
-| Handler globale errori | try/except a tappeto | **`dp.errors` + `ErrorEvent`** | **sì**, aiogram |
-| Vincoli config | validator custom | **`pydantic.Field(ge=, le=)`** | **sì**, pydantic-settings |
-| Migrazioni schema | lista `_MIGRATIONS` di stringhe DDL | **Alembic** | no, da aggiungere |
-| Cache TTL (6 implementazioni a mano) | dict a livello di modulo + timestamp | **`cachetools.TTLCache`** | no, ~1 dipendenza |
-| Lint / format / type check | convenzioni in STEERING.md | **ruff + mypy** | no, da aggiungere |
-| Postgres nei test | mock del locking | **`services:` di GitHub Actions** (più semplice di testcontainers) | n/a, config CI |
-| FSM persistente | — | **`aiogram.fsm.storage.redis.RedisStorage`** | parziale: `redis_url` già in config, storage `memory` di default |
-| i18n / catalogo copy | modulo lexicon custom | **`aiogram.utils.i18n`** (gettext) — *oppure* estendere il registry `CommandDoc` già presente | aiogram sì, ma richiede Babel |
+---
 
-**Dove invece il custom resta giustificato**, e va detto esplicitamente:
+## Parte 1 — Cosa nella v1 era falso
 
-- **Lo scheduler.** `scheduler_loop` è fatto in casa, ma è fatto *bene*: task persistiti
-  in DB, sopravvive ai restart, `TaskSkip` distinto dagli errori, un rollback per task,
-  notifica al creatore. APScheduler + `SQLAlchemyJobStore` non darebbe la semantica di
-  dominio (skip/failed/notify) e aggiungerebbe una dipendenza per sostituire ~40 righe
-  corrette. **Lasciarlo**, spostarlo solo di package.
-- **I fake dei test.** `aiogram-tests` non è mantenuto in modo affidabile. La risposta
-  giusta qui è centralizzare i `SimpleNamespace` esistenti in un `tests/fakes.py`, non
-  adottare una libreria.
-- **`catalog_loader` / CSV.** Già un buon design, nessuna libreria fa meglio per questo
-  caso.
+### ❌ «`economy_service.py` ha 1 su 7 funzioni con return type — l'intero path denaro è scoperto»
 
-## Context
+**Falso, e in modo istruttivo.** Tutte e 7 le funzioni sono annotate. La v1 ha
+prodotto quel numero con un `grep '^async def.*->'`, che non matcha le firme su più
+righe — e in quel file **tutte** le firme sono su più righe. Verifica reale:
 
-Il bot funziona: 700 test verdi, 16 router, ~190 handler registrati, economia + XP +
-scommesse + quiz + shop in produzione. Il problema non è la mancanza di feature — è che
-**il costo marginale di ogni feature nuova sta crescendo**, e alcune classi di bug sono
-oggi *invisibili alla suite di test*.
+```
+$ mypy --disallow-untyped-defs src/services/economy_service.py
+(nessun errore)
+```
 
-Questa roadmap non aggiunge funzionalità. Interviene sulle proprietà del codice che
-determinano quanto costerà tutto quello che verrà dopo: dove vivono le transazioni, cosa
-può essere verificato automaticamente, e quali regole di STEERING.md sono eseguibili
-invece che volontarie.
+Era la giustificazione più concreta della Fase 0.2, ed era un artefatto di misura.
+La ragione **vera** per aggiungere mypy è migliore: il codebase è già a 0 errori, quindi
+il gate si installa gratis.
 
-Il checkup precedente su `main` ha già isolato 2 blocker aperti (lock di riga inefficaci
-sul path denaro; validazione input mancante su durate e callback). Questa roadmap li
-inquadra come **sintomi di 3 cause strutturali**, e li risolve dentro un intervento più
-ampio invece che come patch isolate.
+### ❌ «Alembic va anticipato prima della Fase 1.5, perché il cambio di larghezza colonne è la prima migrazione che non è un `ADD COLUMN`»
 
-**Stato attuale, misurato:**
+**Falso.** `_MIGRATIONS` contiene già due `ALTER COLUMN ... TYPE BIGINT`
+(`connection.py`, righe su `wallets.coins` e `ledger.amount`), in produzione, idempotenti,
+funzionanti. Allargare `total_wagered` e `xp` è **una riga in più per colonna** nella
+lista che esiste. La premessa che rendeva Alembic urgente non esiste.
 
-| Metrica | Valore |
+Alembic resta una scelta legittima *quando* servirà un downgrade o una migrazione di
+dati, non di schema. Oggi aggiunge `env.py`, `versions/`, l'autogenerate che va
+riconciliato a mano fra SQLite e Postgres, e la cerimonia dello stamp del baseline:
+**costo cognitivo alto, problema che ancora non esiste.**
+
+### ❌ «6 cache a mano, nessuna con un bound: crescono con gli utenti e non si svuotano mai» → sostituirle con `cachetools`
+
+**Falso su tutti e tre i punti.**
+
+- Sono **4**, non 6 (`admin_filter`, `group_guard`, `ban_guard`, `fun_ai._last_used`).
+- `group_guard` e `ban_guard` hanno `_CACHE_PRUNE_THRESHOLD = 4096`; `utils/cooldown`
+  ha `_PRUNE_THRESHOLD = 1024` + `_PRUNE_MAX_AGE`. **Il bound c'è.**
+- La v1 cita `cooldown.py:25` e `static_reply.py:24` come middleware: stanno in
+  `src/utils/`, e `utils/cooldown.py` **è già** l'astrazione condivisa per questa cosa
+  (il suo docstring dice esplicitamente che generalizza il throttle di `fun_ai`).
+
+Quindi la voce corretta non è «aggiungi `cachetools`» (dipendenza nuova, rung 5) ma
+«`fun_ai._last_used` dovrebbe usare `utils/cooldown` che esiste già» (rung 2). Costo
+cognitivo: negativo — un concetto in meno.
+
+### ❌ «45 `# noqa` senza un linter che li onori → annotazioni morte»
+
+I `# noqa` sono 45, ma **morti sono 12** (`ruff --select=RUF100`). Gli altri 33 sono
+soppressioni valide di regole reali. E la fotografia generale era assente: con le regole
+di default ruff trova **133** problemi, di cui 90 autofixabili e quasi tutti cosmetici
+(`UP045`, `UP037`, `I001`).
+
+Questo cambia la Fase 0.2 in modo sostanziale. La v1 proponeva «default + `BLE`/`ASYNC`»:
+sarebbe partita con **oltre 130 errori**, cioè un gate rosso al primo giro, che finisce
+disattivato o annegato in `# noqa`. Calibrazione reale:
+
+| Ruleset | Errori |
 |---|---|
-| `src/` | 15.419 righe, 71 file |
-| Layer handlers | 7.266 righe (**47%** del totale) |
-| File più grande | `src/handlers/quiz.py` — **1.820 righe**, 102 def, 30 callback |
-| `session.commit()` chiamati da handler | **64 siti su 12 file** |
-| Handler che importano SQLAlchemy | **18 su 20** |
-| Tastiere costruite inline negli handler | 125 (vs 30 factory in `keyboards/`) |
-| Copertura servizi | ~93% |
-| Copertura handler | **~30-37%** (`quiz.py` 37%, da solo 21% di tutte le righe scoperte) |
-| Copertura totale | 58%, **nessun `fail_under`** |
-| Linter / formatter / type checker | **nessuno configurato** |
-| Test su Postgres | **zero** (prod è `postgres:16`, test è SQLite in-memory) |
-| Literal di copy italiano in `src/` | ~1.370, nessun lexicon |
-| Handler globale errori (`dp.errors`) | **assente** |
-| Indici sulla tabella `ledger` | **nessuno oltre la PK** |
+| `F` (pyflakes: nomi non definiti, import morti, f-string rotte) | **0** |
+| `E9,F` | **0** |
+| `E9,F,B` | 5 |
+| `E9,F,B,ASYNC` | **6** |
+| `+ RUF100, I` | 59 |
+| default completo | 133 |
+
+`E9,F,B,ASYNC` = 6 errori, tutti sistemati in pochi minuti → **il gate parte verde**.
+
+### ⚠️ «Estendere `DbSessionMiddleware` perché committi in uscita — zero dipendenze, zero astrazioni nuove» (Fase 3.1)
+
+Questa era la raccomandazione **più rischiosa** del documento, presentata come la più
+sicura. Il problema non è il rollback (vedi sotto), è il commit in uscita:
+
+1. La transazione resterebbe aperta per **tutta** la durata dell'handler, **incluse le
+   chiamate alle API Telegram**. Con `with_for_update()` sul path denaro, i lock di riga
+   verrebbero tenuti per la durata di un round-trip di rete verso `api.telegram.org`
+   (centinaia di ms, secondi in caso di flood-wait e retry). Oggi gli handler committano
+   *e poi* rispondono. Invertire quest'ordine rende il tempo di lock **dipendente dalla
+   rete**: è una regressione di throughput e un rischio di contesa, non una pulizia.
+2. Un handler che risponde all'utente a metà flusso e poi solleva manderebbe il
+   messaggio «fatto» per una transazione che poi rollbacka.
+3. Non è incrementale come dichiarato: i 64 siti di `commit()` diventano coerenti solo
+   quando spariscono tutti insieme.
+
+**Il rollback esplicito invece non serve affatto:** `DbSessionMiddleware` apre la sessione
+con `async with async_session_maker()`, e uscire da quel blocco la chiude, scartando la
+transazione non committata. La v1 dice «la transazione resta appesa» — non è vero.
+
+Il confine transazionale nei servizi resta un obiettivo giusto (Causa A è reale). Ma la
+strada è **spostare le query nei servizi** (3.2), non spostare il commit nella middleware.
+
+### ❌ Numeri di inventario sbagliati (il documento era scritto su un albero più vecchio)
+
+| Metrica | v1 | Reale |
+|---|---|---|
+| File in `src/` | 71 | **75** |
+| Righe `handlers/` | 7.266 (47%) | **8.447 (55%)** |
+| File handler | 20 | **22** |
+| Handler che importano SQLAlchemy | 18 su 20 | **17 su 22** |
+| `data.split(":")` negli handler | «12+» | **45** |
+
+Conseguenza pratica: i riferimenti riga della v1 (`quiz.py:1521`, `betting.py:504`…)
+non sono affidabili. E l'inventario **omette del tutto** `src/services/backup/`
+(chat archive Telethon + export di stato) più `handlers/backup.py`: `backup/loop.py` è
+a **0% di copertura**, il buco singolo più grosso dopo `quiz.py`, e non è mai citato.
 
 ---
 
-## Le 3 cause strutturali
+## Parte 2 — Cosa nella v1 era giusto (confermato con misure)
 
-### Causa A — Il confine handler↔servizio è rotto in una direzione sola
+| Affermazione | Stato |
+|---|---|
+| `src/` 15.419 righe | ✅ esatto |
+| `quiz.py` 1.820 righe, 649 statement scoperti | ✅ esatto |
+| 64 `commit()` in 12 file di `handlers/` | ✅ esatto |
+| Copertura totale 58%, servizi alti, handler 21-44% | ✅ esatto (712 test) |
+| `dp.errors` assente | ✅ era assente |
+| `handlers/__init__.py` vuoto (0 byte), ordine router in un commento | ✅ esatto |
+| `ledger` senza indici oltre la PK | ✅ esatto |
+| Zero `Field(ge=, le=)` in config | ✅ esatto (0 occorrenze di `Field(`) |
+| `parse_duration` illimitata | ✅ **e peggio** — vedi sotto |
+| SQLite nei test non implementa `FOR UPDATE` | ✅ esatto |
+| **Blocker 1: i lock di riga non proteggono il path denaro** | ✅ **confermato sperimentalmente** |
 
-I servizi sono puliti: 13 su 15 non importano aiogram, e la convenzione "i servizi non
-committano mai" è rispettata. Ma **gli handler scavalcano i servizi**: 18 su 20 importano
-SQLAlchemy, 64 siti chiamano `commit()`, 18 costruiscono `select()` a mano, e 2
-(`quiz.py:1521`, `schedule.py:359`) aprono sessioni proprie bypassando il middleware.
+### Il Blocker 1 è reale, e ora c'è la prova
 
-Conseguenza diretta: **il transaction boundary appartiene al livello di presentazione**.
-Non esiste unit-of-work. La correttezza transazionale non è testabile a livello di
-servizio, e ogni nuovo handler è una nuova occasione di sbagliarla. La copertura
-lo conferma: servizi 93%, handler 30%.
+Tesi: la identity map restituisce valori stale sotto `SELECT ... FOR UPDATE`, quindi il
+check-then-write passa due volte. Riprodotto in modo deterministico (senza concorrenza,
+isolando la sola staleness) contro la configurazione **reale** del repo
+(`expire_on_commit=False, autoflush=False`):
 
-### Causa B — La suite di test non può vedere un'intera classe di bug
-
-Prod è PostgreSQL 16. I test girano su **SQLite in-memory**, che:
-- **no-oppa `SELECT ... FOR UPDATE`** — i test di locking asseriscono su un backend che
-  non implementa la cosa testata. `tests/integration/test_economy_locking.py:5` lo
-  documenta esplicitamente;
-- accetta int64 in colonne `INTEGER`, quindi l'overflow di `betting_window_seconds`
-  (`models.py:181`) e `total_wagered` (`models.py:204`) non si manifesta mai;
-- rifiuterebbe la DDL `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` di `_MIGRATIONS`, che
-  infatti **non ha nessun test**.
-
-700 test verdi non sono una garanzia sui path denaro sotto concorrenza. Il Blocker 1 del
-checkup (identity map + `with_for_update()`) è esattamente questo: reale in prod,
-invisibile in test.
-
-### Causa C — Le regole di STEERING.md non sono eseguibili
-
-STEERING.md è 94KB, normativo, toccato da quasi ogni commit. Le sue regole sono buone
-(§5 servizi non committano, §8 gating admin, §22 26 regole). Ma **niente le verifica**:
-zero linter, zero formatter, zero type checker, zero `fail_under`, nessun pre-commit.
-La CI ha un solo gate: pytest deve passare. `# noqa` compare 45 volte senza un linter che
-lo onori — annotazioni morte. Zero `TODO`/`FIXME` in `src/`: non è pulizia, è debito non
-tracciato.
-
-Dove il progetto *ha* reso una regola strutturale, ha funzionato: il gate admin passa da
-`IsAdminFilter` in 40+ punti, zero controlli manuali sparsi. È il modello da replicare.
-
----
-
-## Roadmap ordinata per rapporto rischio/costo
-
-### Fase 0 — Rete di sicurezza (prerequisito, ~1 giorno)
-
-Da fare **prima** di qualsiasi refactor: senza questi, un refactor rompe cose in silenzio.
-
-**0.1 — Handler globale errori.** Non esiste. Un'eccezione non gestita in un handler
-muore nel log, l'utente vede il bot muto, la transazione resta appesa. Aggiungere in
-`src/main.py` un `@dp.errors` che: logga con `exc_info`, include user_id/chat_id/callback
-data, risponde all'utente un messaggio generico, e fa rollback. Trasforma ogni bug futuro
-da "bot congelato" a "riga di log azionabile".
-
-**0.2 — Gate statici in CI.** Aggiungere `ruff` (lint + format) e `mypy` a
-`requirements-dev.txt` e uno step in `.github/workflows/tests.yml`. Partire permissivi:
-ruff con le regole di default + `BLE`/`ASYNC`, mypy **non-strict** su `src/services/` e
-`src/database/` soltanto. L'obiettivo non è la purezza, è impedire che il debito cresca.
-Nota: `src/services/economy_service.py` ha **1 su 7 funzioni** con return type — i 6
-scoperti sono `credit`, `debit`, `transfer`, `claim_daily`, `_get_wallet`, `get_history`,
-cioè l'intero path denaro.
-
-**0.3 — `fail_under` sulla copertura.** Fissare la soglia al valore attuale (58%) come
-ratchet: non si può scendere. Non alzarla ora.
-
-**0.4 — Allineare Python.** CI gira 3.11, il venv locale 3.12.13. Matrice `[3.11, 3.12]`
-o allineamento secco.
-
-### Fase 1 — Rendere verificabile il path denaro (~2-3 giorni)
-
-Risolve la Causa B e chiude il Blocker 1 con una rete sotto.
-
-**1.1 — Container Postgres in CI.** `services: postgres:16-alpine` in `tests.yml`, e un
-marker `@pytest.mark.postgres` che gira solo dove `DB_URL` punta a Postgres. Serve anche
-un `conftest` che parametrizzi l'engine.
-
-**1.2 — Test di concorrenza reali.** 5-6 test, due sessioni parallele: doppio `/daily`,
-doppio `transfer` sulla stessa coppia, doppio riscatto premio quiz, superamento del cap
-XP giornaliero, doppia chiusura scommessa. **Devono fallire prima del fix** — è il punto.
-
-**1.3 — Test sulle migrazioni.** `_MIGRATIONS` è DDL Postgres-only in un file al 56% di
-copertura e senza nessun test. Un test che applica lo schema da zero + le migrazioni e
-verifica la convergenza.
-
-**1.4 — Fix del Blocker 1.** Per i check-then-write (`claim_daily`, cap XP, doppia
-chiusura), sostituire il read-modify-write in Python con un **UPDATE condizionale +
-controllo `rowcount`**:
-```sql
-UPDATE users SET last_daily_claim = :now
-WHERE tg_id = :id AND (last_daily_claim IS NULL OR last_daily_claim < :threshold)
 ```
-Immune sia alla identity map sia a `autoflush=False`. **Non** usare
-`populate_existing=True` a tappeto: già provato, rompe 3 test perché sovrascrive le
-modifiche in memoria non flushate (vedi memoria `sqlalchemy-lock-idmap`).
-
-**1.5 — Larghezza colonne coerente.** `Wallet.coins` e `LedgerEntry.amount` sono
-`BigInteger`, ma `BettingOption.total_wagered` (`models.py:204`) e `User.xp`
-(`models.py:61`) sono `Integer` (int32). Denaro e XP che confluiscono in colonne più
-strette di quelle da cui vengono. Uniformare a `BigInteger` + migrazione.
-
-### Fase 2 — Validazione al confine (~1 giorno)
-
-Chiude il Blocker 2 e ne previene la ricomparsa.
-
-**2.1 — Vincoli sulla config.** `src/config_data/config.py` ha ~50 impostazioni,
-**zero `Field(ge=, le=)`**, un solo validator (parsing `admin_ids`). `daily_min_hours`
-ha un commento che dice "must stay < 24h" senza nulla che lo imponga. Aggiungere vincoli
-a tutte le impostazioni numeriche: il commento diventa il vincolo.
-
-**2.2 — Callback data tipizzate via `CallbackData` factory.** Oggi:
-`int(callback.data.split(":")[2])` nudo, ripetuto (4 volte solo in
-`betting.py:504, 551, 615, 695`, 4 in `quiz.py:985-1118`, 4 in `events.py:129-263`).
-**Non scrivere un helper custom**: aiogram 3 ha già
-`aiogram.filters.callback_data.CallbackData` — una factory pydantic-backed che dichiara i
-campi con i loro tipi, li valida in ingresso, li serializza in uscita e verifica il limite
-di 64 byte. Un payload malformato non arriva mai all'handler: il filtro non matcha.
-
-```python
-class BetWindow(CallbackData, prefix="bet:win"):
-    event_id: int
-    seconds: int
-
-@router.callback_query(BetWindow.filter())
-async def cb_bet_window(cb: CallbackQuery, callback_data: BetWindow): ...
+A: caricato dal middleware, xp=0
+B: altra sessione ha committato xp=999
+A: dopo SELECT ... FOR UPDATE, xp=0     <-- STALE
 ```
 
-Risolve insieme il Blocker 2, le 12+ duplicazioni di parsing e il rischio di superare i
-64 byte. Migrazione incrementale, un prefisso alla volta.
+Il lock **viene preso** sul DB; sono i valori Python a restare vecchi. Su Postgres questo
+significa: due `/daily` concorrenti si serializzano correttamente e **poi passano
+entrambi il check**. Reale in produzione, invisibile ai test.
 
-**2.3 — Limitare `parse_duration`.** `schedule_service.py:69-84` è illimitata: input
-pubblico da `/crea_scommessa` che porta a `OverflowError` e a `integer out of range` su
-Postgres. Cap a un valore sensato (30 giorni).
+### …ma il fix della v1 va corretto in due punti
 
-### Fase 3 — Restituire ai servizi il confine transazionale (~1 settimana, incrementale)
+**a) La v1 propone `UPDATE` condizionale + `rowcount` come tecnica nuova. È già pattern
+di casa.** Esistono tre usi in produzione:
 
-Risolve la Causa A. **Da fare per moduli, non in blocco**, con i test della Fase 1 attivi.
+- `bet_service.py` — `update(BettingOption).values(total_wagered=BettingOption.total_wagered + amount)`,
+  col commento *«Atomic increment so concurrent bets on the same option can't lose updates»*
+- `admin_service.py` — `update(Wallet).values(coins=Wallet.coins + amount)`
+- `admin_service.py` — `update(User)…` **con controllo di `rowcount`**
 
-**3.1 — Estendere `DbSessionMiddleware`, non inventare un unit-of-work.** Il pattern
-raccomandato da aiogram è già mezzo implementato in `src/middlewares/db_middleware.py`:
-la middleware apre la sessione e la inietta. Manca solo che **committi in uscita e faccia
-rollback su eccezione**. Gli handler smettono di chiamare `commit()`, la transazione
-diventa una proprietà del ciclo di vita dell'update invece che una scelta per-handler.
-Zero dipendenze nuove, zero astrazioni nuove.
+Il fix non introduce un concetto: applica quello che il repo già usa e testa. Costo
+cognitivo **zero**, non «medio». Analogamente `moderation_service.parse_duration` già
+cappa con `min(..., _MAX_DURATION_SECONDS)`: sulla validazione durate il repo aveva già
+ragione in un punto, e `schedule_service` era l'unico fuori linea.
 
-**3.2 — Spostare le query nei servizi.** Ordine per rapporto valore/rischio:
-`economy.py` (23% cov, e reimplementa a mano `_targeting.py:45-52`, che già esiste) →
-`betting.py` (36%, stessa query `selectinload` copiata 4 volte a
-`:421, :469, :575, :654`) → `admin_betting.py` (21%, stessa scala di `except` di 12 righe
-3 volte a `:186, :298, :406`) → `quiz.py` (37%, il pezzo grosso).
+**b) L'alternativa a 1 riga (`populate_existing=True`) è stata provata e ha un footgun
+documentato.** La v1 dice «già provato, rompe 3 test» senza spiegare perché. Il
+meccanismo, misurato: `populate_existing` **invalida le relazioni già caricate**
+sull'oggetto. In SQLAlchemy async questo trasforma un accesso attributo funzionante in un
+`MissingGreenlet`. Applicandolo agli 8 lock site: 1 test rosso
+(`test_bet_locking.py::test_place_bet_rejected_after_lock`), perché `lock_event` non
+carica `options` e il chiamante le usa.
 
-**3.3 — Spezzare `quiz.py`.** 1.820 righe, 30 callback, 13 factory di tastiere private,
-649 statement scoperti. Separare per flusso: creazione/editing, esecuzione, viste. Le
-tastiere private vanno in `keyboards/quiz_kb.py`.
+È sicuro **solo** se la query porta gli stessi loader option che il chiamante usa. E
+`User` riceve `selectinload(User.wallet)`/`badges` in tre punti
+(`admin_service`, `badge_service`, `handlers/common`): con la copertura handler al
+21-44%, **una suite verde non proverebbe che è sicuro**. Modifica ritirata.
 
-**3.4 — Router aggregante.** `src/handlers/__init__.py` è **vuoto (0 byte)**. I 16
-`include_router` sono a mano in `main.py:183-198`, con un commento load-bearing
-(*"admin_betting MUST precede betting"*). L'ordine è correttezza affidata a un commento.
-Spostare la registrazione in `__init__.py` con l'ordine dichiarato e un test che lo
-verifica.
+**Conclusione:** l'ordinamento della v1 (Postgres in CI e test di concorrenza **prima**
+del fix) era corretto, e questo esperimento lo dimostra dal lato pratico — il solo
+segnale ottenuto veniva da un effetto collaterale, non dalla proprietà di concorrenza che
+si voleva correggere. Non si tocca il path denaro prima di poterlo verificare.
 
-**3.5 — `scheduler_loop` fuori da `handlers/`.** È un daemon di background dentro il
-package di presentazione (`handlers/schedule.py:355`). Va in `services/` o `runtime/`.
-Il design in sé è corretto — task persistiti in DB, sopravvive ai restart, `TaskSkip`
-distinto dagli errori, un rollback per task — solo collocato male.
+### `parse_run_at` era illimitata quanto `parse_duration`, e la v1 non l'ha vista
 
-### Fase 4 — Copy e presentazione (~2-3 giorni, opzionale ma ad alto ritorno)
-
-**4.1 — Catalogo del copy.** ~1.370 literal italiani, 577 f-string nei soli handler,
-`quiz.py` 194. Cambiare il tono del bot oggi = grep su 20 file. Già oggi lo stesso
-messaggio ha **tre grafie diverse** (`admin.py:130, :164, :571`).
-
-Due strade, la seconda è quella consigliata:
-- `aiogram.utils.i18n` (gettext + Babel). Standard, ma il bot è monolingua italiano:
-  paghi il toolchain `.po`/`.mo` per una feature che non serve. **Solo se un giorno
-  servisse davvero il multilingua.**
-- **Estendere il registry già presente nel repo.** `help_content.py` (dataclass
-  `CommandDoc`) e `catalog_loader.py` (copy da CSV) sono due implementazioni riuscite
-  dello stesso pattern, scritte da voi e già collaudate. Applicare lo stesso approccio al
-  copy generale, iniziando dai messaggi di errore. Coerente con il codice esistente, zero
-  dipendenze.
-
-**4.2 — Fixture condivise per i test.** 78+ `SimpleNamespace` a mano su ~30 file per
-fingere `Message`/`CallbackQuery`, una sola classe fake nominata, 18 fixture `autouse`
-duplicate. Un aggiornamento di aiogram richiederebbe modifiche in ~30 punti. Un
-`tests/fakes.py` con costruttori condivisi.
-
-**4.3 — Spezzare STEERING.md.** 94KB, un file solo, letto interamente ad ogni modifica.
-Dividere per dominio con un indice. Dove una regola può diventare un test (§5 "i servizi
-non committano mai" → un test che grep-a `commit()` in `services/`), farla diventare un
-test.
-
-### Fase 5 — Scalabilità dati (quando i numeri lo giustificano)
-
-**5.1 — Indici sulla tabella `ledger`.** `ledger` è la tabella che cresce più in fretta e
-ha **zero indici oltre la PK**. `get_history` (`economy_service.py:217-224`) fa
-`WHERE from_tg_id = X OR to_tg_id = X ORDER BY created_at DESC` — scan completo + sort ad
-ogni `/storico`. Aggiungere indici su `from_tg_id`, `to_tg_id`, `created_at`.
-
-**5.2 — Assunzione di processo singolo.** 6 cache mutabili a livello di modulo
-(`admin_filter.py:25`, `group_guard.py:29`, `ban_guard.py:32`, `cooldown.py:25`,
-`static_reply.py:24`, `fun_ai.py:40`) più i globali di `catalog_loader`. Sono 6
-implementazioni a mano della stessa cosa: un dict `{chiave: (valore, scadenza)}`.
-Sostituirle con **`cachetools.TTLCache`** — una dipendenza, sei implementazioni in meno,
-scadenza e limite di dimensione gestiti (oggi nessuna delle sei ha un bound sulla
-dimensione: crescono con il numero di utenti e non si svuotano mai).
-
-Resta comunque l'assunzione di fondo: il bot **non può girare in 2 repliche** senza cache
-incoerenti. Va bene finché è deliberato — va scritto in STEERING, non scoperto in
-produzione. Se un giorno servisse scalare, la sostituzione è Redis (già in config per
-l'FSM).
-
-**5.3 — Alembic.** Questo è il "non reinventare la ruota" più netto del progetto.
-`_MIGRATIONS` è una lista di stringhe DDL idempotenti, Postgres-only, senza versioning,
-senza downgrade e **senza un solo test**. Funziona finché le migrazioni sono solo
-`ADD COLUMN`. La Fase 1.5 (cambio larghezza colonne) è la prima che non lo è, quindi
-questo punto va **anticipato prima della Fase 1.5**, non lasciato in coda.
-
-Alembic con `autogenerate` a partire dallo schema attuale, prima revisione marcata come
-baseline già applicata in produzione.
+Le due funzioni condividono `_REL_RE`. La v1 segnala solo `parse_duration`
+(→ `betting_window_seconds`, colonna int32). Ma `parse_run_at` è chiamata da
+`handlers/schedule.py` su testo admin e fa `now_local + timedelta(seconds=...)`:
+`999999999d` dà **`OverflowError`**, che nessun handler intercetta (intercettano
+`ValueError`). Il cap va nel punto condiviso, non in una delle due.
 
 ---
 
-## Decisioni ancora aperte dal checkup precedente
+## Parte 3 — Fase 0: FATTA
 
-- **Watchtower**: `containrrr/watchtower:latest` non pinnato, socket Docker in
-  lettura/scrittura, auto-deploy in prod ad ogni push su `main`. Può leggere `BOT_TOKEN`,
-  `GROQ_API_KEY`, password Postgres e `TELEGRAM_SESSION` via `docker inspect`. Scelta di
-  postura, da confermare.
+Tutto verificato: **712 test verdi, ruff pulito, mypy pulito, coverage 58,33% ≥ gate 57%**.
+
+| # | Cosa | Costo cognitivo |
+|---|---|---|
+| 0.1 | **`dp.errors`** → `src/handlers/errors.py` + 9 test. Logga user_id/username/chat_id/callback_data/testo con `exc_info`, risponde all'utente (alert sulle callback), e **silenzia il rumore benigno** (`message is not modified`, `query is too old`) fermando comunque lo spinner del bottone. Nessun rollback: la middleware già scarta la transazione alla chiusura della sessione. | basso |
+| 0.2 | **ruff `E9,F,B,ASYNC`** — calibrato per partire verde. I 6 findings sistemati includono `zip(others, schedule, strict=True)` sul payout premi (asserzione gratuita su un invariante di denaro) e `ASYNC240`: `dest.mkdir()` bloccante dentro una `async def` del backup, che su volume lento stalla l'intero event loop → `asyncio.to_thread`. | basso |
+| 0.3 | **mypy non-strict** su `services/database/utils/config_data/filters` + plugin `pydantic.mypy` (nessuna dipendenza nuova). Ha trovato un finding vero sul **gate admin**: `is_admin(bot: Bot, ...)` riceve `message.bot`, che è `Bot \| None`. Falliva chiuso — ma solo perché un `except Exception` inghiottiva l'`AttributeError`, cioè **l'esito dell'autorizzazione dipendeva da un catch incidentale**. Ora il fail-closed è dichiarato. Chiude 4 errori in un punto. | basso |
+| 0.4 | **`fail_under = 57`** come ratchet (sotto il 58,33% attuale, non un obiettivo). | nullo |
+| — | **Cap durate condiviso** (`_rel_seconds`, 365gg) su *entrambi* i parser + 3 test di regressione. | nullo |
+| — | **Indici `ledger`**: due composti `(from_tg_id, created_at)` e `(to_tg_id, created_at)` — non tre a colonna singola come proponeva la v1: il `WHERE a = X OR b = X` li usa in BitmapOr e ognuno porta già `created_at` per l'`ORDER BY`. In `models.py` (DB nuovi) **e** in `_MIGRATIONS` (prod esistente, `create_all` salta le tabelle già presenti). | nullo |
+
+**Non fatto della v1 Fase 0:** allineare Python CI 3.11 / venv locale 3.12. Va deciso, non
+indovinato: matrice `[3.11, 3.12]` o allineamento secco.
+
+---
+
+## Parte 4 — Roadmap rivista
+
+### Fase 1 — Rendere verificabile il path denaro (prerequisito di ogni fix al denaro)
+
+Invariata nella sostanza dalla v1, che qui aveva ragione. **Costo cognitivo: medio** —
+è l'unico punto dove vale la pena spenderlo.
+
+1. **Postgres in CI** — `services: postgres:16-alpine` in `tests.yml` + marker
+   `@pytest.mark.postgres`. I `services:` di GitHub Actions restano più semplici di
+   testcontainers, come diceva la v1.
+2. **Test di concorrenza che falliscono prima del fix**: doppio `/daily`, doppio
+   `transfer` sulla stessa coppia, doppia chiusura scommessa, doppia chiusura quiz,
+   sforamento cap XP.
+3. **Fix del Blocker 1** con il pattern `UPDATE` atomico **già presente nel repo**
+   (`bet_service`/`admin_service`), non con `populate_existing` e non con un concetto nuovo.
+4. **Larghezza colonne** — `total_wagered` e `xp` a `BigInteger`: due righe in
+   `_MIGRATIONS`. **Nessun Alembic richiesto.**
+5. **Test su `_MIGRATIONS`** — è DDL Postgres-only senza un solo test; con Postgres in CI
+   diventa banale (schema da zero + migrazioni + convergenza).
+
+### Fase 2 — Validazione al confine
+
+- **Vincoli config** (`Field(ge=, le=)`): mettili dove un valore invalido causa un danno
+  reale, partendo da `daily_min_hours` (ha un commento che dice «must stay < 24h» e nulla
+  che lo imponga). **Non** su tutte e 50 le impostazioni per simmetria. Costo: nullo.
+- **`CallbackData` factory**: la v1 la vende come fix del Blocker 2. Ridimensionata: con
+  `dp.errors` attivo (0.1), una callback malformata è già una riga di log + un messaggio
+  all'utente invece di un bot muto — l'urgenza di sicurezza è chiusa. Restano 45 siti di
+  parsing duplicato e il limite dei 64 byte, che sono ragioni di **qualità**, non di
+  sicurezza. Quindi: **adottala nel codice nuovo**, e migra un prefisso alla volta quando
+  tocchi già quel file. Migrare 45 siti in blocco è costo cognitivo alto per un guadagno
+  che `dp.errors` ha già in gran parte incassato.
+
+### Fase 3 — Confine transazionale ai servizi (Causa A)
+
+**Senza** il commit-in-uscita nella middleware (vedi Parte 1). Solo `3.2`, per moduli, con
+i test della Fase 1 attivi: `economy.py` (23%, reimplementa a mano `_targeting.py` che
+esiste già) → `betting.py` (36%, stessa `selectinload` copiata 4 volte) →
+`admin_betting.py` (21%) → `quiz.py` (37%).
+
+Più i tre interventi strutturali della v1, che restano validi e sono a costo cognitivo
+nullo perché *togliono* concetti:
+
+- **`handlers/__init__.py`** (0 byte): sposta i 16 `include_router` lì con l'ordine
+  dichiarato e un test che lo verifica. Oggi la correttezza è affidata a un commento
+  (*«admin_betting MUST precede betting»*).
+- **`scheduler_loop` fuori da `handlers/`**: è un daemon dentro il package di
+  presentazione. Il design è corretto (task persistiti, sopravvive ai restart, `TaskSkip`
+  distinto dagli errori) — solo collocato male.
+- **Spezzare `quiz.py`** per flusso, tastiere private in `keyboards/quiz_kb.py`.
+
+### Fase 4 — Copy e test
+
+Come la v1, con la sua raccomandazione confermata: **estendere il registry che esiste già**
+(`help_content.CommandDoc`, `catalog_loader`), non `aiogram.utils.i18n`. Il bot è
+monolingua: il toolchain `.po`/`.mo` è costo cognitivo puro per una feature che non serve.
+Più `tests/fakes.py` per i 78+ `SimpleNamespace` a mano.
+
+Aggiunta che la v1 non aveva: **`services/backup/loop.py` è a 0%**. Prima di rifinire il
+copy, quel modulo merita un test.
+
+### Fase 5 — Dati e scala
+
+- ~~Indici ledger~~ → fatto.
+- **`fun_ai._last_used` → `utils/cooldown`** (rung 2, non `cachetools`).
+- **Processo singolo**: resta l'assunzione di fondo — il bot non gira in 2 repliche senza
+  cache incoerenti. Va scritto in STEERING, non scoperto in produzione.
+- **Alembic**: quando servirà un downgrade o una migrazione di *dati*. Non per la Fase 1.4.
+
+---
+
+## Decisioni aperte (invariate dalla v1, tutte da confermare da te)
+
+- **Storage FSM `memory` + Watchtower che redeploya ad ogni push su `main`** = ogni deploy
+  perde i flussi FSM aperti (un admin a metà creazione quiz riparte da zero). `redis_url`
+  è già in config e aiogram ha `RedisStorage` pronto. Accettabile o si passa a Redis?
+- **Watchtower**: `:latest` non pinnato, socket Docker in lettura/scrittura, può leggere
+  `BOT_TOKEN`/`GROQ_API_KEY`/password Postgres/`TELEGRAM_SESSION` via `docker inspect`.
 - **`bet_default_window_minutes`**: config morta, documentata come funzionante.
 - **Semantica di `reset_quiz`** rispetto ai premi: incoerente.
-- **Storage FSM.** `fsm_storage` è `memory` di default, ma `redis_url` è già in config e
-  aiogram ha `RedisStorage` pronto. Con lo storage in memoria, **ogni riavvio del bot
-  perde tutti i flussi FSM aperti** — un admin a metà creazione di un quiz riparte da
-  zero. Con Watchtower che redeploya ad ogni push su `main`, succede spesso. Scelta da
-  confermare: è accettabile o si passa a Redis?
-
----
-
-## Verifica
-
-Ogni fase è verificabile da sola:
-
-- **Fase 0**: `ruff check src/` e `mypy src/services` passano in CI; un handler che
-  solleva di proposito produce una riga di log con user_id e un messaggio all'utente;
-  `pytest --cov-fail-under` fallisce se la copertura scende.
-- **Fase 1**: i test di concorrenza **falliscono su `main` prima del fix** e passano
-  dopo, su Postgres reale in CI. La suite SQLite resta verde in parallelo.
-- **Fase 2**: `/crea_scommessa` con durata `999999999d` e una callback `bet:win:<enorme>`
-  forgiata a mano producono un messaggio d'errore, non un crash. Test di regressione per
-  entrambi.
-- **Fase 3**: un test che asserisce zero `commit()` in `src/handlers/`; copertura degli
-  handler in salita ad ogni modulo migrato; suite intera verde ad ogni passo.
-- **Fase 4**: nessun test nuovo richiesto, ma `tests/fakes.py` deve sostituire i
-  `SimpleNamespace` in almeno i 10 file più grossi senza cambiare le asserzioni.
-- **Fase 5**: `EXPLAIN ANALYZE` su `get_history` prima/dopo gli indici.
-
-**Branch**: si lavora su `test`. `main` è allineato a `origin/main` (da riverificare con
-`git fetch` all'avvio — la verifica non è stata possibile durante la stesura).
+- **Python 3.11 (CI) vs 3.12 (venv locale)**.

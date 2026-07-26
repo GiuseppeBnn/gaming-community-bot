@@ -61,6 +61,15 @@ _MIGRATIONS: list[str] = [
     # quizzes: per-user display randomization of question/answer order (added after initial deploy)
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_questions BOOLEAN NOT NULL DEFAULT false",
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_answers BOOLEAN NOT NULL DEFAULT false",
+    # ledger: /storico filtered `from_tg_id OR to_tg_id` + sorted by created_at
+    # against a table with no index but the PK. See LedgerEntry.__table_args__ for
+    # why two composite indexes and not three single-column ones. create_all()
+    # skips existing tables, so an already-deployed DB only gets them from here.
+    # ponytail: plain CREATE INDEX takes a write lock for the duration — fine at
+    # this table's size; switch to CREATE INDEX CONCURRENTLY (which cannot run
+    # inside the transaction below) if the ledger ever gets big enough to notice.
+    "CREATE INDEX IF NOT EXISTS ix_ledger_from_created ON ledger (from_tg_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_ledger_to_created ON ledger (to_tg_id, created_at)",
 ]
 
 

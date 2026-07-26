@@ -35,6 +35,31 @@ _REL_RE = re.compile(r"^(\d+)\s*([mhd])$", re.IGNORECASE)
 _REL_UNIT = {"m": 60, "h": 3600, "d": 86400}
 
 
+# Upper bound on any relative duration accepted from chat input. Both parsers
+# below feed it into arithmetic that overflows on absurd values: `parse_run_at`
+# into `datetime + timedelta` (raises OverflowError past year 9999) and
+# `parse_duration` into `BettingEvent.betting_window_seconds`, an int32 column
+# (Postgres rejects anything past 2^31 with "integer out of range"). A year is
+# far beyond any real scheduled event or betting window.
+_MAX_REL_SECONDS = 365 * 86400
+
+
+def _rel_seconds(text: str) -> int | None:
+    """Seconds for a relative token ('30m'/'2h'/'1d'), or None if it isn't one.
+
+    Single place where the bound is enforced, so neither caller can forget it.
+    """
+    rel = _REL_RE.match(text)
+    if not rel:
+        return None
+    seconds = int(rel.group(1)) * _REL_UNIT[rel.group(2).lower()]
+    if seconds <= 0:
+        raise ValueError("La durata deve essere positiva.")
+    if seconds > _MAX_REL_SECONDS:
+        raise ValueError("Durata troppo lunga: il massimo è 365 giorni.")
+    return seconds
+
+
 def parse_run_at(text: str, tz_name: str | None = None) -> datetime:
     """Parse an absolute 'YYYY-MM-DD HH:MM' or relative '30m'/'2h'/'1d' time.
 
@@ -45,11 +70,8 @@ def parse_run_at(text: str, tz_name: str | None = None) -> datetime:
     tz = ZoneInfo(tz_name or settings.scheduler_timezone)
     now_local = datetime.now(tz)
 
-    rel = _REL_RE.match(text)
-    if rel:
-        seconds = int(rel.group(1)) * _REL_UNIT[rel.group(2).lower()]
-        if seconds <= 0:
-            raise ValueError("La durata deve essere positiva.")
+    seconds = _rel_seconds(text)
+    if seconds is not None:
         target_local = now_local + timedelta(seconds=seconds)
     else:
         abs_m = _ABS_RE.match(text)
@@ -73,14 +95,11 @@ def parse_duration(text: str) -> int:
     duration — used by the betting-window creation step. Raises ``ValueError`` on
     unparseable input or a non-positive duration.
     """
-    rel = _REL_RE.match((text or "").strip())
-    if not rel:
+    seconds = _rel_seconds((text or "").strip())
+    if seconds is None:
         raise ValueError(
             "Formato non valido. Usa <code>30m</code>, <code>2h</code> oppure <code>1d</code>."
         )
-    seconds = int(rel.group(1)) * _REL_UNIT[rel.group(2).lower()]
-    if seconds <= 0:
-        raise ValueError("La durata deve essere positiva.")
     return seconds
 
 
