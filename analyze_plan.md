@@ -64,7 +64,7 @@ riconciliato a mano fra SQLite e Postgres, e la cerimonia dello stamp del baseli
 
 Quindi la voce corretta non è «aggiungi `cachetools`» (dipendenza nuova, rung 5) ma
 «`fun_ai._last_used` dovrebbe usare `utils/cooldown` che esiste già» (rung 2). Costo
-cognitivo: negativo — un concetto in meno.
+cognitivo: negativo — un concetto in meno. **Fatto**, quindi le cache a mano sono ora **3**.
 
 ### ❌ «45 `# noqa` senza un linter che li onori → annotazioni morte»
 
@@ -408,7 +408,12 @@ copy, quel modulo merita un test.
 ### Fase 5 — Dati e scala
 
 - ~~Indici ledger~~ → fatto.
-- **`fun_ai._last_used` → `utils/cooldown`** (rung 2, non `cachetools`).
+- ~~**`fun_ai._last_used` → `utils/cooldown`**~~ → **fatto** (rung 2, non `cachetools`). ~15 righe
+  in meno e una implementazione di throttle in meno. Due cose da sapere: `cooldown.guard()`
+  **non** va bene qui, perché marca mentre controlla e togliere quella separazione farebbe
+  costare 60s un `/insulta` malformato (proprietà ora pinnata da un test scritto *prima* del
+  refactor); e le due prove sul pruning esistevano solo nei test di `fun_ai`, quindi sono
+  migrate in `test_cooldown.py` insieme al comportamento invece di sparire.
 - **Processo singolo**: resta l'assunzione di fondo — il bot non gira in 2 repliche senza
   cache incoerenti. Va scritto in STEERING, non scoperto in produzione.
 - **Alembic**: quando servirà un downgrade o una migrazione di *dati*. **Confermato dai fatti**:

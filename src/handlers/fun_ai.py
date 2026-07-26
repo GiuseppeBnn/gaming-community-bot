@@ -18,7 +18,6 @@ NOT use the shared edgy _STYLE — see _PROMPT_ALDUINO.
 from __future__ import annotations
 
 import logging
-import time
 
 from aiogram import Router
 from aiogram.enums import ChatAction, ChatType
@@ -28,6 +27,7 @@ from aiogram.types import Message
 from config_data.config import settings
 from filters.admin_filter import is_admin
 from services import ai_service
+from utils import cooldown
 
 _GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
 
@@ -35,17 +35,15 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
-# Per-user anti-spam cooldown for AI commands (admins exempt). In-memory like
-# the rate-limit middleware — resets on restart, which is fine for spam control.
-_last_used: dict[int, float] = {}
+# Per-user anti-spam cooldown for AI commands (admins exempt), in the shared
+# `utils.cooldown` store — same in-memory semantics and self-pruning as every other
+# command bucket, so there is one throttle implementation in the codebase.
+_AI_BUCKET = "ai"
 
 # Hard caps on the text handed to the LLM: the replied-to message (1500 chars)
 # and the /insulta target name (64 chars). Bounds prompt cost and abuse.
 _MAX_INPUT_CHARS = 1500
 _MAX_TARGET_CHARS = 64
-# Prune the cooldown dict once it grows past this many users (avoid unbounded
-# memory in a big group), dropping entries whose cooldown has already expired.
-_COOLDOWN_PRUNE_THRESHOLD = 512
 
 # Delimiters that wrap user text so the model treats it as inert content, never
 # as instructions (prompt-injection hardening — see _STYLE).
@@ -58,32 +56,28 @@ def clip_source(text: str, limit: int = _MAX_INPUT_CHARS) -> str:
     return (text or "")[:limit]
 
 
-def _prune_cooldowns(now: float) -> None:
-    if len(_last_used) <= _COOLDOWN_PRUNE_THRESHOLD:
-        return
-    cutoff = now - settings.ai_cooldown_seconds
-    for uid in [u for u, t in _last_used.items() if t < cutoff]:
-        del _last_used[uid]
-
-
 async def _check_cooldown(message: Message) -> bool:
-    """Return True if the user may run an AI command now (else reply + False)."""
+    """Return True if the user may run an AI command now (else reply + False).
+
+    Deliberately **not** `cooldown.guard()`, which marks the use as it checks. Here
+    the check and the mark are separate on purpose: handlers check first, then
+    validate (a reply-to is required, a target must parse), and only `_dispatch`
+    marks. So a malformed `/insulta` costs nothing and can be retried at once
+    instead of burning the whole AI cooldown on a typo. Pinned by
+    `tests/unit/test_ai_cooldown.py`.
+    """
     uid = message.from_user.id
     if await is_admin(message.bot, uid):
         return True
-    now = time.monotonic()
-    last = _last_used.get(uid)
-    if last is not None and now - last < settings.ai_cooldown_seconds:
-        remaining = int(settings.ai_cooldown_seconds - (now - last)) + 1
-        await message.reply(f"⏳ Calma! Aspetta {remaining}s prima di un altro comando AI.")
+    left = cooldown.remaining(_AI_BUCKET, uid, settings.ai_cooldown_seconds)
+    if left > 0:
+        await message.reply(f"⏳ Calma! Aspetta {int(left) + 1}s prima di un altro comando AI.")
         return False
     return True
 
 
 def _mark_used(message: Message) -> None:
-    now = time.monotonic()
-    _last_used[message.from_user.id] = now
-    _prune_cooldowns(now)
+    cooldown.mark(_AI_BUCKET, message.from_user.id)
 
 # --------------------------------------------------------------------------
 # System prompts (tono edgy, senza filtri moralisti, roleplay comico per adulti)
