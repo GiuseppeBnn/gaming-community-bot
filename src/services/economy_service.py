@@ -20,19 +20,75 @@ _MIN_TRANSFER = 1
 _MAX_TRANSFER = 1_000_000
 
 
-async def _get_wallet(
-    session: AsyncSession, tg_id: int, *, for_update: bool = False
-) -> Wallet:
-    stmt = select(Wallet).where(Wallet.tg_id == tg_id)
-    if for_update:
-        # Row-level lock so concurrent debits/credits serialize on Postgres and
-        # can't double-spend. No-op on SQLite (dev/tests), real on Postgres (prod).
-        stmt = stmt.with_for_update()
-    result = await session.execute(stmt)
+async def _get_wallet(session: AsyncSession, tg_id: int) -> Wallet:
+    """The wallet **instance**, for its existence check and to refresh afterwards.
+
+    Deliberately not used to *read* the balance: an entity select can be served
+    from the session's identity map, so `wallet.coins` is only trustworthy right
+    after a `session.refresh`. Use `read_balance`/`lock_balance` to read.
+    """
+    result = await session.execute(select(Wallet).where(Wallet.tg_id == tg_id))
     wallet = result.scalar_one_or_none()
     if wallet is None:
         raise WalletNotFoundError(tg_id)
     return wallet
+
+
+async def _balance(session: AsyncSession, tg_id: int, *, lock: bool) -> int:
+    """The wallet's **committed** balance, straight from the database.
+
+    Selects the column, not the `Wallet` entity, and that is the whole point: an
+    entity select is served from the identity map, so a caller still holding the
+    row would get its stale copy — and a `FOR UPDATE` on top of that would take a
+    real lock while protecting a number that is already wrong. A column select
+    can never be answered from the cache.
+
+    With `lock=True` the row is locked until the caller's transaction ends, so the
+    value stays valid for a check-then-write. No-op on SQLite (dev/tests), real on
+    Postgres (prod).
+    """
+    stmt = select(Wallet.coins).where(Wallet.tg_id == tg_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    balance = (await session.execute(stmt)).scalar_one_or_none()
+    if balance is None:
+        raise WalletNotFoundError(tg_id)
+    return balance
+
+
+async def lock_balance(session: AsyncSession, tg_id: int) -> int:
+    """Lock a wallet row and return its committed balance.
+
+    For the one operation that cannot be expressed as a single relative UPDATE:
+    setting an *absolute* balance needs the current value, and the lock is what
+    keeps that value valid until the write lands (see `admin_service.set_balance`).
+    Everything else should use SQL-side arithmetic instead of locking.
+    """
+    return await _balance(session, tg_id, lock=True)
+
+
+async def _add_coins(session: AsyncSession, tg_id: int, delta: int) -> int:
+    """Apply `delta` with SQL-side arithmetic. Returns the number of rows changed.
+
+    `coins = coins + :delta` is computed by the database from the row's current
+    value, so concurrent movements add up instead of overwriting each other. A
+    negative `delta` also refuses to overdraw, in the same statement — which is
+    what makes the balance check atomic rather than a read-then-write.
+
+    `synchronize_session=False` is not an optimisation: the default tries to keep
+    in-session objects in step and would write back a value derived from their
+    *stale* copy (measured: cache=100, DB=500, `coins - 10` leaves DB=490 and
+    cache=90). The caller refreshes instead.
+    """
+    stmt = update(Wallet).where(Wallet.tg_id == tg_id)
+    if delta < 0:
+        stmt = stmt.where(Wallet.coins >= -delta)
+    result = await session.execute(
+        stmt.values(coins=Wallet.coins + delta).execution_options(
+            synchronize_session=False
+        )
+    )
+    return result.rowcount or 0
 
 
 async def credit(
@@ -48,8 +104,11 @@ async def credit(
     """
     if amount <= 0:
         raise ValueError("L'importo da accreditare deve essere positivo.")
-    wallet = await _get_wallet(session, tg_id, for_update=True)
-    wallet.coins += amount
+    wallet = await _get_wallet(session, tg_id)
+    await _add_coins(session, tg_id, amount)
+    # The instance must reflect the write: callers (and tests) read the new
+    # balance off it, and leaving it stale would just move the bug one level up.
+    await session.refresh(wallet, ["coins"])
     session.add(
         LedgerEntry(
             to_tg_id=tg_id,
@@ -75,10 +134,14 @@ async def debit(
     """
     if amount <= 0:
         raise ValueError("L'importo da addebitare deve essere positivo.")
-    wallet = await _get_wallet(session, tg_id, for_update=True)
-    if wallet.coins < amount:
+    wallet = await _get_wallet(session, tg_id)
+    changed = await _add_coins(session, tg_id, -amount)
+    await session.refresh(wallet, ["coins"])
+    if not changed:
+        # The wallet exists (checked above), so the only way to match no row is
+        # the `coins >= amount` guard. The refresh above means the balance quoted
+        # in the error is the real one, not the cached one.
         raise InsufficientFundsError(balance=wallet.coins, required=amount)
-    wallet.coins -= amount
     session.add(
         LedgerEntry(
             from_tg_id=tg_id,
@@ -91,8 +154,7 @@ async def debit(
 
 
 async def get_balance(session: AsyncSession, tg_id: int) -> int:
-    wallet = await _get_wallet(session, tg_id)
-    return wallet.coins
+    return await _balance(session, tg_id, lock=False)
 
 
 async def transfer(
@@ -119,17 +181,17 @@ async def transfer(
             f"Importo non valido (min {_MIN_TRANSFER}, max {_MAX_TRANSFER:,})."
         )
 
-    # Pre-lock both wallets in a deterministic order (ascending tg_id) so two
-    # opposite transfers on the same pair can't deadlock. The debit/credit below
-    # re-select FOR UPDATE, but the locks are already held by this transaction.
+    # Lock both wallets in a deterministic order (ascending tg_id) so two opposite
+    # transfers on the same pair can't deadlock — a transfer touches two rows, and
+    # that is the one thing SQL-side arithmetic alone cannot make safe. Also the
+    # existence check for both sides, before anything moves.
     first, second = sorted((from_tg_id, to_tg_id))
-    w_first = await _get_wallet(session, first, for_update=True)
-    w_second = await _get_wallet(session, second, for_update=True)
-    from_wallet = w_first if first == from_tg_id else w_second
+    await lock_balance(session, first)
+    await lock_balance(session, second)
 
-    if from_wallet.coins < amount:
-        raise InsufficientFundsError(balance=from_wallet.coins, required=amount)
-
+    # No balance pre-check here: `debit` refuses an overdraw in the same statement
+    # that performs it, and it runs first, so an insufficient balance still raises
+    # before anything moves — with the real number rather than a cached one.
     await debit(
         session, from_tg_id, amount,
         TransactionType.transfer_out,
@@ -141,14 +203,19 @@ async def transfer(
         f"Trasferimento da {from_name or from_tg_id}",
     )
 
-    # Increment transfers_made counter for badge tracking (lock the row so the
-    # counter can't be lost under concurrent transfers from the same sender).
-    from_user_result = await session.execute(
-        select(User).where(User.tg_id == from_tg_id).with_for_update()
-    )
-    from_user = from_user_result.scalar_one_or_none()
+    # Increment transfers_made for badge tracking. SQL-side, so concurrent
+    # transfers from the same sender each add one instead of overwriting.
+    from_user = (
+        await session.execute(select(User).where(User.tg_id == from_tg_id))
+    ).scalar_one_or_none()
     if from_user is not None:
-        from_user.transfers_made += 1
+        await session.execute(
+            update(User)
+            .where(User.tg_id == from_tg_id)
+            .values(transfers_made=User.transfers_made + 1)
+            .execution_options(synchronize_session=False)
+        )
+        await session.refresh(from_user, ["transfers_made"])
 
 
 async def claim_daily(

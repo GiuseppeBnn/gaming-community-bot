@@ -267,11 +267,10 @@ class TestDailyClaim:
 # ===========================================================================
 
 class TestDebit:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_get_wallet(for_update=True) returns the held Wallet, so the "
-               "balance check runs against a cached number and coins are minted",
-    )
+    """Regression guards. Both were red while `debit` read the balance off a
+    `Wallet` instance: the row lock was real, but the number it protected came
+    from the identity map."""
+
     async def test_cannot_overdraw_from_a_stale_balance(self, pg_sessions, pg_user_factory):
         await pg_user_factory(tg_id=1, coins=100)
 
@@ -289,19 +288,16 @@ class TestDebit:
         assert await truth(pg_sessions, coins_of(1)) == 0
         await assert_ledger_balanced(pg_sessions, 1, initial=100)
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="all 20 tasks load coins=100 before any of them commits, so each one "
-               "computes 100-10 under its own lock: 20 debits land, 100 coins minted",
-    )
     async def test_concurrent_debits_do_not_lose_updates(self, pg_sessions, pg_user_factory):
         """Shape G, each task holding its own loaded Wallet: 20 × debit(10) on a
         100-coin wallet, exactly 10 may succeed.
 
-        Measured, and it corrected an assumption: loading inside each task does *not*
-        make the cache safe. `gather` starts all 20 before any commits, so every task
-        reads 100, and the row lock faithfully serialises 20 writes of `100 - 10`.
-        The lock works; the arithmetic base is stale.
+        The measurement that named the real mechanism. Loading inside each task did
+        *not* make the cache safe: `gather` starts all 20 before any commits, so
+        every task read 100 and the row lock faithfully serialised 20 writes of
+        `100 - 10`. The lock was working the whole time — the arithmetic base was
+        stale. That is why the fix moved the arithmetic into SQL instead of adding
+        more locking.
         """
         await pg_user_factory(tg_id=1, coins=100)
         ok = 0
@@ -329,10 +325,9 @@ class TestDebit:
 # ===========================================================================
 
 class TestTransfer:
-    @pytest.mark.xfail(
-        strict=True, reason="transfer's pre-check reads the held Wallet's stale coins"
-    )
     async def test_cannot_overdraw_from_a_stale_balance(self, pg_sessions, pg_user_factory):
+        """Was red while `transfer` pre-checked the balance on a held `Wallet`; the
+        check now lives inside `debit`'s own conditional UPDATE."""
         await pg_user_factory(tg_id=1, coins=100, username="alice")
         await pg_user_factory(tg_id=2, coins=0, username="bob")
         await pg_user_factory(tg_id=3, coins=0, username="carol")
@@ -393,20 +388,16 @@ class TestTransfer:
 # ===========================================================================
 
 class TestAdminSetBalance:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="set_balance derives its delta from the held Wallet's stale coins, so "
-               "the wallet lands on target ± whatever moved meanwhile",
-    )
     async def test_lands_on_the_requested_target(self, pg_sessions, pg_user_factory):
         """`/setsaldo 200` must leave exactly 200, whatever happened meanwhile.
 
-        This site is unlike the others in two ways, which is why it gets its own test.
-        First, `assert_ledger_balanced` cannot catch it: the delta is credited
-        honestly and the ledger stays perfectly consistent — it is the *target* that
-        is missed. Second, the function reports success either way, because it returns
-        the `target` it was asked for instead of the balance it actually wrote, so
-        both handlers tell the admin the wallet is on 200 when it is not.
+        The odd one out, and worth keeping for that reason. Its delta was derived
+        from a cached balance, so the *absolute* write it produced landed on the
+        target by construction — and silently swallowed the concurrent movement
+        instead (ledger 250, wallet 200). It also reported success either way,
+        because it returns the `target` it was asked for rather than what it wrote.
+        Setting an absolute balance is the one money operation that genuinely needs
+        the current value, so this is the one that still takes a row lock.
         """
         await pg_user_factory(tg_id=1, coins=100)
 
