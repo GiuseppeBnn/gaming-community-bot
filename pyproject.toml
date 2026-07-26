@@ -6,6 +6,12 @@ testpaths = ["tests"]
 # (e.g. `from config_data.config import settings`) without installing the package.
 pythonpath = ["src"]
 addopts = "--tb=short -q"
+markers = [
+    # Selection/documentation only (`pytest -m "not pg"`). The actual skip lives in
+    # the pg_engine fixture, so a missing TEST_PG_URL can never let a race test
+    # pass silently — it skips loudly instead.
+    "pg: needs a real PostgreSQL (set TEST_PG_URL); skipped otherwise",
+]
 
 [tool.coverage.run]
 source = ["src"]

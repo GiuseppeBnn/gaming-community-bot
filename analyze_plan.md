@@ -138,22 +138,61 @@ a **0% di copertura**, il buco singolo più grosso dopo `quiz.py`, e non è mai 
 | SQLite nei test non implementa `FOR UPDATE` | ✅ esatto |
 | **Blocker 1: i lock di riga non proteggono il path denaro** | ✅ **confermato sperimentalmente** |
 
-### Il Blocker 1 è reale, e ora c'è la prova
+### Il Blocker 1 è reale, ma la sua causa NON è quella che dicevamo
 
-Tesi: la identity map restituisce valori stale sotto `SELECT ... FOR UPDATE`, quindi il
-check-then-write passa due volte. Riprodotto in modo deterministico (senza concorrenza,
-isolando la sola staleness) contro la configurazione **reale** del repo
-(`expire_on_commit=False, autoflush=False`):
+Il meccanismo è confermato: se una riga è già nella identity map, il
+`SELECT ... FOR UPDATE` prende il lock sul DB ma **restituisce i valori Python
+vecchi**, quindi il check-then-write passa due volte.
+
+Ma la premessa sulla *portata* — presente sia nella v1 sia in questo documento fino a
+ora — **era sbagliata**, e l'ha smentita l'harness Postgres appena costruito.
+
+> «`DbSessionMiddleware` carica `User` e `Wallet` nella identity map a **ogni** update,
+> quindi ogni handler eredita una sessione avvelenata.»
+
+**Falso. La identity map di SQLAlchemy usa riferimenti *deboli*.** `_upsert_user()` carica
+`User` e `Wallet` in variabili locali e non li conserva: appena la funzione ritorna gli
+oggetti vengono garbage-collected e la identity map resta **vuota**. Misurato:
 
 ```
-A: caricato dal middleware, xp=0
-B: altra sessione ha committato xp=999
-A: dopo SELECT ... FOR UPDATE, xp=0     <-- STALE
+solo _upsert_user (nessuno tiene l'oggetto) -> FOR UPDATE legge xp=999  (fresco, sicuro)
+un chiamante tiene lo User in una variabile -> FOR UPDATE legge xp=0    (STALE, bug)
 ```
 
-Il lock **viene preso** sul DB; sono i valori Python a restare vecchi. Su Postgres questo
-significa: due `/daily` concorrenti si serializzano correttamente e **poi passano
-entrambi il check**. Reale in produzione, invisibile ai test.
+Quindi il pericolo richiede un chiamante che **tenga vivo** l'oggetto attraverso una
+chiamata che lockta la stessa riga. Leggerne un valore e scartare l'oggetto — come fa
+`shop._balance`, che ritorna un `int` — è sicuro.
+
+Non è una questione globale ma **per-flusso**, e questo riduce di molto il raggio d'azione:
+
+| Flusso | Verdetto |
+|---|---|
+| `handlers/economy.cmd_daily` → `claim_daily` senza precarichi | ✅ sicuro |
+| `handlers/admin_betting.cb_admin_confirm_resolve` → `resolve_event` diretto | ✅ sicuro |
+| `handlers/event_types/bet_type._auto_lock` → lega `event`, controlla `event.status`, poi `lock_event` tenendo il riferimento | ❌ **è il flusso raggiungibile** |
+
+Il test `TestMiddlewareDoesNotPoisonTheSession` in
+`tests/integration/test_money_concurrency_pg.py` fissa questa proprietà: se un domani
+qualcuno mettesse lo User in `data` (una cache «innocua»), il pericolo diventerebbe globale
+su tutti i ~190 handler, e quel test lo direbbe subito.
+
+### La diagnosi misurata: 9 siti vulnerabili, 5 già sicuri
+
+Gli xfail sono `strict=True`, quindi «questo sito è rotto» non è un'affermazione ma un
+fatto che la CI ricontrolla a ogni push — e un xpass **fa fallire la build** per dire
+«questo sito in realtà è sano».
+
+**Vulnerabili (9 xfail):** doppio `/daily`; streak ricalcolata da valore stale; `debit`
+che scopre da saldo stale; 20 `debit` concorrenti (**tutti** i task leggono 100 prima che
+qualcuno committi, quindi 20 scritture di `100-10`: 100 CoInn creati); `transfer` che
+scopre da saldo stale; cap XP giornaliero aggirato; `lock_event` doppio nel flusso
+`_auto_lock`; puntata piazzata prima del resolve mai liquidata; `get_quiz(for_update=True)`
+che legge uno status stale (e `award_prizes` non ha alcuna guardia di idempotenza).
+
+**Già sicuri, ora guardie permanenti (5 verdi):** il middleware non trattiene entità;
+`transfer` concorrenti conservano le monete; transfer opposti non vanno in deadlock
+(l'ordinamento crescente per `tg_id` funziona); il resolve da sessione pulita
+(`cb_admin_confirm_resolve`) paga una volta sola.
 
 ### …ma il fix della v1 va corretto in due punti
 
@@ -200,7 +239,7 @@ Le due funzioni condividono `_REL_RE`. La v1 segnala solo `parse_duration`
 
 ## Parte 3 — Fase 0: FATTA
 
-Tutto verificato: **712 test verdi, ruff pulito, mypy pulito, coverage 58,33% ≥ gate 57%**.
+Tutto verificato: **ruff pulito, mypy pulito, coverage ≥ gate 57%** (conteggi test aggiornati nella Fase 1a).
 
 | # | Cosa | Costo cognitivo |
 |---|---|---|
@@ -218,23 +257,54 @@ indovinato: matrice `[3.11, 3.12]` o allineamento secco.
 
 ## Parte 4 — Roadmap rivista
 
-### Fase 1 — Rendere verificabile il path denaro (prerequisito di ogni fix al denaro)
+### Fase 1a — La rete: FATTA (nessuna riga di `src/` modificata)
 
-Invariata nella sostanza dalla v1, che qui aveva ragione. **Costo cognitivo: medio** —
-è l'unico punto dove vale la pena spenderlo.
+**724 test verdi + 9 xfail con Postgres; 713 verdi + 20 skip senza. Ruff e mypy puliti.**
 
-1. **Postgres in CI** — `services: postgres:16-alpine` in `tests.yml` + marker
-   `@pytest.mark.postgres`. I `services:` di GitHub Actions restano più semplici di
-   testcontainers, come diceva la v1.
-2. **Test di concorrenza che falliscono prima del fix**: doppio `/daily`, doppio
-   `transfer` sulla stessa coppia, doppia chiusura scommessa, doppia chiusura quiz,
-   sforamento cap XP.
-3. **Fix del Blocker 1** con il pattern `UPDATE` atomico **già presente nel repo**
-   (`bet_service`/`admin_service`), non con `populate_existing` e non con un concetto nuovo.
-4. **Larghezza colonne** — `total_wagered` e `xp` a `BigInteger`: due righe in
-   `_MIGRATIONS`. **Nessun Alembic richiesto.**
-5. **Test su `_MIGRATIONS`** — è DDL Postgres-only senza un solo test; con Postgres in CI
-   diventa banale (schema da zero + migrazioni + convergenza).
+- **Harness Postgres**: fixture `pg_engine`/`pg_sessions`/`pg_session`/`pg_user_factory` in
+  `tests/conftest.py`, tutte **aggiunte** (le fixture SQLite esistenti sono intatte).
+  Marker `pg` registrato; `services: postgres:16-alpine` + `TEST_PG_URL` in `tests.yml`.
+  Zero dipendenze nuove: `asyncpg` era già in `requirements.txt`.
+  Senza `TEST_PG_URL` i test PG **skippano**, quindi il run locale resta senza Docker.
+- **Guardia distruttiva**: `pg_engine` fa `drop_all`, quindi rifiuta ogni URL il cui DB non
+  finisce in `_test` (il DB del compose si chiama `gamingbot`, a un carattere di distanza).
+  Verificata a mano in tutti e tre i casi: skip / rifiuto / pass.
+- **`_MIGRATIONS`: prima copertura, 7 test.** Applicazione su schema fresco, idempotenza,
+  guardia sul dialetto, ri-aggiunta di colonne droppate da un deploy vecchio (con verifica
+  che torni il `NOT NULL DEFAULT`, non solo la colonna), allargamento a BIGINT con un saldo
+  oltre 2^31, e presenza dei due indici su `ledger` anche su tabella preesistente.
+  Scoperta collaterale: su schema `create_all` quelle colonne **non** hanno default
+  server-side (i modelli usano default Python), mentre `_MIGRATIONS` le ricrea **con**
+  `DEFAULT` — un DB nuovo e uno migrato differiscono nella DDL.
+- **Strumento diagnostico**: 14 test di gara, `xfail(strict=True)`. Risultato nella
+  sezione «La diagnosi misurata» sopra.
+
+### Fase 1b — Il fix, uno per commit (da fare)
+
+Ordinato per isolamento, sul solo elenco dei 9 siti **provati** vulnerabili. Ogni commit
+toglie il proprio xfail: quando l'xfail sparisce, il test diventa la guardia di regressione.
+
+1. `claim_daily` — il più isolato: un campo, un'eccezione che esiste già, 2 xfail suoi.
+2. `debit` / `credit` / `transfer` — con il pattern `UPDATE` atomico **già presente nel
+   repo** (`bet_service`, `admin_service`), non con `populate_existing`.
+3. `grant_xp` (ramo capped).
+4. `lock_event` / `resolve_event` — solo il flusso `_auto_lock`, l'unico raggiungibile.
+5. Chiusura quiz — richiede di spostare la transizione di stato in un servizio.
+
+**Trappola verificata, obbligatoria per ognuno**: l'`UPDATE` atomico da solo **non basta**.
+Di default SQLAlchemy ricalcola l'aritmetica in Python e riscrive il valore stale nella
+cache (con cache=100 e DB=500, `values(coins=Wallet.coins-10)` dà DB=490 **ma cache=90**).
+Serve `.execution_options(synchronize_session=False)` più `await session.refresh(obj, [col])`
+— **non** `session.expire`, che in async dà `MissingGreenlet`. E `refresh` con
+`attribute_names` lascia intatte le relazioni caricate in eager, a differenza di
+`populate_existing`: è esattamente la proprietà che rende sicuro questo approccio.
+
+Più due voci, tenute fuori dalla Fase 1a perché toccano `src/`:
+- **Larghezza colonne** — `total_wagered` e `xp` a `BigInteger`: due righe in
+  `_MIGRATIONS`, e ora c'è il test che le esercita. **Nessun Alembic richiesto.**
+- **`admin_service.set_balance`** — legge `wallet.coins` dalla cache per calcolare un delta
+  verso un target assoluto, e non usa `with_for_update()` (per questo non compariva nei
+  grep): «imposta il saldo a N» può atterrare su N±X. Non ha ancora un test di gara.
 
 ### Fase 2 — Validazione al confine
 
