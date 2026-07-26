@@ -81,6 +81,7 @@ from exceptions.economy import (
     InsufficientFundsError,
 )
 from middlewares.db_middleware import _upsert_user
+from services import admin_service as admin_svc
 from services import bet_service as bet_svc
 from services import economy_service as eco
 from services import quiz_service as quiz_svc
@@ -389,6 +390,44 @@ class TestTransfer:
 
         assert await truth(pg_sessions, coins_of(1)) == 1000
         assert await truth(pg_sessions, coins_of(2)) == 1000
+
+
+# ===========================================================================
+# admin: set an exact balance
+# ===========================================================================
+
+class TestAdminSetBalance:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="set_balance derives its delta from the held Wallet's stale coins, so "
+               "the wallet lands on target ± whatever moved meanwhile",
+    )
+    async def test_lands_on_the_requested_target(self, pg_sessions, pg_user_factory):
+        """`/setsaldo 200` must leave exactly 200, whatever happened meanwhile.
+
+        This site is unlike the others in two ways, which is why it gets its own test.
+        First, `assert_ledger_balanced` cannot catch it: the delta is credited
+        honestly and the ledger stays perfectly consistent — it is the *target* that
+        is missed. Second, the function reports success either way, because it returns
+        the `target` it was asked for instead of the balance it actually wrote, so
+        both handlers tell the admin the wallet is on 200 when it is not.
+        """
+        await pg_user_factory(tg_id=1, coins=100)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)  # cache: coins=100
+
+            async with pg_sessions() as sb:
+                await eco.credit(sb, 1, 50, TransactionType.admin_credit, "gift")
+                await sb.commit()
+
+            reported_old, reported_new = await admin_svc.set_balance(sa, 1, 200)
+            await sa.commit()
+
+        actual = await truth(pg_sessions, coins_of(1))
+        assert actual == 200, f"admin asked for 200, the wallet landed on {actual}"
+        assert reported_new == actual, "reported a new balance it did not write"
+        assert reported_old == 150, f"reported the old balance as {reported_old}, was 150"
 
 
 # ===========================================================================
