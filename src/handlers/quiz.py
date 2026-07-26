@@ -1266,19 +1266,24 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     Returns (ok, message). The message is the podium text when there is no group
     to announce to, otherwise a short confirmation. Caller need not commit.
     """
-    # Lock the quiz row: the status check below and the prize payout must be atomic,
-    # or two concurrent closes could both pass the guard and pay out twice.
-    quiz = await quiz_service.get_quiz(db_session, quiz_id, for_update=True)
-    if quiz is None:
+    # Claiming the close *is* the status transition, in one conditional UPDATE: only
+    # one caller can win it, so the prizes below are paid exactly once. Checking the
+    # status here and flipping it afterwards would be a read-then-write, and the
+    # quiz row is often already in this session's cache — the check would pass twice.
+    blocked = await quiz_service.claim_close(db_session, quiz_id)
+    if blocked == quiz_service.QUIZ_MISSING:
         return False, "Quiz non trovato."
-    if quiz.status == "finished":
+    if blocked == "finished":
         return False, "Questo quiz è già stato chiuso."
-    if quiz.status != "running":
+    if blocked is not None:
         return False, "Questo quiz non è in corso (avvialo prima)."
+
+    quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    if quiz is None:  # deleted between the claim and here
+        return False, "Quiz non trovato."
 
     ranked = await quiz_service.podium(db_session, quiz_id)
     awards = await quiz_service.award_prizes(db_session, quiz_id)
-    await quiz_service.set_status(db_session, quiz_id, "finished")
 
     # Record Trivia progress for the trophy engine, then re-check trophies for
     # everyone it could affect (not just the podium):

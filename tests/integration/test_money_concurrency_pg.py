@@ -611,14 +611,15 @@ class TestBettingLifecycle:
 # ===========================================================================
 
 class TestQuizClose:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="get_quiz(for_update=True) returns the held quiz's stale status, and "
-               "award_prizes has no idempotency guard of its own",
-    )
-    async def test_locking_read_sees_a_committed_close(self, pg_sessions, pg_user_factory):
-        """`handlers.quiz.close_quiz` guards the payout with a status check read via
-        `get_quiz(for_update=True)`. Tested at service level (the handler needs a bot).
+    async def test_prizes_are_paid_once_when_the_caller_holds_the_quiz(
+        self, pg_sessions, pg_user_factory
+    ):
+        """Two overlapping closes must pay the prize pool once.
+
+        `handlers.quiz.close_quiz` binds the quiz and then pays, so the status check
+        cannot be a separate read — the held instance would answer it from the cache.
+        Claiming the close *is* the transition, and only one caller can win it.
+        Tested at service level: the handler needs a bot to announce the podium.
         """
         await pg_user_factory(tg_id=1, coins=0, username="admin")
         await pg_user_factory(tg_id=2, coins=0, username="player")
@@ -639,16 +640,33 @@ class TestQuizClose:
             assert held is not None and held.status == "running"
 
             async with pg_sessions() as sb:
+                assert await quiz_svc.claim_close(sb, quiz_id) is None, "B should win"
                 await quiz_svc.award_prizes(sb, quiz_id)
-                await quiz_svc.set_status(sb, quiz_id, "finished")
                 await sb.commit()
 
-            observed = await quiz_svc.get_quiz(sa, quiz_id, for_update=True)
-            assert observed is not None
-            assert observed.status == "finished", (
-                "the locking read returned a stale status — close_quiz would pay the "
-                "prizes a second time"
+            assert await quiz_svc.claim_close(sa, quiz_id) == "finished", (
+                "A claimed a close that B had already committed — the prizes would "
+                "be paid a second time"
             )
+            await sa.commit()
 
         assert await truth(pg_sessions, coins_of(2)) == 500
         assert await truth(pg_sessions, select(Quiz.status).where(Quiz.id == quiz_id)) == "finished"
+
+    async def test_claim_reports_what_blocked_it(self, pg_sessions, pg_user_factory):
+        """The three refusals the close handler has to tell apart."""
+        await pg_user_factory(tg_id=1, coins=0, username="admin")
+
+        async with pg_sessions() as s:
+            assert await quiz_svc.claim_close(s, 9999) == quiz_svc.QUIZ_MISSING
+
+            quiz = await quiz_svc.create_quiz(
+                s, creator_tg_id=1, title="Q", description="d"
+            )
+            await s.commit()
+            assert await quiz_svc.claim_close(s, quiz.id) == "draft"
+
+            await quiz_svc.set_status(s, quiz.id, "running")
+            await s.commit()
+            assert await quiz_svc.claim_close(s, quiz.id) is None
+            assert await quiz_svc.claim_close(s, quiz.id) == "finished"

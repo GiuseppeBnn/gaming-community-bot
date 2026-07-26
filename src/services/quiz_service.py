@@ -297,6 +297,42 @@ async def list_manageable(session: AsyncSession, *, finished_limit: int = 10) ->
     return active + finished
 
 
+QUIZ_MISSING = "missing"
+
+
+async def claim_close(session: AsyncSession, quiz_id: int) -> str | None:
+    """Take a running quiz to ``finished``, and report whether *this* call did it.
+
+    Returns ``None`` when this call performed the transition — and at most one
+    caller can ever get ``None`` for a given quiz, which is what makes it safe to
+    pay the prizes right after. Otherwise returns whatever blocked it: the current
+    status (``"finished"``, ``"draft"``, …) or ``QUIZ_MISSING``.
+
+    The transition **is** the guard, deliberately. Reading the status, deciding,
+    and then paying is a read-then-write, and locking the row does not repair it:
+    a caller that already holds the quiz gets its cached status back from the
+    locking read (see STEERING §5), so two closes could both pass the check and
+    pay the pool twice.
+    """
+    changed = (
+        await session.execute(
+            update(Quiz)
+            .where(Quiz.id == quiz_id, Quiz.status == "running")
+            # coalesce, so a re-run keeps the original close time (same rule as
+            # set_status, which only fills finished_at when it is still empty).
+            .values(status="finished", finished_at=func.coalesce(Quiz.finished_at, _now()))
+            .execution_options(synchronize_session=False)
+        )
+    ).rowcount or 0
+    if changed:
+        return None
+
+    status = (
+        await session.execute(select(Quiz.status).where(Quiz.id == quiz_id))
+    ).scalar_one_or_none()
+    return status or QUIZ_MISSING
+
+
 async def set_status(session: AsyncSession, quiz_id: int, status: str) -> None:
     quiz = (await session.execute(select(Quiz).where(Quiz.id == quiz_id))).scalar_one_or_none()
     if quiz is None:
