@@ -517,16 +517,18 @@ async def _open_event(session, creator: int = 1) -> tuple[int, int]:
 
 
 class TestBettingLifecycle:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="_auto_lock holds the event across lock_event, whose FOR UPDATE then "
-               "returns the stale status — two overlapping locks both proceed",
-    )
-    async def test_double_lock_is_refused_when_the_caller_holds_the_event(
+    async def test_second_lock_does_not_move_the_close_time(
         self, pg_sessions, pg_user_factory
     ):
-        """Mirrors `handlers/event_types/bet_type._auto_lock`, the one flow found to
-        hold an entity across a locking service call."""
+        """Mirrors `handlers/event_types/bet_type._auto_lock`, the one flow that holds
+        an entity across a locking service call.
+
+        Note what is *not* asserted here: locking an already-locked event is defined
+        as idempotent, so the second call must not raise. The defect is that it used
+        to re-run the transition — the held event still said `open`, so the check
+        passed again and `locked_at` was overwritten with a later timestamp. That
+        field is when betting actually closed, and `place_bet` rejects against it.
+        """
         await pg_user_factory(tg_id=1, coins=1000, username="admin")
         async with pg_sessions() as setup:
             event_id, _ = await _open_event(setup, 1)
@@ -536,19 +538,26 @@ class TestBettingLifecycle:
             assert held is not None and held.status == EventStatus.open.value
 
             async with pg_sessions() as sb:
-                await bet_svc.lock_event(sb, event_id)
+                first = await bet_svc.lock_event(sb, event_id)
+                closed_at = first.locked_at
                 await sb.commit()
 
-            with pytest.raises(EventAlreadySettledError):
-                await bet_svc.lock_event(sa, event_id)
-                await sa.commit()
+            again = await bet_svc.lock_event(sa, event_id)
+            await sa.commit()
+            assert again.status == EventStatus.locked.value
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="resolve_event walks the held event's cached (empty) user_bets, so a "
-               "bet placed meanwhile is debited but never settled",
-    )
+        assert (
+            await truth(
+                pg_sessions,
+                select(BettingEvent.locked_at).where(BettingEvent.id == event_id),
+            )
+            == closed_at
+        ), "the second lock re-ran the transition and moved the close time"
+
     async def test_bet_placed_before_resolution_is_settled(self, pg_sessions, pg_user_factory):
+        """Was red while `resolve_event` walked `event.user_bets`: a caller holding
+        the event holds its loaded collection too, so a bet placed after that
+        snapshot was debited and then never settled — the stake simply vanished."""
         await pg_user_factory(tg_id=1, coins=1000, username="admin")
         await pg_user_factory(tg_id=2, coins=1000, username="punter")
         async with pg_sessions() as setup:
