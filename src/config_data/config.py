@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -25,9 +25,10 @@ class Settings(BaseSettings):
     daily_reward_coins: int = 100
     # /daily resets at local midnight (scheduler_timezone). This is the extra
     # minimum gap since the previous claim, ANDed with the midnight rule so a
-    # 23:59 claim can't be followed by another one at 00:01. Must stay < 24h,
-    # otherwise it could push the next claim past a whole day and cost a streak.
-    daily_min_hours: int = 6
+    # 23:59 claim can't be followed by another one at 00:01. Bounded < 24h because
+    # 24h+ could push the next claim past a whole day and cost a streak the user
+    # did nothing to lose (the invariant used to live only in this comment).
+    daily_min_hours: int = Field(default=6, ge=1, lt=24)
 
     fsm_storage: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
@@ -63,8 +64,15 @@ class Settings(BaseSettings):
     bet_default_window_minutes: int = 60
     # Level curve (GTA-style): cost to go from level n to n+1 is
     # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
-    xp_level_base: int = 100                 # XP to go from level 1 → 2
-    xp_level_growth: float = 1.15            # geometric growth per level (+15%)
+    #
+    # Both bounds are load-bearing, not cosmetic. `level_for_xp` walks the curve with
+    # `while floor + cost <= xp`, so it terminates only because the cost keeps
+    # growing. A base of 0, or any growth < 1, drives the cost to 0 and the loop
+    # never ends — synchronously, inside async handlers, so the event loop freezes
+    # and the bot stops answering at all. `XP_LEVEL_GROWTH=0.15` instead of `1.15`
+    # is one character away.
+    xp_level_base: int = Field(default=100, ge=1)      # XP to go from level 1 → 2
+    xp_level_growth: float = Field(default=1.15, ge=1.0)  # geometric growth (+15%)
 
     # Quiz mode
     quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers
@@ -94,14 +102,19 @@ class Settings(BaseSettings):
 
     # Scheduler (programmed quiz/poll/bet)
     scheduler_timezone: str = "Europe/Rome"
-    scheduler_poll_interval: int = 20  # seconds between due-task checks
+    # ge=1: the loop is `while True: ... await asyncio.sleep(interval)`, and asyncio
+    # treats 0 (or negative) as "don't yield for long" → a hot loop that pegs a core
+    # and starves every other task, polling included.
+    scheduler_poll_interval: int = Field(default=20, ge=1)  # seconds between due-task checks
 
     # Backup & state export (see §25). All optional: with the Telethon creds
     # empty the chat archive stays disabled and the bot runs normally; the DB
     # state export needs no Telegram access and always works.
     backup_dir: str = "backups"                 # dir for snapshots + chat archive
     backup_state_interval_hours: int = 24       # how often the loop exports DB state
-    backup_state_keep: int = 5                  # rotated state snapshots to retain
+    # ge=1: rotation prunes everything beyond `keep`, so 0 would delete every
+    # snapshot including the one just written — a backup setting that erases backups.
+    backup_state_keep: int = Field(default=5, ge=1)  # rotated state snapshots to retain
     backup_chat_interval_hours: int = 168       # how often the loop extends the archive
     backup_max_message_chars: int = 4096        # per-message text cap in the archive
     # MTProto (Telethon) — reads the group history the Bot API cannot. The
