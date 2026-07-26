@@ -25,7 +25,8 @@ async def _get_wallet(session: AsyncSession, tg_id: int) -> Wallet:
 
     Deliberately not used to *read* the balance: an entity select can be served
     from the session's identity map, so `wallet.coins` is only trustworthy right
-    after a `session.refresh`. Use `read_balance`/`lock_balance` to read.
+    after a `session.refresh`. To read a balance use `get_balance`, or
+    `lock_balance` when the value has to stay valid for a following write.
     """
     result = await session.execute(select(Wallet).where(Wallet.tg_id == tg_id))
     wallet = result.scalar_one_or_none()
