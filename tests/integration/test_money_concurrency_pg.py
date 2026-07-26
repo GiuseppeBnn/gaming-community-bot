@@ -422,12 +422,10 @@ class TestAdminSetBalance:
 # ===========================================================================
 
 class TestDailyXpCap:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="grant_xp's capped path reads xp_today off the held User, so the "
-               "daily cap can be exceeded and one grant is lost",
-    )
     async def test_cap_is_not_bypassed(self, pg_sessions, pg_user_factory, monkeypatch):
+        """Was red while the capped path read `xp_today` off the held User: the row
+        lock was taken, but the counter it protected came from the cache, so the cap
+        could be exceeded *and* one of the two grants was lost."""
         monkeypatch.setattr(xp_service.settings, "xp_daily_participation_cap", 50)
         await pg_user_factory(tg_id=1, coins=0)
 
@@ -444,6 +442,49 @@ class TestDailyXpCap:
         assert result.granted == 10, f"granted {result.granted}: the 50 XP cap was bypassed"
         assert await truth(pg_sessions, user_col(1, User.xp)) == 50
         assert await truth(pg_sessions, user_col(1, User.xp_today)) == 50
+
+
+class TestUncappedXp:
+    """The uncapped path has no row lock *by design* — taking one would invert the
+    canonical Wallet → User order that `bet_service.resolve_event` relies on. So its
+    arithmetic has to be safe on its own, without any locking to fall back on.
+    """
+
+    async def test_concurrent_grants_do_not_lose_updates(self, pg_sessions, pg_user_factory):
+        """10 × grant_xp(5) must total 50.
+
+        Nothing is preloaded here: this one does not need the identity map at all.
+        `gather` starts all ten before any of them commits, so each reads xp=0 and
+        writes 5 — the plain lost update.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async def grant():
+            async with pg_sessions() as s:
+                await xp_service.grant_xp(s, 1, 5, XpSource.quiz, capped=False)
+                await s.commit()
+
+        await asyncio.gather(*(grant() for _ in range(10)))
+
+        total = await truth(pg_sessions, user_col(1, User.xp))
+        assert total == 50, f"10 grants of 5 XP left {total}"
+
+    async def test_two_grants_in_one_transaction_both_land(
+        self, pg_sessions, pg_user_factory
+    ):
+        """A quiz podium finisher is granted twice in a single transaction —
+        participation XP, then the podium bonus (`quiz_service._grant_xp`). Both
+        must accumulate, so whatever makes the concurrent case safe must not make
+        the sequential one lose a grant.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async with pg_sessions() as s:
+            await xp_service.grant_xp(s, 1, 30, XpSource.quiz, capped=False)
+            await xp_service.grant_xp(s, 1, 12, XpSource.quiz, capped=False)
+            await s.commit()
+
+        assert await truth(pg_sessions, user_col(1, User.xp)) == 42
 
 
 # ===========================================================================

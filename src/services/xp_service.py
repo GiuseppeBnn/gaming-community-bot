@@ -26,7 +26,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -174,25 +174,53 @@ async def grant_xp(
 
     was_capped = False
     granted = amount
+    today = ""
+    spent_today = 0
 
     if capped:
+        # The lock above serialises concurrent capped grants, but it does not make
+        # the values on `user` trustworthy: an entity select can be served from the
+        # identity map. Read the committed counter before deciding — under the lock,
+        # so it stays valid until the commit. (A cap is a `min`/`max` against a
+        # stored value, which has no portable SQL spelling across Postgres and
+        # SQLite; that is why this one is decided in Python rather than in a WHERE
+        # like the other sites.)
+        await session.refresh(user, ["xp_today", "xp_today_date"])
         # Same local-midnight boundary as /daily (utils.daytime), so the bot has
         # one single notion of "day" instead of two drifting 1-2h apart.
         today = daytime.local_today().isoformat()
-        if user.xp_today_date != today:
-            user.xp_today = 0
-            user.xp_today_date = today
+        spent_today = user.xp_today if user.xp_today_date == today else 0
         cap = settings.xp_daily_participation_cap
-        remaining = max(0, cap - user.xp_today)
-        granted = min(amount, remaining)
+        granted = min(amount, max(0, cap - spent_today))
         was_capped = granted < amount
-        user.xp_today += granted
 
     if granted <= 0:
         return XpGrantResult(granted=0, capped=was_capped, new_rank=None)
 
-    old_xp = user.xp
-    user.xp += granted
+    # One UPDATE for everything this grant changes. XP is relative (`xp + granted`)
+    # because the uncapped path takes no User lock by design — that would invert the
+    # canonical Wallet → User order resolve_event relies on — so the arithmetic
+    # itself has to be safe. The daily counter is absolute, but computed from a
+    # value read under the lock, so it is safe too.
+    #
+    # Writing rather than mutating the instance also keeps repeated grants in one
+    # transaction correct: nothing is left pending for the next `refresh` to throw
+    # away (a quiz podium finisher is granted twice — participation, then bonus).
+    stmt = update(User).where(User.tg_id == tg_id)
+    if capped:
+        stmt = stmt.values(
+            xp=User.xp + granted,
+            xp_today=spent_today + granted,
+            xp_today_date=today,
+        )
+    else:
+        stmt = stmt.values(xp=User.xp + granted)
+    await session.execute(stmt.execution_options(synchronize_session=False))
+    await session.refresh(user, ["xp", "xp_today", "xp_today_date"])
+    # Derived from the value we just wrote rather than read beforehand: our UPDATE
+    # added exactly `granted`, so this is the true pre-grant XP even if some other
+    # transaction moved it in between.
+    old_xp = user.xp - granted
     new_rank = _apply_rank(user, old_xp)
     old_level = level_for_xp(old_xp).level
     new_level = level_for_xp(user.xp).level
