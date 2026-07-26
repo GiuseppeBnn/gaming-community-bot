@@ -129,7 +129,7 @@ a **0% di copertura**, il buco singolo più grosso dopo `quiz.py`, e non è mai 
 | `src/` 15.419 righe | ✅ esatto |
 | `quiz.py` 1.820 righe, 649 statement scoperti | ✅ esatto |
 | 64 `commit()` in 12 file di `handlers/` | ✅ esatto |
-| Copertura totale 58%, servizi alti, handler 21-44% | ✅ esatto (712 test) |
+| Copertura totale 58%, servizi alti, handler 21-44% | ✅ esatto (misurato su 712 test, prima della Fase 1a) |
 | `dp.errors` assente | ✅ era assente |
 | `handlers/__init__.py` vuoto (0 byte), ordine router in un commento | ✅ esatto |
 | `ledger` senza indici oltre la PK | ✅ esatto |

@@ -89,15 +89,44 @@ Per usare l'immagine pubblicata da CI invece di buildare in locale, imposta
 ```bash
 pip install -r requirements-dev.txt
 
-pytest                                   # tutta la suite (330 test, ~5s)
+pytest                                   # tutta la suite (~733 test, ~20s)
 pytest --cov=src --cov-report=term-missing
 pytest tests/unit/                       # solo unit (senza DB)
 pytest tests/integration/                # solo integration (SQLite in-memory)
+
+ruff check src/                          # lint (gate CI)
+mypy                                     # type check (gate CI)
 ```
 
 I test non richiedono token Telegram reali né un server in esecuzione: le env vars
 necessarie sono impostate da `tests/conftest.py`, e `pyproject.toml` espone `src/`
 al path di import (`pythonpath = ["src"]`).
+
+La coverage ha un **ratchet**: `fail_under = 57` in `pyproject.toml`. Si alza, non si abbassa.
+
+### Test su PostgreSQL reale (opzionali, marker `pg`)
+
+Una ventina di test richiede un Postgres vero, perché due cose non sono esprimibili su SQLite:
+`SELECT ... FOR UPDATE` è un no-op, e l'engine in-memory dà a ogni sessione la stessa connessione
+(quindi la stessa transazione), rendendo impossibile scrivere una gara a due sessioni. Coprono le
+migrazioni DDL — che girano in produzione a ogni deploy — e la concorrenza sul path denaro.
+
+**Senza `TEST_PG_URL` questi test si skippano**, quindi il run normale non richiede Docker.
+
+```bash
+docker run -d --name gcb-pg-test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=gamingbot_test -p 5433:5432 postgres:16-alpine
+export TEST_PG_URL="postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test"
+pytest -m pg -rxX
+```
+
+> ⚠️ Il fixture ricrea lo schema da zero (`drop_all`): punta `TEST_PG_URL` **solo** a un database
+> usa-e-getta. Rifiuta qualsiasi nome che non finisca in `_test`, perché quello del compose si
+> chiama `gamingbot` — a un carattere di distanza.
+
+Alcune di queste gare sono `xfail(strict=True)`: documentano bug di concorrenza **noti e non ancora
+corretti** sul path denaro (vedi `analyze_plan.md`). Un xfail che passa fa fallire la build, così
+il giorno in cui un fix li sistema non passa inosservato.
 
 ---
 
@@ -107,7 +136,7 @@ Tre workflow in `.github/workflows/`:
 
 | Workflow | Trigger | Cosa fa |
 | --- | --- | --- |
-| **`tests.yml`** | ogni `push` e `pull_request` (tutti i branch) | esegue l'intera suite con coverage. È anche `workflow_call` (riusabile). |
+| **`tests.yml`** | ogni `push` e `pull_request` (tutti i branch) | suite completa con coverage (+ un service **`postgres:16-alpine`** per i test `pg`), poi **`ruff`** e **`mypy`** come gate. È anche `workflow_call` (riusabile). |
 | **`docker-image.yml`** | `push` che tocca `src/**`, `requirements.txt`, `Dockerfile` | **prima** esegue i test (gate), **poi** builda e pubblica l'immagine su **GHCR**. |
 | **`compose-artifact.yml`** | `push` che tocca `docker-compose.yml` | valida il compose e lo pubblica come **artifact** (con `.env.example`) — nessuna immagine. |
 
@@ -259,7 +288,9 @@ gaming-community-bot/
 │   │                                 #   catalog_loader (CSV → trofei/ranghi/cosmetici)
 │   ├── handlers/                     # common, onboarding, economy, betting, badges,
 │   │                                 #   leaderboard, shop, quiz, schedule, fun_ai, admin,
-│   │                                 #   admin_betting, admin_dashboard
+│   │                                 #   admin_betting, admin_dashboard, backup, events,
+│   │                                 #   event_types/ (registro tipi-evento)
+│   │   └── errors.py                 # handler globale dp.errors (log con contesto + risposta utente)
 │   ├── keyboards/                    # InlineKeyboard builders (incl. admin_dashboard_kb)
 │   ├── filters/admin_filter.py       # IsAdminFilter / IsAdminCallbackFilter / is_admin
 │   ├── exceptions/economy.py

@@ -32,6 +32,23 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per le chiamate LLM Groq — **mai** librerie HTTP bloccanti |
 | LLM | Groq API (OpenAI-compatible) | modello via `GROQ_MODEL` (default `llama-3.3-70b-versatile`) |
+| ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
+| mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
+
+### Gate statici (CI, config in `pyproject.toml`)
+
+Entrambi girano **dopo** pytest in `tests.yml` (un nit di lint non deve nascondere un test rosso)
+ed erano **a zero findings** quando sono stati introdotti: ogni fallimento è una regressione nuova,
+non rumore preesistente da imparare a ignorare.
+
+- **ruff**, ruleset ristretto di proposito: `E9` (sintassi), `F` (pyflakes: nomi non definiti,
+  import morti, f-string rotte), `B` (bugbear), `ASYNC` (**I/O bloccante dentro `async def`** — su
+  un bot async è uno stallo dell'intero event loop, non un dettaglio di stile). Allargare a
+  `I`/`UP`/`SIM`/`RUF100` sono ~130 autofix quasi tutti cosmetici: vale un commit dedicato, non
+  un gate rosso. Il gate copre **`src/`**; `tests/` ha ancora ~21 findings preesistenti.
+- **mypy**, non-strict, su `services`/`database`/`utils`/`config_data`/`filters`. `handlers/` è
+  escluso per ora (è il layer meno annotato): aggiungerlo per-modulo quando viene migrato.
+  `disallow_untyped_defs` resta **off**.
 
 ---
 
@@ -213,6 +230,29 @@ di update disgiunti dagli altri router → ordine indifferente; registrato per p
 `allowed_updates=dp.resolve_used_update_types()` auto-iscrive `chat_member`/`my_chat_member` perché
 esistono gli handler.
 
+### 7.a Handler globale errori (`dp.errors`)
+
+`dp.errors.register(errors.on_error)` in `main.py`, **dopo** tutti gli `include_router`.
+Implementato in **`handlers/errors.py`** (non in `main.py`, che è escluso dalla coverage —
+così è testabile: `tests/unit/test_error_handler.py`). Sul **Dispatcher**, non su un router,
+per coprire tutti i ~190 handler.
+
+Cosa fa: logga con `exc_info` più `user_id`/`username`/`chat_id`/`callback_data`/testo — l'obiettivo
+è che la riga di log basti da sola ad agire — poi risponde all'utente (alert sulle callback).
+Senza di esso un'eccezione non gestita lasciava il bot **muto** e, sulle callback, il bottone con lo
+spinner appeso fino al timeout di Telegram.
+
+Due scelte deliberate:
+- **Nessun rollback della sessione.** `DbSessionMiddleware` apre con
+  `async with async_session_maker()`: uscire dal blocco chiude la sessione e **scarta** la
+  transazione non committata. Un rollback qui sarebbe codice morto, e opererebbe su una
+  sessione che questa funzione non può nemmeno raggiungere.
+- **Rumore benigno silenziato**: `message is not modified`, `query is too old`,
+  `message to edit not found` sono normali in un bot a callback (ri-render di una tastiera
+  identica, tap su un messaggio vecchio) e non dicono niente sul nostro codice → log a `debug`
+  e nessun messaggio d'allarme all'utente, ma la callback viene comunque chiusa per fermare
+  lo spinner. Aggiungere frammenti a `_BENIGN_FRAGMENTS`, mai un `except` a tappeto.
+
 ---
 
 ## 8. Filtri admin
@@ -233,7 +273,16 @@ Entrambi delegano a **`is_admin(bot, user_id)`**: `True` se `user_id in settings
 effettivo, §13) — **non** `settings.group_id` diretto, così dopo una migrazione pubblico↔privato
 gli admin Telegram non perdono i poteri. Quindi **tutti gli admin del gruppo** hanno i poteri
 bot-admin senza doverli elencare in `ADMIN_IDS`. Usare sempre `is_admin` per i check inline (non
-`user.id in settings.admin_ids` diretto). L'invalidazione cache è **automatica**: gli handler in
+`user.id in settings.admin_ids` diretto).
+
+La firma è **`is_admin(bot: Bot | None, user_id: int)`**: ogni chiamante passa `message.bot` /
+`callback.bot`, che aiogram tipizza opzionale. Il ramo `bot is None` è **esplicito** e ritorna
+`False`. Prima funzionava comunque, ma solo perché l'`except Exception` di `_telegram_admin_ids`
+inghiottiva l'`AttributeError` — cioè l'esito di un'**autorizzazione** dipendeva da un catch
+incidentale: chi avesse restretto quell'except avrebbe cambiato le regole di accesso senza
+accorgersene. Il fail-closed ora è dichiarato, non ereditato.
+
+L'invalidazione cache è **automatica**: gli handler in
 `handlers/group_events.py` chiamano `invalidate_admin_cache()` su promozioni/retrocessioni
 (`chat_member`/`my_chat_member`) e migrazioni.
 
@@ -1007,7 +1056,13 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   `open_quiz` (annuncia + apre); `poll` → `bot.send_poll` nel gruppo. Le spec **non committano** (il
   `scheduler_loop` committa dopo `mark_done`/`mark_failed`).
 - `parse_duration(text)` (30m/2h/1d → secondi): **durata** relativa (non un istante), usata dallo step
-  finestra puntate. La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
+  finestra puntate. **Cappata a 365 giorni** insieme a `parse_run_at`, tramite l'unico helper
+  condiviso `_rel_seconds` — entrambe alimentano aritmetica che va in overflow su input assurdo
+  (`parse_run_at` → `datetime + timedelta` = `OverflowError`, che nessun handler intercetta;
+  `parse_duration` → `betting_window_seconds`, colonna int32 = «integer out of range» su Postgres,
+  **dopo** che l'utente si è già sentito dire che la scommessa era creata). Il cap sta nell'helper
+  e non nelle due funzioni proprio perché nessuna delle due possa dimenticarlo.
+  La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
   `payload.action="lock"` armato all'apertura (§18.2) — stesso registry, nessun task-type nuovo.
 - Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
@@ -1086,6 +1141,11 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 20. **Escaping HTML obbligatorio**: ogni stringa **user-controlled** interpolata in un messaggio `ParseMode.HTML` passa da **`utils.text.esc`** (full_name, username, cosmetic_tag, titoli/descrizioni/opzioni scommesse, testi/risposte quiz, motivi warn, audit detail, query di ricerca, ecc.). I service e il DB restano **raw** — l'escaping è solo presentation layer. Testi dei **bottoni inline** e domande/opzioni dei **poll** non sono HTML-parsed → niente `esc`.
 21. **Mai `settings.group_id` a runtime**: usare **`group_registry.get_group_id()`** (id effettivo, §13). Solo `config.py`, lo startup in `main()` e `group_registry` stesso toccano il setting.
 22. **Mutazioni denaro/XP/bet lockano le righe** con `with_for_update` (no-op su SQLite, reale su Postgres). Ordine di lock canonico **Event → User → Wallet**; tra due wallet, `tg_id` crescente (anti-deadlock). `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
+    > ⚠️ **`with_for_update` NON basta da solo, ed è misurato.** Se la riga è già nella identity map della sessione, il lock viene preso sul DB ma SQLAlchemy restituisce **l'istanza in cache con i valori vecchi** (`expire_on_commit=False`): il check-then-write passa due volte. 9 gare provate rosse in `tests/integration/test_money_concurrency_pg.py` (xfail strict, girano solo con `TEST_PG_URL`).
+    >
+    > Cosa rende una riga "già in cache": **un chiamante che tiene l'entità in una variabile** attraverso la chiamata al servizio. La identity map usa riferimenti **deboli**, quindi `DbSessionMiddleware._upsert_user` **non** avvelena la sessione (carica e scarta → garbage collected), e leggere un valore scartando l'oggetto (`shop._balance` ritorna un `int`) è sicuro. Il pattern pericoloso è quello di `bet_type._auto_lock`: `event = await get_event_detail(...)` → controlla `event.status` → `lock_event(...)` col riferimento ancora vivo.
+    >
+    > **Non aggiungere `populate_existing=True`**: invalida le relazioni già caricate sull'istanza e in async diventa `MissingGreenlet` (provato e ritirato). Il fix corretto è l'**`UPDATE` condizionale atomico** — il check va nella `WHERE`, `rowcount == 0` = gara persa — con **`.execution_options(synchronize_session=False)`** (altrimenti SQLAlchemy ricalcola l'aritmetica in Python e riscrive il valore stale in cache) più `await session.refresh(obj, [colonne])` (**mai** `session.expire`, che in async dà `MissingGreenlet`). Pattern già in uso: `bet_service` (`total_wagered`), `admin_service` (`mass_credit`, `set_banned` col `rowcount`).
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
@@ -1114,7 +1174,8 @@ tests/
 │   ├── test_moderation_service.py # parse_duration + mappatura errori (Bot fake)
 │   ├── test_admin_filter.py  # is_admin (admin_ids, cache TG mockata, fail-closed)
 │   ├── test_ai_cooldown.py   # _check_cooldown (esenzione admin, finestra)
-│   ├── test_schedule_parse.py # parse_run_at (assoluto/relativo/passato/invalid)
+│   ├── test_schedule_parse.py # parse_run_at + parse_duration (assoluto/relativo/passato/invalid/cap 365gg)
+│   ├── test_error_handler.py  # dp.errors: log con contesto, alert callback, rumore benigno silenziato
 │   ├── test_quiz_prizes.py   # consolation_amounts / participation_floor (funzioni pure)
 │   ├── test_keyboards.py     # keyboard builder (incl. shop cosmetici: affordable/owned/callback)
 │   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura) + chunk_blocks (split ≤4096)
@@ -1139,8 +1200,39 @@ tests/
     ├── test_quiz_service.py     # create/add_question / record_answer / podium / award_prizes (legacy + per-rango + consolazione)
     ├── test_admin_dashboard.py  # apply_warning (audit + escalation) / render_user_detail / user picker
     ├── test_schedule_service.py # schedule / due_tasks / mark_done|failed / cancel
-    └── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
+    ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
+    ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
+    │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
+    └── test_money_concurrency_pg.py # [pg] diagnostica gare identity map (9 xfail strict + 5 guardie)
 ```
+
+### I test marcati `pg` (PostgreSQL reale)
+
+Servono perché due cose sono **strutturalmente invisibili** alla suite SQLite, ed entrambe stanno sul
+path denaro: `SELECT ... FOR UPDATE` è un no-op su SQLite, e il suo engine in-memory usa `StaticPool`,
+che dà a ogni sessione la **stessa connessione** — quindi la stessa transazione: una gara a due
+sessioni non è scrivibile lì. In più `run_migrations()` esce subito se il dialetto non è postgresql,
+quindi `_MIGRATIONS` (che gira in **produzione a ogni deploy**) non era mai stato eseguito da un test.
+
+Fixture in `conftest.py`: `pg_engine` (schema fresco per test) → `pg_sessions` (la **factory**, perché
+questi test aprono due sessioni indipendenti) → `pg_session`, `pg_user_factory`. Le fixture SQLite
+esistenti sono intatte: senza `TEST_PG_URL` i test `pg` **skippano**, quindi il run locale di default
+non richiede Docker.
+
+⚠️ **`pg_engine` fa `drop_all`** e rifiuta ogni URL il cui nome DB non finisce in `_test`: quello del
+compose si chiama `gamingbot`, a un carattere di distanza. La guardia non è decorativa.
+
+```bash
+docker run -d --name gcb-pg-test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=gamingbot_test -p 5433:5432 postgres:16-alpine
+export TEST_PG_URL="postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test"
+pytest -m pg -rxX          # -rxX elenca xfail E xpass
+pytest -m "not pg"         # esplicitamente senza
+```
+
+Le gare sono `xfail(strict=True)`: **un xpass fa fallire la build**, e significa che quel sito è già
+sicuro (allora si toglie l'xfail e il test diventa una guardia di regressione permanente). Vedi
+regola 22 per il meccanismo e il fix corretto.
 
 ### Eseguire i test
 
@@ -1185,15 +1277,24 @@ DB_URL=sqlite+aiosqlite:///:memory:
 
 ### Note implementative
 
-- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota), impedendo a `resolve_event` di rileggere i bet dal DB.
+- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota), impedendo a `resolve_event` di rileggere i bet dal DB. **La stessa trappola è un bug di produzione, non solo di test**: vedi regola 22 e `tests/integration/test_money_concurrency_pg.py`.
+- **la identity map usa riferimenti deboli** — un oggetto caricato e non conservato viene garbage-collected e sparisce dalla mappa. È il motivo per cui `_upsert_user` non avvelena la sessione, e va tenuto presente prima di "ottimizzare" mettendo lo `User` in `data`: lo renderebbe **forte**, e ogni lock di ogni servizio diventerebbe vulnerabile su tutti i ~190 handler. Il tripwire è `TestMiddlewareDoesNotPoisonTheSession`.
+- **due sessioni sullo stesso DB non sono esprimibili su SQLite in-memory**: `StaticPool` dà a ogni sessione la **stessa** connessione, quindi la stessa transazione. Ogni test di concorrenza reale richiede il fixture `pg_engine` (marker `pg`).
 - **timestamp SQLite**: `func.now()` ha precisione al secondo → ordinamento `get_history` usa `(created_at DESC, id DESC)` come secondary sort.
+- **`create_all` e `_MIGRATIONS` producono DDL diverse**: le colonne con `default=…` nei modelli non hanno default *server-side* su uno schema nuovo (SQLAlchemy lo applica in Python), mentre `_MIGRATIONS` le ricrea come `NOT NULL DEFAULT …`. Irrilevante via ORM, rilevante per un `INSERT` SQL grezzo. Fissato in `tests/integration/test_migrations_pg.py`.
 
 ### GitHub Actions (CI/CD)
 
 Tre workflow in `.github/workflows/`:
 
-- **`tests.yml`** — push + PR su qualsiasi branch; `pytest --cov=src`; opzionale Codecov
-  (`CODECOV_TOKEN` nei secrets). È anche `workflow_call` (riusabile come gate).
+- **`tests.yml`** — push + PR su qualsiasi branch; `pytest --cov=src -rxX` → `ruff check src/` →
+  `mypy` (§1); opzionale Codecov (`CODECOV_TOKEN` nei secrets). È anche `workflow_call`
+  (riusabile come gate). Include un **service `postgres:16-alpine`** (DB `gamingbot_test`) e
+  passa `TEST_PG_URL`, che abilita i test marcati `pg`; `DB_URL` **resta SQLite**, perché
+  `database.connection` costruisce il suo engine all'import e non deve puntare al DB di test.
+  `-rxX` elenca xfail e **xpass**: le gare sul denaro sono `xfail(strict=True)`, quindi un PASS
+  inatteso **fa fallire la build** e significa «quel sito in realtà è già sicuro».
+  Coverage con ratchet **`fail_under = 57`** in `pyproject.toml`: si alza, non si abbassa.
 - **`docker-image.yml`** — push su `main`/`test` o di un git tag `v*.*.*`: job `test`
   (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`). L'immagine
   si pubblica **solo se i test passano**. Build **multi-arch** `linux/amd64,linux/arm64` (via
