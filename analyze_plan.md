@@ -390,9 +390,28 @@ nullo perché *togliono* concetti:
   non è quello sull'ordine ma quello che **cammina il package**: un modulo con un `router`
   che nessuno registra è morto in silenzio. Ha subito trovato un `Router` inutilizzato in
   `errors.py` (rimosso: `on_error` sta su `dp.errors`, non su un router).
-- **`scheduler_loop` fuori da `handlers/`**: è un daemon dentro il package di
-  presentazione. Il design è corretto (task persistiti, sopravvive ai restart, `TaskSkip`
-  distinto dagli errori) — solo collocato male.
+- ~~**`scheduler_loop` fuori da `handlers/`**~~ → **la voce è sbagliata, misurato.** Non è «un
+  daemon collocato male»: è collocato dove sta la sua dipendenza. `_run_due_task` chiama
+  `execute_task`, che dispatcha sul registro `handlers/event_types`, e gli spec di quel
+  registro **importano funzioni degli handler** (`handlers.betting.start_bet_creation`,
+  `handlers.quiz.open_quiz`/`close_quiz`, `handlers.events.start_poll_creation`) e
+  costruiscono tastiere inline. Sono presentazione a tutti gli effetti. Spostare il loop in
+  `services/` farebbe importare `handlers` da `services` — un'inversione di layering vera in
+  cambio di uno smell estetico, più un campo minato di import circolari (quegli spec già usano
+  import differiti dentro le funzioni proprio per evitarli).
+
+  Quello che il loop **aveva** davvero era zero copertura sulle sue garanzie, esattamente come
+  `backup/loop.py`: `execute_task` era testato, tutto il resto no. Ora 14 test, con la stessa
+  disciplina — mutazioni, non coverage.
+
+  Nel farlo ho inseguito un sospetto e l'ho smentito, e vale la pena averlo scritto: dopo un
+  `rollback` che ha lavoro da annullare, leggere **qualsiasi** attributo dell'istanza ORM dà
+  `MissingGreenlet` (verificato su Postgres). E `_run_due_task` passa proprio quell'istanza a
+  `_notify_creator`, che legge `created_by_tg_id` e `id`. Sembra un bug; non lo è, perché fra
+  il rollback e la notifica ci sono `mark_failed` (che **assegna** soltanto — un'assegnazione
+  non carica) e `await session.commit()`, il cui flush ricarica la riga in contesto greenlet.
+  È un rischio **latente**: dipende da un `await` di SQLAlchemy che sta lì in mezzo. Spostare
+  la notifica prima del commit lo attiva — provato per mutazione, e il test lo prende.
 - **Spezzare `quiz.py`** per flusso, tastiere private in `keyboards/quiz_kb.py`.
 
 ### Fase 4 — Copy e test

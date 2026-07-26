@@ -1093,6 +1093,26 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
 
 - `scheduler_loop(bot)` avviato in `main()` con `asyncio.create_task` prima di `start_polling`; ogni
   `scheduler_poll_interval`s esegue i `due_tasks` (try/except per task → `mark_done`/`mark_failed`).
+  > **Sta in `handlers/` di proposito, non per sbaglio.** Sembra un daemon collocato male, ma
+  > `execute_task` dispatcha sul registro `handlers/event_types`, e quegli spec **importano
+  > funzioni degli handler** (`handlers.quiz.open_quiz`, `handlers.betting.start_bet_creation`, …)
+  > e costruiscono tastiere inline: sono presentazione. Spostare il loop in `services/` farebbe
+  > importare `handlers` da `services`, cioè un'inversione di layering vera in cambio di uno
+  > smell estetico. Non farlo senza prima spostare `event_types`.
+  >
+  > **L'isolamento per-task sta tutto in `_run_due_task` che non solleva mai**, non nel loop: il
+  > `for` è dentro il `try` del tick, quindi un raise lì dentro abbandona i task ancora dovuti
+  > fino al giro successivo. Coperto da `tests/unit/test_scheduler_loop.py` +
+  > `tests/integration/test_scheduler_failure_path.py` (14 test, garanzie verificate per
+  > mutazione).
+  >
+  > ⚠️ **Rischio latente, misurato.** Dopo un `rollback` che ha lavoro da annullare, leggere
+  > *qualsiasi* attributo dell'istanza ORM dà `MissingGreenlet` — e `_run_due_task` passa quella
+  > stessa istanza a `_notify_creator`, che ne legge due. Oggi funziona **solo** perché fra il
+  > rollback e la notifica ci sono `mark_failed` (che assegna soltanto: un'assegnazione non
+  > carica) e `await session.commit()`, il cui flush ricarica la riga in contesto greenlet.
+  > Quindi: **non spostare la notifica prima del commit** e non togliere quel commit dal path di
+  > errore. Provato per mutazione — il test integration lo prende.
 - `parse_run_at(text)`: assoluto `AAAA-MM-GG HH:MM` o relativo `30m`/`2h`/`1d` → **UTC naive**
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
@@ -1228,14 +1248,17 @@ tests/
 │   ├── test_ai_service.py    # Groq client (aioresponses): success/timeout/http/malformed/no-key
 │   ├── test_moderation_service.py # parse_duration + mappatura errori (Bot fake)
 │   ├── test_admin_filter.py  # is_admin (admin_ids, cache TG mockata, fail-closed)
-│   ├── test_ai_cooldown.py   # _check_cooldown (esenzione admin, finestra)
+│   ├── test_ai_cooldown.py   # _check_cooldown (esenzione admin, finestra, check non consuma)
 │   ├── test_schedule_parse.py # parse_run_at + parse_duration (assoluto/relativo/passato/invalid/cap 365gg)
 │   ├── test_error_handler.py  # dp.errors: log con contesto, alert callback, rumore benigno silenziato
 │   ├── test_quiz_prizes.py   # consolation_amounts / participation_floor (funzioni pure)
 │   ├── test_keyboards.py     # keyboard builder (incl. shop cosmetici: affordable/owned/callback)
 │   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura) + chunk_blocks (split ≤4096)
-│   ├── test_fun_ai_hardening.py # clip_source / _prune_cooldowns / output parse_mode=None + wrapper CONTENUTO
+│   ├── test_fun_ai_hardening.py # clip_source / output parse_mode=None + wrapper CONTENUTO
 │   ├── test_atomic_io.py       # scrittura atomica, sha256, troncatura, append membri gzip + rollback
+│   ├── test_backup_loop.py     # due-ness, pre-flight non scrivibile, il loop sopravvive a un tick rotto
+│   ├── test_scheduler_loop.py  # _run_due_task (rollback prima di mark_failed, skip≠errore), il loop non muore
+│   ├── test_router_order.py    # ROUTERS: ogni modulo con un router è registrato, admin_betting<betting, common ultimo
 │   ├── test_chat_archive.py    # build_record/classify_media, _archive_range (dedup/append/no-op), _recover
 │   └── test_admin_dashboard_kb.py # tastiere dashboard (grammatica callback, paginazione)
 └── integration/
@@ -1258,6 +1281,7 @@ tests/
     ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
     ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
     │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
+    ├── test_scheduler_failure_path.py # path di errore su sessione reale: istanza ORM leggibile dopo il rollback
     └── test_money_concurrency_pg.py # [pg] gare su denaro/XP/bet/quiz — 16 guardie di regressione
 ```
 
