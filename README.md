@@ -89,7 +89,7 @@ Per usare l'immagine pubblicata da CI invece di buildare in locale, imposta
 ```bash
 pip install -r requirements-dev.txt
 
-pytest                                   # tutta la suite (~746 test, ~20s)
+pytest                                   # tutta la suite (~776 test, ~25s)
 pytest --cov=src --cov-report=term-missing
 pytest tests/unit/                       # solo unit (senza DB)
 pytest tests/integration/                # solo integration (SQLite in-memory)
@@ -102,7 +102,7 @@ I test non richiedono token Telegram reali né un server in esecuzione: le env v
 necessarie sono impostate da `tests/conftest.py`, e `pyproject.toml` espone `src/`
 al path di import (`pythonpath = ["src"]`).
 
-La coverage ha un **ratchet**: `fail_under = 57` in `pyproject.toml`. Si alza, non si abbassa.
+La coverage ha un **ratchet**: `fail_under = 59` in `pyproject.toml`. Si alza, non si abbassa.
 
 ### Test su PostgreSQL reale (opzionali, marker `pg`)
 
@@ -181,7 +181,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | --- | --- |
 | `/start` | Onboarding (primo accesso) o menu principale; gestisce i deep-link |
 | `/profilo` · `/saldo` · `/storico` | Profilo, saldo, cronologia movimenti |
-| `/daily` | Premio giornaliero (ogni 20h) |
+| `/daily` | Premio giornaliero: si azzera a **mezzanotte locale**, con un gap minimo di 6h dall'ultima riscossione |
 | `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |

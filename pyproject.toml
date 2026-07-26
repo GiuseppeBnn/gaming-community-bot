@@ -28,9 +28,10 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 show_missing = true
-# Ratchet, not a target: pinned just under the current 58% so the number can
+# Ratchet, not a target: pinned just under the current coverage so the number can
 # only go up. Raise it when a phase lands, never lower it to make CI pass.
-fail_under = 57
+# 57 → 59 after covering services/backup/loop.py (was 0%, now 100%).
+fail_under = 59
 
 [tool.ruff]
 target-version = "py311"

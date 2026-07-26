@@ -1322,14 +1322,25 @@ DB_URL=sqlite+aiosqlite:///:memory:
 
 ### Coverage attuale
 
-| Modulo | Coverage |
-| --- | --- |
-| `services/*` | 96–100% |
-| `keyboards/*` | 100% |
-| `exceptions/*` | 100% |
-| `config_data/*` | 100% |
-| `middlewares/*` | 40–92% |
-| `handlers/*` | 0% — richiedono mock framework aiogram, testati E2E con Docker |
+Misurati, non stimati (`pytest --cov=src`, con Postgres). Il range è per-file, l'aggregato
+è per package — un package può avere un aggregato alto e un file molto peggio, che è
+esattamente com'era nascosto `services/backup/loop.py` a 0% sotto un «`services/*` 96-100%».
+
+| Package | Range per-file | Aggregato |
+| --- | --- | --- |
+| `config_data/*` | 100% | 100% |
+| `exceptions/*` | 100% | 100% |
+| `database/*` | 88–100% | 99% |
+| `filters/*` | 98–100% | 97% |
+| `services/*` | 64–100% | 91% |
+| `utils/*` | 88–100% | 91% |
+| `keyboards/*` | 44–100% | 77% |
+| `middlewares/*` | 39–100% | 73% |
+| `handlers/*` | 21–100% | 38% — richiedono mock del framework aiogram, testati E2E con Docker |
+
+I due peggiori sono `middlewares/db_middleware.py` e `handlers/_targeting.py`: entrambi
+stanno su ogni update o su ogni comando che prende un bersaglio, quindi sono i prossimi
+candidati sensati, non i file grandi con l'aggregato basso.
 
 ### Note implementative
 
@@ -1352,7 +1363,7 @@ Tre workflow in `.github/workflows/`:
   `-rxX` elenca xfail e **xpass**: serviva quando le gare sul denaro erano `xfail(strict=True)`
   (un PASS inatteso faceva fallire la build). Oggi non ci sono più xfail; il flag resta perché
   è così che si vede subito se qualcuno ne reintroduce uno.
-  Coverage con ratchet **`fail_under = 57`** in `pyproject.toml`: si alza, non si abbassa.
+  Coverage con ratchet **`fail_under = 59`** in `pyproject.toml`: si alza, non si abbassa.
 - **`docker-image.yml`** — push su `main`/`test` o di un git tag `v*.*.*`: job `test`
   (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`). L'immagine
   si pubblica **solo se i test passano**. Build **multi-arch** `linux/amd64,linux/arm64` (via
@@ -1438,6 +1449,17 @@ artefatti su disco (mtime snapshot / `updated_at` manifest), esegue `export_stat
 dovuti. `/backup` (archivio chat) e `/esporta` (stato) — admin, redirect-to-private, DM del file se ≤ 50 MB,
 audit `log_action`; deep-link `backup`/`esporta` in `common.cmd_start`. Restore = **solo CLI**
 (`scripts/import_state.py`), mai bottone Telegram distruttivo.
+
+> `tests/unit/test_backup_loop.py` (il modulo era a **0%**, ora 100%). Le garanzie coperte sono
+> quelle che tengono in piedi il bot, non i dettagli: la soglia di due-ness è `>=` e non `>` (con
+> `>` una cadenza giornaliera slitta sempre più tardi); il pre-flight salta il giro con **un**
+> warning invece di un traceback EACCES a ogni scrittura; entrambi i backup sono avvolti in un
+> `except` largo, quindi uno rotto non ferma l'altro; il loop sopravvive a un tick che solleva.
+>
+> Verificate **per mutazione**, non per coverage: 5 modifiche introdotte a mano nel modulo, una
+> per garanzia, e ognuna fa fallire il test corrispondente. È così che ho scoperto che la mia
+> prima asserzione sul confine `>=` non pinnava niente — `now - 24h` è già 24.000001 ore quando
+> il confronto gira, quindi passava in entrambi i casi.
 
 ### 25.4 Permessi di scrittura (Docker)
 
