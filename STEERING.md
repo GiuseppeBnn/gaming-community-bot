@@ -181,7 +181,8 @@ I service **non committano mai** — il commit è responsabilità del handler.
 ```python
 # Nel service
 async def credit(...) -> None:
-    wallet.coins += amount
+    await _add_coins(session, tg_id, amount)   # UPDATE ... SET coins = coins + :n
+    await session.refresh(wallet, ["coins"])   # l'istanza in sessione dice la verità (§22)
     session.add(LedgerEntry(...))
     # NO commit qui
 
@@ -393,8 +394,15 @@ La (2) esiste **solo** per impedire il doppio claim 23:59 → 00:01: **non** è 
 > ⚠️ **Regola di implementazione.** Le due condizioni sono espresse come **una sola soglia**
 > `next_allowed = max(next_local_midnight(last), last + daily_min_hours)` e mai come due booleani:
 > un `or` al posto dell'`and` trasformerebbe il gap minimo in "riscuoti ogni 6 ore". Con il `max()`
-> l'AND è **strutturale** e non si può sbagliare. La stessa soglia dà anche i secondi residui
+> l'AND è **strutturale** e non si può sbagliare. La stessa soglia dà i secondi residui
 > dell'errore `DailyAlreadyClaimedError` (mai `24h - elapsed`).
+>
+> Nella `WHERE` le stesse due regole sono riscritte come **istanti fissi**, che è ciò che le fa
+> stare in una sola `UPDATE` condizionale (una soglia derivata da `last` non ci starebbe, §22):
+> `now >= next_local_midnight(last)` ⟺ `last < daytime.local_midnight(oggi)`, e
+> `now >= last + daily_min_hours` ⟺ `last <= now - daily_min_hours`. Lo streak si decide con un
+> `CASE` nella `SET`, che vede i valori **precedenti** della riga. Equivalenze verificate una per
+> una, giorni di cambio ora inclusi (`tests/unit/test_daytime.py`).
 
 **Invariante:** `daily_min_hours < 24` ⇒ il gap non può mai costare un giorno. Il claim più tardi
 possibile (23:59) sblocca alle 05:59 del giorno dopo, sempre dentro quel giorno.
@@ -405,6 +413,12 @@ giorno intero la azzera a 1. (Un secondo claim nello stesso giorno non arriva ma
 Il "giorno" viene da **`utils/daytime`**, unica fonte di verità condivisa con il tetto XP
 giornaliero (§12.1): timestamp salvati naive-UTC, confronti fatti sul giorno **locale**, DST
 gestito da `zoneinfo`. Calcolare il giorno in UTC farebbe scattare il reset all'01:00/02:00 italiane.
+
+Due funzioni, complementari: **`next_local_midnight(stamp)`** = quando finisce il giorno di
+`stamp` (soglia derivata da una riga), **`local_midnight(day)`** = quando *apre* un giorno di
+calendario (istante fisso, confrontabile con una colonna in SQL). La seconda è quella che permette
+di scrivere il reset giornaliero come una `WHERE`; la prima è espressa in termini della seconda,
+così la logica DST sta in un posto solo.
 
 ---
 
@@ -801,6 +815,11 @@ Strumenti admin per gestire un gruppo numeroso. **UX doppia:** comandi testuali 
 ### admin_service (DB-side, no-commit — §5)
 
 - **Valuta**: `set_balance` (delta → riusa `economy_service.credit/debit` con `admin_credit`/`admin_debit`), `mass_credit` (airdrop: bulk `UPDATE wallets` + 1 ledger per utente).
+  > `set_balance` è **l'unica** operazione che prende ancora un lock esplicito, via
+  > `economy_service.lock_balance`: un target assoluto ha bisogno del valore corrente, quindi
+  > non è esprimibile come aritmetica relativa e il lock è ciò che tiene fermo quel valore
+  > finché il delta non atterra (§22). Prima leggeva `wallet.coins` dall'entità e poteva
+  > atterrare su `target ± quello che si era mosso nel frattempo`.
 - **Dossier/stats**: `get_dossier`, `search_users` (ILIKE), `leaderboard`, `economy_stats`.
 - **Warn**: `add_warning` (→ count attivi), `active_warnings`, `active_warning_count`, `clear_warnings` (soft-delete).
 - **Ban bot-level**: `set_user_banned(session, tg_id, banned) -> bool` (no-commit) setta/azzera `User.is_banned`.
@@ -1024,8 +1043,13 @@ esplicitamente che nulla è stato salvato.
     comportamento **invariato** per i quiz vecchi.
   - XP (`_grant_xp`, evento uncapped): `quiz_xp_participation` a chiunque abbia ≥1 risposta,
     `+quiz_xp_per_correct` per corretta, `+quiz_xp_podium_first/second/third` ai primi 3.
+- `claim_close(quiz_id) -> str | None`: porta un quiz da `running` a `finished` in **una `UPDATE`
+  condizionale** e dice se è stata *questa* chiamata a farlo (`None`) o cosa l'ha bloccata (lo stato
+  corrente, oppure `QUIZ_MISSING`). Al massimo un chiamante può ricevere `None`: è quello che rende
+  sicuro pagare i premi subito dopo. **La transizione è la guardia** — controllare lo stato e
+  ribaltarlo dopo sarebbe un read-then-write, e il quiz è spesso già in cache (§22).
 - `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
-  (`ev:close:quiz`, con conferma `ev:askclose`) → `award_prizes` → `finished` → annuncio podio (🎖️ per le
+  (`ev:close:quiz`, con conferma `ev:askclose`) → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le
   consolazioni). Un quiz `finished` resta gestibile nell'hub: `ev:reset:quiz` («Riproponi») lo riporta a
   `ready`, `ev:del:quiz` lo elimina.
 - `format_prize_summary(quiz)` riassume i premi nelle schede/annunci.
@@ -1140,12 +1164,21 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 19. **Cataloghi CSV** (`catalog_loader`) letti solo all'avvio, con **fallback ai default**: non assumere mai che un file esista; valida e salta le righe malformate
 20. **Escaping HTML obbligatorio**: ogni stringa **user-controlled** interpolata in un messaggio `ParseMode.HTML` passa da **`utils.text.esc`** (full_name, username, cosmetic_tag, titoli/descrizioni/opzioni scommesse, testi/risposte quiz, motivi warn, audit detail, query di ricerca, ecc.). I service e il DB restano **raw** — l'escaping è solo presentation layer. Testi dei **bottoni inline** e domande/opzioni dei **poll** non sono HTML-parsed → niente `esc`.
 21. **Mai `settings.group_id` a runtime**: usare **`group_registry.get_group_id()`** (id effettivo, §13). Solo `config.py`, lo startup in `main()` e `group_registry` stesso toccano il setting.
-22. **Mutazioni denaro/XP/bet lockano le righe** con `with_for_update` (no-op su SQLite, reale su Postgres). Ordine di lock canonico **Event → User → Wallet**; tra due wallet, `tg_id` crescente (anti-deadlock). `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
-    > ⚠️ **`with_for_update` NON basta da solo, ed è misurato.** Se la riga è già nella identity map della sessione, il lock viene preso sul DB ma SQLAlchemy restituisce **l'istanza in cache con i valori vecchi** (`expire_on_commit=False`): il check-then-write passa due volte. 9 gare provate rosse in `tests/integration/test_money_concurrency_pg.py` (xfail strict, girano solo con `TEST_PG_URL`).
+22. **Le mutazioni di denaro/XP/stato non si decidono in Python: si decidono in SQL.** Il check va nella `WHERE`, l'aritmetica nella `SET`, e `rowcount == 0` significa "gara persa". `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
+    > ⚠️ **Un lock NON basta, ed è misurato.** `with_for_update` prende un lock vero su Postgres, ma se la riga è già nella identity map SQLAlchemy restituisce **l'istanza in cache con i valori vecchi** (`expire_on_commit=False`): il lock protegge una riga, non il numero su cui stai decidendo. Il check-then-write passa due volte. Erano 9 gare rosse in `tests/integration/test_money_concurrency_pg.py`; oggi sono **verdi e sono le guardie di regressione** — girano solo con `TEST_PG_URL`, e su SQLite una gara a due sessioni non è nemmeno esprimibile.
     >
-    > Cosa rende una riga "già in cache": **un chiamante che tiene l'entità in una variabile** attraverso la chiamata al servizio. La identity map usa riferimenti **deboli**, quindi `DbSessionMiddleware._upsert_user` **non** avvelena la sessione (carica e scarta → garbage collected), e leggere un valore scartando l'oggetto (`shop._balance` ritorna un `int`) è sicuro. Il pattern pericoloso è quello di `bet_type._auto_lock`: `event = await get_event_detail(...)` → controlla `event.status` → `lock_event(...)` col riferimento ancora vivo.
+    > Cosa rende una riga "già in cache": **un chiamante che tiene l'entità in una variabile** attraverso la chiamata al servizio. La identity map usa riferimenti **deboli**, quindi `DbSessionMiddleware._upsert_user` **non** avvelena la sessione (carica e scarta → garbage collected), e leggere un valore scartando l'oggetto è sicuro. Il pattern pericoloso è quello di `bet_type._auto_lock`: `event = await get_event_detail(...)` → controlla `event.status` → `lock_event(...)` col riferimento ancora vivo.
     >
-    > **Non aggiungere `populate_existing=True`**: invalida le relazioni già caricate sull'istanza e in async diventa `MissingGreenlet` (provato e ritirato). Il fix corretto è l'**`UPDATE` condizionale atomico** — il check va nella `WHERE`, `rowcount == 0` = gara persa — con **`.execution_options(synchronize_session=False)`** (altrimenti SQLAlchemy ricalcola l'aritmetica in Python e riscrive il valore stale in cache) più `await session.refresh(obj, [colonne])` (**mai** `session.expire`, che in async dà `MissingGreenlet`). Pattern già in uso: `bet_service` (`total_wagered`), `admin_service` (`mass_credit`, `set_banned` col `rowcount`).
+    > **Le tre regole operative:**
+    > 1. **Leggi le colonne, non le entità.** `select(Wallet.coins)` non può essere servita dalla cache, `select(Wallet)` sì. Vedi `economy_service._balance`.
+    > 2. **Scrivi in SQL, relativo dove puoi.** `coins = coins + :delta` somma; `wallet.coins += x` sovrascrive con un valore calcolato da una base che potrebbe essere vecchia. Per le transizioni di stato, mettile nella `WHERE`: `claim_close` (quiz), `lock_event`/`resolve_event` (bet), `claim_daily`.
+    > 3. **`.execution_options(synchronize_session=False)` sempre**, poi `await session.refresh(obj, [colonne])`. Il default riscrive in cache un valore derivato dalla copia stale (misurato: cache=100, DB=500, `coins - 10` lascia DB=490 e cache=90). Il refresh mantiene il contratto per cui, dopo la chiamata, l'entità in sessione riflette la scrittura — **è usato davvero**, non è cosmetico.
+    >
+    > **Non aggiungere `populate_existing=True`**: invalida le relazioni già caricate sull'istanza e in async diventa `MissingGreenlet` (provato e ritirato). Mai `session.expire` (stesso motivo).
+    >
+    > **Attenzione al `refresh` su un attributo con una modifica pendente**: la butta via (`autoflush=False`, quindi la modifica non è ancora andata al DB). Preso da un test unitario esistente su `grant_xp`. Se scrivi in SQL invece di mutare l'istanza il problema non esiste — non resta mai niente di pendente.
+    >
+    > **I lock restano dove servono davvero**, cioè dove SQL da solo non basta: (a) `transfer` locka i due wallet in ordine di **`tg_id` crescente**, perché due righe toccate insieme possono andare in deadlock; (b) `lock_balance` per l'unica operazione che ha bisogno del valore corrente (`admin_service.set_balance`: un target assoluto non è aritmetica relativa); (c) il ramo `capped` di `grant_xp`, perché un cap è un min/max contro un valore memorizzato e non ha una scrittura portabile fra Postgres e SQLite. Ordine di lock canonico **Event → User → Wallet**; il ramo *uncapped* di `grant_xp` non prende lock **apposta** (invertirebbe l'ordine su cui si appoggia `resolve_event`), per questo la sua aritmetica deve essere sicura da sola.
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
@@ -1203,7 +1236,7 @@ tests/
     ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
     ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
     │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
-    └── test_money_concurrency_pg.py # [pg] diagnostica gare identity map (9 xfail strict + 5 guardie)
+    └── test_money_concurrency_pg.py # [pg] gare su denaro/XP/bet/quiz — 16 guardie di regressione
 ```
 
 ### I test marcati `pg` (PostgreSQL reale)
@@ -1230,9 +1263,11 @@ pytest -m pg -rxX          # -rxX elenca xfail E xpass
 pytest -m "not pg"         # esplicitamente senza
 ```
 
-Le gare sono `xfail(strict=True)`: **un xpass fa fallire la build**, e significa che quel sito è già
-sicuro (allora si toglie l'xfail e il test diventa una guardia di regressione permanente). Vedi
-regola 22 per il meccanismo e il fix corretto.
+Questi test sono nati `xfail(strict=True)` come strumento diagnostico: ognuno provava che un sito era
+rotto, e `strict` faceva fallire la build su un xpass — cioè "questo sito è già sicuro". Sono stati
+tolti uno per commit man mano che i siti venivano corretti. **Oggi sono tutti guardie di regressione
+e non c'è più nessun xfail**: se uno torna rosso, qualcuno ha rimesso una decisione sul denaro in
+Python. Vedi regola 22 per il meccanismo e il pattern corretto.
 
 ### Eseguire i test
 
@@ -1277,7 +1312,8 @@ DB_URL=sqlite+aiosqlite:///:memory:
 
 ### Note implementative
 
-- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota), impedendo a `resolve_event` di rileggere i bet dal DB. **La stessa trappola è un bug di produzione, non solo di test**: vedi regola 22 e `tests/integration/test_money_concurrency_pg.py`.
+- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota). **La stessa trappola era un bug di produzione**: `resolve_event` leggeva i bet da `event.user_bets`, e chi teneva l'evento teneva anche quella collection — una scommessa piazzata dopo lo snapshot veniva addebitata e mai liquidata. Ora li rilegge con una query. Vedi regola 22.
+- **un `refresh` butta via una modifica pendente sullo stesso attributo** (`autoflush=False` ⇒ la modifica non è ancora nel DB). Motivo in più per scrivere in SQL invece di mutare l'istanza: così non resta mai niente di pendente. Fissato dalla guardia «due grant nella stessa transazione» in `TestUncappedXp`.
 - **la identity map usa riferimenti deboli** — un oggetto caricato e non conservato viene garbage-collected e sparisce dalla mappa. È il motivo per cui `_upsert_user` non avvelena la sessione, e va tenuto presente prima di "ottimizzare" mettendo lo `User` in `data`: lo renderebbe **forte**, e ogni lock di ogni servizio diventerebbe vulnerabile su tutti i ~190 handler. Il tripwire è `TestMiddlewareDoesNotPoisonTheSession`.
 - **due sessioni sullo stesso DB non sono esprimibili su SQLite in-memory**: `StaticPool` dà a ogni sessione la **stessa** connessione, quindi la stessa transazione. Ogni test di concorrenza reale richiede il fixture `pg_engine` (marker `pg`).
 - **timestamp SQLite**: `func.now()` ha precisione al secondo → ordinamento `get_history` usa `(created_at DESC, id DESC)` come secondary sort.
@@ -1292,8 +1328,9 @@ Tre workflow in `.github/workflows/`:
   (riusabile come gate). Include un **service `postgres:16-alpine`** (DB `gamingbot_test`) e
   passa `TEST_PG_URL`, che abilita i test marcati `pg`; `DB_URL` **resta SQLite**, perché
   `database.connection` costruisce il suo engine all'import e non deve puntare al DB di test.
-  `-rxX` elenca xfail e **xpass**: le gare sul denaro sono `xfail(strict=True)`, quindi un PASS
-  inatteso **fa fallire la build** e significa «quel sito in realtà è già sicuro».
+  `-rxX` elenca xfail e **xpass**: serviva quando le gare sul denaro erano `xfail(strict=True)`
+  (un PASS inatteso faceva fallire la build). Oggi non ci sono più xfail; il flag resta perché
+  è così che si vede subito se qualcuno ne reintroduce uno.
   Coverage con ratchet **`fail_under = 57`** in `pyproject.toml`: si alza, non si abbassa.
 - **`docker-image.yml`** — push su `main`/`test` o di un git tag `v*.*.*`: job `test`
   (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`). L'immagine
@@ -1328,7 +1365,7 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 - [ ] Nuovi comandi **utente** aggiunti a `_PRIVATE_COMMANDS` / `_GROUP_COMMANDS`; comandi **admin** solo in `/help`
 - [ ] **Stringhe user-controlled** in messaggi HTML passate da `utils.text.esc` (regola 20)
 - [ ] **Nessun `settings.group_id` a runtime** — `group_registry.get_group_id()` (regola 21)
-- [ ] Mutazioni denaro/XP/bet con `with_for_update` (ordine Event→User→Wallet); `credit/debit` con `amount>0` (regola 22)
+- [ ] Mutazioni denaro/XP/bet decise **in SQL**: check nella `WHERE`, aritmetica nella `SET`, `synchronize_session=False` + `refresh`. Letture per colonna, non per entità. Lock solo dove SQL non basta (ordine Event→User→Wallet, wallet per `tg_id` crescente); `credit/debit` con `amount>0` (regola 22)
 - [ ] Trofei conditions aggiornate se aggiunte nuove metriche su `User`; nuove colonne `User` ⇒ voce in `_MIGRATIONS` (anche cambi di **tipo** colonna)
 - [ ] `User.xp` mutato solo via `xp_service`; nuove sorgenti XP classificate capped/uncapped
 - [ ] Nuovi cosmetici/consumabili/categorie/trofei/ranghi: aggiungere al CSV (`catalogs/*.example.csv` + default Python), non hardcodare nel codice; nuove condizioni trofeo via dispatch + `TROPHY_CONDITIONS` + `describe_condition` (mai `if/elif` sparsi); `collection` a punto fisso

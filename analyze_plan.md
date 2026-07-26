@@ -5,7 +5,13 @@
 > **Cosa cambia rispetto alla v1.** La v1 era una buona diagnosi con misure sbagliate.
 > Ogni numero qui sotto è stato rimisurato eseguendo gli strumenti, non con `grep`.
 > Tre raccomandazioni della v1 si sono rivelate infondate e sono state rimosse; una
-> era attivamente pericolosa. La Fase 0 è **già fatta** (vedi in fondo).
+> era attivamente pericolosa.
+>
+> **Stato: Fasi 0, 1a e 1b fatte.** Il path denaro non prende più decisioni su valori in
+> cache, e ogni sito ha la sua guardia di regressione su Postgres vero. Le Fasi 2-5 e le
+> decisioni aperte in fondo sono ancora da fare. Da qui in avanti, quando una sezione
+> descrive un difetto al presente, sta descrivendo *com'era quando è stato misurato*: il
+> registro serve a spiegare come lo si è saputo, non lo stato attuale del codice.
 
 ## Il criterio aggiunto: costo cognitivo
 
@@ -178,8 +184,13 @@ su tutti i ~190 handler, e quel test lo direbbe subito.
 
 ### La diagnosi misurata: 9 siti vulnerabili, 5 già sicuri
 
-Gli xfail sono `strict=True`, quindi «questo sito è rotto» non è un'affermazione ma un
-fatto che la CI ricontrolla a ogni push — e un xpass **fa fallire la build** per dire
+> **Stato: tutti corretti.** Questa sezione resta come registro di *cosa era rotto e come lo
+> si è saputo*. Gli xfail non esistono più: ogni test qui sotto è diventato la guardia di
+> regressione del proprio sito (Fase 1b). Una sola voce si è rivelata mal diagnosticata — il
+> doppio `lock_event` — ed è discussa nella Fase 1b.
+
+Gli xfail erano `strict=True`, quindi «questo sito è rotto» non era un'affermazione ma un
+fatto che la CI ricontrollava a ogni push — e un xpass **faceva fallire la build** per dire
 «questo sito in realtà è sano».
 
 **Vulnerabili (9 xfail):** doppio `/daily`; streak ricalcolata da valore stale; `debit`
@@ -259,7 +270,8 @@ indovinato: matrice `[3.11, 3.12]` o allineamento secco.
 
 ### Fase 1a — La rete: FATTA (nessuna riga di `src/` modificata)
 
-**724 test verdi + 9 xfail con Postgres; 713 verdi + 20 skip senza. Ruff e mypy puliti.**
+*Conteggi a fine Fase 1a: 724 verdi + 9 xfail con Postgres, 713 + 20 skip senza. Ruff e mypy
+puliti. (I conteggi correnti sono in Fase 1b.)*
 
 - **Harness Postgres**: fixture `pg_engine`/`pg_sessions`/`pg_session`/`pg_user_factory` in
   `tests/conftest.py`, tutte **aggiunte** (le fixture SQLite esistenti sono intatte).
@@ -279,32 +291,76 @@ indovinato: matrice `[3.11, 3.12]` o allineamento secco.
 - **Strumento diagnostico**: 14 test di gara, `xfail(strict=True)`. Risultato nella
   sezione «La diagnosi misurata» sopra.
 
-### Fase 1b — Il fix, uno per commit (da fare)
+### Fase 1b — Il fix: FATTA, un commit per sito
 
-Ordinato per isolamento, sul solo elenco dei 9 siti **provati** vulnerabili. Ogni commit
-toglie il proprio xfail: quando l'xfail sparisce, il test diventa la guardia di regressione.
+**746 test verdi con Postgres, 721 + 25 skip senza. Zero xfail. Ruff e mypy puliti.**
 
-1. `claim_daily` — il più isolato: un campo, un'eccezione che esiste già, 2 xfail suoi.
-2. `debit` / `credit` / `transfer` — con il pattern `UPDATE` atomico **già presente nel
-   repo** (`bet_service`, `admin_service`), non con `populate_existing`.
-3. `grant_xp` (ramo capped).
-4. `lock_event` / `resolve_event` — solo il flusso `_auto_lock`, l'unico raggiungibile.
-5. Chiusura quiz — richiede di spostare la transizione di stato in un servizio.
+Sette commit, ognuno con la sua prova. La regola è stata la stessa ovunque, e alla fine si
+riduce a una frase: **le decisioni sul denaro si prendono in SQL, non in Python.**
 
-**Trappola verificata, obbligatoria per ognuno**: l'`UPDATE` atomico da solo **non basta**.
-Di default SQLAlchemy ricalcola l'aritmetica in Python e riscrive il valore stale nella
-cache (con cache=100 e DB=500, `values(coins=Wallet.coins-10)` dà DB=490 **ma cache=90**).
-Serve `.execution_options(synchronize_session=False)` più `await session.refresh(obj, [col])`
-— **non** `session.expire`, che in async dà `MissingGreenlet`. E `refresh` con
-`attribute_names` lascia intatte le relazioni caricate in eager, a differenza di
-`populate_existing`: è esattamente la proprietà che rende sicuro questo approccio.
+| # | Commit | Sito | Cosa è diventato |
+|---|---|---|---|
+| 0 | `test:` | `set_balance` | la gara che mancava alla rete (vedi sotto) |
+| 1 | `fix:` | `claim_daily` | `UPDATE` condizionale; streak via `CASE` nella `SET` |
+| 2 | `fix:` | `debit`/`credit`/`transfer` | aritmetica in SQL; letture per colonna |
+| 3 | `fix:` | `grant_xp` | cap letto sotto lock, XP sommato in SQL |
+| 4 | `fix:` | `lock_event`/`resolve_event` | transizione condizionale; bet riletti con una query |
+| 5 | `fix:` | chiusura quiz | nuova `quiz_service.claim_close()` |
+| 6 | `fix:` | `xp`, `total_wagered` | `BigInteger`, modello + `_MIGRATIONS` |
 
-Più due voci, tenute fuori dalla Fase 1a perché toccano `src/`:
-- **Larghezza colonne** — `total_wagered` e `xp` a `BigInteger`: due righe in
-  `_MIGRATIONS`, e ora c'è il test che le esercita. **Nessun Alembic richiesto.**
-- **`admin_service.set_balance`** — legge `wallet.coins` dalla cache per calcolare un delta
-  verso un target assoluto, e non usa `with_for_update()` (per questo non compariva nei
-  grep): «imposta il saldo a N» può atterrare su N±X. Non ha ancora un test di gara.
+**Le tre regole che ne sono uscite** (ora regola 22 di `STEERING.md`): leggi le colonne, non
+le entità (`select(Wallet.coins)` non può venire dalla cache, `select(Wallet)` sì); scrivi in
+SQL e relativo dove puoi (`coins = coins + :delta` somma, `wallet.coins += x` sovrascrive);
+`synchronize_session=False` sempre, poi `refresh` per non lasciare mentire l'istanza.
+
+I lock restano in tre punti, e solo dove SQL da solo non basta: `transfer` (due righe insieme
+⇒ deadlock possibile, ordine `tg_id` crescente), `lock_balance` per `set_balance` (un target
+assoluto ha bisogno del valore corrente), e il ramo `capped` di `grant_xp` (un min/max contro
+un valore memorizzato non ha una scrittura portabile PG/SQLite).
+
+#### Quattro cose che il piano non aveva previsto
+
+1. **`refresh` non è un dettaglio, è il contratto.** La prima versione del fix a `claim_daily`
+   non lo faceva, e due test esistenti che asseriscono su `user.daily_streak` sono diventati
+   rossi. Non era un difetto dei test: dice che il contratto «dopo la chiamata, l'entità in
+   sessione riflette la scrittura» **è usato davvero**, quindi va mantenuto.
+2. **…ma un `refresh` butta via una modifica pendente sullo stesso attributo** (`autoflush=False`
+   ⇒ non è ancora andata al DB). Preso da un test unitario su `grant_xp` chiamato due volte
+   nella stessa transazione. Scrivere in SQL invece di mutare l'istanza elimina il problema
+   alla radice: non resta mai niente di pendente.
+3. **Un secondo difetto in `grant_xp`, non nella lista.** Il ramo *uncapped* non prende lock
+   (per scelta: lo prenderebbe nell'ordine sbagliato) e faceva `user.xp += n` in Python: 10
+   grant concorrenti da 5 XP lasciavano **5**. Nove persi su dieci, senza nemmeno bisogno
+   della identity map. Trovato leggendo la funzione, misurato prima di toccarlo.
+4. **Una mia diagnosi era sbagliata.** Il test sul doppio `lock_event` asseriva
+   `EventAlreadySettledError`, che non è mai stato il contratto (lockare un evento già lockato
+   è idempotente **per definizione**). Falliva prima e dopo il fix per lo stesso motivo, quindi
+   non misurava niente. Il difetto reale era un altro: l'evento trattenuto diceva ancora
+   `open`, il controllo ripassava e `locked_at` — l'orario di chiusura vera delle scommesse,
+   contro cui `place_bet` rifiuta — veniva riscritto più avanti. Test riscritto e verificato
+   rosso sul codice vecchio prima di tenerlo.
+
+#### Su `set_balance`, che si comportava al contrario di come pensavo
+
+Non mancava il target: lo **centrava sempre**, perché l'ORM riscriveva un valore assoluto
+calcolato da una base stale (`delta = target - stale` ⇒ `stale + delta = target` per
+costruzione). A sparire era il movimento concorrente: ledger 250, wallet 200. E la funzione
+riportava comunque `target`, quindi entrambi gli handler dicevano all'admin che il saldo era
+200 quando non lo era. Corollario che rende il test indispensabile: sistemare `credit`/`debit`
+da solo avrebbe **rotto** questa compensazione accidentale.
+
+#### Verificato che NON serviva toccare
+
+`place_bet` e `cancel_event` leggono lo stato dopo un `FOR UPDATE`, ma i loro handler chiamano
+il servizio **senza trattenere niente**: la lettura che locka è la prima della riga, quindi
+funzionano già. Nessuna modifica speculativa lì.
+
+#### Resta fuori, e per un motivo
+
+`xp_service.airdrop_xp` cicla su tutti gli utenti mutando `user.xp` in Python — stessa forma di
+difetto, ma **nessun test lo prova** e serve che due admin lancino un airdrop nello stesso
+istante. La regola che mi sono dato per tutta la fase è: prima la misura, poi il fix. Vale
+anche quando il fix sarebbe di una riga.
 
 ### Fase 2 — Validazione al confine
 
@@ -353,7 +409,15 @@ copy, quel modulo merita un test.
 - **`fun_ai._last_used` → `utils/cooldown`** (rung 2, non `cachetools`).
 - **Processo singolo**: resta l'assunzione di fondo — il bot non gira in 2 repliche senza
   cache incoerenti. Va scritto in STEERING, non scoperto in produzione.
-- **Alembic**: quando servirà un downgrade o una migrazione di *dati*. Non per la Fase 1.4.
+- **Alembic**: quando servirà un downgrade o una migrazione di *dati*. **Confermato dai fatti**:
+  l'allargamento a `BigInteger` di `xp` e `total_wagered` è passato con due righe in
+  `_MIGRATIONS` più un test che le esercita su Postgres vero.
+- **`xp_service.airdrop_xp`**: muta `user.xp` in Python su tutti gli utenti. Stessa forma dei
+  difetti della Fase 1b ma **non misurata** — serve prima un test di gara.
+- **`quiz_service.reset_quiz`**: read-check-write su `status` con `get_quiz(for_update=True)`,
+  l'ultimo uso di quel pattern rimasto. Due reset sovrapposti però producono lo stesso esito
+  (nessun denaro si muove), quindi vale meno di un test dedicato. Da rivedere insieme alla
+  decisione aperta sulla semantica di `reset_quiz` rispetto ai premi già pagati.
 
 ---
 

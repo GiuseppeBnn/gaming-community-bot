@@ -89,7 +89,7 @@ Per usare l'immagine pubblicata da CI invece di buildare in locale, imposta
 ```bash
 pip install -r requirements-dev.txt
 
-pytest                                   # tutta la suite (~733 test, ~20s)
+pytest                                   # tutta la suite (~746 test, ~20s)
 pytest --cov=src --cov-report=term-missing
 pytest tests/unit/                       # solo unit (senza DB)
 pytest tests/integration/                # solo integration (SQLite in-memory)
@@ -124,9 +124,10 @@ pytest -m pg -rxX
 > usa-e-getta. Rifiuta qualsiasi nome che non finisca in `_test`, perché quello del compose si
 > chiama `gamingbot` — a un carattere di distanza.
 
-Alcune di queste gare sono `xfail(strict=True)`: documentano bug di concorrenza **noti e non ancora
-corretti** sul path denaro (vedi `analyze_plan.md`). Un xfail che passa fa fallire la build, così
-il giorno in cui un fix li sistema non passa inosservato.
+Queste gare sono nate come `xfail(strict=True)`, una per ogni difetto di concorrenza misurato sul
+path denaro. Sono state corrette una alla volta e **oggi sono tutte verdi**: ognuna è la guardia di
+regressione del proprio sito. Se una torna rossa, una decisione sul denaro è tornata in Python
+invece che in SQL — vedi la regola 22 di `STEERING.md`.
 
 ---
 
