@@ -351,14 +351,22 @@ async def cmd_nuovo(message: Message) -> None:
     await message.answer("Ciao dal nuovo handler!")
 ```
 
-1. Registralo in `src/main.py` (prima di `common.router`):
+1. Registralo in `src/handlers/__init__.py`, **prima di `common.router`** (che è il
+   catch-all e deve restare ultimo):
 
 ```python
-from handlers import nuovo
-...
-dp.include_router(nuovo.router)
-dp.include_router(common.router)
+from handlers import ..., nuovo
+
+ROUTERS: tuple[Router, ...] = (
+    ...
+    nuovo.router,
+    common.router,      # ← resta ultimo
+)
 ```
+
+Se te ne dimentichi, `tests/unit/test_router_order.py` fallisce: cammina il package e
+pretende che ogni modulo con un `router` sia registrato. Senza quel test un handler
+non registrato è semplicemente morto, senza nessun errore.
 
 Vedi **STEERING.md** per regole vincolanti (DI negli handler, no-commit nei service,
 ordine middleware/router, filtri admin, ecc.).

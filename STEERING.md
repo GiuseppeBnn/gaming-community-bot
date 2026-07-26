@@ -213,18 +213,39 @@ dp.update.middleware(GroupMemberMiddleware())  # 4. blocca non-membri in privato
 
 ## 7. Ordine router (critico)
 
+Dichiarato **in un posto solo**: `handlers/__init__.py`, come tupla `ROUTERS` + `register(dp)`.
+`main.py` chiama `handlers.register(dp)` e non sa più nulla dell'ordine.
+
 ```python
-dp.include_router(group_events.router)   # migrazione/chat_member: ordine indifferente
-dp.include_router(onboarding.router)
-dp.include_router(economy.router)
-dp.include_router(admin_betting.router)  # ← DEVE stare prima di betting
-dp.include_router(betting.router)
-dp.include_router(badges.router)
-dp.include_router(shop.router)
-dp.include_router(common.router)         # ← DEVE stare per ultimo (catch-all /start)
+# handlers/__init__.py
+ROUTERS: tuple[Router, ...] = (
+    group_events.router,    # migrazione/chat_member: ordine indifferente
+    onboarding.router,
+    economy.router,
+    admin_betting.router,   # ← DEVE stare prima di betting
+    betting.router,
+    ...
+    common.router,          # ← DEVE stare per ultimo (catch-all /start)
+)
 ```
 
 `admin_betting` prima di `betting` perché in fondo ad `admin_betting.router` c'è un catch-all deny per tutti i callback `admin_bet:*`. Se `betting.router` fosse registrato prima, i callback `admin_bet:*` non verrebbero mai visti dall'admin.
+
+> **`tests/unit/test_router_order.py` lo verifica**, e la cosa che vale più delle due
+> asserzioni sull'ordine è la terza: **cammina il package** e pretende che ogni modulo che
+> definisce un `router` sia in `ROUTERS`. Un `handlers/foo.py` nuovo che nessuno registra è
+> semplicemente morto — nessun errore, nessun log, i comandi non partono. Nessuna lista di
+> esclusioni: chi non va registrato (`_privacy`, `_trophy_announce`, `errors`) non definisce
+> un `router`. È scrivendo quel test che è venuto fuori il `Router` inutilizzato che
+> `errors.py` si portava dietro.
+>
+> Confronti per **identità**, non per `Router.name`: solo `Router(name=...)` dà un nome
+> leggibile, e questi sono costruiti nudi (`.name` è un id esadecimale).
+>
+> `ROUTERS` contiene **singleton di modulo** e aiogram rifiuta di attaccare un router a un
+> secondo parent: un test che chiama `register()` con quelli veri li lega per sempre a un
+> Dispatcher buttato via e rompe la registrazione dell'app in qualunque test successivo. Per
+> questo il test di `register` usa router usa-e-getta.
 
 `group_events.router` (gestione migrazioni chat + `chat_member`/`my_chat_member`) ha filtri su tipi
 di update disgiunti dagli altri router → ordine indifferente; registrato per primo per chiarezza.
@@ -233,7 +254,7 @@ esistono gli handler.
 
 ### 7.a Handler globale errori (`dp.errors`)
 
-`dp.errors.register(errors.on_error)` in `main.py`, **dopo** tutti gli `include_router`.
+`dp.errors.register(errors.on_error)` in `main.py`, **dopo** `handlers.register(dp)`.
 Implementato in **`handlers/errors.py`** (non in `main.py`, che è escluso dalla coverage —
 così è testabile: `tests/unit/test_error_handler.py`). Sul **Dispatcher**, non su un router,
 per coprire tutti i ~190 handler.

@@ -385,9 +385,11 @@ esiste già) → `betting.py` (36%, stessa `selectinload` copiata 4 volte) →
 Più i tre interventi strutturali della v1, che restano validi e sono a costo cognitivo
 nullo perché *togliono* concetti:
 
-- **`handlers/__init__.py`** (0 byte): sposta i 16 `include_router` lì con l'ordine
-  dichiarato e un test che lo verifica. Oggi la correttezza è affidata a un commento
-  (*«admin_betting MUST precede betting»*).
+- ~~**`handlers/__init__.py`** (0 byte): sposta i 16 `include_router` lì~~ → **fatto.**
+  `ROUTERS` + `register(dp)`, `main.py` non sa più nulla dell'ordine. Il test che conta
+  non è quello sull'ordine ma quello che **cammina il package**: un modulo con un `router`
+  che nessuno registra è morto in silenzio. Ha subito trovato un `Router` inutilizzato in
+  `errors.py` (rimosso: `on_error` sta su `dp.errors`, non su un router).
 - **`scheduler_loop` fuori da `handlers/`**: è un daemon dentro il package di
   presentazione. Il design è corretto (task persistiti, sopravvive ai restart, `TaskSkip`
   distinto dagli errori) — solo collocato male.

@@ -24,13 +24,15 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ErrorEvent
 
 log = logging.getLogger(__name__)
 
-router = Router(name="errors")
+# No `router` here on purpose: `on_error` is registered on the **dispatcher**
+# (`dp.errors.register`, see main.py) so it covers every router. A module-level
+# Router would be dead code, and `tests/unit/test_router_order.py` discovers
+# registrable modules by looking for exactly that attribute.
 
 _USER_MESSAGE = (
     "⚠️ Qualcosa è andato storto. L'errore è stato registrato — riprova tra poco."
