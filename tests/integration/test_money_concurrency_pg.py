@@ -221,11 +221,10 @@ class TestMiddlewareDoesNotPoisonTheSession:
 # ===========================================================================
 
 class TestDailyClaim:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="claim_daily's FOR UPDATE returns the held User with a stale "
-               "last_daily_claim, so the window check passes twice",
-    )
+    """Regression guards. Both were red until `claim_daily` became a single
+    conditional UPDATE: a locking read plus a Python-side check let the second claim
+    through, because the lock protected a row whose values came from the cache."""
+
     async def test_double_claim_is_refused(self, pg_sessions, pg_user_factory):
         await pg_user_factory(tg_id=1, coins=0)
 
@@ -242,9 +241,6 @@ class TestDailyClaim:
 
         await assert_ledger_balanced(pg_sessions, 1, initial=0)
 
-    @pytest.mark.xfail(
-        strict=True, reason="A recomputes the streak from its stale copy and writes it back"
-    )
     async def test_streak_is_not_double_counted(self, pg_sessions, pg_user_factory):
         yesterday = daytime.utc_now() - timedelta(days=1)
         await pg_user_factory(tg_id=1, coins=0, last_daily_claim=yesterday, daily_streak=5)

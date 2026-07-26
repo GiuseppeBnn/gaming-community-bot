@@ -45,12 +45,21 @@ def local_today() -> date:
     return local_day(utc_now())
 
 
-def next_local_midnight(naive_utc: datetime) -> datetime:
-    """First instant of the local day *after* `naive_utc`, as naive UTC.
+def local_midnight(day: date) -> datetime:
+    """First instant of the local calendar day `day`, as naive UTC.
 
-    Midnight always exists in Europe/Rome (DST shifts happen at 02:00/03:00),
-    so there is no ambiguous/skipped-hour case to disambiguate here.
+    The lower-bound counterpart of `next_local_midnight`: a *fixed* instant a
+    stored column can be compared against, which is what lets a daily reset be
+    written as one SQL predicate (`WHERE last_claim < :day_opened`) instead of a
+    per-row threshold recomputed in Python.
+
+    Midnight always exists in Europe/Rome (DST shifts happen at 02:00/03:00), so
+    there is no ambiguous/skipped-hour case to disambiguate here.
     """
-    next_day = to_local(naive_utc).date() + timedelta(days=1)
-    midnight_local = datetime.combine(next_day, time.min, tzinfo=_tz())
+    midnight_local = datetime.combine(day, time.min, tzinfo=_tz())
     return midnight_local.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def next_local_midnight(naive_utc: datetime) -> datetime:
+    """First instant of the local day *after* `naive_utc`, as naive UTC."""
+    return local_midnight(local_day(naive_utc) + timedelta(days=1))

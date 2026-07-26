@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -167,38 +167,84 @@ async def claim_daily(
     Both rules are expressed as a single `next_allowed` threshold rather than two
     booleans: an OR there would let people claim every N hours, so the AND is made
     structural (a max() of the two instants) and cannot be written wrong.
+
+    ## Why one UPDATE instead of read-check-write
+
+    The check and the write are a single conditional UPDATE, so two concurrent
+    /daily calls cannot both pass: the second one matches zero rows. Locking the
+    row and deciding in Python is *not* enough here — see `_locked_balance` for
+    why the lock alone does not protect a value read through the ORM.
+
+    The two window rules are rephrased as fixed instants so SQL can evaluate them
+    against the stored column, which is the whole reason this fits in one
+    statement (a threshold derived from `last` itself could not):
+
+        now >= next_local_midnight(last)  ⟺  last < <today's local midnight>
+        now >= last + daily_min_hours     ⟺  last <= now - daily_min_hours
     """
-    # Lock the user row: the read-check-write on last_daily_claim must be atomic
-    # or two concurrent /daily calls could both pass the check.
-    result = await session.execute(
-        select(User).where(User.tg_id == tg_id).with_for_update()
-    )
-    user = result.scalar_one_or_none()
+    # Loaded up front for two reasons: it is the existence check, and it is the
+    # instance the caller may still be holding — the refresh below is what stops
+    # it from lying after the UPDATE (§5).
+    user = (
+        await session.execute(select(User).where(User.tg_id == tg_id))
+    ).scalar_one_or_none()
     if user is None:
         raise WalletNotFoundError(tg_id)
 
     now = daytime.utc_now()
-    last = user.last_daily_claim
+    today = daytime.local_day(now)
+    today_opened = daytime.local_midnight(today)
+    yesterday_opened = daytime.local_midnight(today - timedelta(days=1))
+    min_gap_cutoff = now - timedelta(hours=settings.daily_min_hours)
 
-    if last is not None:
-        next_allowed = max(
-            daytime.next_local_midnight(last),          # new calendar day
-            last + timedelta(hours=settings.daily_min_hours),  # min gap
+    result = await session.execute(
+        update(User)
+        .where(
+            User.tg_id == tg_id,
+            or_(
+                User.last_daily_claim.is_(None),  # never claimed
+                and_(
+                    User.last_daily_claim < today_opened,      # new calendar day
+                    User.last_daily_claim <= min_gap_cutoff,   # min gap
+                ),
+            ),
         )
-        if now < next_allowed:
-            remaining = math.ceil((next_allowed - now).total_seconds())
-            raise DailyAlreadyClaimedError(seconds_remaining=remaining)
+        .values(
+            last_daily_claim=now,
+            # SET expressions see the row's *previous* values, so the streak is
+            # continued or reset from the stored claim without reading it first.
+            # The WHERE above already excludes anything from today, so "not older
+            # than yesterday's opening" means exactly "claimed yesterday".
+            daily_streak=case(
+                (User.last_daily_claim >= yesterday_opened, User.daily_streak + 1),
+                else_=1,
+            ),
+        )
+        .execution_options(synchronize_session=False)
+    )
 
-    # Streak continues only if the previous claim was *yesterday*: skipping a
-    # whole calendar day breaks it. (A same-day claim can't reach this point.)
-    if last is not None and daytime.local_day(last) == daytime.local_day(now) - timedelta(days=1):
-        new_streak = (user.daily_streak or 0) + 1
-    else:
-        new_streak = 1
+    # Whatever the outcome, the in-session copy must stop lying: it is what the
+    # error path reads to size the countdown, what this function returns as the
+    # streak, and what the caller sees if it kept a reference.
+    await session.refresh(user, ["last_daily_claim", "daily_streak"])
 
-    user.last_daily_claim = now
-    user.daily_streak = new_streak
+    if not (result.rowcount or 0):
+        last = user.last_daily_claim
+        next_allowed = (
+            max(
+                daytime.next_local_midnight(last),
+                last + timedelta(hours=settings.daily_min_hours),
+            )
+            if last is not None
+            # Unreachable: a NULL last_daily_claim always matches the WHERE above,
+            # so a non-match means the row exists and was claimed too recently.
+            else now
+        )
+        raise DailyAlreadyClaimedError(
+            seconds_remaining=max(0, math.ceil((next_allowed - now).total_seconds()))
+        )
 
+    new_streak = user.daily_streak
     reward = settings.daily_reward_coins
     await credit(
         session, tg_id, reward,
