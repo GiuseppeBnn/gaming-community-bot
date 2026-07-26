@@ -59,7 +59,7 @@ class User(Base):
     tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     full_name: Mapped[str] = mapped_column(String(256), nullable=False)
-    xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    xp: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Bot-level ban (set by /ban, the warn auto-ban and the dashboard; cleared by
     # /sban). A banned user's updates are dropped silently by BannedUserMiddleware —
@@ -213,7 +213,7 @@ class BettingOption(Base):
     )
     label: Mapped[str] = mapped_column(String(128), nullable=False)
     odds_multiplier: Mapped[float] = mapped_column(Float, default=2.0, nullable=False)
-    total_wagered: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_wagered: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
 
     event: Mapped["BettingEvent"] = relationship(back_populates="options")
     bets: Mapped[list["UserBet"]] = relationship(back_populates="option")

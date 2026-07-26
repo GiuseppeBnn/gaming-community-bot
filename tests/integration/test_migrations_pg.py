@@ -156,6 +156,35 @@ class TestMigrationsRepairAnOldDeploy:
         assert stored == big
 
 
+    async def test_widens_the_other_int32_counters(self, pg_engine, monkeypatch):
+        """`users.xp` and `betting_options.total_wagered` accumulate without any
+        upper bound of their own — XP from airdrops, wagers from a pot paid in
+        coins, which are already BIGINT. Overflowing either raises mid-transaction
+        on a write path, so they get widened for the same reason balances did.
+        """
+        async with pg_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE users ALTER COLUMN xp TYPE INTEGER"))
+            await conn.execute(
+                text("ALTER TABLE betting_options ALTER COLUMN total_wagered TYPE INTEGER")
+            )
+
+        await _run_migrations(pg_engine, monkeypatch)
+
+        assert (await _columns(pg_engine, "users"))["xp"]["type"] == "bigint"
+        assert (
+            await _columns(pg_engine, "betting_options")
+        )["total_wagered"]["type"] == "bigint"
+
+        big = 12_345_678_900  # > 2^31
+        async with pg_engine.begin() as conn:
+            await conn.execute(text(INSERT_USER), {"id": 8})
+            await conn.execute(text("UPDATE users SET xp = :x WHERE tg_id = 8"), {"x": big})
+            stored = (
+                await conn.execute(text("SELECT xp FROM users WHERE tg_id = 8"))
+            ).scalar_one()
+        assert stored == big
+
+
 class TestLedgerIndexes:
     async def test_history_indexes_exist(self, pg_engine, monkeypatch):
         """/storico filters `from_tg_id OR to_tg_id` ordered by created_at. Both
