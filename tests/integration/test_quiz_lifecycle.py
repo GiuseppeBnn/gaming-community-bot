@@ -20,11 +20,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from database.models import Badge, Quiz, Wallet
 from handlers.quiz import lifecycle as quiz_handlers
 from services import quiz_service
+from utils import cooldown, static_reply
 
 ADMIN_ID = 1
 GROUP_ID = -100123
@@ -455,3 +457,180 @@ class TestTrophiesOnClose:
             f"no trophy announcement among {len(group.messages)} group messages"
         )
         assert await _coins(session, 10) == 1000
+
+
+# ---------------------------------------------------------------------------
+# The commands around the two functions
+# ---------------------------------------------------------------------------
+
+class _GroupMessage(_FakeMessage):
+    """A message in the group, recording the keyboard a reply carries."""
+
+    def __init__(self, bot=None) -> None:
+        super().__init__(bot=bot, chat_type="supergroup")
+        self.markups: list[object] = []
+
+    async def reply(self, text, reply_markup=None, **kw):
+        self.replies.append(text)
+        self.markups.append(reply_markup)
+        return SimpleNamespace(message_id=len(self.replies))
+
+    async def answer(self, text, reply_markup=None, **kw):
+        return await self.reply(text, reply_markup, **kw)
+
+
+@pytest.fixture(autouse=True)
+def _clean_cooldowns():
+    """`/quiz` is throttled per user and the store is module-level."""
+    cooldown.reset()
+    static_reply.reset()
+    yield
+    cooldown.reset()
+    static_reply.reset()
+
+
+def _as_admin(monkeypatch, value: bool):
+    async def _is_admin(bot, uid):
+        return value
+
+    monkeypatch.setattr(quiz_handlers, "is_admin", _is_admin)
+
+
+class TestQuizCommand:
+    async def test_a_player_with_no_quiz_running_is_told_so(
+        self, session, monkeypatch, user_factory
+    ):
+        """Never silence: the old admin-only filter simply dropped a member's /quiz,
+        which reads as a broken bot."""
+        _as_admin(monkeypatch, False)
+        await user_factory(tg_id=ADMIN_ID, username="tizio")
+        message = _GroupMessage()
+
+        await quiz_handlers.cmd_quiz_list(message, session)
+
+        assert "Nessun quiz attivo" in message.said
+
+    async def test_a_player_gets_a_private_play_link_for_a_running_quiz(
+        self, session, monkeypatch, user_factory
+    ):
+        """The quiz is played in private; the group button is the way in."""
+        _as_admin(monkeypatch, False)
+        quiz = await _quiz_with_players(session, user_factory, players=())
+        message = _GroupMessage()
+
+        await quiz_handlers.cmd_quiz_list(message, session)
+
+        urls = [b.url for row in message.markups[-1].inline_keyboard for b in row]
+        assert any(u.endswith(f"?start=quiz_{quiz.id}") for u in urls)
+
+    async def test_the_second_call_within_the_window_says_nothing(
+        self, session, monkeypatch, user_factory
+    ):
+        """A silent throttle on purpose: a «slow down» notice in the group would be
+        the flood it is trying to prevent."""
+        _as_admin(monkeypatch, False)
+        await user_factory(tg_id=ADMIN_ID, username="tizio")
+        first, second = _GroupMessage(), _GroupMessage()
+
+        await quiz_handlers.cmd_quiz_list(first, session)
+        await quiz_handlers.cmd_quiz_list(second, session)
+
+        assert first.said and second.said == ""
+
+    async def test_an_admin_in_the_group_is_sent_to_the_panel_in_private(
+        self, session, monkeypatch, user_factory
+    ):
+        """The management list has delete and launch buttons on it."""
+        _as_admin(monkeypatch, True)
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        message = _GroupMessage()
+
+        await quiz_handlers.cmd_quiz_list(message, session)
+
+        urls = [b.url for row in message.markups[0].inline_keyboard for b in row]
+        assert any(u.endswith("?start=admin") for u in urls)
+
+    async def test_an_admin_in_private_gets_the_management_list(
+        self, session, monkeypatch, user_factory
+    ):
+        _as_admin(monkeypatch, True)
+        await _quiz_with_players(session, user_factory, players=())
+        message = _FakeMessage()
+
+        await quiz_handlers.cmd_quiz_list(message, session)
+
+        assert "Quiz" in message.said
+
+
+class TestLegacyCommands:
+    async def test_avvia_quiz_in_the_group_is_redirected(self, session, user_factory):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        message = _GroupMessage()
+
+        await quiz_handlers.cmd_avvia_quiz(message, _cmd("1"), session)
+
+        urls = [b.url for row in message.markups[0].inline_keyboard for b in row]
+        assert any(u.endswith("?start=admin") for u in urls)
+
+    async def test_avvia_quiz_starts_a_ready_quiz_in_private(
+        self, session, user_factory, monkeypatch
+    ):
+        group = _Group(monkeypatch)
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        quiz = await quiz_service.create_quiz(session, ADMIN_ID, "Capitali", "Geo")
+        await quiz_service.add_question(session, quiz.id, "Roma?", ["sì", "no"], 0, None)
+        await quiz_service.set_status(session, quiz.id, "ready")
+        await session.commit()
+        message = _FakeMessage()
+
+        await quiz_handlers.cmd_avvia_quiz(message, _cmd(str(quiz.id)), session)
+        await session.rollback()  # only a committed launch survives this
+
+        assert group.messages, "the group must be told"
+        status = (await session.execute(
+            select(Quiz.status).where(Quiz.id == quiz.id)
+        )).scalar_one()
+        assert status == "running"
+        assert "🎬" in message.said
+
+    async def test_avvia_quiz_reports_a_refusal_without_committing(
+        self, session, user_factory, monkeypatch
+    ):
+        _Group(monkeypatch)
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        message = _FakeMessage()
+
+        await quiz_handlers.cmd_avvia_quiz(message, _cmd("999999"), session)
+
+        assert "⚠️" in message.said
+
+    async def test_chiudi_quiz_in_the_group_is_redirected(self, session, user_factory):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        message = _GroupMessage()
+
+        await quiz_handlers.cmd_chiudi_quiz(message, _cmd("1"), session)
+
+        urls = [b.url for row in message.markups[0].inline_keyboard for b in row]
+        assert any(u.endswith("?start=admin") for u in urls)
+
+    async def test_closing_a_quiz_deleted_between_the_claim_and_the_payout(
+        self, session, user_factory, monkeypatch
+    ):
+        """`claim_close` flips the status with a conditional UPDATE and only then is
+        the quiz read back. A delete landing in between must report «not found»,
+        not crash halfway through paying a pool."""
+        _Group(monkeypatch)
+        quiz = await _quiz_with_players(session, user_factory)
+
+        real_get = quiz_service.get_quiz
+
+        async def _vanished(db, quiz_id):
+            if quiz_id == quiz.id:
+                return None
+            return await real_get(db, quiz_id)
+
+        monkeypatch.setattr(quiz_service, "get_quiz", _vanished)
+
+        ok, msg = await quiz_handlers.close_quiz(_FakeBot(), session, quiz.id)
+
+        assert not ok and "non trovato" in msg

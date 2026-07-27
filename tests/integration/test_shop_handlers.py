@@ -23,6 +23,11 @@ from sqlalchemy import func, select
 from database.models import ShopPurchase, User, Wallet
 from handlers import shop
 from services import catalog_loader, consumable_service, shop_service
+from utils import cooldown
+
+async def _get_me():
+    return SimpleNamespace(username="testbot")
+
 
 USER_ID = 1
 COSMETIC = "tag_memelord"     # 2000 🪙, the cheapest cosmetic
@@ -491,3 +496,184 @@ class TestUserWithoutAWallet:
             assert cb.message.texts, data
 
         assert (await session.execute(select(User).where(User.tg_id == 424242))).first() is None
+
+
+# ---------------------------------------------------------------------------
+# The way in, and the screens that have to survive an old message
+# ---------------------------------------------------------------------------
+
+class _UserMessage(_FakeMessage):
+    """A message the *user* sent (the command), as opposed to a bot-sent panel."""
+
+    def __init__(self, chat_type: str = "private", bot=None) -> None:
+        super().__init__(bot=bot)
+        self.from_user = SimpleNamespace(id=USER_ID, username="tizio", full_name="Tizio")
+        self.chat = SimpleNamespace(
+            id=USER_ID if chat_type == "private" else -100_123, type=chat_type
+        )
+
+    async def reply(self, text, reply_markup=None, **kw):
+        self.texts.append(text)
+        self.markups.append(reply_markup)
+        return SimpleNamespace(message_id=len(self.texts))
+
+    async def get_me(self):  # pragma: no cover - not used
+        raise AssertionError
+
+    @property
+    def said(self) -> str:
+        return "\n".join(self.texts)
+
+
+class _StaleMessage(_FakeMessage):
+    """A panel Telegram will not let the bot edit any more (too old, or unchanged)."""
+
+    async def edit_text(self, text, reply_markup=None, **kw):
+        raise RuntimeError("message is not modified")
+
+
+class TestEntry:
+    def teardown_method(self):
+        cooldown.reset()
+
+    async def test_in_a_group_it_only_hands_back_a_link(self, session, user_factory):
+        """The catalog prints the opener's balance and its buttons act on whoever
+        taps them — both wrong in a room full of people."""
+        cooldown.reset()
+        await user_factory(tg_id=USER_ID, coins=5000)
+        message = _UserMessage(chat_type="supergroup")
+        message.bot = SimpleNamespace(get_me=_get_me)
+
+        await shop.cmd_locanda(message, session)
+
+        url = message.markups[0].inline_keyboard[0][0].url
+        assert url.endswith(f"?start=shop_{message.chat.id}")
+        assert "saldo" not in message.said.lower()
+
+    async def test_in_private_it_opens_the_home_screen(self, session, user_factory):
+        cooldown.reset()
+        await user_factory(tg_id=USER_ID, coins=5000)
+        message = _UserMessage()
+
+        await shop.cmd_locanda(message, session)
+
+        assert "5,000" in message.said
+
+    async def test_the_second_call_within_the_window_is_refused(
+        self, session, user_factory
+    ):
+        cooldown.reset()
+        await user_factory(tg_id=USER_ID, coins=5000)
+        first, second = _UserMessage(), _UserMessage()
+
+        await shop.cmd_locanda(first, session)
+        await shop.cmd_locanda(second, session)
+
+        assert first.said and "più piano" in second.said.lower()
+
+    async def test_the_legacy_deep_link_still_opens_the_shop(self, session, user_factory):
+        """Old group messages carry `?start=shop_<group_id>`; they must keep working
+        or those buttons become dead links."""
+        await user_factory(tg_id=USER_ID, coins=5000)
+        message = _UserMessage()
+
+        await shop.start_shop_private(message, None, -100_123, session)
+
+        assert "5,000" in message.said
+
+
+class TestStaleScreens:
+    async def test_the_home_falls_back_to_a_new_message(self, session, user_factory):
+        """A tap on a panel too old to edit must still show the screen."""
+        await user_factory(tg_id=USER_ID, coins=5000)
+        message = _StaleMessage()
+
+        await shop._show_home(message, session, USER_ID, edit=True)
+
+        assert message.texts and "5,000" in message.texts[-1]
+
+    async def test_the_tag_switcher_falls_back_too(self, session, user_factory):
+        await user_factory(tg_id=USER_ID, coins=5000)
+        await shop_service.record_purchase(
+            session, USER_ID, COSMETIC, shop_service.get_item(COSMETIC).price
+        )
+        await session.commit()
+        message = _StaleMessage()
+
+        await shop._show_tag_switcher(message, session, USER_ID, edit=True)
+
+        assert message.texts and "I tuoi tag" in message.texts[-1]
+
+    async def test_the_tag_switcher_sends_a_fresh_screen_when_asked_to(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=USER_ID, coins=5000)
+        message = _FakeMessage()
+
+        await shop._show_tag_switcher(message, session, USER_ID, edit=False)
+
+        assert "I tuoi tag" in message.texts[-1]
+
+
+class TestEmptyMenu:
+    async def test_an_empty_menu_says_so_instead_of_opening_nothing(
+        self, session, user_factory, monkeypatch
+    ):
+        """The catalog is loaded from CSV at startup; a bad deploy can leave it
+        empty, and an empty screen with buttons is worse than a clear message."""
+        await user_factory(tg_id=USER_ID, coins=5000)
+        monkeypatch.setattr(consumable_service, "get_categories", lambda: [])
+        cb = _FakeCallback("shop:menu")
+
+        await shop.cb_shop_menu(cb, session)
+
+        assert cb.alerts and "vuoto" in cb.alerts[0]
+        assert cb.message.texts == []
+
+
+class TestOwnedKeys:
+    async def test_it_reports_only_what_the_user_owns(self, session, user_factory):
+        await user_factory(tg_id=USER_ID, coins=5000)
+        await shop_service.record_purchase(
+            session, USER_ID, COSMETIC, shop_service.get_item(COSMETIC).price
+        )
+        await session.commit()
+        keys = list(catalog_loader.get_cosmetics().keys())
+
+        owned = await shop._owned_keys(session, USER_ID, keys)
+
+        assert owned == {COSMETIC}
+
+
+class TestConcurrentCosmeticPurchase:
+    async def test_losing_the_race_under_the_lock_refunds_the_debit(
+        self, session, user_factory, monkeypatch
+    ):
+        """Two taps on the same «compra» button, close enough that both pass the
+        fast-path check. The debit takes the wallet lock, so they serialize there;
+        the loser re-checks ownership *under the lock* and rolls its own debit back.
+
+        The race is simulated at `has_cosmetic` — the second answer flips to True,
+        which is exactly what the winner's commit would have made it. On SQLite two
+        sessions share one transaction, so a real two-session race is not
+        expressible here (see conftest's pg fixtures); what is under test is the
+        recovery, not the locking.
+        """
+        await user_factory(tg_id=USER_ID, coins=5000)
+        answers = iter([False, True])
+        real_has = shop_service.has_cosmetic
+
+        async def _racing(db, tg_id, key):
+            try:
+                return next(answers)
+            except StopIteration:  # pragma: no cover - later calls, if any
+                return await real_has(db, tg_id, key)
+
+        monkeypatch.setattr(shop_service, "has_cosmetic", _racing)
+        cb = _FakeCallback(f"shop:exec:{COSMETIC}")
+
+        await shop.cb_shop_execute(cb, session)
+
+        assert cb.alerts and "già questa" in cb.alerts[0]
+        assert await _coins(session) == 5000, "the loser's debit must be rolled back"
+        assert await _purchases(session, COSMETIC) == 0

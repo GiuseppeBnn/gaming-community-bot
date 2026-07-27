@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -31,6 +32,7 @@ from database.models import Quiz, QuizQuestion
 from handlers.quiz import _shared
 from handlers.quiz import creation as qz
 from services import quiz_service
+from utils import cooldown
 
 ADMIN_ID = 1
 
@@ -484,3 +486,165 @@ class TestCancelAndBack:
 
         assert await state.get_state() == qz.QuizCreationStates.waiting_title
         assert callback.message.said
+
+
+# ---------------------------------------------------------------------------
+# The entry command and the remaining refusals
+# ---------------------------------------------------------------------------
+
+class _GroupMessage(_FakeMessage):
+    """In a group the handler answers with `reply`, whose keyboard carries the
+    deep-link — so this variant records the markup of a reply too."""
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.chat = SimpleNamespace(id=-100_123, type="supergroup")
+
+    async def reply(self, text, reply_markup=None, **kw):
+        self.texts.append(text)
+        self.markups.append(reply_markup)
+        return SimpleNamespace(message_id=len(self.texts))
+
+
+class TestEntryCommand:
+    def teardown_method(self):
+        cooldown.reset()
+
+    async def test_in_a_group_it_only_hands_back_a_link(self, session):
+        """A fourteen-step FSM in the group would interleave with everyone else's
+        messages, and any other admin's reply could drive it."""
+        cooldown.reset()
+        message = _GroupMessage()
+        state = _state()
+
+        await qz.cmd_crea_quiz(message, state)
+
+        assert message.markups[0].inline_keyboard[0][0].url.endswith("?start=create_quiz")
+        assert await state.get_state() is None
+
+    async def test_in_private_it_starts_the_flow(self, session):
+        cooldown.reset()
+        message = _FakeMessage()
+        state = _state()
+
+        await qz.cmd_crea_quiz(message, state)
+
+        assert await state.get_state() == qz.QuizCreationStates.waiting_title.state
+
+    async def test_the_second_attempt_within_the_cooldown_is_refused(self, session):
+        """Admins are not exempt here: creating events is what an admin can flood
+        the list with by accident."""
+        cooldown.reset()
+        await qz.cmd_crea_quiz(_FakeMessage(), _state())
+        second, state = _FakeMessage(), _state()
+
+        await qz.cmd_crea_quiz(second, state)
+
+        assert "più piano" in second.said.lower()
+        assert await state.get_state() is None
+
+
+class TestRemainingRefusals:
+    async def test_cancelling_outside_the_flow_is_a_no_op(self, session):
+        """The cancel button lives on a message that stays on screen after the flow
+        ended; tapping it then must not pop a confirmation about nothing."""
+        callback = _FakeCallback("quiz_new:cancel")
+
+        await qz.cb_quiz_cancel(callback, _state())
+
+        assert callback.message.texts == []
+
+    async def test_a_description_over_the_cap_does_not_advance(self, session):
+        state = _state()
+        await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
+        await qz.fsm_title(_FakeMessage("Capitali"), state)
+        message = _FakeMessage("x" * (_shared._MAX_DESC + 1))
+
+        await qz.fsm_description(message, state)
+
+        assert "troppo lunga" in message.said
+        assert await state.get_state() == qz.QuizCreationStates.waiting_description.state
+
+    async def test_a_single_dash_means_no_description(self, session):
+        """Documented shortcut: the description is optional, and «-» is how an admin
+        says so without leaving the field blank."""
+        state = _state()
+        await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
+        await qz.fsm_title(_FakeMessage("Capitali"), state)
+
+        await qz.fsm_description(_FakeMessage("-"), state)
+
+        assert (await state.get_data())["description"] == ""
+
+    async def test_a_question_over_the_cap_does_not_advance(self, session):
+        state = _state()
+        await _walk_to_questions(session, state)
+        message = _FakeMessage("x" * (_shared._MAX_QUESTION + 1))
+
+        await qz.fsm_question_text(message, state)
+
+        assert "troppo lunga" in message.said
+        assert await state.get_state() == qz.QuizCreationStates.waiting_question_text.state
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("cinquecento", "Inserisci un numero"),
+        ("-50", "non può essere negativo"),
+    ])
+    async def test_an_unusable_prize_is_refused(self, session, raw, expected):
+        """The prize is paid out of nothing at close time, so a value that parsed
+        loosely would be money invented by a typo."""
+        state = _state()
+        await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
+        await qz.fsm_title(_FakeMessage("Capitali"), state)
+        await qz.fsm_description(_FakeMessage("Geo"), state)
+        await qz.cb_custom_prize(_FakeCallback("quiz_new:customprize"), state)
+        message = _FakeMessage(raw)
+
+        await qz.fsm_prize_value(message, state)
+
+        assert expected in message.said
+        assert await state.get_state() == qz.QuizCreationStates.waiting_prize_first.state
+
+    async def test_the_default_button_outside_a_prize_step_is_ignored(self, session):
+        """An old keyboard from a previous run: there is no step to fill in."""
+        callback = _FakeCallback("quiz_new:usedefault")
+
+        await qz.cb_use_default(callback, _state())
+
+        assert callback.message.texts == []
+
+    async def test_the_custom_time_limit_button_asks_for_seconds(self, session):
+        callback = _FakeCallback("quiz_new:tlcustom")
+
+        await qz.cb_time_limit_custom(callback)
+
+        assert "secondi" in callback.message.said
+
+    async def test_the_review_button_reopens_the_summary(self, session):
+        """Reachable from the question screen: the admin wants to see what they have
+        so far without publishing it."""
+        state = _state()
+        await _walk_to_questions(session, state)
+        await qz.fsm_question_text(_FakeMessage("Capitale d'Italia?"), state)
+        await qz.fsm_question_options(_FakeMessage("Roma\nMilano"), state)
+        await qz.cb_correct(_FakeCallback("quiz_new:correct:0"), state)
+        await qz.fsm_explanation(_FakeMessage("-"), state, session)
+        callback = _FakeCallback("quiz_new:review")
+
+        await qz.cb_review(callback, state, session)
+
+        assert callback.message.said
+        assert await state.get_state() == qz.QuizCreationStates.reviewing.state
+
+
+class TestRandomizeSummary:
+    @pytest.mark.parametrize("questions,answers,expected", [
+        (True, True, "domande e risposte"),
+        (True, False, "solo domande"),
+        (False, True, "solo risposte"),
+        (False, False, "nessuna"),
+    ])
+    def test_every_combination_is_named(self, questions, answers, expected):
+        """It is what the review screen shows before publishing; naming the wrong
+        combination would have the admin publish a shuffle they did not choose."""
+        assert qz._randomize_summary(questions, answers) == expected
