@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from database.models import AdminAction, User, Wallet
@@ -549,3 +550,121 @@ class TestDossierAndReports:
 
         just_mario = await _run(admin.cmd_audit, "@mario", session=session, chat_type="private")
         assert just_mario.said
+
+
+# ---------------------------------------------------------------------------
+# The refusals every command shares
+# ---------------------------------------------------------------------------
+
+class TestUnresolvableTarget:
+    """`_resolve_or_warn` is the first line of every one of these commands. When it
+    cannot name a user, each must stop *there* — a moderation command that carried
+    on with `tg_id=None` would act on whoever the fallback happened to pick."""
+
+    @pytest.mark.parametrize("handler", [
+        "cmd_ban", "cmd_sban", "cmd_kick", "cmd_mute", "cmd_unmute",
+        "cmd_warn", "cmd_warns", "cmd_unwarn", "cmd_info",
+    ])
+    async def test_a_command_with_no_target_explains_how_to_give_one(
+        self, session, handler
+    ):
+        bot = _FakeBot()
+
+        message = await _run(getattr(admin, handler), None, session=session, bot=bot)
+
+        assert "Specifica un utente" in message.said
+        assert bot.banned == [] and bot.restricted == [] and bot.unbanned == []
+        assert await _audit(session) == []
+
+
+class TestAmountValidation:
+    @pytest.mark.parametrize("handler,args", [
+        ("cmd_setsaldo", f"{TARGET_ID}"),
+        ("cmd_setsaldo", f"{TARGET_ID} meta"),
+        ("cmd_setsaldo", f"{TARGET_ID} -5"),
+        ("cmd_dai_xp", f"{TARGET_ID}"),
+        ("cmd_dai_xp", f"{TARGET_ID} 0"),
+        ("cmd_set_xp", f"{TARGET_ID}"),
+        ("cmd_set_xp", f"{TARGET_ID} -1"),
+    ])
+    async def test_an_unusable_amount_shows_the_usage_and_changes_nothing(
+        self, session, user_factory, handler, args
+    ):
+        """These three write an absolute value straight into a wallet or an XP
+        total; a loosely-parsed amount is a number nobody typed."""
+        await user_factory(tg_id=TARGET_ID, username="vittima", coins=500, xp=100)
+
+        message = await _run(getattr(admin, handler), args, session=session)
+
+        assert "Uso:" in message.said
+        assert await _coins(session, TARGET_ID) == 500
+        assert await _xp(session, TARGET_ID) == 100
+
+    async def test_a_user_row_without_a_wallet_is_reported_not_crashed(
+        self, session
+    ):
+        """A User can exist without a Wallet (an old row, a partial import). The
+        command has to say so — `set_balance` locks the wallet row and raises."""
+        session.add(User(tg_id=TARGET_ID, username="vittima", full_name="Vittima"))
+        await session.commit()
+
+        message = await _run(admin.cmd_setsaldo, f"{TARGET_ID} 100", session=session)
+
+        assert "⚠️" in message.said
+        assert await _audit(session) == []
+
+
+class TestPrivateOnlyCommands:
+    @pytest.mark.parametrize("handler", ["cmd_cerca", "cmd_audit"])
+    async def test_they_never_answer_in_the_group(self, session, user_factory, handler):
+        """Both print other people's data — search results and the admin audit
+        trail. In the group that is a leak, so they hand back a link instead."""
+        await user_factory(tg_id=TARGET_ID, username="vittima", coins=500)
+
+        message = await _run(getattr(admin, handler), "vittima", session=session)
+
+        assert "privata" in message.said.lower()
+        assert "vittima" not in message.said.replace("privata", "")
+
+
+class TestDossier:
+    async def test_a_telegram_lookup_that_fails_does_not_lose_the_dossier(
+        self, session, user_factory
+    ):
+        """The group status line is a nicety fetched from Telegram; the rest of the
+        dossier is local data the admin asked for."""
+        await user_factory(tg_id=TARGET_ID, username="vittima", coins=500)
+
+        class _NoStatusBot(_FakeBot):
+            async def get_chat_member(self, chat_id, user_id):
+                raise RuntimeError("Bad Request: user not found")
+
+        message = await _run(
+            admin.cmd_info, str(TARGET_ID), session=session,
+            bot=_NoStatusBot(), chat_type="private",
+        )
+
+        assert "vittima" in message.said
+        assert "Stato gruppo" not in message.said
+
+
+class TestRendering:
+    async def test_an_empty_leaderboard_says_so(self, session):
+        assert "Nessun utente" in await admin.render_leaderboard(session)
+
+    async def test_the_audit_line_labels_coins_and_xp_differently(
+        self, session, user_factory
+    ):
+        """Reading «+500» in the audit without knowing whether it was coins or XP
+        makes the log useless for the one thing it exists for."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        await user_factory(tg_id=TARGET_ID, username="vittima", coins=0, xp=0)
+        await _run(admin.cmd_setsaldo, f"{TARGET_ID} 500", session=session)
+        await _run(admin.cmd_dai_xp, f"{TARGET_ID} 50", session=session)
+        await _run(admin.cmd_ban, f"{TARGET_ID} spam", session=session)
+
+        rendered = await admin.render_audit(session, None)
+
+        assert "+500🪙" in rendered
+        assert "+50 XP" in rendered
+        assert "ban" in rendered.lower()

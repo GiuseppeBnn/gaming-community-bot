@@ -48,10 +48,12 @@ show_missing = true
 # sys.modules), state_export 87→100%, atomic_io 88→100%.
 # 97 → 98 closing the quiz package (creation/lifecycle 93/94→100%) and shop
 # (95→100%), including the concurrent-cosmetic rollback branch.
-# Pinned just under the run WITHOUT Postgres (98.65%, and slightly higher with it),
+# 98 → 99 with the admin surface: admin.py 94→100% (the unresolvable-target
+# refusal on every moderation command) and admin_dashboard 96→100%.
+# Pinned just under the run WITHOUT Postgres (99.20%, and slightly higher with it),
 # so `pytest --cov` still passes on a machine that has no database — the gate must
 # not force everyone to run Docker.
-fail_under = 98
+fail_under = 99
 
 [tool.ruff]
 target-version = "py312"

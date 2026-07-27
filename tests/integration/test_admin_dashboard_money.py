@@ -852,3 +852,187 @@ class TestMuteAndWarnInput:
 
         assert await _audit(session) == []
         assert message.answers and "te stesso" in message.answers[0]
+
+
+# ---------------------------------------------------------------------------
+# The moderation guard, and the screens that must survive a stale message
+# ---------------------------------------------------------------------------
+#
+# `_mod_guard` is checked at three separate points on purpose — asking, doing, and
+# typing a duration — because between them an admin can change their mind, tap an
+# old keyboard, or aim at themselves. Each point is a place where a moderation
+# action would otherwise be carried out on the wrong person.
+
+import pytest
+
+from services import group_registry
+
+GROUP_ID = -100_777
+
+
+@pytest.fixture
+def in_group():
+    group_registry.set_runtime_group_id(GROUP_ID)
+    yield GROUP_ID
+    group_registry.set_runtime_group_id(None)
+
+
+@pytest.fixture
+def as_callback(monkeypatch):
+    """Make `isinstance(target, CallbackQuery)` true for the stubs.
+
+    `show_dashboard_home` and `_show_event_list` branch on the type to decide
+    whether they are editing a panel or answering a command. A pydantic
+    CallbackQuery cannot be built with a controllable `message`, so the module's
+    own name is pointed at the stub class: the branch under test is the real one,
+    it is only the type check that is satisfied differently.
+    """
+    from handlers import admin_betting as ab
+
+    monkeypatch.setattr(ad, "CallbackQuery", _FakeCallback)
+    monkeypatch.setattr(ab, "CallbackQuery", _FakeCallback)
+
+
+@pytest.fixture
+def no_group():
+    group_registry.set_runtime_group_id(0)
+    yield 0
+    group_registry.set_runtime_group_id(None)
+
+
+class _StaleMessage(_FakeMessage):
+    """A panel Telegram will not re-edit (too old, or unchanged)."""
+
+    async def edit_text(self, text, reply_markup=None, **kw):
+        raise RuntimeError("message is not modified")
+
+
+class _StaleCallback(_FakeCallback):
+    def __init__(self, data: str, user_id: int = ADMIN_ID) -> None:
+        super().__init__(data, user_id)
+        self.message = _StaleMessage("", user_id=user_id)
+        self.bot = self.message.bot
+
+
+class TestModerationGuard:
+    @pytest.mark.parametrize("target,expected", [
+        (ADMIN_ID, "te stesso"),
+        (_FakeBot.id, "me stesso"),
+    ])
+    async def test_asking_to_moderate_yourself_or_the_bot_is_refused(
+        self, session, in_group, target, expected
+    ):
+        """Banning the bot removes it from the group; banning yourself locks the
+        admin out of their own panel. Both are one tap away in the dossier."""
+        callback = _FakeCallback(f"adm:ask:ban:{target}")
+
+        await ad.cb_ask(callback)
+
+        assert callback.alerts and expected in callback.alerts[0]
+        assert callback.message.answers == [], "no confirmation screen may open"
+
+    async def test_without_a_group_there_is_nothing_to_moderate(self, session, no_group):
+        callback = _FakeCallback(f"adm:ask:ban:{TARGET_ID}")
+
+        await ad.cb_ask(callback)
+
+        assert callback.alerts and "GROUP_ID" in callback.alerts[0]
+
+    async def test_the_confirmation_opens_for_a_legitimate_target(self, session, in_group):
+        callback = _FakeCallback(f"adm:ask:ban:{TARGET_ID}")
+
+        await ad.cb_ask(callback)
+
+        assert callback.message.answers and "BAN" in callback.message.answers[0]
+
+    async def test_a_warn_without_a_reason_is_guarded_too(self, session, in_group):
+        """The «Senza motivo» button skips the reason step, so it needs its own
+        check — it is a second entry point into the same action."""
+        callback = _FakeCallback(f"adm:do:warn:{ADMIN_ID}")
+
+        await ad.cb_do(callback, _state(), session)
+
+        assert callback.alerts and "te stesso" in callback.alerts[0]
+        assert await _audit(session) == []
+
+    async def test_typing_a_duration_for_an_invalid_target_ends_the_flow(
+        self, session, user_factory, in_group
+    ):
+        """The target is decided when the flow starts; by the time the duration is
+        typed the admin may be aiming at themselves (or the group id may be gone)."""
+        await user_factory(tg_id=ADMIN_ID, coins=0)
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_duration)
+        await state.update_data(target_tg_id=ADMIN_ID)
+        message = _FakeMessage("10m")
+
+        await ad.fsm_duration(message, state, session)
+
+        assert any("te stesso" in a for a in message.answers)
+        assert await state.get_state() is None
+
+
+class TestStaleScreens:
+    async def test_the_dashboard_home_falls_back_to_a_new_message(
+        self, session, as_callback
+    ):
+        """Every «⬅️ Dashboard» button lands here; a failed edit must not leave the
+        admin looking at the previous screen."""
+        callback = _StaleCallback("adm:home")
+
+        await ad.show_dashboard_home(callback, session, edit=True)
+
+        assert callback.message.answers and "Dashboard Admin" in callback.message.answers[-1]
+
+    async def test_the_home_can_also_send_a_fresh_screen_on_purpose(
+        self, session, as_callback
+    ):
+        callback = _FakeCallback("adm:home")
+
+        await ad.show_dashboard_home(callback, session, edit=False)
+
+        assert callback.message.answers and "Dashboard Admin" in callback.message.answers[-1]
+
+    async def test_re_tapping_the_current_leaderboard_tab_is_harmless(
+        self, session, user_factory
+    ):
+        """Telegram rejects an edit that changes nothing; that must not surface as
+        a dead button."""
+        await user_factory(tg_id=TARGET_ID, coins=100)
+        callback = _StaleCallback("adm:lead:coins")
+
+        await ad.cb_lead_board(callback, session)
+
+        assert callback.answers == [(None, False)]
+
+    async def test_the_user_detail_falls_back_to_a_new_message(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=TARGET_ID, coins=100)
+        callback = _StaleCallback(f"adm:user:{TARGET_ID}")
+
+        await ad._show_detail_cb(callback, session, TARGET_ID)
+
+        assert callback.message.answers, "the dossier must appear either way"
+
+    async def test_the_detail_of_an_unknown_user_says_so(self, session):
+        """Reachable from an audit line whose user has since been deleted."""
+        message = _FakeMessage("")
+
+        await ad._show_detail_msg(message, session, 999_999)
+
+        assert any("non trovato" in a for a in message.answers)
+
+
+class TestBetsShortcut:
+    async def test_the_bets_button_opens_the_betting_panel(
+        self, session, user_factory, as_callback
+    ):
+        """One tap from the dashboard into the panel that settles bets; the button
+        exists so an admin never has to remember the command."""
+        await user_factory(tg_id=ADMIN_ID, coins=0)
+        callback = _FakeCallback("adm:bets")
+
+        await ad.cb_bets(callback, session)
+
+        assert callback.message.answers
