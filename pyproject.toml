@@ -34,7 +34,7 @@ show_missing = true
 fail_under = 59
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 100
 src = ["src"]
 
@@ -59,7 +59,7 @@ select = ["E9", "F", "B", "ASYNC"]
 "tests/**" = ["ASYNC230", "ASYNC240"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 mypy_path = "src"
 plugins = ["pydantic.mypy"]
 # Non-strict on purpose. The point is not type purity, it's that the checker

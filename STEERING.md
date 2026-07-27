@@ -23,7 +23,8 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 
 | Dipendenza | Versione | Note |
 |---|---|---|
-| Python | 3.11+ | `from __future__ import annotations` richiesto per compat 3.9+ |
+| Python | **3.12** | Una versione sola, ovunque: Dockerfile, CI, `ruff target-version`, `mypy python_version`, venv locale. Prima la CI girava 3.11 e il venv 3.12, quindi «verde in locale» non era la stessa affermazione di «verde in produzione». Se la cambi, cambiala in tutti e cinque i posti — **e gira `pytest -W error::DeprecationWarning`**, che è ciò che ha fatto emergere le `datetime.utcnow()` (deprecate dalla 3.12, in rimozione) quando siamo saliti. Oggi la suite passa anche con quel flag; non è un gate in CI apposta, perché una dipendenza che inizia a deprecare bloccherebbe la build per una cosa non nostra |
+| `from __future__ import annotations` | in ogni modulo | Annotazioni pigre: i modelli SQLAlchemy e le firme dei service si auto-referenziano senza virgolette, e i tipi non vengono valutati all'import |
 | aiogram | 3.13.1 | **Non** usare aiogram 2.x — API completamente diversa |
 | SQLAlchemy | 2.0 (async) | `mapped_column`, `Mapped[T]`, `AsyncSession` |
 | pydantic-settings | 2.x | `BaseSettings`, `SettingsConfigDict` |

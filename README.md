@@ -12,7 +12,7 @@ senza toccare il codice.
 
 ## Requisiti
 
-- Python 3.11+
+- Python 3.12
 - Docker & Docker Compose (per il deploy)
 - Un bot Telegram (crealo con [@BotFather](https://t.me/BotFather))
 
@@ -54,7 +54,7 @@ FSM_STORAGE=memory
 Il codice applicativo vive sotto `src/` (src-layout): si avvia con `python src/main.py`.
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 mkdir -p data

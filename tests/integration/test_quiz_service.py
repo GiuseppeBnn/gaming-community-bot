@@ -207,7 +207,7 @@ class TestPodiumAndPrizes:
             session.add(QuizAnswer(
                 quiz_id=quiz.id, question_id=q.id, user_tg_id=uid,
                 selected_option_id=selected, is_correct=(i < n_correct),
-                response_ms=0, answered_at=when or datetime.utcnow(),
+                response_ms=0, answered_at=when or qz._now(),
             ))
         await session.commit()
 
@@ -538,7 +538,7 @@ class TestManageableAndLifecycle:
     async def test_delete_quiz_cancels_pending_task(self, session):
         quiz, _ = await _quiz(session)
         session.add(ScheduledTask(
-            task_type="quiz", ref_id=quiz.id, run_at=datetime.utcnow(),
+            task_type="quiz", ref_id=quiz.id, run_at=qz._now(),
             status="pending", created_by_tg_id=9,
         ))
         await session.commit()

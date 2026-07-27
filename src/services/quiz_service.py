@@ -381,6 +381,12 @@ async def reset_quiz(session: AsyncSession, quiz_id: int) -> bool:
     back to ``ready`` so it can be launched again. Only allowed on a ``finished``
     quiz. Returns False if the quiz is missing or not finished.
 
+    **Prizes are deliberately not touched.** What the previous run paid stays paid —
+    no clawback, no reversal in the ledger — and the next close pays the full pool
+    again through ``award_prizes``. A re-run is a new event, not a correction of the
+    old one; this is a decided policy, not an oversight, so do not "fix" it into a
+    refund. The confirmation text in ``handlers/events._CONFIRM`` says so out loud.
+
     A reset deletes every recorded answer, so the status check is the only thing
     between a mistap and destroying live play. It therefore reads the **column**
     under the lock rather than the entity: an entity select can be served from the

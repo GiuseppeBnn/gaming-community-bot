@@ -6,23 +6,23 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.schedule_service import parse_duration, parse_run_at, to_local
+from services.schedule_service import parse_duration, parse_run_at, to_local, utcnow
 
 
 class TestParseRunAt:
     def test_relative_minutes(self):
         result = parse_run_at("30m")
-        delta = result - datetime.utcnow()
+        delta = result - utcnow()
         assert timedelta(minutes=29) < delta < timedelta(minutes=31)
 
     def test_relative_hours_and_days(self):
-        assert parse_run_at("2h") > datetime.utcnow() + timedelta(minutes=110)
-        assert parse_run_at("1d") > datetime.utcnow() + timedelta(hours=23)
+        assert parse_run_at("2h") > utcnow() + timedelta(minutes=110)
+        assert parse_run_at("1d") > utcnow() + timedelta(hours=23)
 
     def test_absolute_future(self):
         future = datetime.now() + timedelta(days=2)
         text = future.strftime("%Y-%m-%d %H:%M")
-        assert parse_run_at(text) > datetime.utcnow()
+        assert parse_run_at(text) > utcnow()
 
     def test_absolute_past_raises(self):
         with pytest.raises(ValueError):

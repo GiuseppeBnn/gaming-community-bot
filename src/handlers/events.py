@@ -155,7 +155,11 @@ _CONFIRM: dict[str, tuple[str, str, str]] = {
     "askstart": ("ev:start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
     "askclose": ("ev:close", "chiudere ora (pubblica il podio)", "🏁 Sì, chiudi"),
     "askdel": ("ev:del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
-    "askreset": ("ev:reset", "riproporre (azzera risposte e premi)", "🔁 Sì, riproponi"),
+    # «e premi» diceva il falso: i premi già pagati restano pagati, e alla chiusura
+    # successiva il montepremi viene erogato di nuovo per intero. È voluto — una
+    # riproposizione è un evento nuovo — quindi è il testo che va detto com'è.
+    "askreset": ("ev:reset", "riproporre (azzera le risposte e ripaga il montepremi intero)",
+                 "🔁 Sì, riproponi"),
 }
 
 
