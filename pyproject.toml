@@ -49,10 +49,19 @@ show_missing = true
 # 97 → 98 closing the quiz package (creation/lifecycle 93/94→100%) and shop
 # (95→100%), including the concurrent-cosmetic rollback branch.
 # 98 → 99 with the admin surface: admin.py 94→100% (the unresolvable-target
-# refusal on every moderation command) and admin_dashboard 96→100%.
-# Pinned just under the run WITHOUT Postgres (99.20%, and slightly higher with it),
-# so `pytest --cov` still passes on a machine that has no database — the gate must
-# not force everyone to run Docker.
+# refusal on every moderation command) and admin_dashboard 96→100%, then the last
+# mile (cache pruning, catalog fallbacks, the session middleware, the migration
+# retry): 99.87% without Postgres, 99.91% with it.
+# Pinned just under the run WITHOUT Postgres, so `pytest --cov` still passes on a
+# machine that has no database — the gate must not force everyone to run Docker.
+#
+# The ten lines still uncovered in the Docker-free run are unreachable there by
+# construction, and are deliberately NOT chased with pragmas:
+#   database/connection.py 87-89  the _MIGRATIONS loop — postgresql-only, and 100%
+#                                 covered in the run WITH Postgres.
+#   handlers/backup.py 46         a return after a loop that always returns; it
+#                                 exists so mypy sees a value on every path.
+#   handlers/event_types/base.py  the `...` bodies of the EventType Protocol.
 fail_under = 99
 
 [tool.ruff]

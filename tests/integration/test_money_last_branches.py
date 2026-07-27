@@ -356,3 +356,46 @@ class TestTransferValidation:
 
         assert message.answers and "⚠️" in message.answers[0]
         assert await _coins(session, 2) == 0
+
+
+class TestResolveRace:
+    async def test_a_resolve_that_loses_the_conditional_update_pays_nobody(
+        self, session, user_factory, monkeypatch
+    ):
+        """`resolve_event` re-reads the status under the lock and *then* settles with
+        a conditional UPDATE. The UPDATE is the real guard: if it matches no rows,
+        someone else settled the event in between, and this call must raise instead
+        of paying a second time.
+
+        The window is forced by making the first `refresh` a no-op, so the status
+        the check sees stays `open` while the row is already `resolved` — exactly
+        what a concurrent settlement produces. On SQLite two sessions share one
+        transaction, so the genuine two-session race is not expressible here.
+        """
+        event = await _event_with_options(session, user_factory)
+        await user_factory(tg_id=10, username="u10", coins=1000)
+        await bet_svc.place_bet(session, 10, event.id, event.options[0].id, 100)
+        await session.commit()
+        await bet_svc.resolve_event(session, event.id, event.options[0].id)
+        await session.commit()
+        paid = await _coins(session, 10)
+
+        # Put the in-session copy back to `open` and let the first refresh keep it
+        # that way; the second (in the failure branch) reads the truth.
+        stale = await session.get(BettingEvent, event.id)
+        stale.status = "open"
+        real_refresh = session.refresh
+        calls = {"n": 0}
+
+        async def _lagging_refresh(obj, attrs=None, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return None
+            return await real_refresh(obj, attrs, **kw)
+
+        monkeypatch.setattr(session, "refresh", _lagging_refresh)
+
+        with pytest.raises(EventAlreadySettledError):
+            await bet_svc.resolve_event(session, event.id, event.options[0].id)
+
+        assert await _coins(session, 10) == paid

@@ -24,6 +24,7 @@ from sqlalchemy import select
 
 from database.models import Badge, LedgerEntry, TransactionType, User, Wallet
 from handlers import economy
+from utils import cooldown
 from handlers._trophy_announce import group_registry as economy_group_registry
 
 SENDER = 1
@@ -440,3 +441,46 @@ class TestAdminCredit:
         await economy.cmd_credita(message, session)
 
         assert "fallita" in message.said
+
+
+class TestCommandGuards:
+    """The two entry points around `show_saldo` / `show_storico`."""
+
+    def teardown_method(self):
+        cooldown.reset()
+
+    async def test_saldo_answers_in_the_group_but_only_once_per_window(
+        self, session, user_factory
+    ):
+        """`/saldo` is public and answers in the group on purpose, so the throttle
+        is what keeps one person from filling the chat with it. It is the silent
+        variant: a «slow down» notice would be the flood itself."""
+        cooldown.reset()
+        await user_factory(tg_id=SENDER, username="tizio", coins=100)
+        first = _FakeMessage("/saldo", chat_type="supergroup", username="tizio")
+        second = _FakeMessage("/saldo", chat_type="supergroup", username="tizio")
+
+        await economy.cmd_saldo(first, session)
+        await economy.cmd_saldo(second, session)
+
+        assert first.said and second.said == ""
+
+    async def test_storico_never_answers_in_the_group(self, session, user_factory):
+        """A transaction history is the clearest picture of what someone does with
+        their coins; in the group it is readable by everyone (§9)."""
+        cooldown.reset()
+        await user_factory(tg_id=SENDER, username="tizio", coins=100)
+        message = _FakeMessage("/storico", chat_type="supergroup", username="tizio")
+
+        await economy.cmd_storico(message, session)
+
+        assert "privata" in message.said.lower()
+
+    async def test_storico_in_private_shows_the_history(self, session, user_factory):
+        cooldown.reset()
+        await user_factory(tg_id=SENDER, username="tizio", coins=100)
+        message = _FakeMessage("/storico", username="tizio")
+
+        await economy.cmd_storico(message, session)
+
+        assert message.said
