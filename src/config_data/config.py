@@ -59,9 +59,6 @@ class Settings(BaseSettings):
     # winning bet pays the (larger) win bonus on top at resolution.
     xp_per_bet_placed: int = 10              # participation XP for placing a bet
     xp_per_bet_won: int = 25                 # extra XP when that bet wins
-    # Betting window: default minutes the pre-selected preset suggests at creation, and
-    # the defensive fallback if the window step is somehow bypassed (0 = illimitata).
-    bet_default_window_minutes: int = 60
     # Level curve (GTA-style): cost to go from level n to n+1 is
     # round(xp_level_base * xp_level_growth ** (n - 1)) → each level costs +15% more.
     #
@@ -75,7 +72,6 @@ class Settings(BaseSettings):
     xp_level_growth: float = Field(default=1.15, ge=1.0)  # geometric growth (+15%)
 
     # Quiz mode
-    quiz_default_prize: int = 1000     # legacy: coin prize pool split among top scorers
     # Quiz event XP (uncapped). Every player who answers at least one question gets
     # `quiz_xp_participation`; each correct answer adds `quiz_xp_per_correct`; the
     # top-3 finishers get an extra podium bonus. Rewards participation, not just winning.

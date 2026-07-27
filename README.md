@@ -323,7 +323,6 @@ gaming-community-bot/
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
 | `XP_PER_BET_PLACED` | `10` | XP (evento) per aver piazzato una scommessa |
 | `XP_PER_BET_WON` | `25` | XP (evento) extra se la scommessa vince |
-| `BET_DEFAULT_WINDOW_MINUTES` | `60` | preset suggerito + fallback della finestra puntate |
 | `QUIZ_XP_PARTICIPATION` | `20` | XP (evento) per aver giocato il quiz (≥1 risposta) |
 | `QUIZ_XP_PER_CORRECT` | `10` | XP (evento) per ogni risposta corretta |
 | `QUIZ_XP_PODIUM_FIRST` / `_SECOND` / `_THIRD` | `50` / `30` / `20` | bonus podio quiz |

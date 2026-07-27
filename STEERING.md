@@ -70,16 +70,15 @@ Campi importanti:
 - `admin_ids: list[int]` — parse da stringa CSV via `@field_validator`
 - `daily_reward_coins: int` — **NON `daily_reward`** — matcha la `.env`
 - `daily_min_hours: int` (default 6) — gap minimo dall'ultima riscossione, **in AND** con il reset di mezzanotte del `/daily` (§10.a). Tenere **< 24**
-- `fsm_storage: str` — `"memory"` | `"redis"`
+- `fsm_storage: str` — `"memory"` | `"redis"`. **Resta `memory`, ed è una scelta, non una svista.** Il costo è noto e accettato: Watchtower ricrea il container a ogni immagine nuova (`WATCHTOWER_POLL_INTERVAL: 600`), e con `MemoryStorage` ogni conversazione FSM aperta in quel momento sparisce — chi stava creando un quiz ricomincia. Il baratto rifiutato è l'altro: `_build_storage` intercetta solo l'`ImportError` del pacchetto, **non** una connessione fallita, quindi con `redis` il bot non degrada, non parte. Perdere un flusso di creazione vale meno di perdere il bot. Non riproporre il passaggio senza prima aggiungere un fallback su errore di connessione
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
 - `groq_model: str` — default `"llama-3.3-70b-versatile"` (il vecchio `llama3-70b-8192` è **dismesso**)
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
-- `quiz_default_prize: int` (default 1000, **legacy** pool) — modalità quiz
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
-- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); `bet_default_window_minutes` (60, preset suggerito + fallback finestra puntate); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
+- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -1413,6 +1412,20 @@ Tre workflow in `.github/workflows/`:
 
 Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, suffisso/versione per ref) ·
 **compose cambia ⇒ solo artifact** · **ogni push ⇒ i test girano**.
+
+### Watchtower: rischio noto e accettato
+
+`containrrr/watchtower` è **senza tag** (quindi `:latest`), l'immagine upstream non è più
+manutenuta (da lì la env var che forza la versione dell'API Docker: quella immagine manda
+la 1.25, rifiutata dai daemon moderni) e monta `/var/run/docker.sock` in **lettura e
+scrittura**, che sull'host equivale a root. Cioè: la cosa che aggiorna il bot da sola non è
+fissata a un digest e ha le chiavi di casa.
+
+**Consapevole, e si tiene così.** Le alternative sono state guardate e scartate: fissare un
+digest, passare a un fork mantenuto, mettere davanti un socket-proxy, o togliere Watchtower
+e fare il pull da GitHub Actions via SSH. Ognuna costa setup e la più pulita costa
+l'auto-update. Non riaprire la discussione senza un fatto nuovo (una CVE su quell'immagine,
+o il registry che smette di servirla).
 
 ---
 

@@ -37,10 +37,6 @@ EVENT_LABELS = {
     TRIVIA_SUB30: "Completa il Trivia Nerd sotto i 30s {when}",
 }
 
-# Known game keys. Only ``trivia`` produces rows today; the others are reserved so
-# trophy conditions/labels can reference them before the games ship.
-GAME_KEYS = ("trivia", "guess", "sound")
-
 # Human-readable game names (used by badge_service.describe_condition).
 GAME_LABELS = {
     "trivia": "Trivia Nerd",
