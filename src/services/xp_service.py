@@ -250,13 +250,36 @@ async def airdrop_xp(session: AsyncSession, amount: int) -> int:
     """
     if amount <= 0:
         return 0
-    result = await session.execute(select(User))
-    users = list(result.scalars().all())
-    for user in users:
-        old_xp = user.xp
-        user.xp += amount
-        _apply_rank(user, old_xp)
-    return len(users)
+
+    # Relative, in SQL. An airdrop is the widest read-modify-write in the bot — it
+    # spans every registered user — and reading the table into Python to write
+    # absolute totals back turns any XP granted in that window (a quiz closing, a
+    # bet resolving) into a silent loss. `xp + amount` computed by the database
+    # cannot lose a grant it did not read.
+    await session.execute(
+        update(User)
+        .values(xp=User.xp + amount)
+        .execution_options(synchronize_session=False)
+    )
+
+    # Re-derive the cached tier from the XP now stored. Column select, so the
+    # identity map cannot answer with the values it had before the UPDATE. Grouped
+    # by target tier: there is a handful of named tiers, so this is a handful of
+    # statements regardless of how many users exist.
+    by_slug: dict[str, list[int]] = {}
+    rows = (await session.execute(select(User.tg_id, User.xp))).all()
+    for tg_id, xp in rows:
+        rank = rank_for_xp(xp)
+        if rank is not None:
+            by_slug.setdefault(rank.slug, []).append(tg_id)
+    for slug, tg_ids in by_slug.items():
+        await session.execute(
+            update(User)
+            .where(User.tg_id.in_(tg_ids))
+            .values(rank_slug=slug)
+            .execution_options(synchronize_session=False)
+        )
+    return len(rows)
 
 
 async def leaderboard_xp(session: AsyncSession, limit: int = 10) -> list[tuple[User, int]]:

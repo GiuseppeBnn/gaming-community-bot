@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import update
 
+from database.models import User
 from services import catalog_loader, xp_service
 from services.catalog_loader import Rank
 from services.xp_service import XpSource
@@ -212,9 +214,77 @@ class TestAdminXp:
         assert (await _xp(session, 30)) == 50
         assert (await _xp(session, 31)) == 150
 
+    async def test_airdrop_keeps_xp_granted_while_it_runs(self, session, user_factory):
+        """An airdrop must **add**, and adding is not the same as writing a total.
+
+        `airdrop_xp` touches every registered user, so the gap between reading the
+        table and writing it back is as wide as the table. A quiz closing in that gap
+        grants XP through `grant_xp`, which emits `xp = xp + n` in SQL. If the airdrop
+        then stores an absolute total computed from what it read *beforehand*, that
+        grant is gone — no error, no trace, just a player whose podium XP evaporated.
+
+        One session is enough to reproduce it, and that is the interesting part: the
+        identity map serves entity selects from cache, so a write this session did not
+        make through the ORM is exactly as invisible to it as another transaction's
+        commit would be. The statement below is what `grant_xp` emits, verbatim.
+        """
+        user, _ = await user_factory(tg_id=32, xp=0)
+
+        await session.execute(
+            update(User)
+            .where(User.tg_id == 32)
+            .values(xp=User.xp + 500)
+            .execution_options(synchronize_session=False)
+        )
+        assert user.xp == 0, "precondition: the loaded instance has not seen the grant"
+
+        count = await xp_service.airdrop_xp(session, 100)
+        await session.commit()
+
+        assert count == 1
+        assert (await _xp(session, 32)) == 600, "the 500 XP granted meanwhile was lost"
+
+    async def test_airdrop_updates_every_tier_it_crosses(self, session, user_factory):
+        """One airdrop, two users, two different destination tiers.
+
+        `User.rank_slug` is a cached string derived from XP, and the airdrop writes it
+        grouped by destination tier instead of user by user. Grouping is exactly the
+        kind of thing that works by accident when everybody lands in the same bucket,
+        so this pins two buckets. Thresholds come from the curve itself rather than
+        being hard-coded, so retuning `xp_level_base` cannot make this test lie.
+        """
+        step = xp_service.xp_to_reach_level(6)  # level 6 = Iniziato
+        await user_factory(tg_id=40, xp=0)
+        await user_factory(tg_id=41, xp=xp_service.xp_to_reach_level(11) - step)
+
+        await xp_service.airdrop_xp(session, step)
+        await session.commit()
+
+        assert (await _rank_slug(session, 40)) == "iniziato"
+        assert (await _rank_slug(session, 41)) == "esperto"
+
 
 async def _xp(session, tg_id):
+    """The XP the database actually holds.
+
+    Selects the **column**, not the `User` entity, on purpose: an entity select can
+    be served from the identity map, so it would happily report the value the test
+    already had in memory instead of the one that was written (STEERING §5). Every
+    XP assertion in this file goes through here for that reason.
+    """
     from sqlalchemy import select
+
     from database.models import User
-    user = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
-    return user.xp
+    return (
+        await session.execute(select(User.xp).where(User.tg_id == tg_id))
+    ).scalar_one()
+
+
+async def _rank_slug(session, tg_id):
+    """The stored tier, read as a column for the same reason as `_xp`."""
+    from sqlalchemy import select
+
+    from database.models import User
+    return (
+        await session.execute(select(User.rank_slug).where(User.tg_id == tg_id))
+    ).scalar_one()
