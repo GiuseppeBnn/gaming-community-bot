@@ -31,7 +31,11 @@ show_missing = true
 # Ratchet, not a target: pinned just under the current coverage so the number can
 # only go up. Raise it when a phase lands, never lower it to make CI pass.
 # 57 → 59 after covering services/backup/loop.py (was 0%, now 100%).
-fail_under = 59
+# 59 → 69 after covering the admin money handlers: admin_betting 21→100%,
+# admin_dashboard 26→96%, shop 30→96%. Pinned just under the run WITHOUT Postgres
+# (69.27%, vs 69.38% with it), so `pytest --cov` still passes on a machine that has
+# no database — the gate must not force everyone to run Docker.
+fail_under = 69
 
 [tool.ruff]
 target-version = "py312"
