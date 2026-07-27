@@ -32,7 +32,7 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per le chiamate LLM Groq — **mai** librerie HTTP bloccanti |
-| LLM | Groq API (OpenAI-compatible) | modello via `GROQ_MODEL` (default `llama-3.3-70b-versatile`) |
+| LLM | Groq API (OpenAI-compatible) | intrattenimento: `GROQ_MODEL` (default `llama-3.3-70b-versatile`); giudice dei giochi «indovina» (§19.b): `GROQ_JUDGE_MODEL` (default `openai/gpt-oss-120b`, uno dei due su cui Groq supporta lo **structured output strict**) |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -348,6 +348,8 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
+| `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
+| `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
 | `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo Locanda (cosmetici + menù) |
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
@@ -1091,6 +1093,137 @@ esplicitamente che nulla è stato salvato.
 
 ---
 
+## 19.b Guess The Game & Sound Quest (privato, giudizio AI)
+
+Indovinare un videogioco da un'**immagine** (`guess`) o da un **audio** (`sound`). Creati e
+gestiti solo da admin, giocati **in privato**. Vince chi ci arriva in **meno tentativi**; a
+parità conta il **tempo**.
+
+**File:** `services/guess_service.py` (motore), `services/guess_judge.py` (giudizio),
+`handlers/guess/` (`_shared` · `creation` · `lifecycle` · `play` attorno a un unico router),
+`handlers/event_types/guess_type.py`. Tabelle: `guess_rounds` · `guess_sessions` ·
+`guess_attempts`.
+
+### Un motore, due giochi
+
+I due giochi differiscono **solo** per il media salvato, il metodo Bot API che lo rimanda e le
+etichette. Tutto il resto — tentativi, tempo, suggerimenti, giudizio, classifica, premi, XP,
+trofei — è identico, quindi c'è **una sola spec parametrizzata su `kind`**, registrata due
+volte in `register_builtin()`. Duplicarla significherebbe duplicare due volte un percorso che
+paga monete. La differenza vive tutta in `_shared.KINDS`.
+
+`kind` fa **triplo lavoro apposta**: chiave del tipo-evento, `ScheduledTask.task_type` e
+`game_key` dei trofei (`guess`/`sound` erano già in `progress_service.GAME_LABELS`). Tre
+stringhe che oggi coincidono, prima o poi divergono.
+
+### Il giudice — quattro stadi, dal più economico al più costoso
+
+1. **normalizzazione**: minuscolo, accenti, punteggiatura, romani→arabi, rumore di edizione
+   (`Remastered`, `GOTY`, …), clip a 80 caratteri;
+2. **accettazione locale**: match esatto contro la risposta canonica **o** contro un alias
+   scritto dall'admin ⇒ CORRETTA, **senza chiamare l'AI**;
+3. **rifiuto per forma**: un titolo è corto (2–60 caratteri, ≤8 parole). Fuori da lì ⇒
+   sbagliata, senza AI;
+4. **il modello**, solo per il centro ambiguo, con il verdetto **in cache per
+   `(round, risposta normalizzata)`**.
+
+> **L'ordine non è un'ottimizzazione, è la garanzia.** L'accettazione locale viene prima ed è
+> autorevole: il modello può solo *promuovere* un match mancato, mai ribaltarne uno riuscito.
+> È questo che tiene il gioco giocabile con Groq irraggiungibile — la risposta giusta scritta
+> bene vince sempre. Gli alias dell'admin sono la rete di sicurezza, non una comodità.
+
+Il **gate di forma** è una regola onesta («una risposta deve avere la forma di un titolo») che
+si dà il caso coincida con il filtro anti-injection: i payload sono lunghi e prolissi, i titoli
+no. Provato per mutazione: togliendolo, il payload arriva al modello.
+
+La **cache dei verdetti** è prima di tutto **equità** — due giocatori che scrivono la stessa
+cosa devono ricevere la stessa risposta. Che al secondo costi zero è il secondo motivo. Le
+righe `unverified` **non** si mettono in cache: non sono un verdetto, sono l'assenza di uno, e
+riusarle renderebbe permanente un singolo outage.
+
+**Regola di sicurezza non negoziabile: l'output testuale del modello non raggiunge mai un
+giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`, constrained
+decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
+che possa riportare indietro la soluzione a chi provi a farsela dire.
+
+`GROQ_JUDGE_MODEL` è separato da `GROQ_MODEL`: i comandi di intrattenimento (§17) sono tarati
+su llama-3.3 e non devono cambiare perché un gioco ha bisogno d'altro. `judge_equivalence` è
+una funzione **nuova** in `ai_service`, non una modifica a `generate_completion`.
+
+### Quando il giudice non risponde
+
+Un retry su 429/5xx (il rate limit è il fallimento *atteso* del free tier), poi verdetto
+`unverified`. Il tentativo **viene registrato ma non contato**, fino a
+`guess_max_unverified_bonus` (default 3) per giocatore per round.
+
+> Le due alternative sono state valutate e scartate, e questo va letto prima di
+> «semplificare»: **non registrare** il tentativo apre un canale di invio illimitato proprio
+> quando il match locale è tutto ciò che resta fra un giocatore e la forza bruta;
+> **contarlo comunque** addebita al giocatore un nostro 429. Il cap chiude entrambe.
+
+### Tentativi, tempo, suggerimenti
+
+- Il tentativo si **spende all'invio**, prima che il verdetto sia noto: è l'unica contabilità
+  con cui un brute-forcer non può discutere.
+- **L'ordine delle guardie è portante**: cooldown → già risolto → scadenza → tentativi →
+  giudice. Un messaggio già rifiutato da una guardia non deve costare quota Groq. Sette test
+  contano le chiamate al modello per tenerlo fermo — la mutazione che sposta il controllo
+  tentativi dopo il giudice era passata verde prima che ci fossero.
+- **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
+  Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
+  azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
+  orologio è per domanda; qui è per sessione. Al giocatore la scadenza si comunica come orario
+  assoluto, così nessuno aspetta un «tempo scaduto!» che nessun timer manderebbe.
+- I suggerimenti stanno in JSON (`hints_json`), come `QuizQuestion.options_json`: piccoli,
+  sempre letti insieme, mai interrogati da soli. Una soglia sopra il limite tentativi viene
+  **rifiutata in creazione**: sarebbe un suggerimento che nessuno vede.
+
+### Media
+
+Si salva il **`file_id` Telegram**, mai il file: il bot non tiene media su disco. In creazione
+il bot **rimanda indietro il media**: quell'eco *è* la verifica che il `file_id` sia
+ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file.
+
+**Nel gruppo il media non si posta prima della chiusura.** Lo sposterebbe lì, dove la soluzione
+si discute e giocare in privato smette di voler dire qualcosa. L'annuncio è un invito con
+deep-link; il reveal (media + risposta) è sotto il podio. Un round che finisce senza vincitori
+la risposta la rivela lo stesso.
+
+### Stati, premi, chiusura
+
+`draft → ready → running → finished`. Le due transizioni sono **UPDATE condizionali** e
+`rowcount == 0` significa «gara persa» (§22): `claim_close` (`WHERE status='running'`) e il
+claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
+
+> Dopo un UPDATE con `synchronize_session=False` va fatto il **refresh delle sole colonne
+> toccate** (`_sync_round_state`) — è la seconda metà della regola 3 di §22. Non è cosmetico:
+> l'hub ri-renderizza il round subito dopo averlo chiuso, e un select per entità è servito
+> dalla identity map, quindi senza refresh l'admin chiude e la schermata continua a dire «in
+> corso».
+
+Classifica: **solo i risolutori**, ordinati per `(tentativi, tempo, arrivo)`. Qui «finisher»
+vuol dire «ha indovinato» — è ciò che dà senso a «meno tentativi, meglio è» — quindi chi
+esaurisce i tentativi prende **XP ma non monete**. Premi: 1°/2°/3° più consolazione lineare
+fino a `prize_min`, dalla scala condivisa `services/prizes.py` (la stessa del quiz). Ledger:
+`TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco della community».
+
+La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico modo per
+accorgersi che il giudice ha rifiutato qualcosa che doveva accettare, perché un giocatore che
+perde ingiustamente non lo dice a nessuno.
+
+### Regole
+
+- Nuovi media: una voce in `_shared.KINDS` e una in `_SENDER_BY_KIND`, **mai** un `if` nei
+  chiamanti. `send_media` risolve **solo** il metodo che serve, da whitelist.
+- La chiusura automatica riusa `task_type = kind` con `payload.action = "close"` — lo stesso
+  pattern della finestra scommesse (§20). **Nessun task-type nuovo.**
+- Deep-link `guess_<id>` / `sound_<id>` **pubblici** (§9): li gioca chiunque nel gruppo, quindi
+  non c'è nessun re-check `is_admin` da dimenticare.
+- Service no-commit (§5). `open_round` annuncia **prima** di flippare lo stato; `close_round`
+  rivendica la chiusura **prima** di pagare e committa i premi **prima** di annunciare.
+
+---
+
 ## 20. Scheduling (quiz / sondaggio / scommessa)
 
 Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB-backed.
@@ -1178,6 +1311,11 @@ DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
+# GROQ_JUDGE_MODEL=openai/gpt-oss-120b  # giudice dei giochi «indovina» (§19.b). Separato da
+#                                       # GROQ_MODEL apposta: serve structured output strict,
+#                                       # e i comandi di intrattenimento sono tarati su llama-3.3.
+#                                       # Senza chiave i giochi restano giocabili: vince chi
+#                                       # scrive la risposta esatta o un alias (§19.b, stadio 2).
 # Backup & export (§25) — tutto opzionale. Senza i 3 TELEGRAM_* l'archivio chat
 # è disattivato (lo state export funziona comunque, non serve Telegram).
 # TELEGRAM_API_ID=1234567               # da my.telegram.org
@@ -1235,7 +1373,9 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
+    > Verificato sul campo: Guess The Game e Sound Quest sono entrati **senza toccare né `events.py` né `schedule.py`** — una spec parametrizzata (`GuessType(kind=…)`) e due righe in `register_builtin`. Quando due tipi differiscono solo per etichette e per un media, si **parametrizza la spec** invece di scriverne due: sono percorsi che pagano monete, e due copie sono due posti dove correggere lo stesso bug.
 26. **Trofei & Locanda** (§11/§12): nuove **condizioni trofeo** si aggiungono al **dispatch** di `check_and_award_milestones` + a `TROPHY_CONDITIONS` + a `describe_condition` (mai catene `if/elif` fuori dagli helper). Le condizioni scoped usano **`Badge.condition_param`** (key item/categoria/gioco o slug `;`-separati per `collection`); colonna nuova ⇒ voce in `_MIGRATIONS`. Le **`collection`** si risolvono a **punto fisso** (sblocco a catena nello stesso commit). **Chiavi disgiunte**: consumabili `cons_*`, cosmetici `tag_*` (namespace `shop_purchases.item_key` condiviso). Acquisto consumabile: **flush prima** del milestone check (autoflush off). Cataloghi (consumabili/categorie/trofei) **solo via CSV + default Python**, mai hardcode negli handler. Nuovi giochi col podio chiamano `progress_service.record_podium(game_key, rank)` — i loro trofei `podium_count`/`first_place_count` si attivano da soli.
+27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **rifiuta tutto ciò che non è esattamente un booleano**. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
 
 ---
 
