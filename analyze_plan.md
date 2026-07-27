@@ -447,13 +447,23 @@ copy, quel modulo merita un test.
 
 ---
 
-## Decisioni aperte (invariate dalla v1, tutte da confermare da te)
+## Decisioni aperte — **chiuse tutte e cinque**
 
-- **Storage FSM `memory` + Watchtower che redeploya ad ogni push su `main`** = ogni deploy
-  perde i flussi FSM aperti (un admin a metà creazione quiz riparte da zero). `redis_url`
-  è già in config e aiogram ha `RedisStorage` pronto. Accettabile o si passa a Redis?
-- **Watchtower**: `:latest` non pinnato, socket Docker in lettura/scrittura, può leggere
-  `BOT_TOKEN`/`GROQ_API_KEY`/password Postgres/`TELEGRAM_SESSION` via `docker inspect`.
-- **`bet_default_window_minutes`**: config morta, documentata come funzionante.
-- **Semantica di `reset_quiz`** rispetto ai premi: incoerente.
-- **Python 3.11 (CI) vs 3.12 (venv locale)**.
+Restano qui per memoria di cosa è stato deciso e perché; il posto vivo è STEERING.
+
+- **Storage FSM** → **resta `memory`**. Il costo (ogni redeploy Watchtower perde i flussi
+  FSM aperti) è accettato; il baratto rifiutato è che `_build_storage` intercetta solo
+  l'`ImportError` del pacchetto, non una connessione fallita, quindi con Redis irraggiungibile
+  il bot non degrada — non parte. Motivazione per esteso in STEERING §3.
+- **Watchtower** → **resta com'è**, rischio noto e scritto: `:latest` non pinnato su immagine
+  upstream non più manutenuta, socket Docker in lettura/scrittura (= root sull'host), e
+  `BOT_TOKEN`/`GROQ_API_KEY`/password Postgres/`TELEGRAM_SESSION` leggibili via
+  `docker inspect`. Alternative valutate e scartate, elencate in STEERING §26.
+- **`bet_default_window_minutes`** → **rimosso** (con `quiz_default_prize` e
+  `progress_service.GAME_KEYS`), più una guardia — `tests/unit/test_no_dead_config.py` —
+  perché non ricresca.
+- **Semantica di `reset_quiz`** → il montepremi si **ripaga per intero**, è voluto: una
+  riproposizione è un evento nuovo, non la correzione di quello vecchio. Era il testo di
+  conferma a dire il falso («azzera risposte e premi»), ed è quello che è stato corretto.
+- **Python** → **3.12 ovunque** (Dockerfile, CI, ruff, mypy, venv). La salita ha fatto
+  emergere le `datetime.utcnow()` deprecate, che stavano solo nei test.

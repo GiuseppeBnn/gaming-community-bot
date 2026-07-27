@@ -1420,7 +1420,9 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 manutenuta (da lì la env var che forza la versione dell'API Docker: quella immagine manda
 la 1.25, rifiutata dai daemon moderni) e monta `/var/run/docker.sock` in **lettura e
 scrittura**, che sull'host equivale a root. Cioè: la cosa che aggiorna il bot da sola non è
-fissata a un digest e ha le chiavi di casa.
+fissata a un digest e ha le chiavi di casa. Con quel socket, `docker inspect` espone anche
+`BOT_TOKEN`, `GROQ_API_KEY`, la password Postgres e `TELEGRAM_SESSION` — quest'ultima è una
+credenziale di account **completo**, non del bot.
 
 **Consapevole, e si tiene così.** Le alternative sono state guardate e scartate: fissare un
 digest, passare a un fork mantenuto, mettere davanti un socket-proxy, o togliere Watchtower
