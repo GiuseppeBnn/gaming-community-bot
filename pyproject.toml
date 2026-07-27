@@ -44,10 +44,12 @@ show_missing = true
 # leaderboards (61→100%).
 # 95 → 96 with group migration (76→100%), the AI commands (71→100%), the quiz
 # countdown (play 84→100%) and the admin test-run (trying 82→100%).
-# Pinned just under the run WITHOUT Postgres (96.48%, and slightly higher with it),
+# 96 → 97 with the backup/restore layer: chat_archive 64→100% (fake Telethon in
+# sys.modules), state_export 87→100%, atomic_io 88→100%.
+# Pinned just under the run WITHOUT Postgres (97.62%, and slightly higher with it),
 # so `pytest --cov` still passes on a machine that has no database — the gate must
 # not force everyone to run Docker.
-fail_under = 96
+fail_under = 97
 
 [tool.ruff]
 target-version = "py312"
