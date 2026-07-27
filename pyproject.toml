@@ -35,10 +35,11 @@ show_missing = true
 # admin_dashboard 26→96%, shop 30→96%. Then 69 → 71 with economy 23→95%, and
 # 71 → 75 with admin 23→93% + _targeting 31→98%, then 75 → 83 covering quiz.py
 # end to end (37→92%): lifecycle, creation, play session, editor.
-# Pinned just under the run WITHOUT Postgres (83.46%, and slightly higher with it),
+# 83 → 86 with the player-facing betting flow (handlers/betting.py 36→100%).
+# Pinned just under the run WITHOUT Postgres (86.92%, and slightly higher with it),
 # so `pytest --cov` still passes on a machine that has no database — the gate must
 # not force everyone to run Docker.
-fail_under = 83
+fail_under = 86
 
 [tool.ruff]
 target-version = "py312"
