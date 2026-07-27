@@ -20,15 +20,22 @@ from .base import (
 
 
 def register_builtin() -> None:
-    """Register the built-in event types (quiz · poll · bet) in hub order.
+    """Register the built-in event types in hub order.
 
     Idempotent: ``register`` replaces by key, so calling it again is harmless.
+
+    The two guess games are the same spec twice, parametrised by ``kind`` — they
+    are one engine with different labels, so a class each would be a copy of a
+    path that pays coins.
     """
     from .bet_type import BetType
+    from .guess_type import GuessType
     from .poll_type import PollType
     from .quiz_type import QuizType
 
     register(QuizType())
+    register(GuessType(kind="guess"))
+    register(GuessType(kind="sound"))
     register(PollType())
     register(BetType())
 

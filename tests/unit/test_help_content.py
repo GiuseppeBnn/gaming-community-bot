@@ -67,5 +67,25 @@ class TestRenderCommandOrHint:
         assert "🔐" in render_command_or_hint("credita", is_admin=True)
 
 
+class TestTheGuessGamesAreDiscoverable:
+    """Neither game has a command of its own — players arrive from the group
+    announcement, admins from the Events hub. So the only place an admin can read
+    what they are is the `/eventi` page, and if it does not say so the feature is
+    invisible until somebody stumbles on the button."""
+
+    def test_the_events_page_names_both_games(self):
+        out = render_command("eventi", is_admin=True)
+        assert "Guess The Game" in out and "Sound Quest" in out
+
+    def test_it_says_the_answers_are_judged_loosely_but_not_by_series(self):
+        """The single rule players argue about, so it belongs in writing."""
+        out = render_command("eventi", is_admin=True)
+        assert "GTA SA" in out and "serie" in out.lower()
+
+    def test_it_is_still_hidden_from_non_admins(self):
+        """Only admins create rounds; the help surface must not leak the set."""
+        assert render_command("eventi", is_admin=False) is None
+
+
 def esc_token(usage: str) -> str:
     return help_content.esc(usage)

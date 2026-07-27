@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # Groq LLM (AI entertainment module)
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    # Judge model for the guess games. Deliberately separate from `groq_model`:
+    # the entertainment commands are tuned around llama-3.3 and must not change
+    # because a game needs something else. `openai/gpt-oss-*` is the pick because
+    # Groq supports STRICT structured output (constrained decoding) on it, so a
+    # verdict cannot come back as prose.
+    groq_judge_model: str = "openai/gpt-oss-120b"
+    # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
+    # would report to players as "non verificata" forever.
+    guess_judge_timeout_seconds: int = Field(default=12, ge=1)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
@@ -91,6 +100,31 @@ class Settings(BaseSettings):
     # Guaranteed floor for the last finisher = max(floor_min, round(consolation * floor_ratio))
     quiz_participation_floor_ratio: float = 0.2
     quiz_participation_floor_min: int = 1
+
+    # Guess games (Guess The Game · Sound Quest) — one engine, two games.
+    # Attempts refunded when the judge could not be reached, per player per round.
+    # Bounded on purpose: an unbounded refund would void the attempt limit exactly
+    # when the AI is down — which is when the local exact-match path is all that
+    # stands between a player and brute force.
+    guess_max_unverified_bonus: int = Field(default=3, ge=0)
+    # Values SUGGESTED by the creation flow; the admin picks the real ones per
+    # round. ge=1 on the attempts: a round nobody may ever answer is not a game.
+    guess_default_attempts: int = Field(default=5, ge=1)
+    guess_default_time_limit_seconds: int = 300   # per player, 0 = no limit
+    guess_answer_cooldown_seconds: int = 3        # between two submissions, per player
+    # Per-rank prize defaults. The last-place floor is NOT duplicated here: it is
+    # derived by `services.prizes.participation_floor` from the shared
+    # `quiz_participation_floor_*` — one schedule for every game with a podium.
+    guess_default_first: int = 800
+    guess_default_second: int = 400
+    guess_default_third: int = 200
+    guess_default_consolation: int = 80
+    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable).
+    guess_xp_participation: int = 15   # XP for submitting at least one answer
+    guess_xp_solved: int = 25          # extra XP for actually guessing it
+    guess_xp_podium_first: int = 50
+    guess_xp_podium_second: int = 30
+    guess_xp_podium_third: int = 20
 
     # Shop cosmetics: how many purchased tags a user can keep active at once
     # (they can switch among owned tags and combine several). Raise to allow more.

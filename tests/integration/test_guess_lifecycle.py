@@ -1,0 +1,394 @@
+"""Opening and closing a round — the two orderings that are not interchangeable.
+
+`open_round` announces first and flips the status second: a send that fails
+leaves a `ready` round rather than a `running` one nobody was told about.
+`close_round` does the reverse — it claims the close as a conditional UPDATE
+*before* paying — so two admins closing at once cannot pay the pool twice.
+
+The group announcement deliberately carries no medium and no answer. Posting the
+image in the group would move the game into the group, where the answer gets
+discussed and private play stops meaning anything. The reveal happens at close,
+under the podium, when there is nothing left to spoil.
+"""
+
+from __future__ import annotations
+
+import types
+
+import pytest
+from sqlalchemy import select
+
+from database.models import GamePodium, GuessRound, Wallet
+from handlers.guess import lifecycle as lc
+from services import group_registry
+from services import guess_service as gs
+from services.guess_judge import Verdict
+
+
+class _Bot:
+    id = 999
+
+    def __init__(self, *, fail_group: bool = False) -> None:
+        self.fail_group = fail_group
+        self.messages: list[tuple[int, str, dict]] = []
+        self.media: list[tuple[int, str]] = []
+
+    async def get_me(self):
+        return types.SimpleNamespace(username="testbot")
+
+    async def send_message(self, chat_id, text, **kw):
+        if self.fail_group:
+            raise RuntimeError("bot is not a member of the group")
+        self.messages.append((chat_id, text, kw))
+
+    async def send_photo(self, chat_id, file_id, **kw):
+        self.media.append((chat_id, file_id))
+
+    async def send_audio(self, chat_id, file_id, **kw):
+        self.media.append((chat_id, file_id))
+
+    async def send_voice(self, chat_id, file_id, **kw):
+        self.media.append((chat_id, file_id))
+
+    @property
+    def texts(self) -> str:
+        return "\n".join(t for _, t, _ in self.messages)
+
+
+@pytest.fixture(autouse=True)
+def _group():
+    group_registry.set_runtime_group_id(-100_123)
+    yield
+    group_registry.set_runtime_group_id(None)
+
+
+@pytest.fixture
+async def round_(session):
+    r = await gs.create_round(
+        session, kind="guess", creator_tg_id=1, title="Indovina",
+        media_file_id="FILE", media_kind="photo", answer="Doom",
+        aliases=[], hints=[], max_attempts=5, time_limit_seconds=0,
+        prize_first=100, prize_second=50, prize_third=25, prize_consolation=10,
+        group_id=-100_123,
+    )
+    r.status = "ready"
+    await session.flush()
+    return r
+
+
+async def _solve(session, round_, uid, user_factory, wrong_before=0):
+    await user_factory(uid, f"u{uid}")
+    await gs.start_or_resume(session, round_.id, uid)
+    for _ in range(wrong_before):
+        await gs.record_attempt(session, round_, uid, "Quake",
+                                Verdict(correct=False, source="ai"))
+    await gs.record_attempt(session, round_, uid, "Doom",
+                            Verdict(correct=True, source="exact"))
+
+
+async def _coins(session, tg_id: int) -> int:
+    return (
+        await session.execute(select(Wallet.coins).where(Wallet.tg_id == tg_id))
+    ).scalar_one()
+
+
+async def _status(session, round_id: int) -> str:
+    return (
+        await session.execute(select(GuessRound.status).where(GuessRound.id == round_id))
+    ).scalar_one()
+
+
+class TestOpen:
+    async def test_it_announces_and_then_runs(self, session, round_):
+        ok, _ = await lc.open_round(_Bot(), session, round_.id)
+        await session.commit()
+
+        assert ok is True and await _status(session, round_.id) == "running"
+
+    async def test_the_announcement_carries_a_play_deep_link(self, session, round_):
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        kb = bot.messages[0][2]["reply_markup"]
+        assert "start=guess_" in kb.inline_keyboard[0][0].url
+
+    async def test_a_sound_round_links_with_its_own_payload(self, session):
+        r = await gs.create_round(
+            session, kind="sound", creator_tg_id=1, title="Ascolta",
+            media_file_id="A", media_kind="audio", answer="Doom",
+            aliases=[], hints=[], max_attempts=3, time_limit_seconds=0,
+        )
+        r.status = "ready"
+        await session.flush()
+        bot = _Bot()
+
+        await lc.open_round(bot, session, r.id)
+
+        kb = bot.messages[0][2]["reply_markup"]
+        assert "start=sound_" in kb.inline_keyboard[0][0].url
+
+    async def test_the_announcement_does_not_reveal_the_medium(self, session, round_):
+        """Posting the image in the group moves the game into the group."""
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert bot.media == []
+
+    async def test_the_announcement_does_not_reveal_the_answer(self, session, round_):
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert "Doom" not in bot.texts
+
+    async def test_a_failed_announcement_leaves_the_round_ready(self, session, round_):
+        """Otherwise the round is running and nobody was told."""
+        ok, _ = await lc.open_round(_Bot(fail_group=True), session, round_.id)
+
+        assert ok is False and await _status(session, round_.id) == "ready"
+
+    async def test_a_running_round_cannot_be_opened_again(self, session, round_):
+        await lc.open_round(_Bot(), session, round_.id)
+        await session.commit()
+
+        ok, msg = await lc.open_round(_Bot(), session, round_.id)
+
+        assert ok is False and "corso" in msg
+
+    async def test_a_finished_round_cannot_be_reopened(self, session, round_):
+        round_.status = "finished"
+        await session.flush()
+
+        ok, msg = await lc.open_round(_Bot(), session, round_.id)
+
+        assert ok is False and "giocato" in msg
+
+    async def test_a_missing_round_is_reported_not_raised(self, session):
+        ok, _ = await lc.open_round(_Bot(), session, 999)
+        assert ok is False
+
+    async def test_with_no_group_configured_it_refuses(self, session, round_):
+        group_registry.set_runtime_group_id(0)
+
+        ok, msg = await lc.open_round(_Bot(), session, round_.id)
+
+        assert ok is False and "GROUP_ID" in msg
+
+
+class TestClose:
+    async def test_closing_pays_the_podium(self, session, round_, user_factory):
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        ok, _ = await lc.close_round(_Bot(), session, round_.id)
+
+        assert ok is True and await _coins(session, 7) == 100
+
+    async def test_closing_twice_pays_once(self, session, round_, user_factory):
+        """The close claim is the guard, not a status read followed by a write."""
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        await lc.close_round(_Bot(), session, round_.id)
+
+        ok, msg = await lc.close_round(_Bot(), session, round_.id)
+
+        assert ok is False and "chiuso" in msg
+        assert await _coins(session, 7) == 100
+
+    async def test_the_podium_reveals_the_medium_and_the_answer(
+        self, session, round_, user_factory
+    ):
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        bot = _Bot()
+
+        await lc.close_round(bot, session, round_.id)
+
+        assert bot.media and bot.media[0][1] == "FILE"
+        assert "Doom" in bot.texts
+
+    async def test_the_podium_shows_the_attempt_count(
+        self, session, round_, user_factory
+    ):
+        """Fewest attempts is what the ranking is *for*; hiding it hides the game."""
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory, wrong_before=2)
+        bot = _Bot()
+
+        await lc.close_round(bot, session, round_.id)
+
+        assert "3 tentativi" in bot.texts
+
+    async def test_one_attempt_is_singular(self, session, round_, user_factory):
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        bot = _Bot()
+
+        await lc.close_round(bot, session, round_.id)
+
+        assert "1 tentativo" in bot.texts and "1 tentativi" not in bot.texts
+
+    async def test_a_podium_finish_is_recorded_for_the_trophies(
+        self, session, round_, user_factory
+    ):
+        """`kind` is the game_key, so the trophies the engine already declares
+        for guess/sound light up with no extra wiring."""
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        row = (await session.execute(
+            select(GamePodium.game_key, GamePodium.rank)
+            .where(GamePodium.user_tg_id == 7)
+        )).one()
+        assert row == ("guess", 1)
+
+    async def test_a_sound_round_records_its_own_game_key(self, session, user_factory):
+        r = await gs.create_round(
+            session, kind="sound", creator_tg_id=1, title="Ascolta",
+            media_file_id="A", media_kind="audio", answer="Doom",
+            aliases=[], hints=[], max_attempts=3, time_limit_seconds=0,
+            prize_first=10,
+        )
+        r.status = "running"
+        await session.flush()
+        await _solve(session, r, 7, user_factory)
+
+        await lc.close_round(_Bot(), session, r.id)
+
+        key = (await session.execute(
+            select(GamePodium.game_key).where(GamePodium.user_tg_id == 7)
+        )).scalar_one()
+        assert key == "sound"
+
+    async def test_closing_a_round_nobody_solved_still_works(
+        self, session, round_, user_factory
+    ):
+        round_.status = "running"
+        await session.flush()
+        await user_factory(7, "u7")
+        await gs.start_or_resume(session, round_.id, 7)
+        await gs.record_attempt(session, round_, 7, "Quake",
+                                Verdict(correct=False, source="ai"))
+        bot = _Bot()
+
+        ok, _ = await lc.close_round(bot, session, round_.id)
+
+        assert ok is True and "nessuno" in bot.texts.lower()
+
+    async def test_even_then_the_answer_is_revealed(self, session, round_):
+        """A round that ends unsolved still owes everyone the answer."""
+        round_.status = "running"
+        await session.flush()
+        bot = _Bot()
+
+        await lc.close_round(bot, session, round_.id)
+
+        assert "Doom" in bot.texts
+
+    async def test_a_ready_round_cannot_be_closed(self, session, round_):
+        ok, msg = await lc.close_round(_Bot(), session, round_.id)
+        assert ok is False and "corso" in msg
+
+    async def test_a_missing_round_is_reported_not_raised(self, session):
+        ok, msg = await lc.close_round(_Bot(), session, 999)
+        assert ok is False and "non trovato" in msg
+
+    async def test_a_failed_podium_announcement_does_not_undo_the_payout(
+        self, session, round_, user_factory
+    ):
+        """Prizes are committed before the announcement, so a send that fails
+        never turns a paid-out round into an error."""
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        ok, _ = await lc.close_round(_Bot(fail_group=True), session, round_.id)
+
+        assert ok is True and await _coins(session, 7) == 100
+
+    async def test_with_no_group_the_podium_comes_back_as_text(
+        self, session, round_, user_factory
+    ):
+        """An admin running without a group still gets to see who won."""
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        group_registry.set_runtime_group_id(0)
+
+        ok, msg = await lc.close_round(_Bot(), session, round_.id)
+
+        assert ok is True and "Doom" in msg
+
+    async def test_a_round_deleted_between_the_claim_and_the_payout_is_survived(
+        self, session, round_, monkeypatch
+    ):
+        """The claim wins, then the row is gone. Defensive, but the alternative
+        is an AttributeError on None in the middle of paying people."""
+        round_.status = "running"
+        await session.flush()
+
+        async def _vanished(_session, _round_id):
+            return None
+        monkeypatch.setattr(lc.guess_service, "get_round", _vanished)
+
+        ok, msg = await lc.close_round(_Bot(), session, round_.id)
+
+        assert ok is False and "non trovato" in msg
+
+
+class TestTrophies:
+    """Closing a round runs the trophy engine for everyone it could affect, and
+    announces what was unlocked. `guess` and `sound` were forward-declared in
+    `progress_service.GAME_LABELS`, so a CSV row is all a trophy needs."""
+
+    @pytest.fixture
+    async def podium_trophy(self, session):
+        from database.models import Badge
+
+        badge = Badge(
+            slug="primo_podio_guess", name="Occhio Clinico",
+            description="Podio nel Guess The Game", icon_emoji="👁️",
+            category="giochi", rarity="bronze", xp_reward=0,
+            condition_type="podium_count", condition_value=1, condition_param="guess",
+        )
+        session.add(badge)
+        await session.flush()
+        return badge
+
+    async def test_a_podium_finish_unlocks_its_trophy(
+        self, session, round_, user_factory, podium_trophy
+    ):
+        from database.models import UserBadge
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        owned = (await session.execute(
+            select(UserBadge.badge_id).where(UserBadge.user_tg_id == 7)
+        )).scalars().all()
+        assert owned == [podium_trophy.id]
+
+    async def test_the_unlocked_trophy_is_announced_in_the_group(
+        self, session, round_, user_factory, podium_trophy
+    ):
+        bot = _Bot()
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        await lc.close_round(bot, session, round_.id)
+
+        assert "Occhio Clinico" in bot.texts

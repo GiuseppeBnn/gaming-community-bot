@@ -6,6 +6,7 @@ Deep-link payloads routed through /start:
   create_poll           → opens the poll-creation FSM in private chat (admin only)
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
+  guess_<id> / sound_<id> → plays a Guess The Game / Sound Quest round in private
   help                  → shows the help message
   spiega_<cmd>          → shows the per-command manual (carried from the group button)
   shop_<group_id>       → opens the Locanda (shop) catalog for the given group
@@ -117,6 +118,18 @@ async def cmd_start(
         from handlers.quiz import start_quiz_session
         await start_quiz_session(message, db_session, int(payload[5:]))
         return
+
+    # Deep-link: guess_<id> / sound_<id> (play a running round in private).
+    # Public by design: any group member plays, so unlike the admin landings
+    # there is no is_admin re-check here to forget.
+    for kind in ("guess", "sound"):
+        prefix = f"{kind}_"
+        if payload.startswith(prefix) and payload[len(prefix):].isdigit():
+            from handlers.guess import start_guess_session
+            await start_guess_session(
+                message, db_session, state, int(payload[len(prefix):])
+            )
+            return
 
     # Deep-link: create_poll (admin poll creation FSM, redirected from the group)
     if payload == "create_poll":

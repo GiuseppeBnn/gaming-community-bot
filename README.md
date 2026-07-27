@@ -217,6 +217,23 @@ I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la *
 sempre **con conferma**. Un quiz concluso resta come archivio finché non lo elimini, e «Riproponi»
 lo azzera per rigiocarlo.
 
+### Guess The Game & Sound Quest
+
+Due giochi «indovina», creati e gestiti solo dagli admin dall'hub **🎬 Eventi**: si manda una
+**foto** (Guess The Game) o un **audio** (Sound Quest), si scrive la risposta corretta, e si
+scelgono tentativi, tempo, suggerimenti progressivi e premi. Il round si avvia subito o si
+programma, come i quiz.
+
+Nel gruppo arriva **solo l'invito**: l'immagine e l'audio non si postano lì, altrimenti la
+soluzione si discute in chat e giocare in privato non vuol più dire niente. Si rivelano col
+**podio** alla chiusura, insieme alla risposta. Vince chi ci arriva in **meno tentativi**; a
+parità conta il tempo.
+
+Le risposte sono **libere** e le giudica l'AI, quindi «GTA SA» vale «Grand Theft Auto: San
+Andreas» — ma la **serie da sola non basta**: «GTA» per «GTA San Andreas» è sbagliato. In
+creazione puoi aggiungere grafie sempre accettate: sono la rete di sicurezza se l'AI non
+risponde, perché quelle vengono riconosciute **senza** interpellarla.
+
 ### Scommesse (stile Twitch)
 
 Payout **proporzionale** al pool (stile Twitch) e una sola scommessa per utente per evento.
@@ -318,6 +335,7 @@ gaming-community-bot/
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
 | `GROQ_API_KEY` | — | modulo AI (opzionale) |
+| `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |

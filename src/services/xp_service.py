@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 
 class XpSource(str, Enum):
     quiz = "quiz"                    # event, uncapped (participation + correct + podium)
+    guess = "guess"                  # event, uncapped (guess games: play + solve + podium)
     bet_placed = "bet_placed"        # event, uncapped (participation: placed a bet)
     bet_won = "bet_won"              # event, uncapped (bonus: bet won)
     daily = "daily"                  # daily quota, capped
