@@ -1,114 +1,312 @@
-"""Tests for GroupMemberMiddleware utilities."""
+"""`middlewares/group_guard.py` — the gate that keeps non-members out of the bot.
+
+This is a security boundary: everything a user can do in private (wallet, shop,
+transfers, bets) sits behind it. Only its two cache helpers were covered; the
+middleware itself — the part that decides *pass or reject* — was not.
+
+The events here are **real aiogram objects** bound to a fake bot with `.as_(bot)`,
+not mocks. The middleware dispatches on `isinstance(event, Message)`, so a stand-in
+class would exercise a different branch than production; the previous version of
+this file monkeypatched the module's `Message`/`CallbackQuery` names to work around
+that, which tested the patch as much as the code. Constructing the real models and
+letting the fake bot receive the outgoing API method avoids both problems.
+
+Two behaviours are deliberately pinned because they are the ones that would be
+"fixed" by mistake:
+
+  * **fail open**: if the membership check itself errors (bot removed from the
+    group, Telegram down) the user is let through. Locking everyone out of their
+    own wallet is worse than admitting an ex-member for at most one cache TTL;
+  * **the cache is trusted for its TTL**: a member who leaves keeps access until it
+    expires or someone calls `invalidate_cache` — which is exactly what the
+    join/leave handlers do.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+import datetime
+import time
 
+import pytest
+from aiogram.types import CallbackQuery, Chat, Message, User
+
+import middlewares.group_guard as gg
+from services import group_registry
+
+GROUP_ID = -100_777
+USER_ID = 42
+
+
+class _FakeBot:
+    """Receives the outgoing API calls aiogram builds from `.answer(...)`."""
+
+    def __init__(self, status: str = "member", *, fail: bool = False) -> None:
+        self.status = status
+        self.fail = fail
+        self.member_checks: list[tuple[int, int]] = []
+        self.calls: list[object] = []
+
+    async def __call__(self, method, *args, **kwargs):
+        self.calls.append(method)
+        return None
+
+    async def get_chat_member(self, chat_id, user_id):
+        self.member_checks.append((chat_id, user_id))
+        if self.fail:
+            raise RuntimeError("Bad Request: chat not found")
+        return type("Member", (), {"status": self.status})()
+
+    @property
+    def texts(self) -> list[str]:
+        return [getattr(c, "text", "") or "" for c in self.calls]
+
+
+def _message(bot, chat_type: str = "private") -> Message:
+    return Message(
+        message_id=1,
+        date=datetime.datetime.now(),
+        chat=Chat(id=USER_ID if chat_type == "private" else GROUP_ID, type=chat_type),
+        from_user=User(id=USER_ID, is_bot=False, first_name="Tizio"),
+    ).as_(bot)
+
+
+def _callback(bot, chat_type: str = "private", *, with_message: bool = True) -> CallbackQuery:
+    return CallbackQuery(
+        id="1",
+        from_user=User(id=USER_ID, is_bot=False, first_name="Tizio"),
+        chat_instance="ci",
+        data="noop",
+        message=_message(bot, chat_type) if with_message else None,
+    ).as_(bot)
+
+
+class _Handler:
+    """The downstream handler: records whether the middleware let the update through."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, event, data):
+        self.calls += 1
+        return "handled"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_guard():
+    """The cache and the group id are module-level state shared by the whole suite."""
+    gg.invalidate_all()
+    group_registry.set_runtime_group_id(GROUP_ID)
+    yield
+    gg.invalidate_all()
+    group_registry.set_runtime_group_id(None)
+
+
+def _data(bot, user: User | None = None) -> dict:
+    return {"bot": bot, "event_from_user": user or User(id=USER_ID, is_bot=False,
+                                                        first_name="Tizio")}
+
+
+# ---------------------------------------------------------------------------
+# The gate
+# ---------------------------------------------------------------------------
+
+class TestTheGate:
+    async def test_a_member_gets_through(self):
+        bot = _FakeBot("member")
+        handler = _Handler()
+
+        result = await gg.GroupMemberMiddleware()(handler, _message(bot), _data(bot))
+
+        assert handler.calls == 1 and result == "handled"
+
+    @pytest.mark.parametrize("status", ["left", "kicked", "banned"])
+    async def test_a_non_member_is_stopped_before_the_handler(self, status):
+        """The reply matters less than the fact that the handler never runs: that
+        is what keeps a stranger out of someone else's wallet."""
+        bot = _FakeBot(status)
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _message(bot), _data(bot))
+
+        assert handler.calls == 0
+        assert "Accesso negato" in bot.texts[0]
+
+    async def test_a_non_member_pressing_a_button_gets_an_alert(self):
+        bot = _FakeBot("left")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _callback(bot), _data(bot))
+
+        assert handler.calls == 0
+        assert getattr(bot.calls[0], "show_alert", False) is True
+
+    async def test_group_updates_are_never_checked(self):
+        """The group is the authoritative context: a message posted in it is proof
+        of membership, and checking would burn an API call per group message."""
+        bot = _FakeBot("left")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _message(bot, "supergroup"), _data(bot))
+
+        assert handler.calls == 1
+        assert bot.member_checks == []
+
+    async def test_a_callback_from_the_group_is_not_checked_either(self):
+        bot = _FakeBot("left")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _callback(bot, "supergroup"), _data(bot))
+
+        assert handler.calls == 1 and bot.member_checks == []
+
+    async def test_with_no_group_configured_the_guard_is_off(self):
+        """A bot with GROUP_ID=0 is a bot with no group to be a member of; gating
+        would make it unusable rather than safe."""
+        group_registry.set_runtime_group_id(0)
+        bot = _FakeBot("kicked")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _message(bot), _data(bot))
+
+        assert handler.calls == 1 and bot.member_checks == []
+
+    async def test_an_update_with_no_user_passes_through(self):
+        """Channel posts and service updates have no `from_user`; there is nobody to
+        check, and dropping them would break the bot's own bookkeeping."""
+        bot = _FakeBot("member")
+        handler = _Handler()
+        data = {"bot": bot, "event_from_user": None}
+
+        await gg.GroupMemberMiddleware()(handler, _message(bot), data)
+
+        assert handler.calls == 1 and bot.member_checks == []
+
+    async def test_an_event_that_is_neither_message_nor_callback_passes_through(self):
+        """`_chat_type` returns None for anything else, which is not "private", so
+        the guard must not try to gate it."""
+        bot = _FakeBot("kicked")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, object(), _data(bot))
+
+        assert handler.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# The membership check itself
+# ---------------------------------------------------------------------------
+
+class TestMembershipCheck:
+    async def test_the_answer_is_cached_for_the_whole_ttl(self):
+        bot = _FakeBot("member")
+
+        for _ in range(5):
+            assert await gg._is_group_member(bot, USER_ID) is True
+
+        assert len(bot.member_checks) == 1
+
+    async def test_an_expired_entry_is_asked_again(self):
+        bot = _FakeBot("member")
+        await gg._is_group_member(bot, USER_ID)
+        # Age the entry past the TTL instead of sleeping through it.
+        is_member, ts = gg._cache[USER_ID]
+        gg._cache[USER_ID] = (is_member, ts - gg._GROUP_MEMBER_CACHE_TTL - 1)
+
+        await gg._is_group_member(bot, USER_ID)
+
+        assert len(bot.member_checks) == 2
+
+    async def test_a_failing_check_fails_open(self):
+        """Bot removed from the group, Telegram down: everyone would be locked out
+        of their own balance. Admitting an ex-member for one TTL is the lesser bug."""
+        bot = _FakeBot(fail=True)
+
+        assert await gg._is_group_member(bot, USER_ID) is True
+
+    async def test_a_user_who_left_is_still_admitted_until_invalidated(self):
+        """Pinning the known consequence of caching: `invalidate_cache` is not an
+        optimisation, it is what makes a leave take effect immediately."""
+        bot = _FakeBot("member")
+        await gg._is_group_member(bot, USER_ID)
+        bot.status = "left"
+
+        assert await gg._is_group_member(bot, USER_ID) is True
+        gg.invalidate_cache(USER_ID)
+        assert await gg._is_group_member(bot, USER_ID) is False
+
+    async def test_the_cache_does_not_grow_without_bound(self):
+        """A busy group would otherwise leak one entry per user forever."""
+        bot = _FakeBot("member")
+        stale = time.monotonic() - gg._GROUP_MEMBER_CACHE_TTL - 1
+        for uid in range(gg._CACHE_PRUNE_THRESHOLD + 1):
+            gg._cache[uid] = (True, stale)
+
+        await gg._is_group_member(bot, 10_000_000)
+
+        assert len(gg._cache) == 1, "only the fresh entry survives the prune"
+
+    async def test_a_fresh_entry_is_never_pruned(self):
+        bot = _FakeBot("member")
+        gg._cache[7] = (True, time.monotonic())
+        for uid in range(gg._CACHE_PRUNE_THRESHOLD + 1):
+            gg._cache[uid + 100] = (True, time.monotonic() - gg._GROUP_MEMBER_CACHE_TTL - 1)
+
+        await gg._is_group_member(bot, 10_000_000)
+
+        assert 7 in gg._cache
+
+    def test_invalidate_all_drops_everything(self):
+        gg._cache[1] = (True, 0.0)
+        gg._cache[2] = (False, 0.0)
+
+        gg.invalidate_all()
+
+        assert gg._cache == {}
 
 
 class TestInvalidateCache:
     def test_removes_user_from_cache(self):
-        import middlewares.group_guard as gg
-
-        # Manually populate the module-level cache
         gg._cache[42] = (True, 9999.0)
-        assert 42 in gg._cache
 
         gg.invalidate_cache(42)
+
         assert 42 not in gg._cache
 
     def test_safe_when_user_not_in_cache(self):
-        import middlewares.group_guard as gg
-
-        # Should not raise even if user was never cached
         gg.invalidate_cache(99999)
 
     def test_only_removes_target_user(self):
-        import middlewares.group_guard as gg
-
         gg._cache[1] = (True, 0.0)
         gg._cache[2] = (False, 0.0)
+
         gg.invalidate_cache(1)
 
-        assert 1 not in gg._cache
-        assert 2 in gg._cache
-        # Cleanup
-        gg._cache.pop(2, None)
+        assert 1 not in gg._cache and 2 in gg._cache
 
 
 class TestChatType:
-    # _chat_type dispatches on isinstance(event, Message) and isinstance(event, CallbackQuery).
-    # Aiogram v3 Pydantic models can't be spec'd with MagicMock (fields aren't regular attrs),
-    # so we test the fall-through (None) path with plain objects, and the isinstance paths
-    # via monkeypatching the module-level Message/CallbackQuery references.
+    def test_a_private_message_is_private(self):
+        assert gg._chat_type(_message(_FakeBot())) == "private"
 
-    def test_unknown_event_returns_none(self):
-        from middlewares.group_guard import _chat_type
+    def test_a_callback_reports_the_chat_of_its_message(self):
+        assert gg._chat_type(_callback(_FakeBot(), "supergroup")) == "supergroup"
 
-        assert _chat_type(object()) is None
+    def test_a_callback_without_a_message_has_no_chat(self):
+        """Inline-mode callbacks carry no message; unknown must not read as private,
+        or the guard would gate something it cannot identify."""
+        assert gg._chat_type(_callback(_FakeBot(), with_message=False)) is None
 
-    def test_plain_mock_returns_none(self):
-        from middlewares.group_guard import _chat_type
-
-        assert _chat_type(MagicMock()) is None
-
-    def test_message_branch_via_patch(self, monkeypatch):
-        from middlewares import group_guard
-
-        # Build a plain fake object that has the .chat.type attribute
-        fake_chat = MagicMock()
-        fake_chat.type = "private"
-        fake_msg = MagicMock()
-        fake_msg.chat = fake_chat
-
-        # Temporarily make Message point at a class that fake_msg IS an instance of
-        FakeMsgClass = type(fake_msg)
-        monkeypatch.setattr(group_guard, "Message", FakeMsgClass)
-
-        result = group_guard._chat_type(fake_msg)
-        assert result == "private"
-
-    def test_callback_branch_via_patch(self, monkeypatch):
-        from middlewares import group_guard
-
-        fake_inner_chat = MagicMock()
-        fake_inner_chat.type = "supergroup"
-        fake_inner_msg = MagicMock()
-        fake_inner_msg.chat = fake_inner_chat
-        fake_cb = MagicMock()
-        fake_cb.message = fake_inner_msg
-
-        FakeCbClass = type(fake_cb)
-        monkeypatch.setattr(group_guard, "Message", type(None))      # not a Message
-        monkeypatch.setattr(group_guard, "CallbackQuery", FakeCbClass)
-
-        result = group_guard._chat_type(fake_cb)
-        assert result == "supergroup"
-
-    def test_callback_without_message_via_patch(self, monkeypatch):
-        from middlewares import group_guard
-
-        fake_cb = MagicMock()
-        fake_cb.message = None
-
-        FakeCbClass = type(fake_cb)
-        monkeypatch.setattr(group_guard, "Message", type(None))
-        monkeypatch.setattr(group_guard, "CallbackQuery", FakeCbClass)
-
-        assert group_guard._chat_type(fake_cb) is None
+    def test_anything_else_has_no_chat(self):
+        assert gg._chat_type(object()) is None
 
 
 class TestNonMemberStatuses:
-    def test_non_member_statuses_set(self):
-        from middlewares.group_guard import _NON_MEMBER_STATUSES
+    @pytest.mark.parametrize("status", ["left", "kicked", "banned"])
+    def test_these_statuses_mean_not_a_member(self, status):
+        assert status in gg._NON_MEMBER_STATUSES
 
-        assert "left" in _NON_MEMBER_STATUSES
-        assert "kicked" in _NON_MEMBER_STATUSES
-        assert "banned" in _NON_MEMBER_STATUSES
-
-    def test_active_statuses_not_in_set(self):
-        from middlewares.group_guard import _NON_MEMBER_STATUSES
-
-        assert "member" not in _NON_MEMBER_STATUSES
-        assert "administrator" not in _NON_MEMBER_STATUSES
-        assert "creator" not in _NON_MEMBER_STATUSES
+    @pytest.mark.parametrize("status", ["member", "administrator", "creator", "restricted"])
+    def test_these_do_not(self, status):
+        """`restricted` included on purpose: a muted member is still a member, and
+        must keep access to the private-chat features."""
+        assert status not in gg._NON_MEMBER_STATUSES
