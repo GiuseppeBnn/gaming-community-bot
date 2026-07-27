@@ -1,4 +1,4 @@
-"""Editing the questions of a ready quiz — the `quiz_edit:*` flow in `handlers/quiz.py`.
+"""Editing the questions of a ready quiz — `handlers/quiz/editing.py`.
 
 An admin builds a quiz, spots a typo, and fixes it before launching. Four fields can
 be changed one at a time (text, options, which option is correct, explanation) plus a
@@ -23,7 +23,8 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from handlers import quiz as qz
+from handlers.quiz import _shared
+from handlers.quiz import editing as qz
 from services import quiz_service
 
 ADMIN_ID = 1
@@ -199,7 +200,7 @@ class TestSingleFieldEdits:
         state = _state()
         await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
 
-        message = _FakeMessage("x" * (qz._MAX_QUESTION + 1))
+        message = _FakeMessage("x" * (_shared._MAX_QUESTION + 1))
         await qz.fsm_edit_text(message, state, session)
 
         assert message.said
@@ -227,7 +228,7 @@ class TestSingleFieldEdits:
         state = _state()
         await qz.cb_edit_expl(_FakeCallback(f"quiz_edit:expl:{quiz.id}:0"), state, session)
 
-        message = _FakeMessage("x" * (qz._MAX_EXPLANATION + 1))
+        message = _FakeMessage("x" * (_shared._MAX_EXPLANATION + 1))
         await qz.fsm_edit_explanation(message, state, session)
 
         assert message.said

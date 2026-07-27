@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from sqlalchemy import select
 
 from database.models import Badge, Quiz, Wallet
-from handlers import quiz as quiz_handlers
+from handlers.quiz import lifecycle as quiz_handlers
 from services import quiz_service
 
 ADMIN_ID = 1

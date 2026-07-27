@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
-from handlers import quiz as quiz_handlers
+from handlers.quiz import trying as quiz_handlers
 from services import quiz_service
 
 ADMIN_ID = 42

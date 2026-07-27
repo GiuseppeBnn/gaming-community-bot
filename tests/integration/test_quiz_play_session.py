@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
-from handlers import quiz as qz
+from handlers.quiz import play as qz
 from services import quiz_service
 
 PLAYER = 10

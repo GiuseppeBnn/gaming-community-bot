@@ -1,6 +1,6 @@
-"""Building a quiz — the creation FSM in `handlers/quiz.py`.
+"""Building a quiz — the creation FSM, `handlers/quiz/creation.py`.
 
-Roughly five hundred lines of `handlers/quiz.py` are one conversation: title →
+The whole module is one conversation: title →
 description → prizes → time limit → shuffling → questions → review → publish. It is
 the longest flow in the bot and the one an admin loses most by having to restart, so
 the first test here simply **walks it end to end** and checks that what comes out the
@@ -28,7 +28,8 @@ from sqlalchemy import select
 
 from config_data.config import settings
 from database.models import Quiz, QuizQuestion
-from handlers import quiz as qz
+from handlers.quiz import _shared
+from handlers.quiz import creation as qz
 from services import quiz_service
 
 ADMIN_ID = 1
@@ -257,7 +258,7 @@ class TestRefusals:
         state = _state()
         await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
 
-        for text in ("ab", "x" * (qz._MAX_TITLE + 1)):
+        for text in ("ab", "x" * (_shared._MAX_TITLE + 1)):
             message = _FakeMessage(text)
             await qz.fsm_title(message, state)
             assert message.said, text
@@ -292,7 +293,7 @@ class TestRefusals:
             "Solo una",                                    # a single option
             "",                                            # none at all
             "\n".join(f"opzione {i}" for i in range(20)),  # past the cap
-            "x" * (qz._MAX_OPTION + 1),                    # one option too long
+            "x" * (_shared._MAX_OPTION + 1),                    # one option too long
         ):
             message = _FakeMessage(options)
             await qz.fsm_question_options(message, state)
@@ -345,7 +346,7 @@ class TestRefusals:
         await qz.fsm_question_options(_FakeMessage("Roma\nMilano"), state)
         await qz.cb_correct(_FakeCallback("quiz_new:correct:0"), state)
 
-        message = _FakeMessage("x" * (qz._MAX_EXPLANATION + 1))
+        message = _FakeMessage("x" * (_shared._MAX_EXPLANATION + 1))
         await qz.fsm_explanation(message, state, session)
 
         assert message.said

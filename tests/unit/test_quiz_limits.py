@@ -6,7 +6,7 @@ out after the quiz is live can no longer fix it without editing every question.
 
 from __future__ import annotations
 
-from handlers.quiz import (
+from handlers.quiz._shared import (
     _MAX_EXPLANATION,
     _MAX_OPTION,
     _MAX_QUESTION,

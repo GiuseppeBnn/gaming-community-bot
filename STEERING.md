@@ -723,8 +723,8 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `BetCreationStates.waiting_for_window` | `handlers/betting.py` | finestra puntate: preset (`bet:win:<sec>`)/♾️ (`bet:win:0`)/✏️ custom → crea l'evento |
 | `BetCreationStates.waiting_for_window_custom` | `handlers/betting.py` | durata custom (`schedule_service.parse_duration`, 30m/2h/1d) |
 | `BetCustomAmountState.waiting_for_amount` | `handlers/betting.py` | |
-| `QuizCreationStates.*` | `handlers/quiz.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
-| `QuizEditStates.*` | `handlers/quiz.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `quiz_edit:nav:<quiz_id>:0`). Namespace callback `quiz_edit:*`: scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
+| `QuizCreationStates.*` | `handlers/quiz/creation.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
+| `QuizEditStates.*` | `handlers/quiz/editing.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `quiz_edit:nav:<quiz_id>:0`). Namespace callback `quiz_edit:*`: scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
@@ -985,7 +985,14 @@ Quiz a risposta multipla creati dall'admin e giocati da ogni utente nella **prop
 tempo per domanda **opzionale** (scelto in creazione); vince chi ne azzecca di più, **a parità
 conta il tempo minore** (poi l'ordine di arrivo).
 
-**File:** `services/quiz_service.py` (DB), `handlers/quiz.py` (FSM + comandi + play privato).
+**File:** `services/quiz_service.py` (DB) e il pacchetto **`handlers/quiz/`**, diviso per fase
+attorno a un unico `router` condiviso in `_shared.py`: `creation.py` (FSM di creazione),
+`editing.py` (modifica domande), `lifecycle.py` (avvio/lista/chiusura/podio), `play.py`
+(sessione privata, timer, risposte), `trying.py` (prova admin). `__init__.py` è la superficie
+pubblica — `open_quiz`, `close_quiz`, `start_quiz_creation`, `start_quiz_session`,
+`start_quiz_try`, `router` — quindi chi importa continua a scrivere `from handlers.quiz import …`.
+**L'ordine degli import in `__init__.py` è l'ordine di registrazione degli handler** su quel
+router, identico a quello che le sezioni avevano nel file unico (47 handler, verificato).
 
 ### Creazione
 
@@ -1001,7 +1008,7 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 - **Navigazione**: ogni step ha «⬅️ Indietro» (`quiz_new:back`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
-- **Limiti di lunghezza**: costanti in cima a `handlers/quiz.py` — `_MAX_TITLE` (256), `_MAX_DESC`
+- **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
   (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
   divergere da quello imposto. L'input oltre il limite viene **rifiutato** (`_too_long` →
