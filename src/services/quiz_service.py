@@ -30,6 +30,9 @@ from database.models import (
     TransactionType,
 )
 from services import economy_service, xp_service
+# Re-exported so every existing caller keeps saying `quiz_service.consolation_amounts`.
+# The schedule itself lives in `services.prizes` because the guess games share it.
+from services.prizes import consolation_amounts, participation_floor  # noqa: F401
 from services.xp_service import XpSource
 
 # Legacy prize split among the podium (1st, 2nd, 3rd) — used only when no explicit
@@ -39,38 +42,6 @@ _PRIZE_SPLIT = (0.5, 0.3, 0.2)
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
-
-
-def participation_floor(consolation: int) -> int:
-    """Derive the guaranteed minimum (last-place consolation) from the 4th-place prize.
-
-    floor = max(floor_min, round(consolation * floor_ratio)), but never above the
-    consolation itself and never below 0.
-    """
-    if consolation <= 0:
-        return 0
-    floor = max(settings.quiz_participation_floor_min,
-                round(consolation * settings.quiz_participation_floor_ratio))
-    return max(0, min(floor, consolation))
-
-
-def consolation_amounts(n: int, top: int, floor: int) -> list[int]:
-    """Linear, non-increasing consolation schedule for the `n` non-podium finishers.
-
-    Position 0 (4th place) gets `top`; the last gets `floor`; the rest interpolate
-    linearly. Everyone gets at least `floor` (and at least 0). Pure function.
-    """
-    if n <= 0:
-        return []
-    if top <= 0:
-        return [0] * n
-    floor = max(0, min(floor, top))
-    if n == 1:
-        return [top]
-    return [
-        max(floor, round(top - (top - floor) * i / (n - 1)))
-        for i in range(n)
-    ]
 
 
 # ---------------------------------------------------------------------------
