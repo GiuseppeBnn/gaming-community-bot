@@ -105,16 +105,20 @@ def extract_media(message: Message) -> tuple[str, str] | None:
     return None
 
 
+#: media_kind → Bot API method name. A whitelist, not free-form attribute access:
+#: `media_kind` comes from the DB and only these three values may ever become a call.
+_SENDER_BY_KIND = {"photo": "send_photo", "audio": "send_audio", "voice": "send_voice"}
+
+
 async def send_media(bot, chat_id: int, file_id: str, media_kind: str, **kwargs) -> None:
     """Resend a stored medium.
 
     The one place that maps ``media_kind`` → Bot API call, shared by the creation
     preview, the play screen and the podium reveal. Three call sites doing their
-    own mapping is three chances to add a fourth medium in two of them.
+    own mapping would be three chances to add a fourth medium in only two of them.
+
+    Only the method actually needed is resolved. Looking up all three to use one
+    couples this to senders the call has nothing to do with — which is exactly how
+    a photo round ends up failing because of an audio method.
     """
-    sender = {
-        "photo": bot.send_photo,
-        "audio": bot.send_audio,
-        "voice": bot.send_voice,
-    }[media_kind]
-    await sender(chat_id, file_id, **kwargs)
+    await getattr(bot, _SENDER_BY_KIND[media_kind])(chat_id, file_id, **kwargs)

@@ -111,6 +111,7 @@ class Settings(BaseSettings):
     # round. ge=1 on the attempts: a round nobody may ever answer is not a game.
     guess_default_attempts: int = Field(default=5, ge=1)
     guess_default_time_limit_seconds: int = 300   # per player, 0 = no limit
+    guess_answer_cooldown_seconds: int = 3        # between two submissions, per player
     # Per-rank prize defaults. The last-place floor is NOT duplicated here: it is
     # derived by `services.prizes.participation_floor` from the shared
     # `quiz_participation_floor_*` — one schedule for every game with a podium.

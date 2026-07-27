@@ -21,15 +21,17 @@ from __future__ import annotations
 from handlers.guess._shared import router
 
 # Imported for their side effect: each registers its handlers on `router`.
-from handlers.guess import creation, lifecycle  # noqa: E402,F401
+from handlers.guess import creation, lifecycle, play  # noqa: E402,F401
 
 # The surface other modules use by name.
 from handlers.guess.creation import start_guess_creation  # noqa: E402
 from handlers.guess.lifecycle import close_round, open_round  # noqa: E402
+from handlers.guess.play import start_guess_session  # noqa: E402
 
 __all__ = [
     "close_round",
     "open_round",
     "router",
     "start_guess_creation",
+    "start_guess_session",
 ]
