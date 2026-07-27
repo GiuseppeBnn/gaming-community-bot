@@ -424,6 +424,121 @@ class BotState(Base):
     value: Mapped[str] = mapped_column(String(256), nullable=False)
 
 
+class GuessRound(Base):
+    """One "guess the subject from a medium" round.
+
+    ``kind`` discriminates the two games — ``guess`` (from an image) and ``sound``
+    (from an audio clip) — and is **also** the ``game_key`` passed to
+    ``progress_service.record_podium``, so the trophies ``GAME_LABELS`` already
+    forward-declares light up with no extra wiring.
+
+    One model serves both because they differ only in which medium is stored and
+    which Bot API method resends it. Duplicating the round would mean duplicating
+    a path that pays coins.
+
+    Status: ``draft`` (being built) → ``ready`` → ``running`` → ``finished``.
+    """
+
+    __tablename__ = "guess_rounds"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+    # Telegram file_id, resent at play time. Never downloaded: the bot keeps no
+    # media on disk. Validated at creation by sending it straight back to the
+    # admin, which is the only moment a dead file_id can still be fixed.
+    media_file_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    media_kind: Mapped[str] = mapped_column(String(16), nullable=False)  # photo|audio|voice
+
+    # The canonical answer, admin-authored (trusted input). ``aliases_json`` holds
+    # extra spellings the admin wants accepted without asking the model at all.
+    answer: Mapped[str] = mapped_column(String(200), nullable=False)
+    aliases_json: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    # JSON list of {"after": int, "text": str} — a hint delivered once the player
+    # has used ``after`` attempts. JSON and not a child table for the same reason
+    # as QuizQuestion.options_json: small, always read together, never queried alone.
+    hints_json: Mapped[Optional[str]] = mapped_column(String(2048), nullable=True)
+
+    max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    # Per-PLAYER limit, counted from when they open the game. 0 = no limit.
+    time_limit_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    prize_first: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_second: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_third: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_consolation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_min: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class GuessSession(Base):
+    """One player's run at one round: the clock, the counters, the outcome.
+
+    It is a table and not in-memory state because the clock starts when the
+    player *opens* the game — before the first attempt — and has to survive a
+    restart. The unique key is the anti-cheat: a second session would be a fresh
+    clock and a second set of attempts for the same player.
+
+    ``solved_attempts`` and ``solve_ms`` are written **once**, by the conditional
+    UPDATE that claims the solve (``WHERE solved_at IS NULL``), so a double tap
+    cannot re-rank or re-pay anyone.
+    """
+
+    __tablename__ = "guess_sessions"
+    __table_args__ = (UniqueConstraint("round_id", "user_tg_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    round_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("guess_rounds.id", ondelete="CASCADE"), nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    solved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    solved_attempts: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    solve_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    attempts_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Submissions the judge could not verify (AI unreachable). They are recorded
+    # but refunded as bonus attempts, capped — see guess_service.attempts_left.
+    unverified_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class GuessAttempt(Base):
+    """One submitted answer, kept forever.
+
+    Three jobs at once: it bounds brute force (the row exists even when the
+    attempt is refunded), it is the admin's audit trail of what got rejected, and
+    ``(round_id, normalized)`` is the **verdict cache** — two players who type the
+    same thing must get the same answer, and the second one costs no API call.
+    """
+
+    __tablename__ = "guess_attempts"
+    __table_args__ = (
+        UniqueConstraint("round_id", "user_tg_id", "attempt_no"),
+        Index("ix_guess_attempts_cache", "round_id", "normalized"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    round_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("guess_rounds.id", ondelete="CASCADE"), nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-based, per user
+    raw_answer: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized: Mapped[str] = mapped_column(String(200), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)  # correct|wrong|unverified
+    # exact|alias|shape|ai|cache|unavailable — how the verdict was reached.
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    elapsed_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class ScheduledTask(Base):
     """A future action (open a bet, start a quiz, send a poll) run by the in-process scheduler."""
 
