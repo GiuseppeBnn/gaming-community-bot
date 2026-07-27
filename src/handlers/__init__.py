@@ -40,6 +40,7 @@ from handlers import (
     events,
     fun_ai,
     group_events,
+    guess,
     leaderboard,
     onboarding,
     quiz,
@@ -61,6 +62,7 @@ ROUTERS: tuple[Router, ...] = (
     admin_dashboard.router,
     events.router,
     quiz.router,
+    guess.router,          # next to its twin; the callback prefixes are disjoint
     schedule.router,
     backup.router,
     fun_ai.router,
