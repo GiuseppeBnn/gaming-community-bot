@@ -1,7 +1,13 @@
-"""Diagnostic instrument for the identity-map staleness hazard on the money path.
+"""The money path under real concurrency — regression guards, and how they got here.
 
-**These tests do not test a fix — there is none yet.** They measure, per site,
-whether the hazard is real, so the fix can target what is actually broken.
+**These started as a diagnostic instrument, not as tests.** Every one of them was
+born `xfail(strict=True)`: red meant «this site is genuinely broken, here is the
+proof», and an unexpected pass meant «this site was already safe, drop the marker».
+Nine came back red. All nine are fixed now, the markers are gone, and what is left is
+what those measurements turned into: the guards that fail if any of it comes back.
+
+Keep new cases in that shape. Add the race first and watch it fail; a green test
+written after the fix proves only that it was written after the fix.
 
 ## The hazard, precisely
 
@@ -70,6 +76,7 @@ from database.models import (
     EventStatus,
     LedgerEntry,
     Quiz,
+    ShopPurchase,
     TransactionType,
     User,
     UserBet,
@@ -80,11 +87,13 @@ from exceptions.economy import (
     EventAlreadySettledError,
     InsufficientFundsError,
 )
+from handlers import shop
 from middlewares.db_middleware import _upsert_user
 from services import admin_service as admin_svc
 from services import bet_service as bet_svc
 from services import economy_service as eco
 from services import quiz_service as quiz_svc
+from services import shop_service
 from services import xp_service
 from services.xp_service import XpSource
 from utils import daytime
@@ -542,6 +551,64 @@ class TestAirdropXp:
         await asyncio.gather(airdrop(70), airdrop(30))
 
         assert await truth(pg_sessions, user_col(1, User.xp)) == 100
+
+
+class TestShopDoublePurchase:
+    """`handlers/shop.cb_shop_execute` debits first — that takes the wallet lock — and
+    only then re-checks ownership, undoing its own debit if it lost the race.
+
+    That re-check is unreachable on SQLite: `StaticPool` hands every session the same
+    connection, so two buyers cannot exist. Here they can, and the guarantee is the
+    one a user would notice immediately: a double-tap on «Confermi» costs the price
+    once, not twice.
+    """
+
+    async def test_a_double_tap_pays_for_the_cosmetic_once(
+        self, pg_sessions, pg_user_factory
+    ):
+        item = shop_service.get_item("tag_memelord")
+        await pg_user_factory(tg_id=1, coins=item.price * 2)
+
+        async def buy():
+            async with pg_sessions() as s:
+                await shop.cb_shop_execute(_ShopCallback(item.key), s)
+
+        await asyncio.gather(buy(), buy())
+
+        spent = item.price * 2 - await truth(pg_sessions, coins_of(1))
+        assert spent == item.price, f"charged {spent} for one tag worth {item.price}"
+
+        bought = await truth(
+            pg_sessions,
+            select(func.count()).select_from(ShopPurchase).where(
+                ShopPurchase.user_tg_id == 1, ShopPurchase.item_key == item.key
+            ),
+        )
+        assert bought == 1
+
+
+class _ShopMessage:
+    def __init__(self) -> None:
+        self.bot = types.SimpleNamespace(id=999_999)
+        self.from_user = types.SimpleNamespace(id=999_999)  # the panel's author is the bot
+        self.chat = types.SimpleNamespace(id=1, type="private")
+
+    async def edit_text(self, text, reply_markup=None, **kw):
+        return None
+
+    async def answer(self, text, reply_markup=None):
+        return None
+
+
+class _ShopCallback:
+    def __init__(self, item_key: str) -> None:
+        self.data = f"shop:exec:{item_key}"
+        self.message = _ShopMessage()
+        self.bot = self.message.bot
+        self.from_user = types.SimpleNamespace(id=1)
+
+    async def answer(self, text=None, show_alert=False):
+        return None
 
 
 # ===========================================================================
