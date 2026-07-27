@@ -140,7 +140,7 @@ async def cmd_start(
     if payload == "manage_bets":
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.admin_betting import _show_event_list
-            await _show_event_list(message, db_session, edit=False)
+            await _show_event_list(message, db_session)
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return
