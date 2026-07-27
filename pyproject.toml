@@ -40,10 +40,12 @@ show_missing = true
 # 88 → 90 with the group-membership guard (39→100%) and /start's deep-link
 # dispatch (handlers/common.py 36→100%).
 # 90 → 93 with the events hub (41→100%) and the scheduling flow (53→100%).
-# Pinned just under the run WITHOUT Postgres (93.65%, and slightly higher with it),
+# 93 → 95 with /backup + /esporta (34→99%), the trophy screens (53→100%) and the
+# leaderboards (61→100%).
+# Pinned just under the run WITHOUT Postgres (95.17%, and slightly higher with it),
 # so `pytest --cov` still passes on a machine that has no database — the gate must
 # not force everyone to run Docker.
-fail_under = 93
+fail_under = 95
 
 [tool.ruff]
 target-version = "py312"
