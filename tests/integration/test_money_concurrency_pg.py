@@ -487,6 +487,63 @@ class TestUncappedXp:
         assert await truth(pg_sessions, user_col(1, User.xp)) == 42
 
 
+class TestAirdropXp:
+    """`airdrop_xp` is the widest write in the bot: one statement over every user.
+
+    It used to read the whole table into Python and write absolute totals back, so
+    anything granted between the read and the write was overwritten. The unit test
+    in `tests/unit/test_xp_service.py` pins the cache half of that (a stale instance
+    in one session); this pins the other half, which only a real database can show:
+    two transactions actually racing for the same rows.
+    """
+
+    async def test_an_airdrop_does_not_swallow_concurrent_grants(
+        self, pg_sessions, pg_user_factory
+    ):
+        """One airdrop of 100 to everyone, ten grants of 5 to user 1, all at once.
+
+        Shape G, like `TestUncappedXp` above: `gather` starts every transaction
+        before any of them commits. Each one is a relative `xp = xp + n`, so the
+        total is exact **whatever order Postgres serialises them in** — which is the
+        entire claim being made. Order-independence is also why this test cannot
+        fail spuriously: there is no interleaving that produces a different number.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+        await pg_user_factory(tg_id=2, coins=0)
+
+        async def airdrop():
+            async with pg_sessions() as s:
+                await xp_service.airdrop_xp(s, 100)
+                await s.commit()
+
+        async def grant():
+            async with pg_sessions() as s:
+                await xp_service.grant_xp(s, 1, 5, XpSource.quiz, capped=False)
+                await s.commit()
+
+        await asyncio.gather(airdrop(), *(grant() for _ in range(10)))
+
+        got = await truth(pg_sessions, user_col(1, User.xp))
+        assert got == 150, f"airdrop 100 + 10×5 granted, user 1 ended at {got}"
+        assert await truth(pg_sessions, user_col(2, User.xp)) == 100
+
+    async def test_two_airdrops_at_once_both_land(self, pg_sessions, pg_user_factory):
+        """Two admins tapping Airdrop at the same moment must add up, not collapse
+        into one. Same reason as above — and a good check that the tier rewrite,
+        which runs as a second batch of statements after the XP update, does not
+        somehow undo the first airdrop's work."""
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async def airdrop(amount: int):
+            async with pg_sessions() as s:
+                await xp_service.airdrop_xp(s, amount)
+                await s.commit()
+
+        await asyncio.gather(airdrop(70), airdrop(30))
+
+        assert await truth(pg_sessions, user_col(1, User.xp)) == 100
+
+
 # ===========================================================================
 # betting lifecycle
 # ===========================================================================
