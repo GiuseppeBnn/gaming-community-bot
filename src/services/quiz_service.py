@@ -498,7 +498,13 @@ async def record_answer(
     if question is None:
         return None
 
-    is_correct = selected_option_id == question.correct_option_id
+    # Read off the ORM object ONCE, up front. The IntegrityError branch below
+    # rolls back, and a rollback expires every instance in the session: touching
+    # `question.correct_option_id` after it would trigger a lazy reload, which in
+    # async is a MissingGreenlet — the duplicate would raise instead of being
+    # reported as a duplicate.
+    correct_option_id = question.correct_option_id
+    is_correct = selected_option_id == correct_option_id
 
     existing = (
         await session.execute(
@@ -509,7 +515,7 @@ async def record_answer(
     ).scalar_one_or_none()
     if existing is not None:
         return AnswerOutcome(recorded=False, is_correct=is_correct,
-                             correct_option_id=question.correct_option_id)
+                             correct_option_id=correct_option_id)
 
     session.add(
         QuizAnswer(
@@ -528,10 +534,10 @@ async def record_answer(
         # Concurrent double-tap raced past the existence check — treat as duplicate.
         await session.rollback()
         return AnswerOutcome(recorded=False, is_correct=is_correct,
-                             correct_option_id=question.correct_option_id)
+                             correct_option_id=correct_option_id)
 
     return AnswerOutcome(recorded=True, is_correct=is_correct,
-                         correct_option_id=question.correct_option_id)
+                         correct_option_id=correct_option_id)
 
 
 # ---------------------------------------------------------------------------
