@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from keyboards.admin_dashboard_kb import (
     back_home_kb,

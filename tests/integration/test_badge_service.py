@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 
 import services.badge_service as badge_svc
-from database.models import Badge, UserBadge
+from database.models import Badge
 from services import catalog_loader
 
 _DEFAULT_COUNT = len(catalog_loader.DEFAULT_TROPHIES)

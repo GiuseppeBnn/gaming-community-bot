@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from config_data.config import settings
 from services.quiz_service import consolation_amounts, participation_floor

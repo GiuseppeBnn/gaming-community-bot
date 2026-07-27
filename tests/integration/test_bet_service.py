@@ -211,7 +211,7 @@ class TestLockEvent:
         await user_factory(tg_id=1)
         event = await _create_event(session, 1)
 
-        result1 = await bet_svc.lock_event(session, event.id)
+        await bet_svc.lock_event(session, event.id)
         await session.commit()
         result2 = await bet_svc.lock_event(session, event.id)  # should not raise
 
@@ -243,7 +243,6 @@ class TestResolveEvent:
         event = await _create_event(session, creator_tg_id=1)
 
         opt_a = event.options[0]
-        opt_b = event.options[1]
 
         await _place_bet_for(session, 1, event, option_index=0, amount=500)
         await _place_bet_for(session, 2, event, option_index=1, amount=500)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
 
 
 class TestInvalidateCache:
@@ -55,7 +54,6 @@ class TestChatType:
 
     def test_message_branch_via_patch(self, monkeypatch):
         from middlewares import group_guard
-        from aiogram.types import Message
 
         # Build a plain fake object that has the .chat.type attribute
         fake_chat = MagicMock()
@@ -72,7 +70,6 @@ class TestChatType:
 
     def test_callback_branch_via_patch(self, monkeypatch):
         from middlewares import group_guard
-        from aiogram.types import CallbackQuery
 
         fake_inner_chat = MagicMock()
         fake_inner_chat.type = "supergroup"

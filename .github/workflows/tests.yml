@@ -65,8 +65,11 @@ jobs:
 
       # Static gates run AFTER the suite on purpose: a lint nit must never hide a
       # failing test in the log. Both are configured in pyproject.toml.
+      # `tests/` is gated too: a dead import or a non-strict zip in a test is the
+      # same defect as in src, and an unused variable there often means an
+      # assertion that was meant to use it.
       - name: Lint (ruff)
-        run: ruff check src/
+        run: ruff check src/ tests/
 
       - name: Type check (mypy)
         run: mypy

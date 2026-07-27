@@ -9,8 +9,8 @@ import pytest
 from sqlalchemy import select
 
 import services.admin_service as admin
-from database.models import AdminAction, LedgerEntry, TransactionType, User, Wallet, Warning
-from exceptions.economy import InsufficientFundsError, WalletNotFoundError
+from database.models import LedgerEntry, TransactionType, User, Wallet
+from exceptions.economy import WalletNotFoundError
 
 
 # ---------------------------------------------------------------------------

@@ -74,7 +74,7 @@ class TestLevels:
         # The "level 4 needs 295, level 5 needs less" report was a display bug, not the
         # curve: each level's real cost is strictly greater than the previous one.
         costs = [xp_service._level_cost(n) for n in range(1, 12)]
-        assert all(b > a for a, b in zip(costs, costs[1:]))
+        assert all(b > a for a, b in zip(costs, costs[1:], strict=False))
 
 
 # ---------------------------------------------------------------------------
