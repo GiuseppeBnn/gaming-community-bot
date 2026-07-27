@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
@@ -86,6 +87,23 @@ class _FakeCallback:
     @property
     def said(self) -> str:
         return "\n".join(t for t, _ in self.answers if t)
+
+
+@pytest.fixture(autouse=True)
+async def _no_leftover_play_contexts():
+    """`_PLAY` is process-global and holds asyncio tasks bound to the *current*
+    event loop. A context surviving its test gets its timer cancelled from the NEXT
+    test's loop — "RuntimeError: Event loop is closed", in a completely unrelated
+    test. Async fixture on purpose: the teardown has to run while this test's loop
+    is still alive, or the cancel itself is the thing that raises.
+    """
+    qz._PLAY.clear()
+    yield
+    for ctx in list(qz._PLAY.values()):
+        timer = getattr(ctx, "timer", None)
+        if timer is not None and not timer.done():
+            timer.cancel()
+    qz._PLAY.clear()
 
 
 async def _running_quiz(session, user_factory, *, n_questions: int = 2, time_limit: int = 0):
@@ -368,3 +386,205 @@ class TestTimingAndCleanup:
             )
 
         assert qz._play_key(quiz.id, PLAYER) not in qz._PLAY
+
+
+class TestTheCountdownFiring:
+    """`_expire_question` — what happens when the timer actually goes off.
+
+    It runs *outside* the request: the handler's session is long gone, so it opens
+    its own. That is why it is worth testing separately — it is the one place in the
+    quiz that writes an answer nobody sent, and it must do so exactly once, only
+    while the quiz is still running, and never let an exception escape into the
+    event loop (an unhandled one in a bare task takes the process's loop with it).
+    """
+
+    @staticmethod
+    def _own_session(monkeypatch, session):
+        """Point the timer's `async_session_maker` at the test's session.
+
+        The real one is bound to the module-level engine, which is a *different*
+        database from the fixture's — the timer would open an empty schema and find
+        no quiz at all, so every assertion below would pass vacuously.
+        """
+        class _Ctx:
+            async def __aenter__(self):
+                return session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(qz, "async_session_maker", lambda: _Ctx())
+
+    async def test_an_unanswered_question_is_recorded_wrong_and_the_quiz_advances(
+        self, session, user_factory, monkeypatch
+    ):
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+        self._own_session(monkeypatch, session)
+        bot = _FakeBot()
+
+        await qz._expire_question(
+            bot, PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+        assert await _answers(session, quiz.id, PLAYER) == 1
+        assert await quiz_service.correct_count(session, quiz.id, PLAYER) == 0
+        assert "Tempo scaduto" in "\n".join(bot.edits)
+        assert bot.messages, "the next question must be sent"
+
+    async def test_the_expiry_reveals_the_right_answer_and_its_explanation(
+        self, session, user_factory, monkeypatch
+    ):
+        """Running out of time is the moment a player most wants to know why."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+        self._own_session(monkeypatch, session)
+        bot = _FakeBot()
+
+        await qz._expire_question(
+            bot, PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+        shown = "\n".join(bot.edits)
+        assert "Giusta" in shown and "Perché sì" in shown
+
+    async def test_a_player_who_answered_in_time_is_left_alone(
+        self, session, user_factory, monkeypatch
+    ):
+        """The cancellation can lose the race with a timer already running: the
+        record_answer call is the real guard, and it must not overwrite the answer
+        the player actually gave."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+        await qz.cb_quiz_answer(
+            _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0"), session
+        )
+        self._own_session(monkeypatch, session)
+        bot = _FakeBot()
+
+        await qz._expire_question(
+            bot, PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+        assert await _answers(session, quiz.id, PLAYER) == 1
+        assert await quiz_service.correct_count(session, quiz.id, PLAYER) == 1
+        assert bot.edits == []
+        qz._forget_play(quiz.id, PLAYER)
+
+    async def test_a_quiz_closed_meanwhile_records_nothing(
+        self, session, user_factory, monkeypatch
+    ):
+        """The admin closed it while the countdown was running; writing an answer
+        into a finished quiz would change a podium that is already published."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+        await quiz_service.set_status(session, quiz.id, "finished")
+        await session.commit()
+        self._own_session(monkeypatch, session)
+
+        await qz._expire_question(
+            _FakeBot(), PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+        assert await _answers(session, quiz.id, PLAYER) == 0
+
+    async def test_a_question_deleted_meanwhile_records_nothing(
+        self, session, user_factory, monkeypatch
+    ):
+        quiz, _ = await _running_quiz(session, user_factory, time_limit=1)
+        self._own_session(monkeypatch, session)
+
+        await qz._expire_question(
+            _FakeBot(), PLAYER, quiz.id, PLAYER, 999_999, message_id=1, limit=0
+        )
+
+        assert await _answers(session, quiz.id, PLAYER) == 0
+
+    async def test_a_message_too_old_to_edit_does_not_stop_the_quiz(
+        self, session, user_factory, monkeypatch
+    ):
+        """The feedback edit is cosmetic; the next question is not."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+        self._own_session(monkeypatch, session)
+
+        class _UneditableBot(_FakeBot):
+            async def edit_message_text(self, text, chat_id=None, message_id=None, **kw):
+                raise RuntimeError("message to edit not found")
+
+        bot = _UneditableBot()
+
+        await qz._expire_question(
+            bot, PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+        assert await _answers(session, quiz.id, PLAYER) == 1
+        assert bot.messages, "the next question must still be sent"
+
+    async def test_a_broken_timer_never_escapes_into_the_event_loop(
+        self, session, user_factory, monkeypatch
+    ):
+        """It runs as a bare task: an exception out of here is an unhandled one in
+        the loop, which is how a bot stops answering everybody."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
+
+        def _explode():
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(qz, "async_session_maker", _explode)
+
+        await qz._expire_question(
+            _FakeBot(), PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=0
+        )
+
+    async def test_a_cancelled_countdown_does_nothing_at_all(
+        self, session, user_factory, monkeypatch
+    ):
+        """The normal case: the player answered, the timer was cancelled mid-sleep."""
+        quiz, questions = await _running_quiz(session, user_factory, time_limit=300)
+        self._own_session(monkeypatch, session)
+
+        task = asyncio.create_task(qz._expire_question(
+            _FakeBot(), PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=300
+        ))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        assert await _answers(session, quiz.id, PLAYER) == 0
+
+
+class TestRacingAnswers:
+    """The two branches `cb_quiz_answer` keeps for a race it cannot prevent: the
+    sequential check passes, and then `record_answer` disagrees because something
+    landed in between."""
+
+    async def test_a_question_that_vanished_between_check_and_write(
+        self, session, user_factory, monkeypatch
+    ):
+        quiz, questions = await _running_quiz(session, user_factory)
+
+        async def _gone(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(quiz_service, "record_answer", _gone)
+        callback = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+
+        await qz.cb_quiz_answer(callback, session)
+
+        assert "Domanda non valida" in callback.said
+        qz._forget_play(quiz.id, PLAYER)
+
+    async def test_an_answer_that_lost_the_race_is_not_counted_twice(
+        self, session, user_factory, monkeypatch
+    ):
+        """`recorded=False` means the row was already there — the timer got in first.
+        Announcing it as a fresh answer would show feedback for something that was
+        actually marked wrong."""
+        quiz, questions = await _running_quiz(session, user_factory)
+
+        async def _already(*args, **kwargs):
+            return SimpleNamespace(recorded=False, is_correct=True, correct_option_id=0)
+
+        monkeypatch.setattr(quiz_service, "record_answer", _already)
+        callback = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+
+        await qz.cb_quiz_answer(callback, session)
+
+        assert "già risposto" in callback.said
+        qz._forget_play(quiz.id, PLAYER)
