@@ -32,7 +32,7 @@ from database.models import (
     TransactionType,
 )
 from services import economy_service, xp_service
-from services.guess_judge import Verdict, normalize
+from services.guess_judge import WRONG, Verdict, normalize
 from services.prizes import consolation_amounts, participation_floor
 from services.xp_service import XpSource
 
@@ -151,6 +151,24 @@ async def set_status(session: AsyncSession, round_id: int, status: str) -> None:
         round_.finished_at = now()
 
 
+async def _sync_round_state(session: AsyncSession, round_id: int) -> None:
+    """Make the in-session entity reflect a status written in raw SQL.
+
+    Every state write here uses ``synchronize_session=False`` (STEERING §22 rule
+    3), which leaves any instance already in the identity map saying the old
+    thing. That is not cosmetic: the events hub re-renders the round straight
+    after closing or resetting it, and an entity select is answered from that map
+    — so without this the admin closes a round and the screen still shows it
+    "in corso".
+
+    Rule 3's second half is exactly this refresh, and it is scoped to the columns
+    that changed so eagerly-loaded state is left alone.
+    """
+    round_ = await session.get(GuessRound, round_id)
+    if round_ is not None:
+        await session.refresh(round_, ["status", "started_at", "finished_at"])
+
+
 async def claim_close(session: AsyncSession, round_id: int) -> str | None:
     """Take a running round to ``finished`` and report whether *this* call did it.
 
@@ -173,6 +191,7 @@ async def claim_close(session: AsyncSession, round_id: int) -> str | None:
         )
     ).rowcount or 0
     if changed:
+        await _sync_round_state(session, round_id)
         return None
     status = (
         await session.execute(select(GuessRound.status).where(GuessRound.id == round_id))
@@ -232,6 +251,7 @@ async def reset_round(session: AsyncSession, round_id: int) -> bool:
         .execution_options(synchronize_session=False)
     )
     await session.flush()
+    await _sync_round_state(session, round_id)
     return True
 
 
@@ -253,6 +273,46 @@ def hints_of(round_: GuessRound) -> list[tuple[int, str]]:
         if isinstance(h, dict) and "after" in h and "text" in h
     ]
     return sorted(out)
+
+
+async def play_stats(session: AsyncSession, round_id: int) -> tuple[int, int]:
+    """``(distinct players, total attempts)`` for the admin detail screen."""
+    row = (
+        await session.execute(
+            select(func.count(func.distinct(GuessAttempt.user_tg_id)), func.count())
+            .select_from(GuessAttempt)
+            .where(GuessAttempt.round_id == round_id)
+        )
+    ).one()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+async def recent_rejected(
+    session: AsyncSession, round_id: int, *, limit: int = 5
+) -> list[str]:
+    """The last few answers the judge turned down, most recent first.
+
+    This is the audit trail that makes a bad verdict noticeable. The judge is an
+    LLM: it will occasionally reject something it should have accepted, and
+    without a list of what it rejected nobody would ever find out — the player
+    just loses and says nothing. Seeing them, an admin can add an alias.
+
+    Deduplicated, because ten people typing the same wrong title is one fact.
+    """
+    rows = (
+        await session.execute(
+            select(GuessAttempt.raw_answer)
+            .where(GuessAttempt.round_id == round_id, GuessAttempt.verdict == WRONG)
+            .order_by(GuessAttempt.id.desc())
+        )
+    ).scalars().all()
+    seen: list[str] = []
+    for answer in rows:
+        if answer not in seen:
+            seen.append(answer)
+        if len(seen) >= limit:
+            break
+    return seen
 
 
 def format_prize_summary(round_: GuessRound) -> str:

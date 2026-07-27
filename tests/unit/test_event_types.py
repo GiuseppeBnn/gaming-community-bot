@@ -61,9 +61,14 @@ def test_clear_empties_registry():
     assert event_types.all_types() == []
 
 
-def test_register_builtin_registers_quiz_poll_bet_in_hub_order():
+def test_register_builtin_registers_every_type_in_hub_order():
+    """The order is the hub's button order, so it is behaviour and not a list.
+    `guess` and `sound` are the same spec registered twice — one engine, two
+    games — which is why they sit next to each other."""
     event_types.register_builtin()
-    assert [t.key for t in event_types.all_types()] == ["quiz", "poll", "bet"]
+    assert [t.key for t in event_types.all_types()] == [
+        "quiz", "guess", "sound", "poll", "bet",
+    ]
 
 
 _REQUIRED_METHODS = (

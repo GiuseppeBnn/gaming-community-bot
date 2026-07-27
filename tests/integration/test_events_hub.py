@@ -223,7 +223,8 @@ class TestHub:
         await events.show_hub(message)
 
         assert set(_callbacks(message.markups[0])) == {
-            "ev:list:quiz", "ev:list:poll", "ev:list:bet", "adm:home",
+            "ev:list:quiz", "ev:list:guess", "ev:list:sound",
+            "ev:list:poll", "ev:list:bet", "adm:home",
         }
 
     async def test_a_newly_registered_type_appears_without_touching_the_hub(self, session):

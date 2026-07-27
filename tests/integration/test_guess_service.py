@@ -569,6 +569,58 @@ class TestResetAndDelete:
         assert await gs.delete_round(session, 999) is False
 
 
+class TestTheRejectedAudit:
+    """The list an admin scans to notice the judge turning down something it
+    should have accepted. Without it a bad verdict is invisible: the player just
+    loses and says nothing."""
+
+    async def test_it_lists_the_rejected_answers_most_recent_first(
+        self, session, round_
+    ):
+        for answer in ("Quake", "Wolfenstein"):
+            await gs.record_attempt(session, round_, 7, answer, _no())
+
+        assert await gs.recent_rejected(session, round_.id) == ["Wolfenstein", "Quake"]
+
+    async def test_correct_answers_are_not_in_it(self, session, round_):
+        await gs.record_attempt(session, round_, 7, "Doom", _ok())
+
+        assert await gs.recent_rejected(session, round_.id) == []
+
+    async def test_unverified_answers_are_not_in_it(self, session, round_):
+        """They were never judged, so they say nothing about the judge."""
+        await gs.record_attempt(session, round_, 7, "Boh", _unverified())
+
+        assert await gs.recent_rejected(session, round_.id) == []
+
+    async def test_the_same_wrong_answer_from_many_players_is_one_line(
+        self, session, round_
+    ):
+        """Ten people typing the same wrong title is one fact, not ten."""
+        for uid in (7, 8, 9):
+            await gs.record_attempt(session, round_, uid, "Quake", _no())
+
+        assert await gs.recent_rejected(session, round_.id) == ["Quake"]
+
+    async def test_it_is_capped(self, session, round_):
+        for i, uid in enumerate(range(100, 110)):
+            await gs.record_attempt(session, round_, uid, f"Gioco {i}", _no())
+
+        assert len(await gs.recent_rejected(session, round_.id, limit=3)) == 3
+
+
+class TestPlayStats:
+    async def test_it_counts_players_and_attempts(self, session, round_):
+        await gs.record_attempt(session, round_, 7, "Quake", _no())
+        await gs.record_attempt(session, round_, 7, "Doom", _ok())
+        await gs.record_attempt(session, round_, 8, "Quake", _no())
+
+        assert await gs.play_stats(session, round_.id) == (2, 3)
+
+    async def test_an_untouched_round_is_all_zeros(self, session, round_):
+        assert await gs.play_stats(session, round_.id) == (0, 0)
+
+
 class TestPrizeSummary:
     async def test_a_round_with_no_prizes_says_so(self, session):
         r = await gs.create_round(

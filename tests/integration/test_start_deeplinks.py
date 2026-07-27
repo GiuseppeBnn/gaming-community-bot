@@ -145,6 +145,10 @@ ADMIN_PAYLOADS = [
 # Payloads any member may use, and where they land.
 PUBLIC_PAYLOADS = [
     ("quiz_5", "handlers.quiz.start_quiz_session"),
+    # The guess games are public: any group member plays them, so — unlike the
+    # admin landings — there is no is_admin re-check here to forget.
+    ("guess_5", "handlers.guess.start_guess_session"),
+    ("sound_5", "handlers.guess.start_guess_session"),
     ("shop_-100123", "handlers.shop.start_shop_private"),
     ("saldo", "handlers.economy.show_saldo"),
     ("daily", "handlers.economy.show_saldo"),

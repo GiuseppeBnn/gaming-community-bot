@@ -166,7 +166,8 @@ class TestEntry:
         await schedule.start_schedule_flow(message, _state())
 
         assert set(_callbacks(message.markups[0])) == {
-            "sched:type:quiz", "sched:type:poll", "sched:type:bet", "sched:cancel",
+            "sched:type:quiz", "sched:type:guess", "sched:type:sound",
+            "sched:type:poll", "sched:type:bet", "sched:cancel",
         }
 
     async def test_a_new_type_is_schedulable_without_touching_this_file(self, session):
