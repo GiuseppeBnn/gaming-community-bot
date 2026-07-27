@@ -36,6 +36,15 @@ class Settings(BaseSettings):
     # Groq LLM (AI entertainment module)
     groq_api_key: str = ""
     groq_model: str = "llama-3.3-70b-versatile"
+    # Judge model for the guess games. Deliberately separate from `groq_model`:
+    # the entertainment commands are tuned around llama-3.3 and must not change
+    # because a game needs something else. `openai/gpt-oss-*` is the pick because
+    # Groq supports STRICT structured output (constrained decoding) on it, so a
+    # verdict cannot come back as prose.
+    groq_judge_model: str = "openai/gpt-oss-120b"
+    # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
+    # would report to players as "non verificata" forever.
+    guess_judge_timeout_seconds: int = Field(default=12, ge=1)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
