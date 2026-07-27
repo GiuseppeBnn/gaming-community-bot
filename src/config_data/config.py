@@ -101,6 +101,19 @@ class Settings(BaseSettings):
     quiz_participation_floor_ratio: float = 0.2
     quiz_participation_floor_min: int = 1
 
+    # Guess games (Guess The Game · Sound Quest) — one engine, two games.
+    # Attempts refunded when the judge could not be reached, per player per round.
+    # Bounded on purpose: an unbounded refund would void the attempt limit exactly
+    # when the AI is down — which is when the local exact-match path is all that
+    # stands between a player and brute force.
+    guess_max_unverified_bonus: int = Field(default=3, ge=0)
+    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable).
+    guess_xp_participation: int = 15   # XP for submitting at least one answer
+    guess_xp_solved: int = 25          # extra XP for actually guessing it
+    guess_xp_podium_first: int = 50
+    guess_xp_podium_second: int = 30
+    guess_xp_podium_third: int = 20
+
     # Shop cosmetics: how many purchased tags a user can keep active at once
     # (they can switch among owned tags and combine several). Raise to allow more.
     max_active_tags: int = 3
