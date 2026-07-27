@@ -32,11 +32,12 @@ show_missing = true
 # only go up. Raise it when a phase lands, never lower it to make CI pass.
 # 57 → 59 after covering services/backup/loop.py (was 0%, now 100%).
 # 59 → 69 after covering the admin money handlers: admin_betting 21→100%,
-# admin_dashboard 26→96%, shop 30→96%. Then 69 → 71 with economy 23→95%.
-# Pinned just under the run WITHOUT Postgres (71.02%, and slightly higher with it),
+# admin_dashboard 26→96%, shop 30→96%. Then 69 → 71 with economy 23→95%, and
+# 71 → 75 with admin 23→93% + _targeting 31→98%.
+# Pinned just under the run WITHOUT Postgres (75.56%, and slightly higher with it),
 # so `pytest --cov` still passes on a machine that has no database — the gate must
 # not force everyone to run Docker.
-fail_under = 71
+fail_under = 75
 
 [tool.ruff]
 target-version = "py312"
