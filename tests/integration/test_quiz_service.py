@@ -59,11 +59,11 @@ class TestCreateAddQuestion:
         full = await qz.get_quiz(session, quiz.id)
         assert qz.time_limit_seconds(full) == 0
 
-    async def test_get_quiz_for_update_returns_quiz_with_questions(self, session):
-        # The FOR UPDATE branch (used by close_quiz to serialize concurrent closes)
-        # must still eager-load questions; the lock is a no-op on SQLite.
+    async def test_get_quiz_eager_loads_questions(self, session):
+        # Questions must come back with the quiz: callers read `quiz.questions`
+        # outside any await, and a lazy load there is illegal in async.
         quiz, qs = await _quiz(session, n_questions=2)
-        got = await qz.get_quiz(session, quiz.id, for_update=True)
+        got = await qz.get_quiz(session, quiz.id)
         assert got is not None and got.id == quiz.id
         assert len(got.questions) == len(qs)
 
@@ -576,6 +576,54 @@ class TestManageableAndLifecycle:
         )).first() is None
         # questions survive a reset (only answers/timestamps are wiped)
         assert len(reloaded.questions) == 1
+
+    async def test_reset_refuses_a_quiz_that_is_running_again(self, session, user_factory):
+        """«Solo i quiz conclusi» has to mean the database's opinion, not the caller's.
+
+        A reset wipes every recorded answer. Doing that to a quiz that is *running*
+        destroys live play — people who already answered lose their progress, and the
+        podium they were building is gone. So the status check is the only thing
+        standing between an admin's mistap and real data loss, and it has to read the
+        row, not an object.
+
+        It used to read the status off a locked **entity** select, and an entity select
+        can be answered from the identity map (STEERING §5). Today's caller
+        (`cb_reset`) happens not to hold the quiz, so the locking read really did hit
+        the row — but that is a property of the handler, not of this function, and the
+        same handler re-renders the quiz detail right after. One caller that loads the
+        quiz before resetting it (a confirmation screen, say) would have been enough
+        to turn the check into a lookup of what that caller already believed.
+
+        Reproduced with a SQL-level write, which is what the identity map cannot see —
+        the same thing another admin's committed transaction would look like.
+        """
+        from sqlalchemy import update
+
+        from database.models import Quiz
+
+        await user_factory(tg_id=1)
+        quiz, qs = await _quiz(session, n_questions=1)
+        await qz.set_status(session, quiz.id, "running")
+        await qz.set_status(session, quiz.id, "finished")
+        await session.commit()
+        await qz.record_answer(session, quiz.id, qs[0].id, 1, 0)
+
+        # Someone relaunched it. The row says `running`; our instance still says
+        # `finished`, and nothing in this session will ever tell it otherwise.
+        await session.execute(
+            update(Quiz)
+            .where(Quiz.id == quiz.id)
+            .values(status="running")
+            .execution_options(synchronize_session=False)
+        )
+        assert quiz.status == "finished", "precondition: the cached instance is stale"
+
+        assert await qz.reset_quiz(session, quiz.id) is False
+
+        surviving = (await session.execute(
+            select(QuizAnswer).where(QuizAnswer.quiz_id == quiz.id)
+        )).first()
+        assert surviving is not None, "a running quiz was wiped mid-play"
 
     async def test_answer_stats_counts_participants_and_answers(self, session, user_factory):
         for uid in (1, 2):

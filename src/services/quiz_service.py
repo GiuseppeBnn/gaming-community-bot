@@ -255,15 +255,19 @@ def user_option_order(quiz: Quiz, question: QuizQuestion, user_tg_id: int) -> li
     return pairs
 
 
-async def get_quiz(
-    session: AsyncSession, quiz_id: int, *, for_update: bool = False
-) -> Quiz | None:
-    stmt = select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
-    if for_update:
-        # Row-level lock so two concurrent closes can't both pass the status check
-        # and pay prizes twice. No-op on SQLite (dev/tests), real on Postgres (prod).
-        stmt = stmt.with_for_update()
-    result = await session.execute(stmt)
+async def get_quiz(session: AsyncSession, quiz_id: int) -> Quiz | None:
+    """Load a quiz with its questions. **Read-only by contract.**
+
+    There is deliberately no ``for_update`` here any more. Locking an entity select
+    reads as a guarantee it cannot give: the row does get locked on Postgres, but
+    the values come back from the identity map when the caller already holds the
+    quiz, so the check that follows can be decided on stale data (STEERING §5).
+    Both callers that used to do that — ``claim_close`` and ``reset_quiz`` — now
+    decide on a column read instead, which is the only form that cannot be cached.
+    """
+    result = await session.execute(
+        select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
+    )
     return result.scalar_one_or_none()
 
 
@@ -376,9 +380,27 @@ async def reset_quiz(session: AsyncSession, quiz_id: int) -> bool:
     """Re-run a finished quiz ("Riproponi"): wipe answers/timestamps and set it
     back to ``ready`` so it can be launched again. Only allowed on a ``finished``
     quiz. Returns False if the quiz is missing or not finished.
+
+    A reset deletes every recorded answer, so the status check is the only thing
+    between a mistap and destroying live play. It therefore reads the **column**
+    under the lock rather than the entity: an entity select can be served from the
+    identity map (STEERING §5), which would make this a lookup of whatever the
+    caller already believed instead of what the row says.
+
+    The writes below stay ORM mutations on purpose. Every one of them assigns a
+    constant — never a delta — so they are correct even on a stale instance, and
+    keeping them on the entity is what lets the caller re-render the quiz right
+    after (``cb_reset`` does) without reloading anything.
     """
-    quiz = await get_quiz(session, quiz_id, for_update=True)
-    if quiz is None or quiz.status != "finished":
+    status = (
+        await session.execute(
+            select(Quiz.status).where(Quiz.id == quiz_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if status != "finished":
+        return False
+    quiz = await get_quiz(session, quiz_id)
+    if quiz is None:  # pragma: no cover - the locked row cannot vanish under us
         return False
     await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
     for question in quiz.questions:
