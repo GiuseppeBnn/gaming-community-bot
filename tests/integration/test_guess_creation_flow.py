@@ -30,19 +30,59 @@ from services import guess_service as gs
 
 
 class _StubBot:
+    """Records every outgoing call, because *how many* we make is under test.
+
+    Each card render used to resend the medium and post two fresh messages. Six
+    field edits meant six media uploads into one chat, which Telegram rate-limits
+    — the bot appeared to hang, and the chat filled with stale cards.
+    """
+
     id = 999
 
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
+        self.reset()
+
+    def reset(self) -> None:
+        self.sent: list[tuple[str, str]] = []      # media sends
+        self.posted: list[str] = []                # NEW text messages
+        self.edits: list[tuple[int, str]] = []     # (message_id, text)
+        self.deleted: list[int] = []
+        self.screens: list[str] = []               # every text put on screen, in order
+        self._next_id = 100
+
+    def _mk_id(self) -> int:
+        self._next_id += 1
+        return self._next_id
+
+    @property
+    def screen(self) -> str:
+        """What the admin is looking at right now.
+
+        With the card edited in place, most text no longer arrives as a new
+        message — asserting on "what this call sent" would miss it. This is the
+        panel's current contents, which is what the admin actually sees.
+        """
+        return self.screens[-1] if self.screens else ""
 
     async def send_photo(self, chat_id, file_id, **kw):
         self.sent.append(("photo", file_id))
+        return types.SimpleNamespace(message_id=self._mk_id())
 
     async def send_audio(self, chat_id, file_id, **kw):
         self.sent.append(("audio", file_id))
+        return types.SimpleNamespace(message_id=self._mk_id())
 
     async def send_voice(self, chat_id, file_id, **kw):
         self.sent.append(("voice", file_id))
+        return types.SimpleNamespace(message_id=self._mk_id())
+
+    async def edit_message_text(self, chat_id=None, message_id=None, text=None, **kw):
+        self.edits.append((message_id, text))
+        self.screens.append(text)
+        return types.SimpleNamespace(message_id=message_id)
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted.append(message_id)
 
     async def get_chat_administrators(self, chat_id):
         return []
@@ -53,28 +93,40 @@ class _Photo:
         self.file_id = file_id
 
 
+#: One bot per flow, so "how many messages did this whole edit produce" is a
+#: question the tests can actually ask. A bot per message could not see it.
+_BOT = _StubBot()
+
+
 class _Msg:
     """The narrow slice of Message the creation FSM actually touches."""
 
     def __init__(self, text: str | None = None, *, photo=None, audio=None,
-                 voice=None, user_id: int = 1) -> None:
+                 voice=None, user_id: int = 1, message_id: int | None = None) -> None:
         self.text = text
         self.photo = photo
         self.audio = audio
         self.voice = voice
-        self.bot = _StubBot()
+        self.bot = _BOT
+        self.message_id = message_id if message_id is not None else _BOT._mk_id()
         self.chat = types.SimpleNamespace(id=user_id, type="private")
         self.from_user = types.SimpleNamespace(id=user_id, full_name="Admin")
         self.answers: list[str] = []
 
     async def answer(self, text, **kw):
         self.answers.append(text)
+        _BOT.posted.append(text)
+        _BOT.screens.append(text)
+        return _Msg(user_id=self.chat.id)
 
     async def reply(self, text, **kw):
-        self.answers.append(text)
+        return await self.answer(text, **kw)
 
     async def edit_text(self, text, **kw):
         self.answers.append(text)
+        _BOT.edits.append((self.message_id, text))
+        _BOT.screens.append(text)
+        return self
 
     @property
     def said(self) -> str:
@@ -84,9 +136,9 @@ class _Msg:
 class _Cb:
     """A callback query carrying `data`, over a message we can read back."""
 
-    def __init__(self, data: str, user_id: int = 1) -> None:
+    def __init__(self, data: str, user_id: int = 1, message_id: int | None = None) -> None:
         self.data = data
-        self.message = _Msg(user_id=user_id)
+        self.message = _Msg(user_id=user_id, message_id=message_id)
         self.from_user = types.SimpleNamespace(id=user_id, full_name="Admin")
         self.alerts: list[str] = []
 
@@ -97,6 +149,19 @@ class _Cb:
     @property
     def said(self) -> str:
         return self.message.said
+
+
+@pytest.fixture(autouse=True)
+def bot():
+    """A brand-new recorder per test.
+
+    Rebinding rather than resetting: one test replaces `send_photo` to simulate a
+    dead `file_id`, and on a reused instance that patch would leak into every test
+    that ran after it.
+    """
+    global _BOT
+    _BOT = _StubBot()
+    return _BOT
 
 
 @pytest.fixture
@@ -131,12 +196,15 @@ async def _to_card(state, kind="guess", answer="Doom"):
     return msg
 
 
-async def _edit(state, field: str, value: str) -> _Msg:
-    """Tap a field's edit button, then send a new value."""
+async def _edit(state, field: str, value: str) -> str:
+    """Tap a field's edit button, send a new value, return what is on screen.
+
+    The panel is edited in place, so "what the bot said" is not a property of any
+    single message any more — it is the current contents of the card.
+    """
     await cr.cb_edit(_Cb(f"guess_new:edit:{field}"), state)
-    msg = _Msg(value)
-    await cr.fsm_edit_value(msg, state)
-    return msg
+    await cr.fsm_edit_value(_Msg(value), state)
+    return _BOT.screen
 
 
 class TestTheMandatoryThree:
@@ -293,6 +361,71 @@ class TestTheCard:
         assert data["aliases"] == [] and data["hints"] == []
 
 
+class TestTheCardIsOneMessage:
+    """The card is a panel, not a feed.
+
+    Re-sending it (and the medium with it) on every change buried the chat in
+    stale copies and fired a media upload per edit — which Telegram rate-limits,
+    so the bot looked like it had frozen. Editing one message in place fixes the
+    mess and the stall with the same change.
+    """
+
+    async def test_editing_fields_never_posts_a_second_card(self, state, bot):
+        await _to_card(state)
+        posted_after_card = len(bot.posted)
+
+        await _edit(state, "max_attempts", "8")
+        await _edit(state, "prizes", "500 250 100 50")
+        await _edit(state, "aliases", "GTA SA")
+
+        assert len(bot.posted) == posted_after_card, (
+            f"three edits posted {len(bot.posted) - posted_after_card} new messages"
+        )
+        assert bot.edits, "the card must be updated in place"
+
+    async def test_the_medium_is_sent_once_not_once_per_edit(self, state, bot):
+        """The upload burst that made the bot hang."""
+        await _to_card(state)
+
+        for _ in range(5):
+            await _edit(state, "max_attempts", "7")
+
+        assert bot.sent == [("photo", "F")], f"medium sent {len(bot.sent)}x"
+
+    async def test_opening_a_field_reuses_the_card_message(self, state, bot):
+        """The prompt replaces the card instead of stacking under it."""
+        await _to_card(state)
+        posted_before = len(bot.posted)
+
+        await cr.cb_edit(_Cb("guess_new:edit:max_attempts"), state)
+
+        assert len(bot.posted) == posted_before
+
+    async def test_replacing_the_medium_removes_the_old_one(self, state, bot):
+        """Two media in the chat and the admin cannot tell which one is live."""
+        await _to_card(state)
+        first_media_id = (await state.get_data())["media_message_id"]
+
+        await cr.cb_edit(_Cb("guess_new:edit:media"), state)
+        await cr.fsm_media(_Msg(photo=[_Photo("NEW")]), state)
+
+        assert first_media_id in bot.deleted
+
+    async def test_publishing_turns_the_card_into_the_confirmation(
+        self, state, session, bot
+    ):
+        """No orphan card left behind: its «✏️ campo» buttons would still be
+        tappable and would edit a round that no longer exists in the flow."""
+        await _to_card(state)
+        card_id = (await state.get_data())["card_message_id"]
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        edited_ids = [mid for mid, _ in bot.edits]
+        assert card_id in edited_ids, "the card must become the confirmation"
+        assert await state.get_state() is None
+
+
 class TestEditingAField:
     """The whole point of the card: any field, any time, no walking."""
 
@@ -367,10 +500,10 @@ class TestEditingAField:
     ):
         await _to_card(state)
 
-        msg = await _edit(state, field, bad)
+        screen = await _edit(state, field, bad)
 
         assert await state.get_state() == cr.GuessCreationStates.editing.state
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
 
     async def test_a_refused_value_does_not_overwrite_the_old_one(self, state):
         await _to_card(state)
@@ -386,39 +519,39 @@ class TestEditingAField:
         await _to_card(state)
         await _edit(state, "max_attempts", "3")
 
-        msg = await _edit(state, "hints", "5 | mai vista")
+        screen = await _edit(state, "hints", "5 | mai vista")
 
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
         assert (await state.get_data())["hints"] == []
 
     async def test_two_hints_on_the_same_threshold_are_refused(self, state):
         await _to_card(state)
 
-        msg = await _edit(state, "hints", "2 | uno\n2 | due")
+        screen = await _edit(state, "hints", "2 | uno\n2 | due")
 
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
 
     async def test_too_many_aliases_are_refused(self, state):
         await _to_card(state)
 
-        msg = await _edit(state, "aliases", "\n".join(f"a{i}" for i in
+        screen = await _edit(state, "aliases", "\n".join(f"a{i}" for i in
                                                       range(cr._MAX_ALIASES + 1)))
 
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
 
     async def test_an_over_long_alias_is_refused(self, state):
         await _to_card(state)
 
-        msg = await _edit(state, "aliases", "x" * (cr._MAX_ALIAS + 1))
+        screen = await _edit(state, "aliases", "x" * (cr._MAX_ALIAS + 1))
 
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
 
     async def test_an_over_long_hint_is_refused(self, state):
         await _to_card(state)
 
-        msg = await _edit(state, "hints", "2 | " + "x" * (cr._MAX_HINT + 1))
+        screen = await _edit(state, "hints", "2 | " + "x" * (cr._MAX_HINT + 1))
 
-        assert "⚠️" in msg.said
+        assert "⚠️" in screen
 
 
 class TestPublish:
@@ -467,23 +600,23 @@ class TestPublish:
         r = (await session.execute(select(GuessRound))).scalar_one()
         assert (r.kind, r.media_kind) == ("sound", "audio")
 
-    async def test_the_confirmation_offers_start_and_schedule(self, state, session):
+    async def test_the_confirmation_offers_start_and_schedule(self, state, session, bot):
         cb = _Cb("guess_new:publish")
 
         await _to_card(state)
         await cr.cb_publish(cb, state, session)
 
-        assert "creato" in cb.said.lower()
+        assert "creato" in bot.screen.lower()
 
 
 class TestCancel:
-    async def test_cancelling_asks_first(self, state):
+    async def test_cancelling_asks_first(self, state, bot):
         await _to_card(state)
         cb = _Cb("guess_new:cancel")
 
         await cr.cb_cancel(cb, state)
 
-        assert "sicuro" in cb.said.lower()
+        assert "sicuro" in bot.screen.lower()
         assert await state.get_state() is not None, "not cancelled until confirmed"
 
     async def test_cancelling_outside_a_flow_is_a_no_op(self, state):

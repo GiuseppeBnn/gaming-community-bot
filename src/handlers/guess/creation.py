@@ -44,6 +44,7 @@ from services import group_registry, guess_service
 from utils.text import esc, format_seconds_short
 
 from handlers.guess._shared import (
+    forget_message,
     _MAX_ALIAS,
     _MAX_ALIASES,
     _MAX_ANSWER,
@@ -413,8 +414,10 @@ async def fsm_media(message: Message, state: FSMContext) -> None:
     file_id, media_kind = found
     # Send it straight back. A file_id that cannot be resent has to fail HERE,
     # while the admin can still pick another file — not in front of the players.
+    # This is also the ONLY place the medium is posted: the card no longer resends
+    # it on every render.
     try:
-        await send_media(message.bot, message.chat.id, file_id, media_kind)
+        echo = await send_media(message.bot, message.chat.id, file_id, media_kind)
     except Exception as exc:  # noqa: BLE001 — any Bot API failure means unusable
         log.warning("Anteprima media fallita in creazione: %s", exc)
         await message.answer(
@@ -423,7 +426,11 @@ async def fsm_media(message: Message, state: FSMContext) -> None:
             reply_markup=_cancel_kb(),
         )
         return
-    await state.update_data(media_file_id=file_id, media_kind=media_kind)
+    # Drop the previous one: two media in the chat and the admin cannot tell which
+    # of them the round actually uses.
+    await forget_message(message.bot, message.chat.id, data.get("media_message_id"))
+    await state.update_data(media_file_id=file_id, media_kind=media_kind,
+                            media_message_id=echo.message_id)
 
     # Replacing the medium from the card returns to the card; the first time
     # through, the answer is still missing and is the third question.
@@ -451,27 +458,52 @@ async def fsm_answer(message: Message, state: FSMContext) -> None:
 # The card
 # ---------------------------------------------------------------------------
 
-async def _show_card(message: Message, state: FSMContext) -> None:
-    """Render the whole round, medium included, and wait for a tap.
+async def _panel(
+    message: Message, state: FSMContext, text: str, kb: InlineKeyboardMarkup | None
+) -> None:
+    """Put `text` on **the** card message, editing it in place.
 
-    The medium is resent every time on purpose: seeing it next to the answer is
-    how an admin notices the wrong file is attached, and each resend is one more
-    proof the `file_id` is still alive.
+    The card is a panel, not a feed. Posting a fresh one for every change buried
+    the chat in stale copies whose buttons still looked live, and — because each
+    render also resent the medium — fired a media upload per edit, which Telegram
+    rate-limits: the bot appeared to freeze. One message, edited, fixes the mess
+    and the stall with the same change.
+
+    Falls back to sending when there is nothing to edit yet, or when the edit is
+    refused (message too old, deleted, or identical content — Telegram treats a
+    no-op edit as an error).
+    """
+    data = await state.get_data()
+    message_id = data.get("card_message_id")
+    if message_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id, message_id=message_id,
+                text=text, reply_markup=kb,
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 — fall back to a fresh panel
+            log.debug("Scheda %s non modificabile, ne mando una nuova: %s",
+                      message_id, exc)
+    sent = await message.answer(text, reply_markup=kb)
+    await state.update_data(card_message_id=sent.message_id)
+
+
+async def _show_card(message: Message, state: FSMContext) -> None:
+    """Render the whole round and wait for a tap.
+
+    The medium is **not** resent here — it is posted once, when it is chosen or
+    replaced, and stays above the card. Resending it per render was what made the
+    chat unusable and the bot stall.
     """
     data = await state.get_data()
     spec = kind_of(data["kind"])
     await state.set_state(GuessCreationStates.card)
 
-    try:
-        await send_media(message.bot, message.chat.id,
-                         data["media_file_id"], data["media_kind"])
-    except Exception as exc:  # noqa: BLE001 — worth a warning, not a dead end
-        log.warning("Media non rimandabile nella scheda: %s", exc)
-
     lines = [f"{spec.emoji} <b>{esc(spec.label)}</b> — scheda del round\n"]
     lines += [f"{field.label}: {field.show(data)}" for field in FIELDS.values()]
     lines.append("\n<i>Tocca un campo per cambiarlo, poi pubblica.</i>")
-    await message.answer("\n".join(lines), reply_markup=_card_kb())
+    await _panel(message, state, "\n".join(lines), _card_kb())
 
 
 @router.callback_query(F.data.startswith("guess_new:edit:"), IsAdminCallbackFilter())
@@ -482,8 +514,8 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
     if key == _MEDIA_FIELD:
         spec = kind_of((await state.get_data())["kind"])
         await state.set_state(GuessCreationStates.waiting_media)
-        await callback.message.answer(f"🖼️ {spec.media_prompt}",
-                                      reply_markup=_editing_kb())
+        await _panel(callback.message, state, f"🖼️ {spec.media_prompt}",
+                     _editing_kb())
         await callback.answer()
         return
 
@@ -493,8 +525,10 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(GuessCreationStates.editing)
     await state.update_data(_editing=key)
-    await callback.message.answer(f"{field.label}\n\n{field.prompt}",
-                                  reply_markup=_editing_kb())
+    # The prompt REPLACES the card rather than stacking under it, so there is only
+    # ever one live panel on screen.
+    await _panel(callback.message, state, f"{field.label}\n\n{field.prompt}",
+                 _editing_kb())
     await callback.answer()
 
 
@@ -510,11 +544,15 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
 
     value, err = field.parse((message.text or "").strip(), data)
     if err:
-        await message.answer(err, reply_markup=_editing_kb())
+        await _panel(message, state, f"{field.label}\n\n{field.prompt}\n\n{err}",
+                     _editing_kb())
         return
 
     update = field.apply(value) if field.apply else {data["_editing"]: value}
     await state.update_data(**update)
+    # The typed value has been absorbed into the card; leaving it on screen turns
+    # the wizard back into the feed this replaced.
+    await forget_message(message.bot, message.chat.id, message.message_id)
     await _show_card(message, state)
 
 
@@ -560,14 +598,17 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext,
     )
     round_.status = "ready"
     await db_session.commit()
-    await state.clear()
-    await callback.message.answer(
+    # The card BECOMES the confirmation. Left as it was, its «✏️ campo» buttons
+    # would still be tappable over a flow that no longer exists.
+    await _panel(
+        callback.message, state,
         f"✅ <b>{esc(spec.label)} #{round_.id} creato!</b>\n\n"
         f"{spec.emoji} {esc(round_.title)}\n"
         f"🏆 {guess_service.format_prize_summary(round_)}\n\n"
         "Avvialo subito nel gruppo oppure programmalo:",
-        reply_markup=_created_kb(data["kind"], round_.id),
+        _created_kb(data["kind"], round_.id),
     )
+    await state.clear()
     await callback.answer()
 
 
@@ -576,21 +617,28 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     if await state.get_state() is None:
         await callback.answer()
         return
-    await callback.message.answer(
+    await _panel(
+        callback.message, state,
         "⚠️ Sicuro di voler annullare? I dati inseriti andranno persi.",
-        reply_markup=confirm_cancel_kb("guess_new:cancel_yes", "guess_new:cancel_no"),
+        confirm_cancel_kb("guess_new:cancel_yes", "guess_new:cancel_no"),
     )
     await callback.answer()
 
 
 @router.callback_query(F.data == "guess_new:cancel_yes", IsAdminCallbackFilter())
 async def cb_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
+    # Read the medium's id before clearing, then take it off screen with the card:
+    # an abandoned flow should leave nothing behind, in the chat or in the DB.
+    media_id = (await state.get_data()).get("media_message_id")
+    await _panel(callback.message, state, "❌ Creazione annullata.", None)
+    await forget_message(callback.message.bot, callback.message.chat.id, media_id)
     await state.clear()
-    await callback.message.edit_text("❌ Creazione annullata.")
     await callback.answer()
 
 
 @router.callback_query(F.data == "guess_new:cancel_no", IsAdminCallbackFilter())
-async def cb_cancel_no(callback: CallbackQuery) -> None:
-    await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
+async def cb_cancel_no(callback: CallbackQuery, state: FSMContext) -> None:
+    """Back to where they were, which is the card — not a message saying they are
+    back where they were."""
+    await _show_card(callback.message, state)
     await callback.answer()

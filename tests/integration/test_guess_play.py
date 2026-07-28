@@ -36,6 +36,15 @@ class _Bot:
 
     def __init__(self) -> None:
         self.media: list[tuple[int, str]] = []
+        self.markup_cleared: list[int] = []
+        self.actions: list[str] = []
+
+    async def edit_message_reply_markup(self, chat_id=None, message_id=None, **kw):
+        self.markup_cleared.append(message_id)
+
+    async def send_chat_action(self, chat_id=None, action=None, **kw):
+        self.actions.append(action)
+        return True
 
     async def send_photo(self, chat_id, file_id, **kw):
         self.media.append((chat_id, file_id))
@@ -48,9 +57,12 @@ class _Bot:
 
 
 class _Msg:
-    def __init__(self, text: str | None = None, user_id: int = 7) -> None:
+    _ids = iter(range(1000, 99999))
+
+    def __init__(self, text: str | None = None, user_id: int = 7, bot=None) -> None:
         self.text = text
-        self.bot = _Bot()
+        self.bot = bot or _Bot()
+        self.message_id = next(_Msg._ids)
         self.chat = types.SimpleNamespace(id=user_id, type="private")
         self.from_user = types.SimpleNamespace(id=user_id, full_name="Player")
         self.answers: list[str] = []
@@ -59,10 +71,10 @@ class _Msg:
     async def answer(self, text, **kw):
         self.answers.append(text)
         self.markups.append(kw.get("reply_markup"))
+        return _Msg(user_id=self.chat.id, bot=self.bot)
 
     async def reply(self, text, **kw):
-        self.answers.append(text)
-        self.markups.append(kw.get("reply_markup"))
+        return await self.answer(text, **kw)
 
     @property
     def said(self) -> str:
@@ -636,6 +648,86 @@ class TestCooldown:
         await pl.fsm_answer(_Msg("Wolfenstein"), session, state)
 
         assert await gs.attempts_left(session, round_, 7) == 2
+
+
+class TestTheWaitSignal:
+    """The judge is a network call. Silence while it runs reads as a dead bot."""
+
+    async def test_the_player_sees_typing_while_the_judge_thinks(
+        self, session, round_, state, monkeypatch
+    ):
+        import asyncio
+
+        async def _slow(session_, round__, raw):
+            await asyncio.sleep(0.02)
+            return Verdict(correct=False, source="ai")
+
+        monkeypatch.setattr(guess_judge, "judge", _slow)
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert "typing" in msg.bot.actions
+
+    async def test_the_signal_stops_on_its_own(
+        self, session, round_, state, monkeypatch
+    ):
+        """A chat action rather than a "⏳ attendi" message precisely so there is
+        nothing to clean up: Telegram expires it, and the verdict is the next
+        thing the player sees."""
+        import asyncio
+
+        async def _slow(session_, round__, raw):
+            await asyncio.sleep(0.02)
+            return Verdict(correct=True, source="ai")
+
+        monkeypatch.setattr(guess_judge, "judge", _slow)
+        await _playing(session, round_, state)
+        msg = _Msg("Doom")
+
+        await pl.fsm_answer(msg, session, state)
+
+        before = len(msg.bot.actions)
+        await asyncio.sleep(0.05)
+        assert len(msg.bot.actions) == before, "the sender must be stopped"
+        assert "Indovinato" in msg.said
+
+
+class TestStaleButtons:
+    """Only the newest message keeps its buttons.
+
+    Five wrong answers used to leave five live «🚪 Esci» buttons scattered up the
+    chat, all of them still working, none of them obviously the current one.
+    """
+
+    async def test_the_previous_message_loses_its_keyboard(
+        self, session, round_, state
+    ):
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert msg.bot.markup_cleared, "the superseded prompt must be stripped"
+
+    async def test_a_failed_cleanup_never_breaks_the_answer(
+        self, session, round_, state
+    ):
+        """Cleanup is cosmetic; the verdict is not. A message too old to edit must
+        not turn a correct answer into an error."""
+        await _playing(session, round_, state)
+        msg = _Msg("Doom")
+
+        async def _boom(*a, **kw):
+            raise RuntimeError("message is too old to edit")
+
+        msg.bot.edit_message_reply_markup = _boom
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert await _solved_at(session) is not None
+        assert "Indovinato" in msg.said
 
 
 class TestTheStatusLine:

@@ -22,6 +22,7 @@ from aiogram.enums import ChatType
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, Message
+from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +35,11 @@ from handlers.guess._shared import kind_of, log, router, send_media
 
 _ANSWER_BUCKET = "guess_answer"
 
+#: Telegram clears a chat action after ~5s, and aiogram's default refresh is
+#: exactly 5.0 — the two racing produce a visible flicker on a slow verdict.
+#: Refreshing just inside the window keeps "sto scrivendo…" continuous.
+_TYPING_REFRESH = 4.0
+
 
 class GuessPlayStates(StatesGroup):
     answering = State()
@@ -43,6 +49,35 @@ def _playing_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🚪 Esci dal gioco", callback_data="guess_play:quit")
     return b.as_markup()
+
+
+async def _reply(
+    message: Message, state: FSMContext, text: str,
+    kb: InlineKeyboardMarkup | None = None,
+) -> None:
+    """Answer the player, leaving only the newest message holding buttons.
+
+    Five wrong answers used to leave five live «🚪 Esci» buttons up the chat, all
+    of them working and none of them obviously current. Stripping the superseded
+    one keeps exactly one live control on screen.
+
+    The cleanup is best-effort and deliberately runs *before* the new message: it
+    is cosmetic, while the text below it is the verdict. An edit refused because
+    the message is too old must never turn a correct answer into an error.
+    """
+    data = await state.get_data()
+    previous = data.get("kb_message_id")
+    if previous and kb is not None:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=previous, reply_markup=None
+            )
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            log.debug("Tastiera %s non rimovibile: %s", previous, exc)
+
+    sent = await message.answer(text, reply_markup=kb)
+    if kb is not None:
+        await state.update_data(kb_message_id=sent.message_id)
 
 
 def _status_line(round_, sess, left: int) -> str:
@@ -122,12 +157,13 @@ async def start_guess_session(
 
     await state.set_state(GuessPlayStates.answering)
     await state.update_data(round_id=round_id)
-    await message.answer(
+    await _reply(
+        message, state,
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
         "Scrivimi il <b>titolo del gioco</b>.\n"
         f"{_status_line(round_, sess, left)}\n"
         "<i>Meno tentativi usi, più in alto finisci nel podio!</i>",
-        reply_markup=_playing_kb(),
+        _playing_kb(),
     )
 
 
@@ -181,14 +217,25 @@ async def fsm_answer(
     # player's budget is intact and waiting — but without a bound this would be an
     # unlimited free channel to Groq for anyone willing to type.
     if await guess_service.unverified_left(db_session, round_, user_id) <= 0:
-        await message.answer(
+        await _reply(
+            message, state,
             "⚠️ Il <b>giudice non risponde</b> in questo momento.\n"
             "I tuoi tentativi sono <b>salvi</b> — riprova fra qualche minuto.",
-            reply_markup=_playing_kb(),
+            _playing_kb(),
         )
         return
 
-    verdict = await guess_judge.judge(db_session, round_, raw)
+    # "Sto scrivendo…" for as long as the judge takes, and gone by itself the
+    # moment it answers. The judge is a network call that can run into seconds,
+    # and silence reads as a broken bot.
+    #
+    # A chat action rather than a "⏳ attendi" message on purpose: Telegram clears
+    # it on its own, so there is nothing to delete, nothing to leak if we raise,
+    # and no extra message competing with the verdict that follows. `interval`
+    # under Telegram's 5s expiry keeps it alive across a slow call.
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id,
+                                       interval=_TYPING_REFRESH):
+        verdict = await guess_judge.judge(db_session, round_, raw)
     outcome = await guess_service.record_attempt(
         db_session, round_, user_id, raw, verdict
     )
@@ -201,11 +248,12 @@ async def fsm_answer(
     if not verdict.verified:
         # The status line matters most here: it is the proof that the outage did
         # not cost the player anything.
-        await message.answer(
+        await _reply(
+            message, state,
             "⚠️ Non sono riuscito a <b>verificare</b> la tua risposta.\n"
             "Riprova: questo tentativo <b>non conta</b>.\n"
             + _status_line(round_, sess, outcome.attempts_left),
-            reply_markup=_playing_kb(),
+            _playing_kb(),
         )
         return
 
@@ -230,7 +278,7 @@ async def fsm_answer(
     if outcome.hint:
         lines.append(f"💡 <i>{esc(outcome.hint)}</i>")
     lines.append(_status_line(round_, sess, outcome.attempts_left))
-    await message.answer("\n".join(lines), reply_markup=_playing_kb())
+    await _reply(message, state, "\n".join(lines), _playing_kb())
 
 
 @router.callback_query(GuessPlayStates.answering, F.data == "guess_play:quit")

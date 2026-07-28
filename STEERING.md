@@ -1244,6 +1244,43 @@ effettivo. La scheda doveva togliere codice, non aggiungerne.
 La chiave del dizionario **è** la chiave in `state.get_data()`: niente mappatura da tenere
 allineata. `apply` esiste per l'unica eccezione (i premi, che scrivono quattro chiavi).
 
+### La scheda è **un** messaggio, non un flusso
+
+`_panel()` modifica **sempre lo stesso messaggio** (`card_message_id` in stato). Il prompt di
+un campo sostituisce la scheda, il valore accettato la riporta, la pubblicazione la trasforma
+nella conferma. Sullo schermo c'è **un solo pannello vivo**, sempre.
+
+Non è cosmetica: la prima versione rimandava la scheda **e il media** a ogni render. Misurato
+su 6 campi modificati:
+
+| | prima | ora |
+|---|---|---|
+| messaggi nuovi | 12 | **0** |
+| re-invii del media | 6 | **0** |
+
+Sei upload di media in una chat sono un burst che Telegram rate-limita, ed è per questo che
+«a volte il bot si impallava» modificando un evento. Il media si posta **una volta sola**,
+quando viene scelto o sostituito (quell'eco resta la verifica del `file_id`, §19.b/Media), e
+il vecchio si cancella: due media in chat e l'admin non sa più quale sia quello del round.
+
+Regola generale, valida anche in gioco: **un messaggio che non comanda più niente non resta
+sullo schermo con i bottoni vivi.** In `play` ogni nuova risposta toglie la tastiera alla
+precedente (`_reply`), così esiste un solo «🚪 Esci» premibile invece di uno per tentativo.
+La pulizia è **best-effort e non può fallire rumorosamente**: è cosmetica, mentre il testo che
+accompagna è il verdetto — un `edit` rifiutato perché il messaggio è vecchio non deve
+trasformare una risposta corretta in un errore.
+
+### L'attesa del giudice
+
+Il giudice è una chiamata di rete che può durare secondi, e il silenzio si legge come «bot
+rotto». Si usa `ChatActionSender.typing` di aiogram attorno alla sola chiamata al giudice:
+parte subito, si spegne da sé quando il verdetto arriva.
+
+Una **chat action** e non un messaggio «⏳ attendi» apposta: la cancella Telegram, quindi non
+c'è niente da eliminare, niente che resti appeso se solleviamo, e nessun messaggio in più che
+compete col verdetto subito sotto. `interval=4.0` e non il default 5.0 perché Telegram scade
+l'azione a ~5s: i due valori uguali si rincorrono e l'indicatore lampeggia.
+
 `media` è nella scheda ma **non** in `FIELDS`: il suo input è una foto o un audio, non testo,
 quindi rientra da `waiting_media` invece che dall'editor condiviso.
 

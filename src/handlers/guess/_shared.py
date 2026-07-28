@@ -115,7 +115,23 @@ def extract_media(message: Message) -> tuple[str, str] | None:
 _SENDER_BY_KIND = {"photo": "send_photo", "audio": "send_audio", "voice": "send_voice"}
 
 
-async def send_media(bot, chat_id: int, file_id: str, media_kind: str, **kwargs) -> None:
+async def forget_message(bot, chat_id: int, message_id: int | None) -> None:
+    """Take a message off the screen once it no longer means anything.
+
+    Best-effort by contract. Deleting is allowed to fail for reasons that are all
+    fine — already gone, older than Telegram's delete window, permissions — and a
+    leftover message is cosmetic while an exception here would abort a flow that
+    otherwise succeeded. Never let cleanup break the thing it is tidying up.
+    """
+    if not message_id:
+        return
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        log.debug("Messaggio %s non eliminabile: %s", message_id, exc)
+
+
+async def send_media(bot, chat_id: int, file_id: str, media_kind: str, **kwargs):
     """Resend a stored medium.
 
     The one place that maps ``media_kind`` → Bot API call, shared by the creation
@@ -125,5 +141,7 @@ async def send_media(bot, chat_id: int, file_id: str, media_kind: str, **kwargs)
     Only the method actually needed is resolved. Looking up all three to use one
     couples this to senders the call has nothing to do with — which is exactly how
     a photo round ends up failing because of an audio method.
+
+    Returns the sent message so callers can clean it up later.
     """
-    await getattr(bot, _SENDER_BY_KIND[media_kind])(chat_id, file_id, **kwargs)
+    return await getattr(bot, _SENDER_BY_KIND[media_kind])(chat_id, file_id, **kwargs)
