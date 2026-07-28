@@ -225,6 +225,11 @@ risposta corretta — poi mostra una **scheda** con tutto il resto già compilat
 tempo, chiusura automatica, suggerimenti e premi. Tocchi un campo, lo cambi, torni alla scheda.
 Il round si avvia subito o si programma, come i quiz.
 
+I **suggerimenti** si aggiungono senza scrivere niente di tecnico: `➕ Aggiungi`, scrivi il
+testo, e scegli con un tocco dopo quanti tentativi deve arrivare. I numeri già usati non
+vengono nemmeno proposti. Se poi abbassi i tentativi, i suggerimenti che nessuno vedrebbe più
+vengono tolti e il bot te lo dice.
+
 Nel gruppo arriva **solo l'invito**: l'immagine e l'audio non si postano lì, altrimenti la
 soluzione si discute in chat e giocare in privato non vuol più dire niente. Si rivelano col
 **podio** alla chiusura, insieme alla risposta. Vince chi ci arriva in **meno tentativi**; a

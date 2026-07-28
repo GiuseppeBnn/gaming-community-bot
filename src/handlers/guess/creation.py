@@ -33,7 +33,12 @@ from dataclasses import dataclass
 from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,8 +69,8 @@ from handlers.guess._shared import (
     too_long,
 )
 
+#: Ways to say "none" in the one field that still takes free text (aliases).
 _SKIP_WORDS = ("-", "no", "nessuno", "nessuna", "salta")
-_HINT_SEPARATOR = "|"
 
 
 class GuessCreationStates(StatesGroup):
@@ -74,6 +79,8 @@ class GuessCreationStates(StatesGroup):
     waiting_answer = State()
     editing = State()   # one field from the card is open for input
     card = State()      # the card is on screen, waiting for a tap
+    hints = State()             # the hints screen is open
+    waiting_hint_text = State() # a hint's words, before its threshold
 
 
 # ---------------------------------------------------------------------------
@@ -156,43 +163,34 @@ def _parse_prizes(raw: str, _data: dict) -> tuple[list[int] | None, str | None]:
     return values, None
 
 
-def _parse_hints(raw: str, data: dict) -> tuple[list[list] | None, str | None]:
-    """All hints in one field, one per line: ``3 | È uno sparatutto``.
+def hints_of(data: dict) -> list[list]:
+    """The hints held in the flow state, always sorted by threshold."""
+    return sorted(data.get("hints") or [])
 
-    Validated against the attempt limit *of this round*: a threshold above the
-    budget is a hint nobody would ever see.
+
+def free_thresholds(data: dict) -> list[int]:
+    """Attempt numbers that do not have a hint yet.
+
+    The single source of truth for **which numbers may be chosen**. The keyboard
+    renders it and the callback re-checks against it, so "offered" and "accepted"
+    can never drift apart — the property that makes a forged callback harmless.
     """
-    if raw.lower() in _SKIP_WORDS:
-        return [], None
-    max_attempts = data.get("max_attempts", settings.guess_default_attempts)
-    hints: list[list] = []
-    for line in (line.strip() for line in raw.splitlines()):
-        if not line:
-            continue
-        if _HINT_SEPARATOR not in line:
-            return None, (f"⚠️ Formato: <code>3 {_HINT_SEPARATOR} testo</code>, "
-                          "uno per riga.")
-        head, _, text = line.partition(_HINT_SEPARATOR)
-        text = text.strip()
-        try:
-            after = int(head.strip())
-        except ValueError:
-            return None, (f"⚠️ Prima del «{_HINT_SEPARATOR}» ci va il numero di "
-                          f"tentativi: <code>3 {_HINT_SEPARATOR} testo</code>")
-        if not (1 <= after <= max_attempts):
-            return None, (f"⚠️ La soglia deve stare fra 1 e <b>{max_attempts}</b> "
-                          "(i tentativi di questo round): oltre, il suggerimento "
-                          "non lo vedrebbe nessuno.")
-        if not text:
-            return None, "⚠️ Il testo del suggerimento è vuoto."
-        if err := too_long(text, _MAX_HINT, "Un suggerimento è troppo lungo"):
-            return None, err
-        if any(a == after for a, _ in hints):
-            return None, f"⚠️ Due suggerimenti sulla stessa soglia ({after})."
-        hints.append([after, text])
-    if len(hints) > _MAX_HINTS:
-        return None, f"⚠️ Massimo {_MAX_HINTS} suggerimenti."
-    return sorted(hints), None
+    taken = {int(after) for after, _ in hints_of(data)}
+    limit = int(data.get("max_attempts", settings.guess_default_attempts))
+    return [n for n in range(1, limit + 1) if n not in taken]
+
+
+def prune_unreachable_hints(data: dict) -> list[list]:
+    """Drop hints whose threshold is above the current attempt limit.
+
+    The threshold used to be validated only as it was typed, so setting 10
+    attempts, adding a hint at 8 and then lowering to 3 left a hint no player
+    could ever reach — exactly what that validation exists to prevent. The limit
+    is editable, so the check has to run when the limit changes, not only when
+    the hint is written.
+    """
+    limit = int(data.get("max_attempts", settings.guess_default_attempts))
+    return [h for h in hints_of(data) if int(h[0]) <= limit]
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +217,9 @@ class Field:
 
     label: str
     prompt: str
-    parse: Callable[[str, dict], tuple[object | None, str | None]]
+    #: ``None`` means the field is not edited by typing — it has a screen of its
+    #: own (hints). The card still renders and buttons it like any other line.
+    parse: Callable[[str, dict], tuple[object | None, str | None]] | None
     show: Callable[[dict], str]
     apply: Callable[[object], dict] | None = None
 
@@ -278,13 +278,13 @@ FIELDS: dict[str, Field] = {
         parse=_parse_duration,
         show=lambda d: _show_seconds(d["round_duration_seconds"], "a mano"),
     ),
+    # No `parse`: hints are built on their own screen, from buttons. See
+    # `_hints_panel`. The entry stays in FIELDS so the card still renders and
+    # buttons it like every other line.
     "hints": Field(
         label="💡 Suggerimenti",
-        prompt=(f"<b>Suggerimenti</b>, uno per riga (max {_MAX_HINTS}):\n"
-                f"<code>3 {_HINT_SEPARATOR} È uno sparatutto</code>\n"
-                "<i>Arriva dopo il 3° tentativo giudicato.</i>\n"
-                "Manda «-» per non averne."),
-        parse=_parse_hints,
+        prompt="",
+        parse=None,
         show=lambda d: (f"<b>{len(d['hints'])}</b>" if d["hints"]
                         else "<i>nessuno</i>"),
     ),
@@ -308,6 +308,8 @@ FIELDS: dict[str, Field] = {
 #: audio, not text, so it routes back through `waiting_media` instead of the
 #: shared text editor. It has no `parse` and no `show` — the card resends it.
 _MEDIA_FIELD = "media"
+#: Built on its own screen from buttons, not typed. See `_hints_panel`.
+_HINTS_FIELD = "hints"
 
 
 def _defaults() -> dict:
@@ -489,12 +491,16 @@ async def _panel(
     await state.update_data(card_message_id=sent.message_id)
 
 
-async def _show_card(message: Message, state: FSMContext) -> None:
+async def _show_card(message: Message, state: FSMContext, *, note: str = "") -> None:
     """Render the whole round and wait for a tap.
 
     The medium is **not** resent here — it is posted once, when it is chosen or
     replaced, and stays above the card. Resending it per render was what made the
     chat unusable and the bot stall.
+
+    `note` carries a one-off remark about what the last edit did beyond setting
+    its own field, so a silent side effect (hints dropped because the attempt
+    limit shrank) is stated where the admin is already looking.
     """
     data = await state.get_data()
     spec = kind_of(data["kind"])
@@ -503,13 +509,19 @@ async def _show_card(message: Message, state: FSMContext) -> None:
     lines = [f"{spec.emoji} <b>{esc(spec.label)}</b> — scheda del round\n"]
     lines += [f"{field.label}: {field.show(data)}" for field in FIELDS.values()]
     lines.append("\n<i>Tocca un campo per cambiarlo, poi pubblica.</i>")
-    await _panel(message, state, "\n".join(lines), _card_kb())
+    await _panel(message, state, "\n".join(lines) + note, _card_kb())
 
 
 @router.callback_query(F.data.startswith("guess_new:edit:"), IsAdminCallbackFilter())
 async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
-    """Open one field for input. The single entry point for every field."""
+    """Open one field for input. The single entry point for every field.
+
+    Leaving anywhere drops a half-written hint: text typed but never given a
+    threshold must not be able to attach itself later, when a stale number button
+    from that screen gets tapped.
+    """
     key = callback.data.split(":")[-1]
+    await state.update_data(_pending_hint=None)
 
     if key == _MEDIA_FIELD:
         spec = kind_of((await state.get_data())["kind"])
@@ -519,8 +531,15 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer()
         return
 
+    if key == _HINTS_FIELD:
+        await _hints_panel(callback.message, state)
+        await callback.answer()
+        return
+
     field = FIELDS.get(key)
-    if field is None:  # a typo in a callback must not silently edit the wrong field
+    # A typo in a callback must not silently edit the wrong field; a field with no
+    # `parse` has a screen of its own and must never reach the text editor.
+    if field is None or field.parse is None:
         await callback.answer("Campo sconosciuto.", show_alert=True)
         return
     await state.set_state(GuessCreationStates.editing)
@@ -538,7 +557,7 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
     open and the previous value untouched — nothing is half-written."""
     data = await state.get_data()
     field = FIELDS.get(data.get("_editing", ""))
-    if field is None:
+    if field is None or field.parse is None:
         await _show_card(message, state)
         return
 
@@ -553,7 +572,196 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
     # The typed value has been absorbed into the card; leaving it on screen turns
     # the wizard back into the feed this replaced.
     await forget_message(message.bot, message.chat.id, message.message_id)
-    await _show_card(message, state)
+
+    # Lowering the attempt limit can strand hints above it. The threshold is only
+    # checked when a hint is written, and the limit is editable afterwards — so
+    # without this, 10 attempts + a hint at 8 + "actually, 3 attempts" ships a
+    # hint no player can reach, which is the exact thing that check prevents.
+    note = ""
+    if data["_editing"] == "max_attempts":
+        kept = prune_unreachable_hints(await state.get_data())
+        dropped = len(hints_of(await state.get_data())) - len(kept)
+        if dropped:
+            await state.update_data(hints=kept)
+            subject = ("<b>1</b> suggerimento" if dropped == 1
+                       else f"<b>{dropped}</b> suggerimenti")
+            seen = "non lo avrebbe visto" if dropped == 1 else "non li avrebbe visti"
+            note = (f"\n\n⚠️ Ho tolto {subject}: la soglia era oltre i "
+                    f"<b>{value}</b> tentativi, quindi {seen} nessuno.")
+
+    await _show_card(message, state, note=note)
+
+
+# ---------------------------------------------------------------------------
+# Hints — a screen of its own, driven by buttons
+#
+# The old field wanted `3 | È uno sparatutto` typed by hand: a separator
+# character, an argument order and a magic number. Three things an admin who does
+# not write code has no reason to guess, and three ways to get an error message
+# instead of a hint.
+#
+# The threshold is now a button. That is the intuitive half; the safe half is
+# that `free_thresholds` is the *only* source of valid numbers and every callback
+# re-checks against it, so a stale or forged `guess_new:hint:at:99` creates
+# nothing. The only free text left is the hint body, which needs a length check
+# and nothing else — a value that never passes through a parser cannot be
+# malformed.
+# ---------------------------------------------------------------------------
+
+def _hints_kb(data: dict) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    hints = hints_of(data)
+    if len(hints) < _MAX_HINTS and free_thresholds(data):
+        b.button(text="➕ Aggiungi", callback_data="guess_new:hint:add")
+    if hints:
+        b.button(text="↩️ Togli l'ultimo", callback_data="guess_new:hint:undo")
+        b.button(text="🧹 Cancella tutti", callback_data="guess_new:hint:clear")
+    b.button(text="⬅️ Fatto", callback_data="guess_new:hint:done")
+    b.adjust(1, 2, 1)
+    return b.as_markup()
+
+
+def _thresholds_kb(data: dict) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for n in free_thresholds(data):
+        b.button(text=str(n), callback_data=f"guess_new:hint:at:{n}")
+    b.adjust(5)
+    # Its own row: packed in with the numbers it reads as one of the choices, and
+    # sits where a mistap costs the hint you just typed.
+    b.row(InlineKeyboardButton(text="❌ Lascia perdere",
+                               callback_data="guess_new:hint:done"))
+    return b.as_markup()
+
+
+def _hints_text(data: dict) -> str:
+    hints = hints_of(data)
+    lines = [f"💡 <b>Suggerimenti</b> — {len(hints)} su {_MAX_HINTS}\n"]
+    if hints:
+        lines += [
+            f"• dopo <b>{after}</b> tentativi: {esc(text)}"
+            for after, text in hints
+        ]
+    else:
+        lines.append("<i>Ancora nessuno.</i>")
+    lines.append(
+        "\n<i>Un suggerimento arriva quando il giocatore ha usato quel numero di "
+        "tentativi senza indovinare.</i>"
+    )
+    return "\n".join(lines)
+
+
+async def _hints_panel(message: Message, state: FSMContext) -> None:
+    await state.set_state(GuessCreationStates.hints)
+    data = await state.get_data()
+    await _panel(message, state, _hints_text(data), _hints_kb(data))
+
+
+@router.callback_query(F.data == "guess_new:hint:add", IsAdminCallbackFilter())
+async def cb_hint_add(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if len(hints_of(data)) >= _MAX_HINTS:
+        await _panel(callback.message, state,
+                     f"{_hints_text(data)}\n\n⚠️ Massimo {_MAX_HINTS} suggerimenti.",
+                     _hints_kb(data))
+        await callback.answer()
+        return
+    if not free_thresholds(data):
+        await _panel(
+            callback.message, state,
+            f"{_hints_text(data)}\n\n⚠️ Ogni tentativo ha già il suo suggerimento.",
+            _hints_kb(data),
+        )
+        await callback.answer()
+        return
+    await state.set_state(GuessCreationStates.waiting_hint_text)
+    await _panel(callback.message, state,
+                 "💡 Scrivi il <b>suggerimento</b>.\n"
+                 "<i>Poi ti chiedo dopo quanti tentativi farlo arrivare.</i>",
+                 _editing_kb())
+    await callback.answer()
+
+
+@router.message(GuessCreationStates.waiting_hint_text, IsAdminFilter(),
+                ~F.text.startswith("/"))
+async def fsm_hint_text(message: Message, state: FSMContext) -> None:
+    """Take the hint's words, then ask *when* with buttons."""
+    text = (message.text or "").strip()
+    if not text:
+        await _panel(message, state,
+                     "⚠️ Il suggerimento è vuoto. Scrivilo e te lo salvo.",
+                     _editing_kb())
+        return
+    if err := too_long(text, _MAX_HINT, "Il suggerimento è troppo lungo"):
+        await _panel(message, state, err, _editing_kb())
+        return
+
+    await state.update_data(_pending_hint=text)
+    await forget_message(message.bot, message.chat.id, message.message_id)
+    data = await state.get_data()
+    await _panel(
+        message, state,
+        f"💡 «{esc(text)}»\n\n<b>Dopo quanti tentativi</b> sbagliati deve arrivare?",
+        _thresholds_kb(data),
+    )
+
+
+@router.callback_query(F.data.startswith("guess_new:hint:at:"), IsAdminCallbackFilter())
+async def cb_hint_at(callback: CallbackQuery, state: FSMContext) -> None:
+    """Attach the pending hint to a threshold.
+
+    Everything here is re-checked even though the keyboard only offered valid
+    numbers: callback data is user input, and a button from a screen taken three
+    edits ago is as untrusted as a forged one.
+    """
+    data = await state.get_data()
+    pending = data.get("_pending_hint")
+    if not pending:  # a stale button must not invent a hint out of nothing
+        await _hints_panel(callback.message, state)
+        await callback.answer()
+        return
+
+    if len(hints_of(data)) >= _MAX_HINTS:  # belt and braces: `add` guards this too
+        await callback.answer(f"Massimo {_MAX_HINTS} suggerimenti.", show_alert=True)
+        return
+
+    raw = callback.data.rsplit(":", 1)[-1]
+    try:
+        after = int(raw)
+    except ValueError:
+        await callback.answer("Valore non valido.", show_alert=True)
+        return
+    if after not in free_thresholds(data):
+        # Out of range, or taken since this keyboard was drawn.
+        await callback.answer("Quel numero non è disponibile.", show_alert=True)
+        await _hints_panel(callback.message, state)
+        return
+
+    await state.update_data(hints=sorted([*hints_of(data), [after, pending]]),
+                            _pending_hint=None)
+    await _hints_panel(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "guess_new:hint:undo", IsAdminCallbackFilter())
+async def cb_hint_undo(callback: CallbackQuery, state: FSMContext) -> None:
+    hints = hints_of(await state.get_data())
+    await state.update_data(hints=hints[:-1])
+    await _hints_panel(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "guess_new:hint:clear", IsAdminCallbackFilter())
+async def cb_hint_clear(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(hints=[], _pending_hint=None)
+    await _hints_panel(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "guess_new:hint:done", IsAdminCallbackFilter())
+async def cb_hint_done(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(_pending_hint=None)
+    await _show_card(callback.message, state)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "guess_new:back", IsAdminCallbackFilter())
@@ -586,7 +794,11 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext,
         media_kind=data["media_kind"],
         answer=data["answer"],
         aliases=data["aliases"],
-        hints=[(int(a), str(t)) for a, t in data["hints"]],
+        # Pruned once more on the way out. Every path into `hints` is already
+        # guarded, so this changes nothing today — it is here so a future path
+        # that sets `max_attempts` without pruning cannot quietly ship a hint no
+        # player can reach. Last gate before the data becomes a round that pays.
+        hints=[(int(a), str(t)) for a, t in prune_unreachable_hints(data)],
         max_attempts=data["max_attempts"],
         time_limit_seconds=data["time_limit_seconds"],
         round_duration_seconds=data["round_duration_seconds"],

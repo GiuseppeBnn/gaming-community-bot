@@ -48,11 +48,17 @@ class _StubBot:
         self.edits: list[tuple[int, str]] = []     # (message_id, text)
         self.deleted: list[int] = []
         self.screens: list[str] = []               # every text put on screen, in order
+        self.markups: list = []                    # keyboard attached to each screen
         self._next_id = 100
 
     def _mk_id(self) -> int:
         self._next_id += 1
         return self._next_id
+
+    @property
+    def last_kb(self):
+        """The keyboard on the panel right now — buttons are the interface here."""
+        return self.markups[-1] if self.markups else None
 
     @property
     def screen(self) -> str:
@@ -79,6 +85,7 @@ class _StubBot:
     async def edit_message_text(self, chat_id=None, message_id=None, text=None, **kw):
         self.edits.append((message_id, text))
         self.screens.append(text)
+        self.markups.append(kw.get("reply_markup"))
         return types.SimpleNamespace(message_id=message_id)
 
     async def delete_message(self, chat_id, message_id):
@@ -117,6 +124,7 @@ class _Msg:
         self.answers.append(text)
         _BOT.posted.append(text)
         _BOT.screens.append(text)
+        _BOT.markups.append(kw.get("reply_markup"))
         return _Msg(user_id=self.chat.id)
 
     async def reply(self, text, **kw):
@@ -126,6 +134,7 @@ class _Msg:
         self.answers.append(text)
         _BOT.edits.append((self.message_id, text))
         _BOT.screens.append(text)
+        _BOT.markups.append(kw.get("reply_markup"))
         return self
 
     @property
@@ -439,9 +448,6 @@ class TestEditingAField:
         ("round_duration_seconds", "0", "round_duration_seconds", 0),
         ("aliases", "GTA SA\nSan Andreas", "aliases", ["GTA SA", "San Andreas"]),
         ("aliases", "-", "aliases", []),
-        ("hints", "2 | sparatutto\n3 | anni 90", "hints",
-         [[2, "sparatutto"], [3, "anni 90"]]),
-        ("hints", "-", "hints", []),
         ("prizes", "500 250 100 50", "prize_first", 500),
     ])
     async def test_a_field_can_be_changed_from_the_card(
@@ -489,9 +495,6 @@ class TestEditingAField:
         ("prizes", "500 250"),
         ("prizes", "-100 0 0 0"),
         ("prizes", "a b c d"),
-        ("hints", "sparatutto"),
-        ("hints", "99 | oltre il limite"),
-        ("hints", "2 | "),
         ("title", "ab"),
         ("answer", "x"),
     ])
@@ -514,23 +517,6 @@ class TestEditingAField:
             cr.settings.guess_default_attempts
         )
 
-    async def test_a_hint_threshold_above_the_attempt_limit_is_refused(self, state):
-        """A hint that unlocks past the budget is a hint nobody ever sees."""
-        await _to_card(state)
-        await _edit(state, "max_attempts", "3")
-
-        screen = await _edit(state, "hints", "5 | mai vista")
-
-        assert "⚠️" in screen
-        assert (await state.get_data())["hints"] == []
-
-    async def test_two_hints_on_the_same_threshold_are_refused(self, state):
-        await _to_card(state)
-
-        screen = await _edit(state, "hints", "2 | uno\n2 | due")
-
-        assert "⚠️" in screen
-
     async def test_too_many_aliases_are_refused(self, state):
         await _to_card(state)
 
@@ -546,19 +532,249 @@ class TestEditingAField:
 
         assert "⚠️" in screen
 
-    async def test_an_over_long_hint_is_refused(self, state):
+
+def _buttons(kb) -> list[str]:
+    return [b.callback_data for row in kb.inline_keyboard for b in row
+            if b.callback_data]
+
+
+async def _add_hint(state, text: str, after: int) -> None:
+    """Add a hint the way an admin does: tap ➕, type the text, tap a number."""
+    await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+    await cr.fsm_hint_text(_Msg(text), state)
+    await cr.cb_hint_at(_Cb(f"guess_new:hint:at:{after}"), state)
+
+
+class TestAddingHints:
+    """No syntax. At all.
+
+    The old field wanted `3 | È uno sparatutto` typed by hand: a separator
+    character, an argument order and a magic number, i.e. three things an admin
+    who does not write code has no reason to guess. The threshold now comes from
+    a button, so the only free text is the hint itself — and a value that never
+    passes through a parser is a value that cannot be malformed.
+    """
+
+    async def test_the_prompt_shows_no_syntax(self, state, bot):
         await _to_card(state)
 
-        screen = await _edit(state, "hints", "2 | " + "x" * (cr._MAX_HINT + 1))
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
 
-        assert "⚠️" in screen
+        assert "|" not in bot.screen, "the pipe syntax must be gone"
+
+    async def test_adding_asks_only_for_the_text(self, state, bot):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+
+        assert await state.get_state() == cr.GuessCreationStates.waiting_hint_text.state
+        assert "|" not in bot.screen
+
+    async def test_the_thresholds_are_offered_as_buttons(self, state, bot):
+        await _to_card(state)
+        await _edit(state, "max_attempts", "4")
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+
+        cb = _Cb("x")
+        await cr.fsm_hint_text(_Msg("È uno sparatutto"), state)
+
+        assert cb is not None
+        assert bot.last_kb is not None
+        picks = [b for b in _buttons(bot.last_kb) if b.startswith("guess_new:hint:at:")]
+        assert picks == [f"guess_new:hint:at:{n}" for n in (1, 2, 3, 4)]
+
+    async def test_picking_a_number_stores_the_hint(self, state):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+
+        await _add_hint(state, "È uno sparatutto", 2)
+
+        assert (await state.get_data())["hints"] == [[2, "È uno sparatutto"]]
+
+    async def test_a_taken_threshold_is_not_offered_again(self, state, bot):
+        """Two hints on one number is not refused with a message — it is simply
+        not offered, which is the version that cannot be got wrong."""
+        await _to_card(state)
+        await _edit(state, "max_attempts", "3")
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "primo", 2)
+
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+        await cr.fsm_hint_text(_Msg("secondo"), state)
+
+        picks = [b for b in _buttons(bot.last_kb) if b.startswith("guess_new:hint:at:")]
+        assert "guess_new:hint:at:2" not in picks
+        assert picks == ["guess_new:hint:at:1", "guess_new:hint:at:3"]
+
+    async def test_the_hints_can_be_removed_one_at_a_time(self, state):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "primo", 1)
+        await _add_hint(state, "secondo", 2)
+
+        await cr.cb_hint_undo(_Cb("guess_new:hint:undo"), state)
+
+        assert (await state.get_data())["hints"] == [[1, "primo"]]
+
+    async def test_they_can_all_be_cleared(self, state):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "primo", 1)
+
+        await cr.cb_hint_clear(_Cb("guess_new:hint:clear"), state)
+
+        assert (await state.get_data())["hints"] == []
+
+    async def test_done_goes_back_to_the_card(self, state):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+
+        await cr.cb_hint_done(_Cb("guess_new:hint:done"), state)
+
+        assert await state.get_state() == cr.GuessCreationStates.card.state
+
+    async def test_an_over_long_hint_is_refused(self, state, bot):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+
+        await cr.fsm_hint_text(_Msg("x" * (cr._MAX_HINT + 1)), state)
+
+        assert "⚠️" in bot.screen
+        assert await state.get_state() == cr.GuessCreationStates.waiting_hint_text.state
+
+    async def test_an_empty_hint_is_refused(self, state, bot):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+
+        await cr.fsm_hint_text(_Msg("   "), state)
+
+        assert "⚠️" in bot.screen
+
+
+class TestHintsCannotBeCorrupted:
+    """The threshold arrives as callback data, and callback data is user input.
+
+    A button that only offers valid numbers is the intuitive half; refusing an
+    invalid one anyway is the safe half. A crafted `guess_new:hint:at:99` must
+    not create a hint no player could ever reach.
+    """
+
+    @pytest.mark.parametrize("forged", ["99", "0", "-3", "abc", ""])
+    async def test_a_forged_threshold_is_refused(self, state, forged):
+        await _to_card(state)
+        await _edit(state, "max_attempts", "3")
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+        await cr.fsm_hint_text(_Msg("payload"), state)
+
+        await cr.cb_hint_at(_Cb(f"guess_new:hint:at:{forged}"), state)
+
+        assert (await state.get_data())["hints"] == []
+
+    async def test_a_duplicate_threshold_is_refused_even_if_forged(self, state):
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "primo", 2)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+        await cr.fsm_hint_text(_Msg("secondo"), state)
+
+        await cr.cb_hint_at(_Cb("guess_new:hint:at:2"), state)
+
+        assert (await state.get_data())["hints"] == [[2, "primo"]]
+
+    async def test_picking_a_number_without_a_pending_text_does_nothing(self, state):
+        """A stale button from an older screen must not invent a hint."""
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+
+        await cr.cb_hint_at(_Cb("guess_new:hint:at:2"), state)
+
+        assert (await state.get_data())["hints"] == []
+
+    async def test_the_hint_cap_is_enforced(self, state, bot):
+        await _to_card(state)
+        await _edit(state, "max_attempts", str(cr._MAX_HINTS + 5))
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        for n in range(1, cr._MAX_HINTS + 1):
+            await _add_hint(state, f"hint {n}", n)
+
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+
+        assert len((await state.get_data())["hints"]) == cr._MAX_HINTS
+        assert "massimo" in bot.screen.lower()
+
+    async def test_lowering_the_attempts_drops_unreachable_hints(self, state, bot):
+        """The hole the old flow had.
+
+        The threshold was checked only as it was typed. Setting 10 attempts,
+        adding a hint at 8 and then dropping to 3 left a hint no player could
+        ever reach — exactly what that check exists to prevent.
+        """
+        await _to_card(state)
+        await _edit(state, "max_attempts", "10")
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "presto", 2)
+        await _add_hint(state, "tardi", 8)
+        await cr.cb_hint_done(_Cb("guess_new:hint:done"), state)
+
+        await _edit(state, "max_attempts", "3")
+
+        assert (await state.get_data())["hints"] == [[2, "presto"]]
+        assert "1</b> suggerimento:" in bot.screen, "singular, and it says which"
+        assert "non lo avrebbe visto nessuno" in bot.screen
+
+    async def test_publishing_can_never_store_an_unreachable_hint(
+        self, state, session
+    ):
+        """The last gate before the data becomes a round that pays coins.
+
+        Every path into `hints` is guarded, so this cannot be reached today — it
+        is here so that a *future* path which sets `max_attempts` without pruning
+        cannot quietly ship a hint nobody will see. The state is corrupted
+        directly, because no sequence of taps can produce it.
+        """
+        await _to_card(state)
+        await state.update_data(max_attempts=3, hints=[[2, "ok"], [9, "mai vista"]])
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        r = (await session.execute(select(GuessRound))).scalar_one()
+        assert gs.hints_of(r) == [(2, "ok")]
+
+    async def test_leaving_the_hints_screen_drops_a_half_written_hint(self, state):
+        """Text typed but never given a number must not attach itself later, when
+        a stale threshold button from that screen gets tapped."""
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await cr.cb_hint_add(_Cb("guess_new:hint:add"), state)
+        await cr.fsm_hint_text(_Msg("mai confermato"), state)
+
+        await cr.cb_edit(_Cb("guess_new:edit:max_attempts"), state)
+        await cr.cb_hint_at(_Cb("guess_new:hint:at:2"), state)
+
+        assert (await state.get_data())["hints"] == []
+
+    async def test_raising_the_attempts_keeps_every_hint(self, state):
+        await _to_card(state)
+        await _edit(state, "max_attempts", "3")
+        await cr.cb_edit(_Cb("guess_new:edit:hints"), state)
+        await _add_hint(state, "uno", 2)
+        await cr.cb_hint_done(_Cb("guess_new:hint:done"), state)
+
+        await _edit(state, "max_attempts", "9")
+
+        assert (await state.get_data())["hints"] == [[2, "uno"]]
 
 
 class TestPublish:
     async def test_a_published_round_is_ready_and_complete(self, state, session):
         await _to_card(state, answer="Doom")
         await _edit(state, "aliases", "DOOM 1993")
-        await _edit(state, "hints", "2 | sparatutto")
+        await _add_hint(state, "sparatutto", 2)
         await _edit(state, "prizes", "500 250 100 50")
 
         await cr.cb_publish(_Cb("guess_new:publish"), state, session)

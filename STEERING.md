@@ -1270,6 +1270,38 @@ La pulizia è **best-effort e non può fallire rumorosamente**: è cosmetica, me
 accompagna è il verdetto — un `edit` rifiutato perché il messaggio è vecchio non deve
 trasformare una risposta corretta in un errore.
 
+### I suggerimenti: nessuna sintassi, quindi niente da sbagliare
+
+Prima si scriveva `3 | È uno sparatutto` a mano. Un separatore, un ordine degli argomenti e
+un numero magico: **tre cose che un admin che non programma non ha motivo di indovinare**, e
+tre modi di ricevere un errore invece di un suggerimento.
+
+Ora i suggerimenti hanno una **schermata propria**: `➕ Aggiungi` → scrivi il testo → **scegli
+il numero da una tastiera**. La soglia non viene più digitata, quindi non può essere
+malformata: l'unico testo libero rimasto è il suggerimento, che vuole solo un controllo di
+lunghezza.
+
+`free_thresholds()` è la **sola** fonte dei numeri validi: la tastiera la renderizza **e** il
+callback la ri-controlla. Non possono divergere, ed è questo che rende innocuo un
+`guess_new:hint:at:99` costruito a mano o premuto su una schermata vecchia. Una soglia già
+presa **non viene offerta** — e viene comunque rifiutata se arriva lo stesso.
+
+> Le difese sul percorso della soglia sono tre e volutamente ridondanti, perché è un percorso
+> che finisce in un round che paga monete: la tastiera offre solo numeri liberi; il callback
+> li ri-valida (range, duplicati, tetto, testo pendente); la pubblicazione ripota un'ultima
+> volta. La terza oggi non cambia niente — c'è perché un domani qualcuno tocchi
+> `max_attempts` da un percorso nuovo senza sapere di questa regola.
+
+**Il tetto dei tentativi è modificabile, quindi va ricontrollato quando cambia.** La soglia era
+validata solo mentre la si scriveva: 10 tentativi, un suggerimento all'8°, poi «facciamo 3» e
+restava un suggerimento che nessuno avrebbe mai visto — esattamente ciò che quel controllo
+esiste per impedire. Ora abbassando i tentativi i suggerimenti irraggiungibili si tolgono, e
+**lo si dice** sulla scheda: un effetto collaterale silenzioso su dati che pagano non è
+accettabile.
+
+Un testo scritto ma mai confermato con un numero viene **buttato uscendo dalla schermata**,
+altrimenti un bottone-soglia rimasto in cronologia se lo attaccherebbe più tardi.
+
 ### L'attesa del giudice
 
 Il giudice è una chiamata di rete che può durare secondi, e il silenzio si legge come «bot
