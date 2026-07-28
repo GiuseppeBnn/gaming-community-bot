@@ -39,16 +39,45 @@ class GuessPlayStates(StatesGroup):
     answering = State()
 
 
-def _quit_kb() -> InlineKeyboardMarkup:
+def _playing_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🚪 Esci dal gioco", callback_data="guess_play:quit")
     return b.as_markup()
 
 
+def _status_line(round_, sess, left: int) -> str:
+    """Where the player stands, on every message that expects an answer.
+
+    Both numbers used to be invisible: the attempts showed only on a wrong
+    answer, the deadline only once on the way in. They are the two facts that
+    decide how you play, so they go on every screen that asks you to play.
+
+    The deadline is a wall clock and not a countdown because nothing will ever
+    send a "time's up!" — the check is stateless and happens on submission, so an
+    absolute time is the only honest way to state it.
+    """
+    parts = [f"🎯 <b>{left}</b> tentativi rimasti su {round_.max_attempts}"]
+    deadline = guess_service.deadline(round_, sess)
+    if deadline is not None:
+        parts.append(
+            f"⏱️ fino alle <b>{schedule_service.to_local(deadline):%H:%M}</b>"
+        )
+    return " · ".join(parts)
+
+
 async def start_guess_session(
-    message: Message, db_session: AsyncSession, state: FSMContext, round_id: int
+    message: Message, db_session: AsyncSession, state: FSMContext, round_id: int,
+    *, user_id: int | None = None,
 ) -> None:
-    """Deep-link ``<kind>_<id>``: start (or resume) playing this round in private."""
+    """Deep-link ``<kind>_<id>``: start (or resume) playing this round in private.
+
+    `user_id` is passed explicitly by callers whose `message` belongs to the bot
+    rather than to the player — the «Riprendi» button, whose `callback.message`
+    the bot itself sent. The same reason `start_guess_creation` takes
+    `creator_id`. Reaching into `message.from_user` to fix it up is not an
+    option: aiogram's models are frozen pydantic instances and assigning to one
+    raises at runtime.
+    """
     round_ = await guess_service.get_round(db_session, round_id)
     if round_ is None:
         await message.answer("⚠️ Round non trovato.")
@@ -62,8 +91,8 @@ async def start_guess_session(
         )
         return
 
-    user_id = message.from_user.id
-    sess = await guess_service.start_or_resume(db_session, round_id, user_id)
+    player_id = user_id if user_id is not None else message.from_user.id
+    sess = await guess_service.start_or_resume(db_session, round_id, player_id)
     await db_session.commit()
 
     if sess.solved_at is not None:
@@ -74,7 +103,7 @@ async def start_guess_session(
         )
         return
 
-    left = await guess_service.attempts_left(db_session, round_, user_id)
+    left = await guess_service.attempts_left(db_session, round_, player_id)
     if left <= 0:
         await message.answer("❌ Hai esaurito i tentativi per questo round.")
         return
@@ -91,19 +120,14 @@ async def start_guess_session(
         )
         return
 
-    deadline = guess_service.deadline(round_, sess)
-    when = (
-        f"\n⏱️ Hai tempo fino alle <b>"
-        f"{schedule_service.to_local(deadline):%H:%M}</b>."
-        if deadline is not None else ""
-    )
     await state.set_state(GuessPlayStates.answering)
     await state.update_data(round_id=round_id)
     await message.answer(
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
-        f"Scrivimi il <b>titolo del gioco</b>. Hai <b>{left}</b> tentativi.{when}\n"
+        "Scrivimi il <b>titolo del gioco</b>.\n"
+        f"{_status_line(round_, sess, left)}\n"
         "<i>Meno tentativi usi, più in alto finisci nel podio!</i>",
-        reply_markup=_quit_kb(),
+        reply_markup=_playing_kb(),
     )
 
 
@@ -152,6 +176,18 @@ async def fsm_answer(
         await message.answer("❌ Tentativi <b>esauriti</b> per questo round.")
         return
 
+    # Last guard before the model, and the one production needed: when the judge
+    # keeps failing, stop feeding it. Un-judged answers cost no attempts, so the
+    # player's budget is intact and waiting — but without a bound this would be an
+    # unlimited free channel to Groq for anyone willing to type.
+    if await guess_service.unverified_left(db_session, round_, user_id) <= 0:
+        await message.answer(
+            "⚠️ Il <b>giudice non risponde</b> in questo momento.\n"
+            "I tuoi tentativi sono <b>salvi</b> — riprova fra qualche minuto.",
+            reply_markup=_playing_kb(),
+        )
+        return
+
     verdict = await guess_judge.judge(db_session, round_, raw)
     outcome = await guess_service.record_attempt(
         db_session, round_, user_id, raw, verdict
@@ -163,10 +199,13 @@ async def fsm_answer(
         return
 
     if not verdict.verified:
+        # The status line matters most here: it is the proof that the outage did
+        # not cost the player anything.
         await message.answer(
-            "⚠️ Non sono riuscito a <b>verificare</b> la tua risposta. "
-            "Riprova: questo tentativo non conta.",
-            reply_markup=_quit_kb(),
+            "⚠️ Non sono riuscito a <b>verificare</b> la tua risposta.\n"
+            "Riprova: questo tentativo <b>non conta</b>.\n"
+            + _status_line(round_, sess, outcome.attempts_left),
+            reply_markup=_playing_kb(),
         )
         return
 
@@ -187,19 +226,44 @@ async def fsm_answer(
         return
 
     # A wrong answer never echoes the correct one.
-    lines = [f"❌ <b>Non ci siamo.</b> Ti restano <b>{outcome.attempts_left}</b> tentativi."]
+    lines = ["❌ <b>Non ci siamo.</b>"]
     if outcome.hint:
-        lines.append(f"\n💡 <i>{esc(outcome.hint)}</i>")
-    await message.answer("\n".join(lines), reply_markup=_quit_kb())
+        lines.append(f"💡 <i>{esc(outcome.hint)}</i>")
+    lines.append(_status_line(round_, sess, outcome.attempts_left))
+    await message.answer("\n".join(lines), reply_markup=_playing_kb())
 
 
 @router.callback_query(GuessPlayStates.answering, F.data == "guess_play:quit")
 async def cb_quit(callback, state: FSMContext) -> None:
     """Leave the answering mode. The session (and its clock) stays: quitting is
-    not a way to buy more time."""
+    not a way to buy more time.
+
+    The way back goes on the message. Telling the player to «reopen the group
+    link» meant scrolling the group back to an announcement that newer messages
+    had already buried — a button costs one callback and no new command.
+    """
+    round_id = (await state.get_data()).get("round_id")
     await state.clear()
+    b = InlineKeyboardBuilder()
+    if round_id:
+        b.button(text="🔄 Riprendi", callback_data=f"guess_play:resume:{round_id}")
     await callback.message.answer(
-        "🚪 Uscito dal gioco. Riapri il link del gruppo per riprendere — "
-        "il tempo però continua a scorrere."
+        "🚪 Uscito dal gioco. Puoi riprendere quando vuoi — "
+        "il tempo però continua a scorrere.",
+        reply_markup=b.as_markup() if round_id else None,
     )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("guess_play:resume:"))
+async def cb_resume(callback, db_session: AsyncSession, state: FSMContext) -> None:
+    """Back into the round, through the same door the deep-link uses.
+
+    No re-check of anything: `start_guess_session` owns every guard (finished,
+    not started, already solved, out of attempts), so a second copy here would be
+    a second place to forget one.
+    """
+    round_id = int(callback.data.rsplit(":", 1)[-1])
+    await start_guess_session(callback.message, db_session, state, round_id,
+                              user_id=callback.from_user.id)
     await callback.answer()

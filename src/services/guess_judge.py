@@ -56,9 +56,18 @@ _EDITION_NOISE = (
     "remastered", "remaster", "remake", "definitive", "goty", "hd",
 )
 
+#: Roman numerals folded to digits so `FF VII` and `FF 7` match.
+#:
+#: `x` is deliberately ABSENT. In game titles a bare X is routinely a name and
+#: not a ten — Mega Man X, X-COM, Project X — and folding it made `Mega Man X`
+#: and `Mega Man 10`, two different games, normalise identically. Local
+#: acceptance is authoritative and runs before the AI, so that was a false
+#: positive on a path that pays coins. `Final Fantasy X` ↔ `Final Fantasy 10`
+#: now goes to the judge or to an alias instead: one API call is a fair price for
+#: one fewer wrong payout. The multi-letter numerals carry no such ambiguity.
 _ROMAN = {
     "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5", "vi": "6", "vii": "7",
-    "viii": "8", "ix": "9", "x": "10", "xi": "11", "xii": "12", "xiii": "13",
+    "viii": "8", "ix": "9", "xi": "11", "xii": "12", "xiii": "13",
 }
 
 _PUNCT = re.compile(r"[^\w\s]", flags=re.UNICODE)

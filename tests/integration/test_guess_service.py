@@ -164,16 +164,51 @@ class TestAttemptBudget:
 
         assert r.attempts_left == 5, "spent, then given back"
 
-    async def test_the_refund_is_capped(self, session, round_, monkeypatch):
-        """Uncapped, an outage would void the attempt limit at the exact moment
-        the local exact-match path is all that stands between a player and brute
-        force."""
-        monkeypatch.setattr(gs.settings, "guess_max_unverified_bonus", 3)
+    async def test_an_unverified_attempt_NEVER_costs_a_real_attempt(
+        self, session, round_, monkeypatch
+    ):
+        """Not "refunded up to a cap" — never.
+
+        The old rule capped the *refund*, so past the cap our own outage started
+        eating the player's budget. With the judge returning 400 on every call
+        that is exactly what happened in production: players burned every attempt
+        they had without a single answer ever being judged.
+
+        The cap still exists, but it now limits how many un-judged answers we
+        ACCEPT (see the test below), not how many we charge for.
+        """
+        monkeypatch.setattr(gs.settings, "guess_max_unverified", 3)
         await gs.start_or_resume(session, round_.id, 7)
         for _ in range(10):
             await gs.record_attempt(session, round_, 7, "Quake", _unverified())
 
-        assert await gs.attempts_left(session, round_, 7) == 0
+        assert await gs.attempts_left(session, round_, 7) == 5
+
+    async def test_the_number_of_unjudged_answers_is_capped(
+        self, session, round_, monkeypatch
+    ):
+        """Refunding without a bound would open an unlimited submission channel
+        at the exact moment the local exact-match is all that stands between a
+        player and brute force. The bound moved here: we stop accepting, rather
+        than start charging."""
+        monkeypatch.setattr(gs.settings, "guess_max_unverified", 3)
+        await gs.start_or_resume(session, round_.id, 7)
+
+        assert await gs.unverified_left(session, round_, 7) == 3
+        for _ in range(3):
+            await gs.record_attempt(session, round_, 7, "Quake", _unverified())
+
+        assert await gs.unverified_left(session, round_, 7) == 0
+
+    async def test_a_judged_answer_does_not_eat_the_unjudged_allowance(
+        self, session, round_, monkeypatch
+    ):
+        monkeypatch.setattr(gs.settings, "guess_max_unverified", 3)
+        await gs.start_or_resume(session, round_.id, 7)
+
+        await gs.record_attempt(session, round_, 7, "Quake", _no())
+
+        assert await gs.unverified_left(session, round_, 7) == 3
 
     async def test_an_unverified_attempt_is_still_stored(self, session, round_):
         """The row is what bounds brute force even when the counter is refunded."""
@@ -283,6 +318,25 @@ class TestHints:
         ]
 
         assert seen == [None, None, "È sparatutto", "Anni 90", None]
+
+    async def test_a_hint_survives_an_unverified_attempt_on_its_threshold(
+        self, session, round_
+    ):
+        """The hint after 3 belongs to the 3rd *judged* answer.
+
+        Keying it to the row number meant an unverified attempt landing on the
+        threshold consumed the hint and nobody ever saw it — a hint silently lost
+        to an outage the player did not cause.
+        """
+        await gs.start_or_resume(session, round_.id, 7)
+        await gs.record_attempt(session, round_, 7, "Quake", _no())
+        await gs.record_attempt(session, round_, 7, "Quake", _no())
+        swallowed = await gs.record_attempt(session, round_, 7, "Quake", _unverified())
+
+        third_judged = await gs.record_attempt(session, round_, 7, "Quake", _no())
+
+        assert swallowed.hint is None, "an unjudged answer earns no hint"
+        assert third_judged.hint == "È sparatutto"
 
     async def test_solving_it_does_not_also_deliver_a_hint(self, session, round_):
         """A hint after the win is noise about a question already answered."""

@@ -102,15 +102,22 @@ class Settings(BaseSettings):
     quiz_participation_floor_min: int = 1
 
     # Guess games (Guess The Game · Sound Quest) — one engine, two games.
-    # Attempts refunded when the judge could not be reached, per player per round.
-    # Bounded on purpose: an unbounded refund would void the attempt limit exactly
-    # when the AI is down — which is when the local exact-match path is all that
-    # stands between a player and brute force.
-    guess_max_unverified_bonus: int = Field(default=3, ge=0)
+    # How many UN-JUDGED answers we accept from one player on one round before
+    # pausing them. An unreachable judge never costs a real attempt — that is our
+    # outage, not the player's mistake — so the bound is on how many we ACCEPT,
+    # not on how many we refund. Without it, an outage would open an unlimited
+    # submission channel exactly when the local exact-match is all that stands
+    # between a player and brute force.
+    guess_max_unverified: int = Field(default=3, ge=0)
     # Values SUGGESTED by the creation flow; the admin picks the real ones per
     # round. ge=1 on the attempts: a round nobody may ever answer is not a game.
     guess_default_attempts: int = Field(default=5, ge=1)
     guess_default_time_limit_seconds: int = 300   # per player, 0 = no limit
+    # How long a round stays open before it closes itself. The attempt clock is
+    # per player and starts when they open the link, so there is no derivable
+    # instant at which "everyone has expired" — the admin sets the round's own
+    # length, and it is shown in the group announcement. 0 = close it by hand.
+    guess_default_round_duration_seconds: int = 1800
     guess_answer_cooldown_seconds: int = 3        # between two submissions, per player
     # Per-rank prize defaults. The last-place floor is NOT duplicated here: it is
     # derived by `services.prizes.participation_floor` from the shared

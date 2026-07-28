@@ -203,6 +203,78 @@ class TestFailures:
             await ai_service.judge_equivalence("sys", "x")
 
 
+class TestTheTokenBudget:
+    """The bug that took both games down in production, and the test that was
+    missing when it did.
+
+    `groq_judge_model` is a *reasoning* model (`openai/gpt-oss-*`). Its reasoning
+    tokens are drawn from the same `max_tokens` budget as the answer, so a budget
+    sized for `{"corretta": true}` alone leaves the content channel with nothing.
+    Groq then validates an empty generation against the strict schema and returns
+    **400 json_validate_failed**, which is not retryable — so every single answer
+    that reached the model came back `unverified`, forever.
+
+    Every other test in this file scripts a well-formed reply, which is exactly
+    why none of them saw it: they check what we do with an answer, never whether
+    the request could produce one.
+    """
+
+    async def test_the_budget_leaves_room_for_reasoning_tokens(self):
+        """`{"corretta": true}` is ~10 tokens. Anything close to that is a budget
+        for a non-reasoning model, and this one is not."""
+        assert ai_service._JUDGE_MAX_TOKENS >= 256, (
+            "the judge model reasons before it answers, and the reasoning is "
+            "billed to max_tokens; a budget this small yields an EMPTY generation "
+            "and a 400 json_validate_failed on every call"
+        )
+
+    async def test_it_asks_for_short_reasoning(self, groq):
+        """A binary question about two short strings does not need long chains,
+        and every reasoning token is latency the player waits through."""
+        session = groq(_FakeResponse(200, _verdict_body(True)))
+
+        await ai_service.judge_equivalence("sys", "x")
+
+        assert session.payloads[0]["reasoning_effort"] == "low"
+
+    async def test_the_budget_is_actually_sent(self, groq):
+        session = groq(_FakeResponse(200, _verdict_body(True)))
+
+        await ai_service.judge_equivalence("sys", "x")
+
+        assert session.payloads[0]["max_tokens"] == ai_service._JUDGE_MAX_TOKENS
+
+    async def test_a_schema_validation_failure_raises_without_retrying(self, groq):
+        """The production failure, verbatim. Not retried on purpose: a 400 means
+        the request itself is wrong, and sending it again only burns quota."""
+        session = groq(_FakeResponse(400, {
+            "error": {"message": "Failed to validate JSON.",
+                      "type": "invalid_request_error",
+                      "code": "json_validate_failed",
+                      "failed_generation": ""},
+        }))
+
+        with pytest.raises(ai_service.AIServiceError):
+            await ai_service.judge_equivalence("sys", "x")
+
+        assert len(session.payloads) == 1
+
+    async def test_an_empty_generation_is_logged_as_a_budget_problem(
+        self, groq, caplog
+    ):
+        """The one diagnosis that cost real time to make must not cost it twice:
+        an empty `failed_generation` names the token budget in the log, instead of
+        reading as a generic 'judge unreachable'."""
+        groq(_FakeResponse(400, {
+            "error": {"code": "json_validate_failed", "failed_generation": ""},
+        }))
+
+        with caplog.at_level("ERROR"), pytest.raises(ai_service.AIServiceError):
+            await ai_service.judge_equivalence("sys", "x")
+
+        assert "budget" in caplog.text.lower()
+
+
 class TestTransportFailures:
     """The network branches, which the status-code tests never reach."""
 

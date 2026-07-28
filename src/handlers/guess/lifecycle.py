@@ -19,12 +19,22 @@ the podium, when it can no longer spoil anything.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from database.models import ScheduledTask
 from handlers._mentions import mention
 from handlers._trophy_announce import announce_trophies
-from services import badge_service, group_registry, guess_service, progress_service
+from services import (
+    badge_service,
+    group_registry,
+    guess_service,
+    progress_service,
+    schedule_service,
+)
 from utils.text import esc, format_seconds_short
 
 from handlers.guess._shared import kind_of, log, send_media
@@ -48,6 +58,12 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
     time_txt = (
         f"⏱️ {format_seconds_short(limit)} a testa" if limit else "⏱️ senza limite"
     )
+    # Say when it ends. A round that closes itself at a time nobody was told is a
+    # deadline that ambushes people.
+    closes_txt = (
+        f"\n🏁 Si chiude fra <b>{format_seconds_short(round_.round_duration_seconds)}</b>."
+        if round_.round_duration_seconds > 0 else ""
+    )
     # Announce FIRST: a failed send leaves a `ready` round instead of a running
     # one nobody knows about. The medium is NOT posted — see the module docstring.
     try:
@@ -56,7 +72,7 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
             bot, db_session,
             f"{spec.emoji} <b>{esc(spec.label.upper())}: {esc(round_.title)}</b>\n"
             f"🎯 {round_.max_attempts} tentativi · {time_txt} · "
-            f"🏆 {guess_service.format_prize_summary(round_)}\n\n"
+            f"🏆 {guess_service.format_prize_summary(round_)}{closes_txt}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ci arriva in <b>meno "
             "tentativi</b> — a parità conta il tempo. 🏁",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
@@ -71,7 +87,32 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
         return False, "Impossibile annunciare nel gruppo (il bot è nel gruppo?)."
 
     await guess_service.set_status(db_session, round_id, "running")
+    await _schedule_auto_close(db_session, round_)
     return True, f"{spec.label} avviato nel gruppo!"
+
+
+async def _schedule_auto_close(db_session: AsyncSession, round_) -> None:
+    """Arm the round's own closing time, if it has one.
+
+    Reuses ``task_type = kind`` with ``payload.action = "close"`` — the same
+    pattern as the betting window's auto-lock, and the branch
+    ``guess_type.execute_scheduled`` already carries. **No new task type.**
+
+    Without this the branch was unreachable and every round ran until an admin
+    remembered it: players sat in rounds that were over for them and never closed
+    for anyone.
+    """
+    if round_.round_duration_seconds <= 0:
+        return  # closed by hand, on purpose
+    await schedule_service.schedule_task(
+        db_session,
+        task_type=round_.kind,
+        run_at=guess_service.now() + timedelta(seconds=round_.round_duration_seconds),
+        created_by_tg_id=round_.creator_tg_id,
+        group_id=round_.group_id,
+        ref_id=round_.id,
+        payload={"action": "close"},
+    )
 
 
 async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool, str]:
@@ -96,6 +137,17 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
     round_ = await guess_service.get_round(db_session, round_id)
     if round_ is None:  # deleted between the claim and here
         return False, "Round non trovato."
+
+    # This close won the claim, so any armed auto-close is now moot. Left pending
+    # it would fire later, find a `finished` round and log a failure for something
+    # that went right.
+    await db_session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.task_type == round_.kind,
+               ScheduledTask.ref_id == round_id,
+               ScheduledTask.status == "pending")
+        .values(status="cancelled")
+    )
 
     ranked = await guess_service.standings(db_session, round_id)
     awards = await guess_service.award_prizes(db_session, round_id)
@@ -124,9 +176,15 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
     text = await _podium_text(db_session, round_, ranked, awards)
     group_id = group_registry.get_group_id()
     if group_id != 0:
+        # Two separate `try`s, and the split is the point. The medium is a bonus;
+        # the podium is the announcement people are waiting for. Sharing one
+        # block, a dead `file_id` swallowed the podium with it — prizes paid, and
+        # the group never told who won.
         try:
-            # The reveal, finally: the medium first, then the podium under it.
             await send_media(bot, group_id, round_.media_file_id, round_.media_kind)
+        except Exception as exc:  # noqa: BLE001 — a dead file_id is not a bug here
+            log.warning("Reveal del media del round %s fallito: %s", round_id, exc)
+        try:
             await group_registry.send_group_message(bot, db_session, text)
         except Exception:  # noqa: BLE001
             log.warning("Impossibile annunciare il podio del round %s.", round_id)

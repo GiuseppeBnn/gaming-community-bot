@@ -65,6 +65,7 @@ async def create_round(
     hints: list[tuple[int, str]],
     max_attempts: int,
     time_limit_seconds: int,
+    round_duration_seconds: int = 0,
     prize_first: int = 0,
     prize_second: int = 0,
     prize_third: int = 0,
@@ -89,6 +90,7 @@ async def create_round(
         ),
         max_attempts=max(1, max_attempts),
         time_limit_seconds=max(0, time_limit_seconds),
+        round_duration_seconds=max(0, round_duration_seconds),
         prize_first=max(0, prize_first),
         prize_second=max(0, prize_second),
         prize_third=max(0, prize_third),
@@ -382,27 +384,62 @@ def deadline(round_: GuessRound, sess: GuessSession) -> datetime | None:
     return sess.started_at + timedelta(seconds=round_.time_limit_seconds)
 
 
-async def attempts_left(
-    session: AsyncSession, round_: GuessRound, user_tg_id: int
-) -> int:
-    """Budget remaining for this player.
+async def _counters(
+    session: AsyncSession, round_id: int, user_tg_id: int
+) -> tuple[int, int]:
+    """``(rows written, of which un-judged)`` for this player on this round.
 
     Read as **columns**, so it is the row's truth and not a copy the caller might
     already be holding (STEERING §22 rule 1).
+
+    The two are separate on purpose. ``attempts_used`` counts rows and must stay
+    monotonic — it drives ``attempt_no``, which is part of the unique key, so two
+    submissions may never share a number. ``unverified_count`` says how many of
+    those rows are not a verdict. The budget is the difference.
     """
     row = (
         await session.execute(
             select(GuessSession.attempts_used, GuessSession.unverified_count).where(
-                GuessSession.round_id == round_.id,
+                GuessSession.round_id == round_id,
                 GuessSession.user_tg_id == user_tg_id,
             )
         )
     ).one_or_none()
-    if row is None:
-        return round_.max_attempts
-    used, unverified = int(row[0]), int(row[1])
-    bonus = min(unverified, settings.guess_max_unverified_bonus)
-    return max(0, round_.max_attempts + bonus - used)
+    return (0, 0) if row is None else (int(row[0]), int(row[1]))
+
+
+def _budget_left(max_attempts: int, used: int, unverified: int) -> int:
+    """The budget rule, in one place.
+
+    An answer the judge never ruled on does **not** count. Not "is refunded up to
+    a cap" — does not count, ever. Capping the refund meant that past the cap our
+    own outage started spending the player's budget, and with the judge failing on
+    every call that is precisely what happened: players ran out of attempts
+    without one answer having been judged. The bound now lives in
+    `unverified_left`, on how many un-judged answers we accept.
+    """
+    return max(0, max_attempts - (used - unverified))
+
+
+async def attempts_left(
+    session: AsyncSession, round_: GuessRound, user_tg_id: int
+) -> int:
+    """Budget remaining for this player."""
+    used, unverified = await _counters(session, round_.id, user_tg_id)
+    return _budget_left(round_.max_attempts, used, unverified)
+
+
+async def unverified_left(
+    session: AsyncSession, round_: GuessRound, user_tg_id: int
+) -> int:
+    """How many more un-judged answers we will take from this player.
+
+    At zero the caller must stop **before** the judge: refunding without a bound
+    would be an unlimited submission channel at the exact moment the local
+    exact-match path is all that stands between a player and brute force.
+    """
+    _used, unverified = await _counters(session, round_.id, user_tg_id)
+    return max(0, settings.guess_max_unverified - unverified)
 
 
 @dataclass(frozen=True)
@@ -486,8 +523,14 @@ async def record_attempt(
         ).rowcount or 0)
 
     await session.flush()
-    hint = next((text for after, text in hints if after == attempt_no), None)
-    left = await attempts_left(session, round_, user_tg_id)
+    # Hints unlock on the count of JUDGED answers, not on the row number. Keyed to
+    # `attempt_no`, an unverified attempt landing on a threshold consumed that
+    # hint and nobody ever saw it — a hint lost to an outage the player did not
+    # cause. `judged` has no gaps, so the exact match is still the right test.
+    used, unverified = await _counters(session, round_id, user_tg_id)
+    judged = used - unverified
+    hint = next((text for after, text in hints if after == judged), None)
+    left = _budget_left(round_.max_attempts, used, unverified)
     return Attempt(recorded=True, verdict=verdict, attempt_no=attempt_no,
                    attempts_left=left, solved=solved,
                    hint=None if solved else hint)

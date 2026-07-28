@@ -18,9 +18,9 @@ import types
 import pytest
 from sqlalchemy import select
 
-from database.models import GamePodium, GuessRound, Wallet
+from database.models import GamePodium, GuessRound, ScheduledTask, Wallet
 from handlers.guess import lifecycle as lc
-from services import group_registry
+from services import group_registry, schedule_service
 from services import guess_service as gs
 from services.guess_judge import Verdict
 
@@ -177,7 +177,104 @@ class TestOpen:
         assert ok is False and "GROUP_ID" in msg
 
 
+class TestTheAutoClose:
+    """A round used to run forever.
+
+    `guess_type.execute_scheduled` has always had an `action == "close"` branch,
+    and STEERING §19.b has always documented it — but nothing ever created that
+    task, so the branch was unreachable and every round stayed `running` until an
+    admin remembered it. Players sat in rounds that were over for them and never
+    closed for anyone.
+
+    The task reuses `task_type = kind` with an action payload, exactly like the
+    betting window's auto-lock. No new task type.
+    """
+
+    async def _pending(self, session, round_id: int) -> list[ScheduledTask]:
+        return list((await session.execute(
+            select(ScheduledTask).where(
+                ScheduledTask.ref_id == round_id,
+                ScheduledTask.status == "pending",
+            )
+        )).scalars().all())
+
+    async def test_opening_a_round_schedules_its_own_close(self, session, round_):
+        round_.round_duration_seconds = 600
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        tasks = await self._pending(session, round_.id)
+        assert len(tasks) == 1
+        assert tasks[0].task_type == "guess", "reuses the kind, no new task type"
+        assert schedule_service.task_payload(tasks[0]) == {"action": "close"}
+
+    async def test_the_close_lands_after_the_round_duration(self, session, round_):
+        round_.round_duration_seconds = 600
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        task = (await self._pending(session, round_.id))[0]
+        delay = (task.run_at - gs.now()).total_seconds()
+        assert 590 <= delay <= 610
+
+    async def test_the_announcement_says_when_the_round_closes(self, session, round_):
+        """A deadline nobody is told about is a deadline that ambushes people."""
+        round_.round_duration_seconds = 3600
+        await session.flush()
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert "chiude" in bot.texts.lower()
+
+    async def test_a_round_with_no_duration_closes_by_hand(self, session, round_):
+        """0 means the admin closes it, and must not leave a task behind."""
+        round_.round_duration_seconds = 0
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        assert await self._pending(session, round_.id) == []
+
+    async def test_closing_by_hand_cancels_the_pending_auto_close(
+        self, session, round_
+    ):
+        """Otherwise the scheduler later finds a `finished` round and logs a
+        failure for something that went right."""
+        round_.round_duration_seconds = 600
+        await session.flush()
+        await lc.open_round(_Bot(), session, round_.id)
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert await self._pending(session, round_.id) == []
+
+
 class TestClose:
+    async def test_the_podium_is_announced_even_if_the_medium_will_not_send(
+        self, session, round_, user_factory
+    ):
+        """The reveal is a bonus; the podium is the point.
+
+        Both used to sit in one `try`, so a dead `file_id` swallowed the podium
+        with it: the prizes were paid and the group was never told who won.
+        """
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        class _NoMedia(_Bot):
+            async def send_photo(self, chat_id, file_id, **kw):
+                raise RuntimeError("file_id is dead")
+
+        bot = _NoMedia()
+        ok, _ = await lc.close_round(bot, session, round_.id)
+
+        assert ok is True
+        assert "PODIO" in bot.texts
+
     async def test_closing_pays_the_podium(self, session, round_, user_factory):
         round_.status = "running"
         await session.flush()

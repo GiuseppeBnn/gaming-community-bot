@@ -106,6 +106,9 @@ class GuessType:
             f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
             f"🎯 {round_.max_attempts} tentativi · "
             + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
+            "⏳ Chiusura: "
+            + (f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
+               if round_.round_duration_seconds else "manuale"),
             f"🏆 {guess_service.format_prize_summary(round_)}",
         ]
         hints = guess_service.hints_of(round_)
