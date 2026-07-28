@@ -219,10 +219,11 @@ lo azzera per rigiocarlo.
 
 ### Guess The Game & Sound Quest
 
-Due giochi «indovina», creati e gestiti solo dagli admin dall'hub **🎬 Eventi**: si manda una
-**foto** (Guess The Game) o un **audio** (Sound Quest), si scrive la risposta corretta, e si
-scelgono tentativi, tempo, suggerimenti progressivi e premi. Il round si avvia subito o si
-programma, come i quiz.
+Due giochi «indovina», creati e gestiti solo dagli admin dall'hub **🎬 Eventi**. La creazione
+chiede **tre cose** — titolo, media (**foto** per Guess The Game, **audio** per Sound Quest) e
+risposta corretta — poi mostra una **scheda** con tutto il resto già compilato: tentativi,
+tempo, chiusura automatica, suggerimenti e premi. Tocchi un campo, lo cambi, torni alla scheda.
+Il round si avvia subito o si programma, come i quiz.
 
 Nel gruppo arriva **solo l'invito**: l'immagine e l'audio non si postano lì, altrimenti la
 soluzione si discute in chat e giocare in privato non vuol più dire niente. Si rivelano col
@@ -233,6 +234,10 @@ Le risposte sono **libere** e le giudica l'AI, quindi «GTA SA» vale «Grand Th
 Andreas» — ma la **serie da sola non basta**: «GTA» per «GTA San Andreas» è sbagliato. In
 creazione puoi aggiungere grafie sempre accettate: sono la rete di sicurezza se l'AI non
 risponde, perché quelle vengono riconosciute **senza** interpellarla.
+
+Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
+tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
+ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto.
 
 ### Scommesse (stile Twitch)
 

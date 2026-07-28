@@ -45,6 +45,30 @@ class TestNormalize:
         remembered the re-release, or the other way round."""
         assert gj.normalize(raw) == expected
 
+    def test_a_lone_X_is_a_name_not_a_ten(self):
+        """`Mega Man X` and `Mega Man 10` are two different games.
+
+        Folding a bare `X` to `10` made them normalise identically, and local
+        acceptance is authoritative and runs before the AI — so this was a false
+        positive on a path that pays coins. `X` is the one numeral that is
+        routinely a name in game titles (Mega Man X, X-COM, Project X); the
+        multi-letter numerals below have no such ambiguity and still fold.
+        """
+        assert gj.normalize("Mega Man X") != gj.normalize("Mega Man 10")
+
+    @pytest.mark.parametrize("roman,arabic", [
+        ("Final Fantasy VII", "Final Fantasy 7"),
+        ("Rocky IV", "Rocky 4"),
+        ("Civilization VI", "Civilization 6"),
+        ("Final Fantasy XIII", "Final Fantasy 13"),
+        ("GTA V", "GTA 5"),
+    ])
+    def test_unambiguous_numerals_still_fold(self, roman, arabic):
+        """The cost of the rule above is paid only by `X`. `Final Fantasy X` ↔
+        `Final Fantasy 10` now needs the judge or an alias — one API call is a
+        fair price for one fewer wrong payout."""
+        assert gj.normalize(roman) == gj.normalize(arabic)
+
     def test_a_title_that_is_only_edition_noise_survives(self):
         """Stripping must never leave nothing: an empty normalised answer would
         match an empty canonical one and hand a win to a blank message."""

@@ -115,9 +115,47 @@ JUDGE_SCHEMA: dict = {
     },
 }
 
-_JUDGE_MAX_TOKENS = 20
+#: The judge model reasons before it answers, and on `openai/gpt-oss-*` those
+#: reasoning tokens are drawn from THIS budget. Sizing it for the answer alone
+#: (`{"corretta": true}` is ~10 tokens) leaves the content channel empty, Groq
+#: validates that empty generation against the strict schema, and every call comes
+#: back `400 json_validate_failed` — which is correctly not retried, so every
+#: answer that reached the model was `unverified`. That was the production bug.
+_JUDGE_MAX_TOKENS = 512
+#: Short chains, not no chains: the question is binary and about two short
+#: strings, and every reasoning token is latency a player waits through.
+_JUDGE_REASONING_EFFORT = "low"
 _JUDGE_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 _JUDGE_RETRY_DELAY = 1.0
+
+
+def _log_judge_http_failure(status: int, body: str) -> None:
+    """Say what actually went wrong, at the level it deserves.
+
+    `json_validate_failed` with an EMPTY `failed_generation` has exactly one
+    cause: the token budget ran out inside the model's reasoning, so nothing
+    reached the content channel and Groq validated an empty string against the
+    strict schema. That diagnosis cost real time to make once, from logs that
+    only said "status 400"; it must not cost it twice.
+
+    This is for whoever reads the logs. The caller still gets a plain
+    `AIServiceError`, because for the game "I have no verdict" is one thing and
+    splitting it would only add a branch nothing acts on differently.
+    """
+    try:
+        error = json.loads(body).get("error", {})
+    except (ValueError, TypeError, AttributeError):
+        error = {}
+
+    if error.get("code") == "json_validate_failed" and not error.get("failed_generation"):
+        logger.error(
+            "Giudice: generazione VUOTA rifiutata dallo schema (modello=%s, "
+            "max_tokens=%s). Il budget di token non basta per il reasoning del "
+            "modello: alzalo, oppure passa a un modello non-reasoning.",
+            settings.groq_judge_model, _JUDGE_MAX_TOKENS,
+        )
+        return
+    logger.warning("Giudice: status %s — %s", status, body[:300])
 
 
 async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
@@ -145,6 +183,7 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
         ],
         "temperature": 0,
         "max_tokens": _JUDGE_MAX_TOKENS,
+        "reasoning_effort": _JUDGE_REASONING_EFFORT,
         "response_format": {"type": "json_schema", "json_schema": JUDGE_SCHEMA},
     }
     headers = {
@@ -162,7 +201,7 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
                         data = await resp.json()
                         break
                     body = await resp.text()
-                    logger.warning("Giudice: status %s — %s", resp.status, body[:300])
+                    _log_judge_http_failure(resp.status, body)
                     if resp.status not in _JUDGE_RETRY_STATUSES or attempt == 2:
                         raise AIServiceError(f"status {resp.status}")
         except asyncio.TimeoutError as exc:

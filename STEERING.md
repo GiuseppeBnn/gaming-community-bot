@@ -1119,7 +1119,12 @@ stringhe che oggi coincidono, prima o poi divergono.
 ### Il giudice — quattro stadi, dal più economico al più costoso
 
 1. **normalizzazione**: minuscolo, accenti, punteggiatura, romani→arabi, rumore di edizione
-   (`Remastered`, `GOTY`, …), clip a 80 caratteri;
+   (`Remastered`, `GOTY`, …), clip a 80 caratteri. **`x` non è nella tabella dei romani**:
+   nei titoli una X isolata è quasi sempre un nome e non un dieci (Mega Man X, X-COM), e
+   foldarla rendeva `Mega Man X` e `Mega Man 10` — due giochi diversi — identici. Il match
+   locale è autoritativo e precede l'AI, quindi era un falso positivo **su un percorso che
+   paga monete**. `Final Fantasy X` ↔ `Final Fantasy 10` passa dal giudice o da un alias: una
+   chiamata API in più vale un pagamento sbagliato in meno;
 2. **accettazione locale**: match esatto contro la risposta canonica **o** contro un alias
    scritto dall'admin ⇒ CORRETTA, **senza chiamare l'AI**;
 3. **rifiuto per forma**: un titolo è corto (2–60 caratteri, ≤8 parole). Fuori da lì ⇒
@@ -1150,25 +1155,57 @@ che possa riportare indietro la soluzione a chi provi a farsela dire.
 su llama-3.3 e non devono cambiare perché un gioco ha bisogno d'altro. `judge_equivalence` è
 una funzione **nuova** in `ai_service`, non una modifica a `generate_completion`.
 
+> **Cambiando `GROQ_JUDGE_MODEL` si ricontrolla `_JUDGE_MAX_TOKENS`.** I due sono legati: un
+> modello di reasoning paga il ragionamento dallo stesso budget della risposta (vedi sotto).
+
+### Il budget di token del giudice — la regressione da non rifare
+
+`GROQ_JUDGE_MODEL` è un modello di **reasoning**, e su `openai/gpt-oss-*` i token di
+ragionamento escono dallo **stesso** `max_tokens` della risposta. Dimensionarlo sulla sola
+risposta (`{"corretta": true}` sono ~10 token) lascia il canale `content` vuoto, Groq valida
+la generazione vuota contro lo schema strict e risponde **400 `json_validate_failed`** — che
+correttamente *non* viene ritentato, perché una 4xx significa «la richiesta è sbagliata».
+
+Con `_JUDGE_MAX_TOKENS = 20` questo succedeva **a ogni chiamata**: ogni risposta che
+raggiungeva il modello tornava `unverified`, e il gioco era vincibile solo scrivendo la
+risposta carattere per carattere. Oggi il budget è **512** con `reasoning_effort: "low"`, e
+un test lo àncora — perché nessuno dei test esistenti poteva prenderlo: costruivano tutti un
+corpo di risposta ben formato, quindi verificavano cosa facciamo di un verdetto, mai se la
+richiesta potesse produrne uno.
+
+Un `failed_generation` **vuoto** viene loggato nominando il budget, non come «giudice
+irraggiungibile». Quella diagnosi è costata tempo una volta e non deve costarlo due.
+
 ### Quando il giudice non risponde
 
 Un retry su 429/5xx (il rate limit è il fallimento *atteso* del free tier), poi verdetto
-`unverified`. Il tentativo **viene registrato ma non contato**, fino a
-`guess_max_unverified_bonus` (default 3) per giocatore per round.
+`unverified`. Il tentativo **viene registrato ma non costa mai un tentativo vero** — non «fino
+a un cap»: mai.
+
+Il cap `guess_max_unverified` (default 3) esiste ancora ma fa un altro mestiere: limita
+**quante risposte non giudicate accettiamo** prima di fermare il giocatore, non quante gliene
+addebitiamo. Superato, si rifiuta **prima del giudice** («il giudice non risponde, i tuoi
+tentativi sono salvi»).
 
 > Le due alternative sono state valutate e scartate, e questo va letto prima di
 > «semplificare»: **non registrare** il tentativo apre un canale di invio illimitato proprio
 > quando il match locale è tutto ciò che resta fra un giocatore e la forza bruta;
-> **contarlo comunque** addebita al giocatore un nostro 429. Il cap chiude entrambe.
+> **contarlo comunque** addebita al giocatore un nostro 429. Registrare senza contare, con il
+> cap sull'accettazione, chiude entrambe — la versione precedente (cap sul *rimborso*) chiudeva
+> solo la prima, e oltre il cap addebitava al giocatore proprio il nostro guasto.
+
+`attempts_used` e `unverified_count` restano **due contatori distinti** e non se ne può fondere
+uno: il primo conta le righe e deve restare monotono perché guida `attempt_no`, che è parte
+della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
 
 ### Tentativi, tempo, suggerimenti
 
 - Il tentativo si **spende all'invio**, prima che il verdetto sia noto: è l'unica contabilità
   con cui un brute-forcer non può discutere.
 - **L'ordine delle guardie è portante**: cooldown → già risolto → scadenza → tentativi →
-  giudice. Un messaggio già rifiutato da una guardia non deve costare quota Groq. Sette test
-  contano le chiamate al modello per tenerlo fermo — la mutazione che sposta il controllo
-  tentativi dopo il giudice era passata verde prima che ci fossero.
+  **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non deve costare
+  quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la mutazione che
+  sposta il controllo tentativi dopo il giudice era passata verde prima che ci fossero.
 - **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
   Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
   azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
@@ -1177,12 +1214,46 @@ Un retry su 429/5xx (il rate limit è il fallimento *atteso* del free tier), poi
 - I suggerimenti stanno in JSON (`hints_json`), come `QuizQuestion.options_json`: piccoli,
   sempre letti insieme, mai interrogati da soli. Una soglia sopra il limite tentativi viene
   **rifiutata in creazione**: sarebbe un suggerimento che nessuno vede.
+- La soglia si conta sui tentativi **giudicati** (`attempts_used - unverified_count`), non sul
+  numero di riga. Agganciata ad `attempt_no`, un `unverified` che cadeva sulla soglia si
+  mangiava il suggerimento e nessuno lo vedeva più: un suggerimento perso per un guasto nostro.
+- **La durata del round è un campo suo** (`round_duration_seconds`), non si deriva dal tempo per
+  giocatore: quell'orologio parte quando *ogni* giocatore apre il link, quindi non esiste un
+  istante calcolabile in cui «sono scaduti tutti». La durata la decide l'admin, si vede nella
+  scheda e **si annuncia nel gruppo** — una scadenza che nessuno conosce è un agguato.
+
+### Creazione: tre domande e una scheda
+
+Si chiedono **solo titolo, media e risposta** — le uniche tre senza un default sensato. Tutto
+il resto parte compilato da `settings` e si cambia con un tap.
+
+Prima erano undici domande in fila **senza ritorno**: chi sbagliava la risposta alla terza
+poteva solo percorrere gli otto step restanti o annullare e ribattere tutto. Su un form da
+undici domande *quello* è il difetto — non la lunghezza — e la scheda è ciò che lo toglie: non
+esiste più uno stato in cui qualcosa è sbagliato e non si può correggere.
+
+Ogni campo opzionale vive in `creation.FIELDS` con la sua etichetta, il suo prompt, il suo
+parser e il suo renderer. **Un solo handler di edit li serve tutti**: aggiungere un campo è una
+voce di dizionario, mai uno stato nuovo e mai un handler nuovo. I quattro premi sono **un campo
+solo** — quattro step per quattro numeri dello stesso tipo erano quattro occasioni di sbagliare
+senza poter tornare al primo.
+
+Costo strutturale: 12 stati FSM → **5**, 17 handler → **10**, 453 → **424** righe di codice
+effettivo. La scheda doveva togliere codice, non aggiungerne.
+
+La chiave del dizionario **è** la chiave in `state.get_data()`: niente mappatura da tenere
+allineata. `apply` esiste per l'unica eccezione (i premi, che scrivono quattro chiavi).
+
+`media` è nella scheda ma **non** in `FIELDS`: il suo input è una foto o un audio, non testo,
+quindi rientra da `waiting_media` invece che dall'editor condiviso.
 
 ### Media
 
 Si salva il **`file_id` Telegram**, mai il file: il bot non tiene media su disco. In creazione
 il bot **rimanda indietro il media**: quell'eco *è* la verifica che il `file_id` sia
-ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file.
+ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file. La
+scheda lo **rimanda a ogni render**: vederlo accanto alla risposta è come ci si accorge di aver
+allegato il file sbagliato, e ogni reinvio è una prova in più che il `file_id` sia ancora vivo.
 
 **Nel gruppo il media non si posta prima della chiusura.** Lo sposterebbe lì, dove la soluzione
 si discute e giocare in privato smette di voler dire qualcosa. L'annuncio è un invito con
@@ -1216,11 +1287,20 @@ perde ingiustamente non lo dice a nessuno.
 - Nuovi media: una voce in `_shared.KINDS` e una in `_SENDER_BY_KIND`, **mai** un `if` nei
   chiamanti. `send_media` risolve **solo** il metodo che serve, da whitelist.
 - La chiusura automatica riusa `task_type = kind` con `payload.action = "close"` — lo stesso
-  pattern della finestra scommesse (§20). **Nessun task-type nuovo.**
+  pattern della finestra scommesse (§20). **Nessun task-type nuovo.** Il task lo crea
+  `open_round`; `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
+  tardi trova un round già `finished` e logga un fallimento per una cosa andata bene.
+  *(Il ramo esisteva da sempre ma nessuno creava il task: era codice morto documentato come
+  funzionante — controllare che un ramo sia raggiungibile, non solo che sia scritto.)*
 - Deep-link `guess_<id>` / `sound_<id>` **pubblici** (§9): li gioca chiunque nel gruppo, quindi
-  non c'è nessun re-check `is_admin` da dimenticare.
+  non c'è nessun re-check `is_admin` da dimenticare. Il bottone «🔄 Riprendi» dopo l'uscita
+  rientra dalla **stessa porta** (`start_guess_session`), che possiede tutte le guardie: una
+  seconda copia sarebbe un secondo posto dove dimenticarne una.
 - Service no-commit (§5). `open_round` annuncia **prima** di flippare lo stato; `close_round`
   rivendica la chiusura **prima** di pagare e committa i premi **prima** di annunciare.
+- Alla chiusura **media e podio stanno in due `try` separati**: il reveal è un di più, il podio
+  è l'annuncio che la gente aspetta. Insieme, un `file_id` morto si portava via anche il podio —
+  premi pagati e gruppo mai informato di chi avesse vinto.
 
 ---
 

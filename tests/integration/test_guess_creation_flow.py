@@ -1,12 +1,20 @@
-"""Building a round, step by step — and every way the flow refuses one.
+"""Building a round: three questions, then a card you can edit.
 
-The refusals are the point. A round is admin-authored data that later decides who
-gets paid: a title that was silently truncated, a hint threshold above the attempt
-limit, or a medium that cannot be resent are all defects that only surface once
-players are already looking at it.
+The old flow asked eleven questions in a row with no way back. Getting the answer
+wrong on question three left two options — walk the remaining eight steps, or
+cancel and retype everything. On an eleven-question form that is *the* defect,
+and it is the one this shape removes: only title, medium and answer are asked,
+because only those three have no sensible default. Everything else starts filled
+in and is one tap away from being changed.
 
-The preview step is pinned as behaviour, not decoration: sending the medium back
-to the admin is how a dead `file_id` gets caught while it can still be fixed.
+The refusals are still the point. A round is admin-authored data that later
+decides who gets paid: a title silently truncated, a hint threshold above the
+attempt limit, or a medium that cannot be resent are all defects that surface
+only once players are already looking at it. Every one of them is refused here,
+with the real number, at the moment it can still be fixed.
+
+The medium echo is pinned as behaviour, not decoration: sending it straight back
+is how a dead `file_id` gets caught while the admin can still pick another.
 """
 
 from __future__ import annotations
@@ -65,9 +73,30 @@ class _Msg:
     async def reply(self, text, **kw):
         self.answers.append(text)
 
+    async def edit_text(self, text, **kw):
+        self.answers.append(text)
+
     @property
     def said(self) -> str:
         return "\n".join(self.answers)
+
+
+class _Cb:
+    """A callback query carrying `data`, over a message we can read back."""
+
+    def __init__(self, data: str, user_id: int = 1) -> None:
+        self.data = data
+        self.message = _Msg(user_id=user_id)
+        self.from_user = types.SimpleNamespace(id=user_id, full_name="Admin")
+        self.alerts: list[str] = []
+
+    async def answer(self, text=None, **kw):
+        if text:
+            self.alerts.append(text)
+
+    @property
+    def said(self) -> str:
+        return self.message.said
 
 
 @pytest.fixture
@@ -94,511 +123,379 @@ async def _to_answer(state, kind="guess"):
     await cr.fsm_media(media, state)
 
 
-async def _to_attempts(state):
-    await _to_answer(state)
-    await cr.fsm_answer(_Msg("Doom"), state)
-    await cr.fsm_aliases(_Msg("-"), state)
+async def _to_card(state, kind="guess", answer="Doom"):
+    """The whole mandatory path: title → medium → answer → the card."""
+    await _to_answer(state, kind)
+    msg = _Msg(answer)
+    await cr.fsm_answer(msg, state)
+    return msg
 
 
-async def _to_hints(state):
-    await _to_attempts(state)
-    await cr.fsm_attempts(_Msg("5"), state)
-    await cr.fsm_time_limit(_Msg("0"), state)
+async def _edit(state, field: str, value: str) -> _Msg:
+    """Tap a field's edit button, then send a new value."""
+    await cr.cb_edit(_Cb(f"guess_new:edit:{field}"), state)
+    msg = _Msg(value)
+    await cr.fsm_edit_value(msg, state)
+    return msg
 
 
-async def _to_review(state):
-    await _to_hints(state)
-    await cr.fsm_hint(_Msg("3 | sparatutto"), state)
-    await cr.fsm_hint(_Msg("fine"), state)
-    for value in ("100", "50", "25", "10"):
-        await cr.fsm_prize_value(_Msg(value), state)
+class TestTheMandatoryThree:
+    """Only title, medium and answer are asked. They are the three with no
+    sensible default; everything else the card can guess and the admin can
+    correct."""
 
-
-class TestTitle:
     async def test_the_flow_starts_by_asking_for_a_title(self, state):
-        m = _Msg()
+        msg = _Msg()
 
-        await cr.start_guess_creation(m, state, kind="guess", creator_id=1)
+        await cr.start_guess_creation(msg, state, kind="guess", creator_id=42)
 
-        assert "titolo" in m.said.lower()
         assert await state.get_state() == cr.GuessCreationStates.waiting_title.state
+        assert "titolo" in msg.said.lower()
 
     async def test_the_chosen_kind_is_remembered(self, state):
-        await cr.start_guess_creation(_Msg(), state, kind="sound", creator_id=1)
+        await cr.start_guess_creation(_Msg(), state, kind="sound", creator_id=42)
 
         assert (await state.get_data())["kind"] == "sound"
 
     async def test_the_creator_is_taken_from_the_argument_not_the_message(self, state):
-        """The hub calls this with `message.from_user` = the bot."""
-        await cr.start_guess_creation(_Msg(user_id=999), state, kind="guess",
-                                      creator_id=42)
+        """The events hub calls this with `message.from_user` set to the bot."""
+        await cr.start_guess_creation(_Msg(user_id=999), state,
+                                      kind="guess", creator_id=42)
 
         assert (await state.get_data())["creator_id"] == 42
 
-    async def test_a_title_over_the_cap_is_rejected_with_its_real_length(self, state):
-        await cr.start_guess_creation(_Msg(), state, kind="guess", creator_id=1)
-        m = _Msg("x" * 300)
-
-        await cr.fsm_title(m, state)
-
-        assert "300/256" in m.said
-        assert await state.get_state() == cr.GuessCreationStates.waiting_title.state
-
     async def test_a_title_that_is_too_short_is_rejected(self, state):
-        await cr.start_guess_creation(_Msg(), state, kind="guess", creator_id=1)
+        await cr.start_guess_creation(_Msg(), state, kind="guess", creator_id=42)
+        msg = _Msg("ab")
 
-        await cr.fsm_title(_Msg("ab"), state)
+        await cr.fsm_title(msg, state)
 
         assert await state.get_state() == cr.GuessCreationStates.waiting_title.state
+        assert "⚠️" in msg.said
 
+    async def test_a_title_over_the_cap_is_rejected_with_its_real_length(self, state):
+        """Never silently truncated: a cut title is only discovered once players
+        are already reading it."""
+        await cr.start_guess_creation(_Msg(), state, kind="guess", creator_id=42)
+        msg = _Msg("x" * (cr._MAX_TITLE + 5))
 
-class TestMedia:
+        await cr.fsm_title(msg, state)
+
+        assert str(cr._MAX_TITLE + 5) in msg.said
+
     async def test_a_photo_is_accepted_and_echoed_back(self, state):
-        """The echo IS the validation: a file_id that cannot be resent must fail
-        here, where the admin can still send another file."""
+        """The echo IS the validation that the file_id can be resent."""
         await _to_media(state)
-        m = _Msg(photo=[_Photo("small"), _Photo("BIG")])
+        msg = _Msg(photo=[_Photo("FILE")])
 
-        await cr.fsm_media(m, state)
+        await cr.fsm_media(msg, state)
 
-        assert m.bot.sent == [("photo", "BIG")]
-        assert (await state.get_data())["media_file_id"] == "BIG"
+        assert msg.bot.sent == [("photo", "FILE")]
+        assert (await state.get_data())["media_file_id"] == "FILE"
 
     async def test_the_largest_photo_size_is_the_one_kept(self, state):
-        """Players squint at this; the thumbnail would be unfair."""
         await _to_media(state)
 
-        await cr.fsm_media(_Msg(photo=[_Photo("thumb"), _Photo("full")]), state)
+        await cr.fsm_media(_Msg(photo=[_Photo("small"), _Photo("big")]), state)
 
-        assert (await state.get_data())["media_file_id"] == "full"
+        assert (await state.get_data())["media_file_id"] == "big"
 
     async def test_a_voice_note_is_accepted_for_a_sound_round(self, state):
         await _to_media(state, kind="sound")
-        m = _Msg(voice=types.SimpleNamespace(file_id="V"))
 
-        await cr.fsm_media(m, state)
+        await cr.fsm_media(_Msg(voice=types.SimpleNamespace(file_id="V")), state)
 
         assert (await state.get_data())["media_kind"] == "voice"
 
-    async def test_a_photo_is_refused_for_a_sound_round(self, state):
-        """Otherwise Sound Quest ships with an image nobody can listen to."""
-        await _to_media(state, kind="sound")
-        m = _Msg(photo=[_Photo("BIG")])
+    @pytest.mark.parametrize("kind,msg_kwargs", [
+        ("sound", {"photo": [_Photo("F")]}),
+        ("guess", {"audio": types.SimpleNamespace(file_id="F")}),
+        ("guess", {}),
+    ])
+    async def test_the_wrong_medium_is_refused(self, state, kind, msg_kwargs):
+        await _to_media(state, kind=kind)
+        msg = _Msg(**msg_kwargs)
 
-        await cr.fsm_media(m, state)
-
-        assert "audio" in m.said.lower()
-        assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
-
-    async def test_an_audio_is_refused_for_an_image_round(self, state):
-        await _to_media(state, kind="guess")
-        m = _Msg(audio=types.SimpleNamespace(file_id="A"))
-
-        await cr.fsm_media(m, state)
+        await cr.fsm_media(msg, state)
 
         assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
-
-    async def test_text_instead_of_media_is_refused(self, state):
-        await _to_media(state)
-
-        await cr.fsm_media(_Msg("una foto bellissima"), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
+        assert "⚠️" in msg.said
 
     async def test_a_medium_that_cannot_be_resent_is_refused_now(self, state):
-        """The whole reason the preview exists."""
+        """While the admin can still pick another file — not in front of players."""
         await _to_media(state)
-        m = _Msg(photo=[_Photo("DEAD")])
+        msg = _Msg(photo=[_Photo("DEAD")])
 
-        async def _boom(*a, **kw):
-            raise RuntimeError("wrong file identifier")
-        m.bot.send_photo = _boom
+        async def _boom(chat_id, file_id, **kw):
+            raise RuntimeError("file_id is dead")
 
-        await cr.fsm_media(m, state)
+        msg.bot.send_photo = _boom
 
-        assert "non riesco" in m.said.lower()
+        await cr.fsm_media(msg, state)
+
         assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
-        assert "media_file_id" not in await state.get_data()
+        assert "⚠️" in msg.said
 
-
-class TestAnswerAndAliases:
-    async def test_the_answer_is_stored(self, state):
+    async def test_an_answer_that_is_too_short_is_refused(self, state):
         await _to_answer(state)
+        msg = _Msg("x")
 
-        await cr.fsm_answer(_Msg("GTA San Andreas"), state)
-
-        assert (await state.get_data())["answer"] == "GTA San Andreas"
-
-    async def test_an_empty_answer_is_refused(self, state):
-        await _to_answer(state)
-
-        await cr.fsm_answer(_Msg("   "), state)
+        await cr.fsm_answer(msg, state)
 
         assert await state.get_state() == cr.GuessCreationStates.waiting_answer.state
 
     async def test_an_answer_over_the_cap_is_refused(self, state):
         await _to_answer(state)
-        m = _Msg("x" * 250)
+        msg = _Msg("x" * (cr._MAX_ANSWER + 1))
 
-        await cr.fsm_answer(m, state)
+        await cr.fsm_answer(msg, state)
 
-        assert "250/200" in m.said
-
-    async def test_aliases_are_one_per_line(self, state):
-        await _to_answer(state)
-        await cr.fsm_answer(_Msg("GTA San Andreas"), state)
-
-        await cr.fsm_aliases(_Msg("GTA SA\nSan Andreas"), state)
-
-        assert (await state.get_data())["aliases"] == ["GTA SA", "San Andreas"]
-
-    async def test_aliases_can_be_skipped(self, state):
-        await _to_answer(state)
-        await cr.fsm_answer(_Msg("GTA San Andreas"), state)
-
-        await cr.fsm_aliases(_Msg("-"), state)
-
-        assert (await state.get_data())["aliases"] == []
-
-    async def test_too_many_aliases_are_refused(self, state):
-        await _to_answer(state)
-        await cr.fsm_answer(_Msg("Doom"), state)
-
-        await cr.fsm_aliases(_Msg("\n".join(f"a{i}" for i in range(25))), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_aliases.state
-
-    async def test_an_over_long_alias_is_refused(self, state):
-        await _to_answer(state)
-        await cr.fsm_answer(_Msg("Doom"), state)
-
-        await cr.fsm_aliases(_Msg("x" * 150), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_aliases.state
+        assert str(cr._MAX_ANSWER + 1) in msg.said
 
 
-class TestAttemptsAndTime:
-    async def test_attempts_are_stored(self, state):
-        await _to_attempts(state)
+class TestTheCard:
+    """After the third question the admin sees the whole round at once, already
+    filled in. No more walking eight steps to reach the end."""
 
-        await cr.fsm_attempts(_Msg("5"), state)
+    async def test_the_answer_leads_straight_to_the_card(self, state):
+        await _to_card(state)
 
-        assert (await state.get_data())["max_attempts"] == 5
+        assert await state.get_state() == cr.GuessCreationStates.card.state
 
-    @pytest.mark.parametrize("bad", ["0", "-3", "abc", "999"])
-    async def test_an_impossible_attempt_count_is_refused(self, state, bad):
-        """Zero attempts is a round nobody may answer; 999 is not a game."""
-        await _to_attempts(state)
+    async def test_the_card_shows_every_field(self, state):
+        msg = await _to_card(state)
 
-        await cr.fsm_attempts(_Msg(bad), state)
+        for field in cr.FIELDS.values():
+            assert field.label in msg.said, f"«{field.label}» missing from the card"
 
-        assert await state.get_state() == cr.GuessCreationStates.waiting_attempts.state
+    async def test_the_card_shows_the_answer(self, state):
+        msg = await _to_card(state, answer="Grand Theft Auto")
 
-    async def test_no_time_limit_is_a_valid_choice(self, state):
-        await _to_attempts(state)
-        await cr.fsm_attempts(_Msg("5"), state)
+        assert "Grand Theft Auto" in msg.said
 
-        await cr.fsm_time_limit(_Msg("0"), state)
+    async def test_the_card_shows_the_medium_again(self, state):
+        """Seeing it next to the answer is how you notice you attached the wrong
+        file — and the resend is a second proof the file_id is alive."""
+        msg = await _to_card(state)
 
-        assert (await state.get_data())["time_limit_seconds"] == 0
+        assert msg.bot.sent == [("photo", "F")]
 
-    @pytest.mark.parametrize("bad", ["5", "99999", "presto"])
-    async def test_an_impossible_time_limit_is_refused(self, state, bad):
-        await _to_attempts(state)
-        await cr.fsm_attempts(_Msg("5"), state)
+    async def test_everything_optional_starts_at_its_default(self, state):
+        await _to_card(state)
 
-        await cr.fsm_time_limit(_Msg(bad), state)
+        data = await state.get_data()
+        assert data["max_attempts"] == cr.settings.guess_default_attempts
+        assert data["time_limit_seconds"] == cr.settings.guess_default_time_limit_seconds
+        assert data["round_duration_seconds"] == (
+            cr.settings.guess_default_round_duration_seconds
+        )
+        assert data["prize_first"] == cr.settings.guess_default_first
+        assert data["aliases"] == [] and data["hints"] == []
 
-        assert await state.get_state() == cr.GuessCreationStates.waiting_time_limit.state
 
+class TestEditingAField:
+    """The whole point of the card: any field, any time, no walking."""
 
-class TestHints:
-    async def test_a_hint_is_parsed_as_threshold_and_text(self, state):
-        await _to_hints(state)
+    @pytest.mark.parametrize("field,value,key,expected", [
+        ("title", "Nuovo titolo", "title", "Nuovo titolo"),
+        ("answer", "Quake", "answer", "Quake"),
+        ("max_attempts", "8", "max_attempts", 8),
+        ("time_limit_seconds", "120", "time_limit_seconds", 120),
+        ("time_limit_seconds", "0", "time_limit_seconds", 0),
+        ("round_duration_seconds", "900", "round_duration_seconds", 900),
+        ("round_duration_seconds", "0", "round_duration_seconds", 0),
+        ("aliases", "GTA SA\nSan Andreas", "aliases", ["GTA SA", "San Andreas"]),
+        ("aliases", "-", "aliases", []),
+        ("hints", "2 | sparatutto\n3 | anni 90", "hints",
+         [[2, "sparatutto"], [3, "anni 90"]]),
+        ("hints", "-", "hints", []),
+        ("prizes", "500 250 100 50", "prize_first", 500),
+    ])
+    async def test_a_field_can_be_changed_from_the_card(
+        self, state, field, value, key, expected
+    ):
+        await _to_card(state)
 
-        await cr.fsm_hint(_Msg("3 | È uno sparatutto"), state)
+        await _edit(state, field, value)
 
-        assert (await state.get_data())["hints"] == [(3, "È uno sparatutto")]
+        assert (await state.get_data())[key] == expected
 
-    async def test_hints_can_be_skipped_entirely(self, state):
-        await _to_hints(state)
+    async def test_editing_returns_to_the_card(self, state):
+        await _to_card(state)
 
-        await cr.fsm_hint(_Msg("fine"), state)
+        await _edit(state, "max_attempts", "8")
 
+        assert await state.get_state() == cr.GuessCreationStates.card.state
+
+    async def test_the_prizes_are_one_field_not_four_steps(self, state):
+        await _to_card(state)
+
+        await _edit(state, "prizes", "500 250 100 50")
+
+        data = await state.get_data()
+        assert (data["prize_first"], data["prize_second"],
+                data["prize_third"], data["prize_consolation"]) == (500, 250, 100, 50)
+
+    async def test_editing_the_medium_comes_back_to_the_card(self, state):
+        """Not back into the old title→medium→answer march."""
+        await _to_card(state)
+        await cr.cb_edit(_Cb("guess_new:edit:media"), state)
+
+        await cr.fsm_media(_Msg(photo=[_Photo("NEW")]), state)
+
+        assert await state.get_state() == cr.GuessCreationStates.card.state
+        assert (await state.get_data())["media_file_id"] == "NEW"
+
+    @pytest.mark.parametrize("field,bad", [
+        ("max_attempts", "0"),
+        ("max_attempts", "999"),
+        ("max_attempts", "tanti"),
+        ("time_limit_seconds", "5"),
+        ("time_limit_seconds", "99999"),
+        ("round_duration_seconds", "5"),
+        ("prizes", "500 250"),
+        ("prizes", "-100 0 0 0"),
+        ("prizes", "a b c d"),
+        ("hints", "sparatutto"),
+        ("hints", "99 | oltre il limite"),
+        ("hints", "2 | "),
+        ("title", "ab"),
+        ("answer", "x"),
+    ])
+    async def test_a_bad_value_is_refused_and_the_field_stays_open(
+        self, state, field, bad
+    ):
+        await _to_card(state)
+
+        msg = await _edit(state, field, bad)
+
+        assert await state.get_state() == cr.GuessCreationStates.editing.state
+        assert "⚠️" in msg.said
+
+    async def test_a_refused_value_does_not_overwrite_the_old_one(self, state):
+        await _to_card(state)
+
+        await _edit(state, "max_attempts", "0")
+
+        assert (await state.get_data())["max_attempts"] == (
+            cr.settings.guess_default_attempts
+        )
+
+    async def test_a_hint_threshold_above_the_attempt_limit_is_refused(self, state):
+        """A hint that unlocks past the budget is a hint nobody ever sees."""
+        await _to_card(state)
+        await _edit(state, "max_attempts", "3")
+
+        msg = await _edit(state, "hints", "5 | mai vista")
+
+        assert "⚠️" in msg.said
         assert (await state.get_data())["hints"] == []
-        assert await state.get_state() == cr.GuessCreationStates.waiting_prize_first.state
-
-    async def test_a_threshold_above_the_attempt_limit_is_refused(self, state):
-        """A hint after 9 attempts on a 5-attempt round is a hint nobody sees."""
-        await _to_hints(state)
-        m = _Msg("9 | mai visibile")
-
-        await cr.fsm_hint(m, state)
-
-        assert "5" in m.said
-        assert (await state.get_data())["hints"] == []
-
-    @pytest.mark.parametrize("bad", ["senza separatore", "tre | testo", "3 | "])
-    async def test_a_malformed_hint_is_refused(self, state, bad):
-        await _to_hints(state)
-
-        await cr.fsm_hint(_Msg(bad), state)
-
-        assert (await state.get_data())["hints"] == []
-        assert await state.get_state() == cr.GuessCreationStates.waiting_hints.state
 
     async def test_two_hints_on_the_same_threshold_are_refused(self, state):
-        """Only one would ever be delivered; the other is silently lost work."""
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("2 | primo"), state)
+        await _to_card(state)
 
-        await cr.fsm_hint(_Msg("2 | secondo"), state)
+        msg = await _edit(state, "hints", "2 | uno\n2 | due")
 
-        assert (await state.get_data())["hints"] == [(2, "primo")]
+        assert "⚠️" in msg.said
+
+    async def test_too_many_aliases_are_refused(self, state):
+        await _to_card(state)
+
+        msg = await _edit(state, "aliases", "\n".join(f"a{i}" for i in
+                                                      range(cr._MAX_ALIASES + 1)))
+
+        assert "⚠️" in msg.said
+
+    async def test_an_over_long_alias_is_refused(self, state):
+        await _to_card(state)
+
+        msg = await _edit(state, "aliases", "x" * (cr._MAX_ALIAS + 1))
+
+        assert "⚠️" in msg.said
 
     async def test_an_over_long_hint_is_refused(self, state):
-        await _to_hints(state)
+        await _to_card(state)
 
-        await cr.fsm_hint(_Msg("2 | " + "x" * 250), state)
+        msg = await _edit(state, "hints", "2 | " + "x" * (cr._MAX_HINT + 1))
 
-        assert (await state.get_data())["hints"] == []
-
-    async def test_hints_accumulate_in_order(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("4 | secondo"), state)
-        await cr.fsm_hint(_Msg("2 | primo"), state)
-
-        assert (await state.get_data())["hints"] == [(4, "secondo"), (2, "primo")]
-
-
-class TestPrizes:
-    async def test_the_four_steps_run_in_order(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("fine"), state)
-
-        for value, expected in [("100", "prize_first"), ("50", "prize_second"),
-                                ("25", "prize_third"), ("10", "prize_consolation")]:
-            await cr.fsm_prize_value(_Msg(value), state)
-            assert expected in await state.get_data()
-
-    async def test_a_negative_prize_is_refused(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("fine"), state)
-
-        await cr.fsm_prize_value(_Msg("-10"), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_prize_first.state
-
-    async def test_a_non_number_is_refused(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("fine"), state)
-
-        await cr.fsm_prize_value(_Msg("tanti"), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_prize_first.state
-
-    async def test_the_last_prize_step_leads_to_the_review(self, state):
-        await _to_review(state)
-
-        assert await state.get_state() == cr.GuessCreationStates.reviewing.state
+        assert "⚠️" in msg.said
 
 
 class TestPublish:
     async def test_a_published_round_is_ready_and_complete(self, state, session):
-        await _to_review(state)
+        await _to_card(state, answer="Doom")
+        await _edit(state, "aliases", "DOOM 1993")
+        await _edit(state, "hints", "2 | sparatutto")
+        await _edit(state, "prizes", "500 250 100 50")
 
-        await cr.fsm_publish(_Msg(), state, session)
-        await session.commit()
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
 
         r = (await session.execute(select(GuessRound))).scalar_one()
         assert r.status == "ready"
-        assert (r.title, r.answer, r.max_attempts, r.time_limit_seconds) == \
-               ("Il titolo", "Doom", 5, 0)
+        assert (r.title, r.answer, r.kind) == ("Il titolo", "Doom", "guess")
+        assert (r.media_file_id, r.media_kind) == ("F", "photo")
         assert r.creator_tg_id == 42
-        assert r.prize_first == 100 and r.prize_min > 0
-        assert gs.hints_of(r) == [(3, "sparatutto")]
+        assert gs.hints_of(r) == [(2, "sparatutto")]
+        assert r.prize_first == 500
+
+    async def test_publishing_untouched_uses_every_default(self, state, session):
+        """The three-question path has to produce a playable round on its own,
+        or the defaults are decoration."""
+        await _to_card(state)
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        r = (await session.execute(select(GuessRound))).scalar_one()
+        assert r.max_attempts == cr.settings.guess_default_attempts
+        assert r.round_duration_seconds == (
+            cr.settings.guess_default_round_duration_seconds
+        )
+        assert r.prize_first == cr.settings.guess_default_first
 
     async def test_publishing_clears_the_state(self, state, session):
-        await _to_review(state)
+        await _to_card(state)
 
-        await cr.fsm_publish(_Msg(), state, session)
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
 
         assert await state.get_state() is None
 
-    async def test_the_confirmation_offers_start_and_schedule(self, state, session):
-        await _to_review(state)
-        m = _Msg()
-
-        await cr.fsm_publish(m, state, session)
-
-        assert "creato" in m.said.lower()
-
     async def test_a_sound_round_publishes_with_its_own_kind(self, state, session):
-        await _to_answer(state, kind="sound")
-        await cr.fsm_answer(_Msg("Doom"), state)
-        await cr.fsm_aliases(_Msg("-"), state)
-        await cr.fsm_attempts(_Msg("3"), state)
-        await cr.fsm_time_limit(_Msg("0"), state)
-        await cr.fsm_hint(_Msg("fine"), state)
-        for value in ("10", "5", "2", "1"):
-            await cr.fsm_prize_value(_Msg(value), state)
+        await _to_card(state, kind="sound")
 
-        await cr.fsm_publish(_Msg(), state, session)
-        await session.commit()
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
 
         r = (await session.execute(select(GuessRound))).scalar_one()
         assert (r.kind, r.media_kind) == ("sound", "audio")
 
+    async def test_the_confirmation_offers_start_and_schedule(self, state, session):
+        cb = _Cb("guess_new:publish")
 
-class _Cb:
-    """The narrow slice of CallbackQuery the button handlers touch."""
+        await _to_card(state)
+        await cr.cb_publish(cb, state, session)
 
-    def __init__(self, message: _Msg | None = None) -> None:
-        self.message = message or _Msg()
-        self.from_user = types.SimpleNamespace(id=1, full_name="Admin")
-        self.answered = 0
-        self.edits: list[str] = []
-        self.message.edit_text = self._edit  # type: ignore[method-assign]
-
-    async def _edit(self, text, **kw):
-        self.edits.append(text)
-
-    async def answer(self, text=None, **kw):
-        self.answered += 1
-
-
-class TestDefaultAndSkipButtons:
-    """The buttons exist so an admin can take the suggested value without
-    retyping it. If one silently did nothing, the flow would look frozen."""
-
-    async def test_the_default_button_fills_in_the_attempts(self, state):
-        await _to_attempts(state)
-
-        await cr.cb_use_default(_Cb(), state)
-
-        data = await state.get_data()
-        assert data["max_attempts"] == cr.settings.guess_default_attempts
-        assert await state.get_state() == cr.GuessCreationStates.waiting_time_limit.state
-
-    async def test_the_default_button_fills_in_the_time_limit(self, state):
-        await _to_attempts(state)
-        await cr.fsm_attempts(_Msg("5"), state)
-
-        await cr.cb_use_default(_Cb(), state)
-
-        data = await state.get_data()
-        assert data["time_limit_seconds"] == cr.settings.guess_default_time_limit_seconds
-        assert await state.get_state() == cr.GuessCreationStates.waiting_hints.state
-
-    async def test_the_default_button_fills_in_a_prize(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("fine"), state)
-
-        await cr.cb_use_default(_Cb(), state)
-
-        assert (await state.get_data())["prize_first"] == cr.settings.guess_default_first
-
-    async def test_the_default_button_walks_the_whole_prize_ladder(self, state):
-        await _to_hints(state)
-        await cr.fsm_hint(_Msg("fine"), state)
-
-        for _ in range(4):
-            await cr.cb_use_default(_Cb(), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.reviewing.state
-
-    async def test_the_default_button_outside_a_default_step_does_nothing(self, state):
-        """A stale button from an earlier message must not corrupt the flow."""
-        await _to_media(state)
-
-        cb = _Cb()
-        await cr.cb_use_default(cb, state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
-        assert cb.answered == 1
-
-    async def test_the_skip_button_skips_the_aliases(self, state):
-        await _to_answer(state)
-        await cr.fsm_answer(_Msg("Doom"), state)
-
-        await cr.cb_skip(_Cb(), state)
-
-        assert (await state.get_data())["aliases"] == []
-        assert await state.get_state() == cr.GuessCreationStates.waiting_attempts.state
-
-    async def test_the_skip_button_skips_the_hints(self, state):
-        await _to_hints(state)
-
-        await cr.cb_skip(_Cb(), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_prize_first.state
-
-    async def test_the_skip_button_outside_a_skippable_step_does_nothing(self, state):
-        await _to_media(state)
-
-        await cr.cb_skip(_Cb(), state)
-
-        assert await state.get_state() == cr.GuessCreationStates.waiting_media.state
-
-
-class TestPublishButton:
-    async def test_it_publishes(self, state, session):
-        await _to_review(state)
-
-        await cr.cb_publish(_Cb(), state, session)
-        await session.commit()
-
-        assert (await session.execute(select(GuessRound.status))).scalar_one() == "ready"
+        assert "creato" in cb.said.lower()
 
 
 class TestCancel:
     async def test_cancelling_asks_first(self, state):
-        """A half-built round is real work; one tap must not throw it away."""
-        await _to_attempts(state)
-        cb = _Cb()
+        await _to_card(state)
+        cb = _Cb("guess_new:cancel")
 
         await cr.cb_cancel(cb, state)
 
-        assert "sicuro" in cb.message.said.lower()
-        assert await state.get_state() is not None, "nothing is lost until confirmed"
+        assert "sicuro" in cb.said.lower()
+        assert await state.get_state() is not None, "not cancelled until confirmed"
 
     async def test_cancelling_outside_a_flow_is_a_no_op(self, state):
-        cb = _Cb()
+        cb = _Cb("guess_new:cancel")
 
         await cr.cb_cancel(cb, state)
 
-        assert cb.message.said == ""
+        assert cb.said == ""
 
     async def test_confirming_clears_the_flow(self, state):
-        await _to_attempts(state)
-        cb = _Cb()
+        await _to_card(state)
 
-        await cr.cb_cancel_yes(cb, state)
+        await cr.cb_cancel_yes(_Cb("guess_new:cancel_yes"), state)
 
         assert await state.get_state() is None
-        assert "annullata" in cb.edits[0].lower()
-
-    async def test_declining_leaves_the_flow_intact(self, state):
-        await _to_attempts(state)
-        before = await state.get_state()
-        cb = _Cb()
-
-        await cr.cb_cancel_no(cb)
-
-        assert await state.get_state() == before
-        assert cb.edits
-
-
-class TestHintCaps:
-    async def test_too_many_hints_are_refused(self, state):
-        await _to_attempts(state)
-        await cr.fsm_attempts(_Msg("20"), state)
-        await cr.fsm_time_limit(_Msg("0"), state)
-        for i in range(1, 11):
-            await cr.fsm_hint(_Msg(f"{i} | suggerimento {i}"), state)
-        m = _Msg("11 | uno di troppo")
-
-        await cr.fsm_hint(m, state)
-
-        assert "10" in m.said
-        assert len((await state.get_data())["hints"]) == 10

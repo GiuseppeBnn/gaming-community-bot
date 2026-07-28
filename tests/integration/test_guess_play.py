@@ -25,7 +25,7 @@ from sqlalchemy import select
 
 from database.models import GuessAttempt, GuessSession
 from handlers.guess import play as pl
-from services import guess_judge
+from services import guess_judge, schedule_service
 from services import guess_service as gs
 from services.guess_judge import Verdict, normalize
 from utils import cooldown
@@ -54,16 +54,50 @@ class _Msg:
         self.chat = types.SimpleNamespace(id=user_id, type="private")
         self.from_user = types.SimpleNamespace(id=user_id, full_name="Player")
         self.answers: list[str] = []
+        self.markups: list = []
 
     async def answer(self, text, **kw):
         self.answers.append(text)
+        self.markups.append(kw.get("reply_markup"))
 
     async def reply(self, text, **kw):
         self.answers.append(text)
+        self.markups.append(kw.get("reply_markup"))
 
     @property
     def said(self) -> str:
         return "\n".join(self.answers)
+
+
+class _FrozenUserMsg(_Msg):
+    """A message whose `from_user` cannot be reassigned.
+
+    aiogram's types are frozen pydantic models, so patching a player onto a
+    bot-sent message raises at runtime. A plain stub would happily accept it and
+    let that bug reach production green.
+    """
+
+    def __setattr__(self, name, value):
+        if name == "from_user" and "from_user" in self.__dict__:
+            raise TypeError("aiogram types are frozen: from_user is not assignable")
+        super().__setattr__(name, value)
+
+
+class _ResumeCb:
+    """A callback whose `message` was sent by the bot — so `message.from_user` is
+    the bot and only `callback.from_user` identifies the player."""
+
+    def __init__(self, data: str, *, user_id: int = 7, bot_id: int = 999) -> None:
+        self.data = data
+        self.message = _FrozenUserMsg(user_id=user_id)
+        # Construction, not reassignment — the same way pydantic builds a frozen
+        # model. Every later write to `from_user` is what must raise.
+        object.__setattr__(self.message, "from_user",
+                           types.SimpleNamespace(id=bot_id, full_name="Bot"))
+        self.from_user = types.SimpleNamespace(id=user_id, full_name="Player")
+
+    async def answer(self, *a, **kw):
+        pass
 
 
 @pytest.fixture
@@ -537,6 +571,35 @@ class TestTheGuardOrderIsLoadBearing:
 
         assert judge == []
 
+    async def test_a_player_whose_answers_keep_coming_back_unjudged_is_paused(
+        self, session, round_, state, judge, monkeypatch
+    ):
+        """The eighth guard, and the one production needed.
+
+        With the judge failing on every call, the player must not keep feeding an
+        endpoint that cannot answer. Past the un-judged allowance we stop before
+        the model — and, because unjudged answers cost no attempts, the player's
+        budget is still intact when the judge comes back.
+        """
+        monkeypatch.setattr(pl.settings, "guess_max_unverified", 2)
+
+        async def _down(session_, round__, raw):
+            judge.append(raw)
+            return Verdict(correct=False, source="unavailable", verified=False)
+
+        monkeypatch.setattr(guess_judge, "judge", _down)
+        await _playing(session, round_, state)
+        for _ in range(2):
+            await pl.fsm_answer(_Msg("Quake"), session, state)
+        judge.clear()
+
+        msg = _Msg("Wolfenstein")
+        await pl.fsm_answer(msg, session, state)
+
+        assert judge == [], "past the allowance, stop before the model"
+        assert await gs.attempts_left(session, round_, 7) == 3, "budget untouched"
+        assert "giudice" in msg.said.lower()
+
     async def test_a_real_attempt_does_reach_the_model(
         self, session, round_, state, judge
     ):
@@ -575,7 +638,117 @@ class TestCooldown:
         assert await gs.attempts_left(session, round_, 7) == 2
 
 
+class TestTheStatusLine:
+    """The player should never have to guess where they stand.
+
+    Before, the attempts left showed up only on a wrong answer and the deadline
+    only once, on the way in — so the two numbers that decide how you play were
+    the two you could not see.
+    """
+
+    async def test_a_wrong_answer_says_how_many_attempts_are_left(
+        self, session, round_, state
+    ):
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert "2" in msg.said, "two of three left"
+
+    async def test_the_status_line_carries_the_deadline_as_a_wall_clock(
+        self, session, round_, state
+    ):
+        """An absolute time, because no timer will ever send a «time's up!»."""
+        round_.time_limit_seconds = 600
+        await session.flush()
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        sess = await gs.get_session(session, round_.id, 7)
+        expected = schedule_service.to_local(gs.deadline(round_, sess))
+        assert f"{expected:%H:%M}" in msg.said
+
+    async def test_a_round_without_a_limit_shows_no_clock(
+        self, session, round_, state
+    ):
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert "scade" not in msg.said.lower()
+
+    async def test_an_unjudged_answer_does_not_advance_the_counter(
+        self, session, round_, state, monkeypatch
+    ):
+        async def _down(session_, round__, raw):
+            return Verdict(correct=False, source="unavailable", verified=False)
+
+        monkeypatch.setattr(guess_judge, "judge", _down)
+        await _playing(session, round_, state)
+        msg = _Msg("Quake")
+
+        await pl.fsm_answer(msg, session, state)
+
+        assert "3" in msg.said, "nothing was judged, so nothing was spent"
+
+
 class TestQuit:
+    async def test_quitting_offers_a_way_back_in(self, session, round_, state):
+        """Otherwise the only way to resume is to scroll the group back to the
+        announcement and find the deep link again."""
+        await _playing(session, round_, state)
+
+        class _Cb:
+            def __init__(self) -> None:
+                self.message = _Msg()
+
+            async def answer(self, *a, **kw):
+                pass
+
+        cb = _Cb()
+        await pl.cb_quit(cb, state)
+
+        buttons = [
+            b.callback_data
+            for row in cb.message.markups[-1].inline_keyboard for b in row
+        ]
+        assert f"guess_play:resume:{round_.id}" in buttons
+
+    async def test_the_resume_button_puts_the_player_back_in(
+        self, session, round_, state
+    ):
+        await _playing(session, round_, state)
+        await pl.cb_quit(_ResumeCb(""), state)
+
+        await pl.cb_resume(_ResumeCb(f"guess_play:resume:{round_.id}"), session, state)
+
+        assert await state.get_state() == pl.GuessPlayStates.answering.state
+
+    async def test_resuming_identifies_the_player_without_touching_the_message(
+        self, session, round_, state
+    ):
+        """`callback.message` was sent by the BOT, so its `from_user` is the bot —
+        the player id has to come from `callback.from_user`.
+
+        Patching it onto the message would look like it works and then raise in
+        production: aiogram's types are frozen pydantic models. `_ResumeCb.message`
+        refuses the assignment for the same reason the real one does, so this test
+        fails if anyone reaches for that shortcut again.
+        """
+        await pl.cb_quit(_ResumeCb(""), state)
+
+        await pl.cb_resume(_ResumeCb(f"guess_play:resume:{round_.id}", bot_id=999),
+                           session, state)
+
+        assert await gs.get_session(session, round_.id, 7) is not None, (
+            "the session must belong to the player, not to the bot"
+        )
+        assert await gs.get_session(session, round_.id, 999) is None
+
     async def test_quitting_clears_the_state(self, session, round_, state):
         await _playing(session, round_, state)
 

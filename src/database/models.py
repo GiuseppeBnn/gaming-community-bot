@@ -466,6 +466,13 @@ class GuessRound(Base):
     max_attempts: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     # Per-PLAYER limit, counted from when they open the game. 0 = no limit.
     time_limit_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # How long the ROUND stays open, from the moment it is started. Separate from
+    # the field above and not derivable from it: the per-player clock starts when
+    # each player opens the link, so there is no instant at which "everyone has
+    # expired". Drives the auto-close task. 0 = the admin closes it by hand.
+    round_duration_seconds: Mapped[int] = mapped_column(
+        Integer, default=0, nullable=False, server_default="0"
+    )
 
     prize_first: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     prize_second: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

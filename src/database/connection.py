@@ -74,6 +74,12 @@ _MIGRATIONS: list[str] = [
     # inside the transaction below) if the ledger ever gets big enough to notice.
     "CREATE INDEX IF NOT EXISTS ix_ledger_from_created ON ledger (from_tg_id, created_at)",
     "CREATE INDEX IF NOT EXISTS ix_ledger_to_created ON ledger (to_tg_id, created_at)",
+    # guess_rounds: the round's own lifetime, which drives the auto-close task
+    # (STEERING §19.b). Distinct from time_limit_seconds, which is per player.
+    # DEFAULT 0 = "close it by hand", so rounds created before this column keep
+    # behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS "
+    "round_duration_seconds INTEGER NOT NULL DEFAULT 0",
 ]
 
 

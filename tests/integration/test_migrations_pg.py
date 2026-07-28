@@ -95,6 +95,27 @@ class TestMigrationsRepairAnOldDeploy:
     that predates the columns, which is the situation `_MIGRATIONS` exists for.
     """
 
+    async def test_readds_the_round_duration_to_an_older_guess_table(
+        self, pg_engine, monkeypatch
+    ):
+        """`guess_rounds.round_duration_seconds` drives the auto-close task.
+
+        `create_all` skips tables that already exist, so a deploy that already has
+        `guess_rounds` would never get this column and every round would fail to
+        open. DEFAULT 0 means "close it by hand", so existing rounds keep behaving
+        exactly as they did.
+        """
+        async with pg_engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE guess_rounds DROP COLUMN round_duration_seconds")
+            )
+
+        await _run_migrations(pg_engine, monkeypatch)
+
+        col = (await _columns(pg_engine, "guess_rounds"))["round_duration_seconds"]
+        assert col["nullable"] is False
+        assert "0" in col["default"]
+
     async def test_readds_columns_missing_from_an_older_schema(self, pg_engine, monkeypatch):
         async with pg_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE users DROP COLUMN xp_today"))

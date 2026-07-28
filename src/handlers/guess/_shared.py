@@ -33,7 +33,12 @@ _MAX_ALIASES = 20
 _MAX_HINT = 200
 _MAX_HINTS = 10
 _MAX_ATTEMPTS_ALLOWED = 20
+_MIN_TIME_LIMIT = 10
 _MAX_TIME_LIMIT = 3600
+#: The round's own life, not the per-player clock. The floor is a minute because
+#: a round that closes sooner than a player can open the link is not a round.
+_MIN_ROUND_DURATION = 60
+_MAX_ROUND_DURATION = 86_400
 
 #: Guess rounds are managed by admins in private, like quizzes.
 _GUESS_PRIVATE_NOTICE = "🎮 Gestisci questi eventi in chat privata col bot."
