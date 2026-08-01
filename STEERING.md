@@ -1276,6 +1276,14 @@ Sei upload di media in una chat sono un burst che Telegram rate-limita, ed è pe
 quando viene scelto o sostituito (quell'eco resta la verifica del `file_id`, §19.b/Media), e
 il vecchio si cancella: due media in chat e l'admin non sa più quale sia quello del round.
 
+**L'unica eccezione è il media**, e per la stessa ragione: sostituirlo mette in chat due
+messaggi nuovi (l'upload dell'admin e l'eco del bot), quindi una scheda modificata *sul posto*
+resterebbe **sopra** di loro, fuori schermo. L'ultima cosa visibile sarebbe una foto senza
+bottoni — «cambio l'immagine e poi non mi fa proseguire». Perciò `fsm_media` cancella il
+pannello e lo **ripubblica sotto** il media (`card_message_id=None`). Resta un solo pannello
+vivo: cambia solo dove sta. Negli altri campi il pannello resta ultimo perché il messaggio
+digitato viene cancellato (`forget_message`), quindi lì non c'è niente da spostare.
+
 Regola generale, valida anche in gioco: **un messaggio che non comanda più niente non resta
 sullo schermo con i bottoni vivi.** In `play` ogni nuova risposta toglie la tastiera alla
 precedente (`_reply`), così esiste un solo «🚪 Esci» premibile invece di uno per tentativo.
@@ -1333,9 +1341,10 @@ quindi rientra da `waiting_media` invece che dall'editor condiviso.
 
 Si salva il **`file_id` Telegram**, mai il file: il bot non tiene media su disco. In creazione
 il bot **rimanda indietro il media**: quell'eco *è* la verifica che il `file_id` sia
-ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file. La
-scheda lo **rimanda a ogni render**: vederlo accanto alla risposta è come ci si accorge di aver
-allegato il file sbagliato, e ogni reinvio è una prova in più che il `file_id` sia ancora vivo.
+ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file. Si
+posta **una volta sola** — quando viene scelto o sostituito — e resta sopra la scheda: vederlo
+accanto alla risposta è come ci si accorge di aver allegato il file sbagliato. Rimandarlo a
+ogni render era il burst di upload che impallava il bot (§19.b/«La scheda è un messaggio»).
 
 **Nel gruppo il media non si posta prima della chiusura.** Lo sposterebbe lì, dove la soluzione
 si discute e giocare in privato smette di voler dire qualcosa. L'annuncio è un invito con

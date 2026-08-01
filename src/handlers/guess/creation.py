@@ -467,8 +467,15 @@ async def fsm_media(message: Message, state: FSMContext) -> None:
     # Drop the previous one: two media in the chat and the admin cannot tell which
     # of them the round actually uses.
     await forget_message(message.bot, message.chat.id, data.get("media_message_id"))
+    # The panel has to come back UNDER the medium. This is the only step that puts
+    # new messages in the chat (the upload and its echo), so editing the card in
+    # place would leave it *above* them: the admin is looking at a photo with no
+    # buttons, and replacing the medium from the card looks like a dead end.
+    # Everywhere else the panel stays last because the typed message is deleted.
+    await forget_message(message.bot, message.chat.id, data.get("card_message_id"))
     await state.update_data(media_file_id=file_id, media_kind=media_kind,
-                            media_message_id=echo.message_id)
+                            media_message_id=echo.message_id,
+                            card_message_id=None)
 
     # Replacing the medium from the card returns to the card; the first time
     # through, the answer is still missing and is the third question.

@@ -420,6 +420,23 @@ class TestTheCardIsOneMessage:
 
         assert first_media_id in bot.deleted
 
+    async def test_replacing_the_medium_brings_the_card_back_under_it(self, state, bot):
+        """The one step that posts new messages has to move the panel with them.
+
+        Edited in place, the card stayed *above* the new medium and its echo: the
+        last thing on screen was a photo with no buttons, so replacing the image
+        from the card read as a dead end — nothing to tap, nothing to publish.
+        """
+        await _to_card(state)
+        old_card = (await state.get_data())["card_message_id"]
+
+        await cr.cb_edit(_Cb("guess_new:edit:media"), state)
+        await cr.fsm_media(_Msg(photo=[_Photo("NEW")]), state)
+
+        assert old_card in bot.deleted, "the panel above the medium must go"
+        assert "scheda del round" in bot.posted[-1], "the card is the last thing on screen"
+        assert (await state.get_data())["card_message_id"] != old_card
+
     async def test_publishing_turns_the_card_into_the_confirmation(
         self, state, session, bot
     ):
