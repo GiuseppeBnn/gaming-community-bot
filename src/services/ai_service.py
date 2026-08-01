@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 
 import aiohttp
 
@@ -28,6 +29,14 @@ AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 _TEMPERATURE = 0.9
 _DEFAULT_MAX_TOKENS = 300
+
+#: A hybrid-reasoning model writes its chain of thought INSIDE `content` when the
+#: reasoning switch is off — unlike `openai/gpt-oss-*`, which puts it in a field
+#: of its own. Groq ignores parameters a model does not support *silently*, so a
+#: flag that stops working raises nothing: it publishes the model's thinking to
+#: the group. `(?:</think>|$)` also catches the block TRUNCATED by `max_tokens`,
+#: which is the dangerous shape — pure reasoning with no closing tag.
+_THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
 
 
 class AIServiceError(Exception):
@@ -89,10 +98,22 @@ async def generate_completion(
         raise AIServiceError("network error") from exc
 
     try:
-        return data["choices"][0]["message"]["content"].strip()
+        content = data["choices"][0]["message"]["content"]
+        text = _THINK_BLOCK.sub("", content).strip()
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
         logger.error("Risposta Groq malformata: %s", data)
         raise AIServiceError("malformed response") from exc
+
+    # Everything the model produced was reasoning. An empty reply in the group
+    # reads as a broken bot; the fallback message at least says what happened.
+    if not text:
+        logger.error(
+            "Risposta AI vuota dopo aver tolto il ragionamento (modello=%s). "
+            "Il modello sta ragionando in chiaro: controlla GROQ_REASONING_EFFORT.",
+            settings.groq_model,
+        )
+        raise AIServiceError("empty completion")
+    return text
 
 
 # ---------------------------------------------------------------------------

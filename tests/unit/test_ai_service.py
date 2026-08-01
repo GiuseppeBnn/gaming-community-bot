@@ -82,3 +82,38 @@ async def test_generate_completion_missing_key(monkeypatch):
     # differently; AIServiceError here proves we bail out before any request.
     with pytest.raises(AIServiceError):
         await generate_completion("sys", "user")
+
+
+async def test_a_closed_think_block_never_reaches_the_caller(with_api_key):
+    """qwen3.6 scrive il ragionamento dentro `content`: va tolto, non mostrato."""
+    payload = {"choices": [{"message": {
+        "content": "<think>Valuto il tono richiesto.</think>La risposta vera."
+    }}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        assert await generate_completion("sys", "user") == "La risposta vera."
+
+
+async def test_an_unterminated_think_block_is_stripped_too(with_api_key):
+    """La forma pericolosa: `max_tokens` tronca il ragionamento PRIMA di `</think>`,
+    quindi non c'è nessun tag di chiusura a cui appoggiarsi."""
+    payload = {"choices": [{"message": {
+        "content": "Ecco.\n<think>sto ancora ragionando e non ho finito"
+    }}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        assert await generate_completion("sys", "user") == "Ecco."
+
+
+async def test_a_reply_that_is_only_reasoning_is_an_error_not_an_empty_message(
+    with_api_key,
+):
+    """Meglio il messaggio di fallback che una risposta vuota in chat."""
+    payload = {"choices": [{"message": {"content": "<think>solo pensieri</think>"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        with pytest.raises(AIServiceError):
+            await generate_completion("sys", "user")
