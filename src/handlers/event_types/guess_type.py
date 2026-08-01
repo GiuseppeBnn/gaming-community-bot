@@ -50,6 +50,12 @@ def _fmt_dt(dt) -> str:
 class GuessType:
     """One instance per game; ``key`` is the ``kind``."""
 
+    #: Its close pays the podium and reveals the medium, so it is worth scheduling
+    #: on its own clock — `handlers.schedule` offers «avvio o chiusura?» only for
+    #: types that say this. (A round with `round_duration_seconds` already arms its
+    #: own close at start; this is the admin picking a wall-clock instant instead.)
+    closable = True
+
     def __init__(self, kind: str) -> None:
         spec = kind_of(kind)
         self.kind = kind
@@ -139,9 +145,18 @@ class GuessType:
         if round_.status == "ready":
             b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:{self.key}:{item_id}")
             b.button(text="🗓️ Programma", callback_data=f"ev:sched:{self.key}:{item_id}")
+            b.button(text="🔤 Aggiungi grafie",
+                     callback_data=f"guess_alias:add:{item_id}")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
         elif round_.status == "running":
             b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:{self.key}:{item_id}")
+            b.button(text="🗓️ Programma chiusura",
+                     callback_data=f"ev:sched:{self.key}:{item_id}:close")
+            # The judge is an LLM: it will occasionally turn down a spelling that
+            # was right. Accepting it here fixes the round for everyone who guesses
+            # from now on, without rebuilding it (see `handlers.guess.editing`).
+            b.button(text="🔤 Aggiungi grafie",
+                     callback_data=f"guess_alias:add:{item_id}")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
         else:  # finished
             b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:{self.key}:{item_id}")

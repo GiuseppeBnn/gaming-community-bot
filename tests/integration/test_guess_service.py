@@ -687,3 +687,77 @@ class TestPrizeSummary:
     async def test_it_lists_every_rank_that_pays(self, session, round_):
         got = gs.format_prize_summary(round_)
         assert "100" in got and "50" in got and "25" in got and "10" in got
+
+
+class TestAddAliases:
+    """Accepting a spelling the judge got wrong, on a round that is already out.
+
+    The point is that it works **forward**: the judge consults the aliases before
+    the cached verdict, so the next player to type it wins — including the one who
+    was turned down, if they try again. Nothing already judged is rewritten, and
+    no podium already announced can move.
+    """
+
+    async def test_a_new_spelling_is_appended(self, session, round_):
+        from services.guess_judge import aliases_of
+
+        added, skipped = await gs.add_aliases(session, round_.id, ["Doom 1993"])
+
+        assert (added, skipped) == (1, 0)
+        assert aliases_of(await gs.get_round(session, round_.id)) == ["Doom 1993"]
+
+    async def test_a_duplicate_is_skipped_however_it_is_spelled(self, session, round_):
+        """«DOOM 1993!» and «doom 1993» are the same alias: they normalise to the
+        same string, which is the form the matcher actually compares."""
+        await gs.add_aliases(session, round_.id, ["Doom 1993"])
+
+        added, skipped = await gs.add_aliases(session, round_.id, ["DOOM  1993!"])
+
+        assert (added, skipped) == (0, 1)
+
+    async def test_the_canonical_answer_is_not_added_as_an_alias(self, session, round_):
+        added, _skipped = await gs.add_aliases(session, round_.id, ["doom"])
+
+        assert added == 0
+
+    async def test_a_missing_round_is_reported_not_raised(self, session):
+        assert await gs.add_aliases(session, 9999, ["X"]) is None
+
+    async def test_additions_stop_at_the_column_width(self, session, round_):
+        """`aliases_json` is a String(1024): a longer write is an error on Postgres
+        and a silent truncation nowhere."""
+        added, skipped = await gs.add_aliases(
+            session, round_.id, [f"alias numero {i:03d} " + "x" * 60 for i in range(40)]
+        )
+
+        assert skipped > 0
+        assert len(round_.aliases_json) <= gs._MAX_ALIASES_JSON
+        assert added > 0, "it fits some of them, it does not refuse the lot"
+
+    async def test_the_added_spelling_wins_before_the_cached_verdict(
+        self, session, round_
+    ):
+        """The whole point: «Doom 1993» was judged wrong and cached as wrong, and
+        after the fix the next player who types it is accepted anyway."""
+        from services import guess_judge
+
+        await gs.record_attempt(session, round_, 5, "Doom 1993", _no())
+        assert (await guess_judge.judge(session, round_, "Doom 1993")).correct is False
+
+        await gs.add_aliases(session, round_.id, ["Doom 1993"])
+
+        verdict = await guess_judge.judge(session, round_, "Doom 1993")
+        assert verdict.correct and verdict.source == "alias"
+
+    async def test_attempts_already_judged_are_left_alone(self, session, round_):
+        """Forward-only: re-scoring the past would move a podium already paid."""
+        await gs.record_attempt(session, round_, 5, "Doom 1993", _no())
+
+        await gs.add_aliases(session, round_.id, ["Doom 1993"])
+
+        verdicts = (
+            await session.execute(
+                select(GuessAttempt.verdict).where(GuessAttempt.round_id == round_.id)
+            )
+        ).scalars().all()
+        assert list(verdicts) == ["wrong"]

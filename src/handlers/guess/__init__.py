@@ -21,7 +21,10 @@ from __future__ import annotations
 from handlers.guess._shared import router
 
 # Imported for their side effect: each registers its handlers on `router`.
-from handlers.guess import creation, lifecycle, play  # noqa: E402,F401
+# The callback prefixes are disjoint (`guess_new:` / `guess_alias:` /
+# `guess_play:`), so nothing depends on this order today — keeping it stable is
+# what makes that a fact rather than a hope.
+from handlers.guess import creation, editing, lifecycle, play  # noqa: E402,F401
 
 # The surface other modules use by name.
 from handlers.guess.creation import start_guess_creation  # noqa: E402

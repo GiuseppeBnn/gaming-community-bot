@@ -368,6 +368,51 @@ def _created_kb(kind: str, round_id: int) -> InlineKeyboardMarkup:
 # The three mandatory questions
 # ---------------------------------------------------------------------------
 
+_TITLE_PROMPT = (
+    f"<b>1 di 3</b> — Invia il <b>titolo</b> (max {_MAX_TITLE} caratteri).\n"
+    "<i>Il titolo lo vedono tutti nel gruppo: non metterci la soluzione.</i>"
+)
+
+
+def _step_prompt(data: dict) -> tuple[State, str] | None:
+    """The mandatory question still unanswered, or None when all three are in.
+
+    One place decides *where the flow is*, so nothing can send the admin to a card
+    that cannot be rendered yet — the three `show` lambdas read `title`, `answer`
+    and the rest straight out of the state data.
+    """
+    spec = kind_of(data["kind"])
+    if not data.get("title"):
+        return GuessCreationStates.waiting_title, _TITLE_PROMPT
+    if not data.get("media_file_id"):
+        return GuessCreationStates.waiting_media, (
+            f"<b>2 di 3</b> — {spec.media_prompt}\n"
+            "<i>Te lo rimando indietro: se non ci riesco, il file non è utilizzabile "
+            "e te lo dico subito.</i>"
+        )
+    if not data.get("answer"):
+        return GuessCreationStates.waiting_answer, f"<b>3 di 3</b> — {FIELDS['answer'].prompt}"
+    return None
+
+
+async def _ask_next(message: Message, state: FSMContext, *, in_panel: bool = False) -> None:
+    """Ask the pending mandatory question, or show the card when there is none.
+
+    `in_panel` reuses the card message instead of sending a new one: the caller is
+    replacing a screen that is already there (the «sei sicuro?» confirmation).
+    """
+    step = _step_prompt(await state.get_data())
+    if step is None:
+        await _show_card(message, state)
+        return
+    next_state, prompt = step
+    await state.set_state(next_state)
+    if in_panel:
+        await _panel(message, state, prompt, _cancel_kb())
+    else:
+        await message.answer(prompt, reply_markup=_cancel_kb())
+
+
 async def start_guess_creation(
     message: Message, state: FSMContext, *, kind: str, creator_id: int
 ) -> None:
@@ -381,9 +426,7 @@ async def start_guess_creation(
     await state.update_data(kind=kind, creator_id=creator_id, **_defaults())
     await state.set_state(GuessCreationStates.waiting_title)
     await message.answer(
-        f"{spec.emoji} <b>Nuovo {esc(spec.label)}</b>\n\n"
-        f"<b>1 di 3</b> — Invia il <b>titolo</b> (max {_MAX_TITLE} caratteri).\n"
-        "<i>Il titolo lo vedono tutti nel gruppo: non metterci la soluzione.</i>",
+        f"{spec.emoji} <b>Nuovo {esc(spec.label)}</b>\n\n{_TITLE_PROMPT}",
         reply_markup=_cancel_kb(),
     )
 
@@ -395,14 +438,7 @@ async def fsm_title(message: Message, state: FSMContext) -> None:
         await message.answer(err, reply_markup=_cancel_kb())
         return
     await state.update_data(title=value)
-    spec = kind_of((await state.get_data())["kind"])
-    await state.set_state(GuessCreationStates.waiting_media)
-    await message.answer(
-        f"<b>2 di 3</b> — {spec.media_prompt}\n"
-        "<i>Te lo rimando indietro: se non ci riesco, il file non è utilizzabile "
-        "e te lo dico subito.</i>",
-        reply_markup=_cancel_kb(),
-    )
+    await _ask_next(message, state)
 
 
 @router.message(GuessCreationStates.waiting_media, IsAdminFilter())
@@ -436,14 +472,7 @@ async def fsm_media(message: Message, state: FSMContext) -> None:
 
     # Replacing the medium from the card returns to the card; the first time
     # through, the answer is still missing and is the third question.
-    if data.get("answer"):
-        await _show_card(message, state)
-        return
-    await state.set_state(GuessCreationStates.waiting_answer)
-    await message.answer(
-        f"<b>3 di 3</b> — {FIELDS['answer'].prompt}",
-        reply_markup=_cancel_kb(),
-    )
+    await _ask_next(message, state)
 
 
 @router.message(GuessCreationStates.waiting_answer, IsAdminFilter(), ~F.text.startswith("/"))
@@ -850,7 +879,13 @@ async def cb_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "guess_new:cancel_no", IsAdminCallbackFilter())
 async def cb_cancel_no(callback: CallbackQuery, state: FSMContext) -> None:
-    """Back to where they were, which is the card — not a message saying they are
-    back where they were."""
-    await _show_card(callback.message, state)
+    """Back to where they were — not a message saying they are back where they were.
+
+    «Where they were» is the card only once the three mandatory questions are
+    answered. Cancelling on question one and then changing your mind used to render
+    the card anyway: it reads `title` out of the state data, which isn't there yet,
+    and it had already switched the state to `card` — where no message handler
+    listens. The flow was unrecoverable except by cancelling for real.
+    """
+    await _ask_next(callback.message, state, in_panel=True)
     await callback.answer()

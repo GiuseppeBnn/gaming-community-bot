@@ -35,6 +35,9 @@ class QuizType:
     key = "quiz"
     hub_label = "🧠 Quiz"
     create_label = "➕ Crea quiz"
+    #: Its close publishes the podium, so it is worth scheduling on its own clock —
+    #: `handlers.schedule` offers «avvio o chiusura?» only for types that say this.
+    closable = True
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         # Quizzes are persistent objects: show ready/running AND the recent
@@ -94,6 +97,8 @@ class QuizType:
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
         elif quiz.status == "running":
             b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:quiz:{item_id}")
+            b.button(text="🗓️ Programma chiusura",
+                     callback_data=f"ev:sched:quiz:{item_id}:close")
             b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
         else:  # finished
             b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:quiz:{item_id}")
@@ -138,8 +143,18 @@ class QuizType:
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
     ) -> None:
-        from handlers.quiz import open_quiz
+        from handlers.quiz import close_quiz, open_quiz
         from services.schedule_service import TaskSkip
+
+        # A scheduled close reuses this same task_type with an action payload — the
+        # pattern the guess auto-close and the betting auto-lock already use. No new
+        # task type. Not closable yet (never started, closed by hand) is a skip, not
+        # a failure: the end state is the one asked for either way.
+        if schedule_service.task_payload(task).get("action") == "close":
+            ok, msg = await close_quiz(bot, session, task.ref_id)
+            if not ok:
+                raise TaskSkip(msg)
+            return
 
         # Already running (e.g. an admin started it by hand before the scheduled
         # time) → skip, don't fail: it's the intended end state anyway.

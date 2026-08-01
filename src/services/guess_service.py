@@ -32,7 +32,7 @@ from database.models import (
     TransactionType,
 )
 from services import economy_service, xp_service
-from services.guess_judge import WRONG, Verdict, normalize
+from services.guess_judge import WRONG, Verdict, aliases_of, normalize
 from services.prizes import consolation_amounts, participation_floor
 from services.xp_service import XpSource
 
@@ -255,6 +255,48 @@ async def reset_round(session: AsyncSession, round_id: int) -> bool:
     await session.flush()
     await _sync_round_state(session, round_id)
     return True
+
+
+#: `GuessRound.aliases_json` is a String(1024): a longer write is an error on
+#: Postgres and a silent truncation nowhere. Additions stop at the width.
+_MAX_ALIASES_JSON = 1024
+
+
+async def add_aliases(
+    session: AsyncSession, round_id: int, new: list[str]
+) -> tuple[int, int] | None:
+    """Accept more spellings on a round that is already out. No commit.
+
+    Returns ``(added, skipped)``, or ``None`` if the round is gone. Skipped covers
+    both duplicates (normalised, so «GTA SA» twice in two shapes counts once) and
+    anything that no longer fits the column.
+
+    Deliberately forward-only: the attempts already judged are left alone. An
+    alias is consulted **before** the cached verdict (``guess_judge.judge``), so
+    the next player to type it wins — including the one who was turned down, if
+    they try again. Re-judging the past would mean paying a podium that was
+    already announced.
+    """
+    round_ = await get_round(session, round_id)
+    if round_ is None:
+        return None
+    current = aliases_of(round_)
+    seen = {normalize(a) for a in current} | {normalize(round_.answer)}
+    added: list[str] = []
+    for alias in new:
+        cleaned = alias.strip()[:100]
+        key = normalize(cleaned)
+        if not key or key in seen:
+            continue
+        candidate = json.dumps(current + added + [cleaned], ensure_ascii=False)
+        if len(candidate) > _MAX_ALIASES_JSON:
+            break
+        seen.add(key)
+        added.append(cleaned)
+    if added:
+        round_.aliases_json = json.dumps(current + added, ensure_ascii=False)
+        await session.flush()
+    return len(added), len(new) - len(added)
 
 
 def hints_of(round_: GuessRound) -> list[tuple[int, str]]:

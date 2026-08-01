@@ -516,8 +516,8 @@ class TestScheduleAndCreate:
         id would make the list unreadable."""
         seen = []
 
-        async def _fake_start(message, state, task_type, item_id, label):
-            seen.append((task_type, item_id, label))
+        async def _fake_start(message, state, task_type, item_id, label, action=None):
+            seen.append((task_type, item_id, label, action))
 
         import handlers.schedule as sched
         monkeypatch.setattr(sched, "start_schedule_for", _fake_start)
@@ -525,7 +525,23 @@ class TestScheduleAndCreate:
 
         await events.cb_schedule(callback, _state())
 
-        assert seen == [("fake", 7, "🧪 Finto #7")]
+        assert seen == [("fake", 7, "🧪 Finto #7", None)]
+
+    async def test_the_close_variant_pins_the_action(self, session, only_fake, monkeypatch):
+        """On a running item «avvio» is not one of the answers, so the button says
+        which action it means instead of asking."""
+        seen = []
+
+        async def _fake_start(message, state, task_type, item_id, label, action=None):
+            seen.append(action)
+
+        import handlers.schedule as sched
+        monkeypatch.setattr(sched, "start_schedule_for", _fake_start)
+        callback = _FakeCallback("ev:sched:fake:7:close")
+
+        await events.cb_schedule(callback, _state())
+
+        assert seen == ["close"]
 
     async def test_scheduling_an_unknown_type_does_nothing(self, session, only_fake):
         callback = _FakeCallback("ev:sched:inesistente:7")

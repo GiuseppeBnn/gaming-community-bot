@@ -730,7 +730,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
-| `ScheduleStates.*` | `handlers/schedule.py` | programmazione quiz/poll/bet (scelta orario run-at) |
+| `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`sched:act:start\|close`, senza stato: sono bottoni), poi l'orario run-at |
 | `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
 
 ---
@@ -931,7 +931,9 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
 - **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (**schermata info**,
   vedi sotto), `ev:start:<type>:<id>`, `ev:close:<type>:<id>`, `ev:del:<type>:<id>`, `ev:reset:<type>:<id>`,
-  `ev:sched:<type>:<id>`, `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
+  `ev:sched:<type>:<id>[:close]` (l'ultimo segmento **opzionale** fissa l'azione invece di chiederla:
+  lo usano i bottoni su un item già in corso, dove «avvio» non è una delle risposte — §20),
+  `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
   e `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi presente nel
   registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py` con il suo gate
   admin di router (§8).
@@ -940,7 +942,10 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   da uno step di conferma `ev:ask*` (Sì→esecutore, No→`ev:item`). La scheda è fornita dal tipo con i
   metodi **opzionali** `render_detail`/`delete`/`reset` (l'hub li rileva via `getattr` e per i tipi che
   non li implementano ricade sulla vecchia schermata «Avvia ora / Programma» + `ev:start`). Restano fuori
-  dal contratto `EventType` per non rompere `isinstance(et, EventType)`.
+  dal contratto `EventType` per non rompere `isinstance(et, EventType)`. Stessa logica per l'attributo
+  opzionale **`closable`** (§20): dichiara che la chiusura del tipo vale la pena di essere messa su un
+  orario, e `handlers/schedule.py` lo legge con `getattr` — un tipo che non lo dichiara si comporta
+  esattamente come prima.
 - **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
   (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
   community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
@@ -1244,6 +1249,14 @@ effettivo. La scheda doveva togliere codice, non aggiungerne.
 La chiave del dizionario **è** la chiave in `state.get_data()`: niente mappatura da tenere
 allineata. `apply` esiste per l'unica eccezione (i premi, che scrivono quattro chiavi).
 
+**Dove sia arrivato il flusso lo decide `_step_prompt`, e solo lui.** La scheda si può
+renderizzare **soltanto** quando le tre risposte obbligatorie ci sono: i suoi `show` leggono
+`title`/`answer` dritti dai dati di stato. Chi manda l'admin «avanti» passa da `_ask_next`, che
+o fa la domanda che manca o mostra la scheda. Il difetto che questo toglie: «Annulla» alla prima
+domanda e poi «No, continua» renderizzava comunque la scheda — e avendo già messo lo stato a
+`card`, lasciava il flusso dove **nessun handler di messaggi ascolta**. Si poteva solo annullare
+davvero.
+
 ### La scheda è **un** messaggio, non un flusso
 
 `_panel()` modifica **sempre lo stesso messaggio** (`card_message_id` in stato). Il prompt di
@@ -1351,6 +1364,25 @@ La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico
 accorgersi che il giudice ha rifiutato qualcosa che doveva accettare, perché un giocatore che
 perde ingiustamente non lo dice a nessuno.
 
+### Correggere il giudice a round aperto (`handlers/guess/editing.py`)
+
+Leggere le risposte scartate serve a poco se poi non si può fare niente. Dalla scheda,
+**«🔤 Aggiungi grafie»** (`guess_alias:add:<id>`, stati `ready` e `running`) apre un'unica
+domanda: le grafie da accettare, una per riga, dallo stesso parser della creazione
+(`creation._parse_aliases`, stesso cap). `guess_service.add_aliases` le appende deduplicate
+**per forma normalizzata** (quindi «DOOM 1993!» non entra due volte) e si ferma alla larghezza
+della colonna (`aliases_json` è `String(1024)`: un write più lungo è un errore su Postgres, non
+un troncamento silenzioso), riportando quante ne ha scartate.
+
+**Vale solo in avanti, ed è la scelta.** Un alias è consultato **prima** della cache dei verdetti
+(§19.b, stadio 2 → stadio 4), quindi dal momento in cui c'è vince chi lo scrive — compreso chi
+era stato scartato, se riprova. I tentativi già giudicati restano come sono: ri-giudicarli
+sposterebbe un podio eventualmente già annunciato e pagato. Non è una lacuna da colmare più
+avanti: è il confine fra correggere il futuro e riscrivere il passato.
+
+Disponibile anche su un round `ready`: dopo la creazione era l'unico campo senza più una strada
+per tornarci, se non eliminare il round e rifarlo.
+
 ### Regole
 
 - Nuovi media: una voce in `_shared.KINDS` e una in `_SENDER_BY_KIND`, **mai** un `if` nei
@@ -1419,7 +1451,17 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   e non nelle due funzioni proprio perché nessuna delle due possa dimenticarlo.
   La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
   `payload.action="lock"` armato all'apertura (§18.2) — stesso registry, nessun task-type nuovo.
-- Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
+- **Programmare la chiusura, non solo l'avvio.** Un tipo che dichiara `closable = True` (oggi `quiz`,
+  `guess`, `sound` — poll e bet no: il loro `close_now` è `None`) fa chiedere **cosa** programmare prima
+  dell'orario: `sched:act:start` | `sched:act:close`. Gli altri tipi vanno dritti al run-at, perché una
+  domanda con una sola risposta possibile non è una domanda. La chiusura è lo **stesso `task_type`** con
+  `payload.action="close"` — identico al `lock` delle scommesse e all'auto-close del guess: **nessun
+  task-type nuovo**, nessuna colonna nuova. L'avvio resta senza payload. Ogni spec `closable` gestisce
+  quel payload nel proprio `execute_scheduled` (`close_quiz`/`close_round` → `TaskSkip` se non era in
+  corso: chiuso a mano o mai avviato è comunque lo stato voluto, non un errore). `/programmati` etichetta
+  ogni task «▶️ Avvio» o «🏁 Chiusura» — su un item con entrambi pendenti è la differenza fra annullare
+  quello giusto e quello sbagliato.
+- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
   riusa `events.start_poll_creation`). Gating a **livello di router** (§8):

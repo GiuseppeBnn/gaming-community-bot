@@ -848,3 +848,51 @@ class TestCancel:
         await cr.cb_cancel_yes(_Cb("guess_new:cancel_yes"), state)
 
         assert await state.get_state() is None
+
+    async def test_refusing_puts_the_card_back(self, state, bot):
+        await _to_card(state)
+        await cr.cb_cancel(_Cb("guess_new:cancel"), state)
+
+        await cr.cb_cancel_no(_Cb("guess_new:cancel_no"), state)
+
+        assert await state.get_state() == cr.GuessCreationStates.card.state
+        assert "scheda del round" in bot.screen
+
+    @pytest.mark.parametrize(
+        "reach, expected_state, expected_text",
+        [
+            (lambda st: cr.start_guess_creation(_Msg(), st, kind="guess", creator_id=42),
+             cr.GuessCreationStates.waiting_title, "titolo"),
+            (_to_media, cr.GuessCreationStates.waiting_media, "foto"),
+            (_to_answer, cr.GuessCreationStates.waiting_answer, "risposta"),
+        ],
+        ids=["title", "media", "answer"],
+    )
+    async def test_refusing_before_the_card_re_asks_the_pending_question(
+        self, state, bot, reach, expected_state, expected_text
+    ):
+        """The dead end this replaces: «Annulla» on question one, then «No,
+        continua», used to render a card that has no title in it yet — and it had
+        already moved the state to `card`, where no message handler listens. The
+        admin could type all they liked and nothing answered."""
+        await reach(state)
+        await cr.cb_cancel(_Cb("guess_new:cancel"), state)
+
+        await cr.cb_cancel_no(_Cb("guess_new:cancel_no"), state)
+
+        assert await state.get_state() == expected_state.state
+        assert expected_text in bot.screen.lower()
+
+    async def test_after_refusing_on_the_first_question_the_title_is_still_accepted(
+        self, state, bot
+    ):
+        """The property that matters is not the message: it is that the flow still
+        goes somewhere."""
+        await cr.start_guess_creation(_Msg(), state, kind="guess", creator_id=42)
+        await cr.cb_cancel(_Cb("guess_new:cancel"), state)
+        await cr.cb_cancel_no(_Cb("guess_new:cancel_no"), state)
+
+        await cr.fsm_title(_Msg("Il titolo"), state)
+
+        assert (await state.get_data())["title"] == "Il titolo"
+        assert await state.get_state() == cr.GuessCreationStates.waiting_media.state

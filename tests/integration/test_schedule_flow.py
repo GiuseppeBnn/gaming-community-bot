@@ -131,6 +131,14 @@ def _registry_and_cooldowns():
     cooldown.reset()
 
 
+class _ClosableType(_FakeType):
+    """A type whose close does something worth putting on a clock (quiz, guess)."""
+
+    key = "chiudibile"
+    hub_label = "🧪 Chiudibile"
+    closable = True
+
+
 @pytest.fixture
 def only_fake():
     event_types.clear()
@@ -345,6 +353,112 @@ class TestRunAt:
         assert "scomparso" in message.said
 
 
+class TestWhatToSchedule:
+    """Types that can also be closed on a timer are asked *what* to schedule.
+
+    The rest keep going straight to the time: a question with one possible answer
+    is not a question, and every existing flow (poll, bet) is one of those.
+    """
+
+    @pytest.fixture
+    def closable(self):
+        event_types.clear()
+        et = _ClosableType()
+        event_types.register(et)
+        return et
+
+    async def test_a_closable_type_asks_start_or_close_first(self, session, closable):
+        message = _FakeMessage()
+
+        await schedule.start_schedule_for(message, _state(), "chiudibile", 7, "🧪 #7")
+
+        assert set(_callbacks(message.markups[0])) == {
+            "sched:act:start", "sched:act:close", "sched:cancel",
+        }
+
+    async def test_a_type_that_cannot_close_goes_straight_to_the_time(
+        self, session, only_fake
+    ):
+        state = _state()
+        message = _FakeMessage()
+
+        await schedule.start_schedule_for(message, state, "fake", 7, "🧪 Finto #7")
+
+        assert await state.get_state() == schedule.ScheduleStates.event_runat.state
+
+    async def test_an_action_given_up_front_skips_the_question(self, session, closable):
+        """The «🗓️ Programma chiusura» button on a running item already knows."""
+        state = _state()
+        message = _FakeMessage()
+
+        await schedule.start_schedule_for(
+            message, state, "chiudibile", 7, "🧪 #7", "close"
+        )
+
+        assert await state.get_state() == schedule.ScheduleStates.event_runat.state
+        assert (await state.get_data())["sched_action"] == "close"
+
+    async def test_choosing_close_arms_the_run_at_step(self, session, closable):
+        state = _state()
+        await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
+        callback = _FakeCallback("sched:act:close")
+
+        await schedule.cb_action(callback, state)
+
+        assert (await state.get_data())["sched_action"] == "close"
+        assert await state.get_state() == schedule.ScheduleStates.event_runat.state
+
+    async def test_a_stale_action_button_says_so_instead_of_arming_nothing(
+        self, session, closable
+    ):
+        """The flow was cleared (cancelled, or another one started): without a
+        target, arming the run-at step would take a time and drop it."""
+        state = _state()
+        callback = _FakeCallback("sched:act:close")
+
+        await schedule.cb_action(callback, state)
+
+        assert callback.alerts and "Ricomincia" in callback.alerts[0]
+        assert await state.get_state() is None
+
+    async def test_an_unknown_action_is_refused(self, session, closable):
+        state = _state()
+        await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
+        callback = _FakeCallback("sched:act:inventata")
+
+        await schedule.cb_action(callback, state)
+
+        assert await state.get_state() is None
+
+    async def test_a_scheduled_close_carries_the_action_in_its_payload(
+        self, session, closable, user_factory
+    ):
+        """Same task_type as the start — the close rides an action payload, the way
+        the betting auto-lock already does, so there is no second task type."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        state = _state()
+        await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
+        await schedule.cb_action(_FakeCallback("sched:act:close"), state)
+
+        await schedule.fsm_event_runat(_FakeMessage("2h"), state, session)
+
+        task = (await _tasks(session))[0]
+        assert task.task_type == "chiudibile"
+        assert schedule_service.task_payload(task) == {"action": "close"}
+
+    async def test_a_scheduled_start_still_carries_no_payload(
+        self, session, closable, user_factory
+    ):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        state = _state()
+        await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
+        await schedule.cb_action(_FakeCallback("sched:act:start"), state)
+
+        await schedule.fsm_event_runat(_FakeMessage("2h"), state, session)
+
+        assert (await _tasks(session))[0].payload_json is None
+
+
 # ---------------------------------------------------------------------------
 # /programmati
 # ---------------------------------------------------------------------------
@@ -374,6 +488,22 @@ class TestPendingList:
 
         assert f"sched:del:{task.id}" in _callbacks(message.markups[0])
         assert "🧪 Finto" in message.said
+
+    async def test_the_list_says_which_tasks_are_closes(self, session, only_fake, user_factory):
+        """An item can have a start and a close pending at once: telling them apart
+        is the difference between cancelling the right one and the wrong one."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        await self._task(session)
+        await schedule_service.schedule_task(
+            session, "fake", schedule_service.utcnow() + timedelta(hours=2),
+            ADMIN_ID, GROUP_CHAT, ref_id=7, payload={"action": "close"},
+        )
+        await session.commit()
+        message = _FakeMessage()
+
+        await schedule.cmd_programmati(message, session)
+
+        assert "▶️ Avvio" in message.said and "🏁 Chiusura" in message.said
 
     async def test_a_task_whose_type_is_gone_is_still_listed(self, session, user_factory):
         """Otherwise the only way to cancel it would disappear with its type."""
