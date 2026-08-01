@@ -32,7 +32,7 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per le chiamate LLM Groq — **mai** librerie HTTP bloccanti |
-| LLM | Groq API (OpenAI-compatible) | intrattenimento: `GROQ_MODEL` (default `llama-3.3-70b-versatile`); giudice dei giochi «indovina» (§19.b): `GROQ_JUDGE_MODEL` (default `openai/gpt-oss-120b`, uno dei due su cui Groq supporta lo **structured output strict**) |
+| LLM | Groq API (OpenAI-compatible) | intrattenimento: `GROQ_MODEL` (default `qwen/qwen3.6-27b`) + `GROQ_REASONING_EFFORT` (default `none`: il modello è ibrido-reasoning e senza il flag ragiona **dentro** la risposta); giudice dei giochi «indovina» (§19.b): `GROQ_JUDGE_MODEL` (default `openai/gpt-oss-120b`, uno dei due su cui Groq supporta lo **structured output strict**) |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -74,7 +74,8 @@ Campi importanti:
 - `fsm_storage: str` — `"memory"` | `"redis"`. **Resta `memory`, ed è una scelta, non una svista.** Il costo è noto e accettato: Watchtower ricrea il container a ogni immagine nuova (`WATCHTOWER_POLL_INTERVAL: 600`), e con `MemoryStorage` ogni conversazione FSM aperta in quel momento sparisce — chi stava creando un quiz ricomincia. Il baratto rifiutato è l'altro: `_build_storage` intercetta solo l'`ImportError` del pacchetto, **non** una connessione fallita, quindi con `redis` il bot non degrada, non parte. Perdere un flusso di creazione vale meno di perdere il bot. Non riproporre il passaggio senza prima aggiungere un fallback su errore di connessione
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
-- `groq_model: str` — default `"llama-3.3-70b-versatile"` (il vecchio `llama3-70b-8192` è **dismesso**)
+- `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
+- `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
@@ -822,7 +823,9 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 ### Regole
 
-- Per cambiare modello: `GROQ_MODEL` in `.env` (zero codice). Modelli uncensored "veri" non esistono sul tier hosted Groq — il tono si pilota col *system prompt*.
+- Per cambiare modello: `GROQ_MODEL` in `.env` (zero codice), **e con lui `GROQ_REASONING_EFFORT`** — il flag è specifico del modello, non un'impostazione globale. Modelli uncensored "veri" non esistono sul tier hosted Groq — il tono si pilota col *system prompt*.
+- **Un modello che rifiuta non è utilizzabile qui.** `openai/gpt-oss-120b`, provato sugli otto prompt veri, ha risposto «I'm sorry, but I can't comply with that.» a `/complotto` e `/insulta`: il `_STYLE` condiviso è satira nera per contratto. Prima di sostituire il modello, fallo girare su tutti e otto i comandi e leggi le risposte — un modello si sceglie sull'output, non sul benchmark.
+- `generate_completion` **ripulisce** un eventuale `<think>…</think>` dalla risposta e alza `AIServiceError` se non resta niente. Groq ignora in silenzio i parametri non supportati, quindi il flag da solo non basta: la rete sta nel parsing.
 - Nuovi comandi AI vanno aggiunti a `_GROUP_COMMANDS` (`main.py`) e alla sezione 🤖 di `/help` (`common.py`).
 
 ---
@@ -1156,8 +1159,10 @@ giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`
 decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
 che possa riportare indietro la soluzione a chi provi a farsela dire.
 
-`GROQ_JUDGE_MODEL` è separato da `GROQ_MODEL`: i comandi di intrattenimento (§17) sono tarati
-su llama-3.3 e non devono cambiare perché un gioco ha bisogno d'altro. `judge_equivalence` è
+`GROQ_JUDGE_MODEL` è separato da `GROQ_MODEL`, e i due non convergeranno: un verdetto ha bisogno
+dello structured output **strict**, che Groq offre solo su `openai/gpt-oss-*`; i comandi di
+intrattenimento (§17) hanno bisogno dell'opposto — un modello che stia al gioco della satira
+nera — e `gpt-oss` quei prompt li rifiuta. Due mestieri, due modelli. `judge_equivalence` è
 una funzione **nuova** in `ai_service`, non una modifica a `generate_completion`.
 
 > **Cambiando `GROQ_JUDGE_MODEL` si ricontrolla `_JUDGE_MAX_TOKENS`.** I due sono legati: un
@@ -1511,9 +1516,13 @@ DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
+# GROQ_MODEL=qwen/qwen3.6-27b           # comandi di intrattenimento (§17)
+# GROQ_REASONING_EFFORT=none            # qwen3.6 è ibrido-reasoning: senza questo scrive il
+#                                       # ragionamento dentro la risposta. Vuoto = campo omesso.
 # GROQ_JUDGE_MODEL=openai/gpt-oss-120b  # giudice dei giochi «indovina» (§19.b). Separato da
 #                                       # GROQ_MODEL apposta: serve structured output strict,
-#                                       # e i comandi di intrattenimento sono tarati su llama-3.3.
+#                                       # che gpt-oss ha e qwen no — e gpt-oss in cambio rifiuta
+#                                       # i prompt di §17.
 #                                       # Senza chiave i giochi restano giocabili: vince chi
 #                                       # scrive la risposta esatta o un alias (§19.b, stadio 2).
 # Backup & export (§25) — tutto opzionale. Senza i 3 TELEGRAM_* l'archivio chat
