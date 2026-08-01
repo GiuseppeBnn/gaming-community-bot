@@ -66,7 +66,7 @@ async def generate_completion(
         logger.error("GROQ_API_KEY non configurata — impossibile chiamare Groq.")
         raise AIServiceError("missing api key")
 
-    payload = {
+    payload: dict = {
         "model": settings.groq_model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -75,6 +75,10 @@ async def generate_completion(
         "temperature": _TEMPERATURE if temperature is None else temperature,
         "max_tokens": max_tokens,
     }
+    # Only when set: it is model-specific, and a model that does not take it
+    # would answer 400. Emptying the variable is the escape hatch.
+    if settings.groq_reasoning_effort:
+        payload["reasoning_effort"] = settings.groq_reasoning_effort
     headers = {
         "Authorization": f"Bearer {settings.groq_api_key}",
         "Content-Type": "application/json",

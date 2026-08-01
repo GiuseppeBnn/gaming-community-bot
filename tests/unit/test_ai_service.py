@@ -117,3 +117,27 @@ async def test_a_reply_that_is_only_reasoning_is_an_error_not_an_empty_message(
 
         with pytest.raises(AIServiceError):
             await generate_completion("sys", "user")
+
+
+async def test_the_reasoning_switch_is_sent_with_the_model(with_api_key):
+    """qwen3.6 è ibrido: senza questo campo ragiona in chiaro (vedi _THINK_BLOCK)."""
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user")
+
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert sent["reasoning_effort"] == ai_service.settings.groq_reasoning_effort
+
+
+async def test_an_empty_reasoning_setting_omits_the_field(with_api_key, monkeypatch):
+    """La via d'uscita per un modello che il campo non lo accetta: si svuota la
+    variabile in .env, senza toccare il codice."""
+    monkeypatch.setattr(ai_service.settings, "groq_reasoning_effort", "")
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user")
+
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert "reasoning_effort" not in sent

@@ -35,12 +35,18 @@ class Settings(BaseSettings):
 
     # Groq LLM (AI entertainment module)
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "qwen/qwen3.6-27b"
+    # qwen3.6 is a hybrid reasoning model: without this it writes its chain of
+    # thought INSIDE `content` (`<think>…</think>`) and it would reach the group.
+    # Model-specific — `openai/gpt-oss-*` rejects "none" — so it travels with
+    # `groq_model` and is overridable from .env. Empty string → field omitted,
+    # which is the way out for a model that does not take it.
+    groq_reasoning_effort: str = "none"
     # Judge model for the guess games. Deliberately separate from `groq_model`:
-    # the entertainment commands are tuned around llama-3.3 and must not change
-    # because a game needs something else. `openai/gpt-oss-*` is the pick because
-    # Groq supports STRICT structured output (constrained decoding) on it, so a
-    # verdict cannot come back as prose.
+    # a verdict needs STRICT structured output (constrained decoding), which Groq
+    # supports only on `openai/gpt-oss-*`, so it cannot come back as prose. The
+    # entertainment commands need the opposite — a model that plays along with
+    # black satire — and gpt-oss refuses them outright. Two jobs, two models.
     groq_judge_model: str = "openai/gpt-oss-120b"
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
