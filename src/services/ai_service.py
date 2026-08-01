@@ -3,8 +3,9 @@ AI entertainment service — async Groq (OpenAI-compatible) client.
 
 All LLM traffic goes through `aiohttp` (never blocking libraries) so the
 aiogram event loop is never stalled. Failures (timeout, network, non-200,
-malformed body, missing API key) are normalised into `AIServiceError` so
-handlers can fall back to `AI_FALLBACK_MESSAGE`.
+malformed body, missing API key, empty reply once reasoning is stripped) are
+normalised into `AIServiceError` so handlers can fall back to
+`AI_FALLBACK_MESSAGE`.
 
 No moderation fields are sent in the payload by design — only the system
 and user prompts.
@@ -60,7 +61,8 @@ async def generate_completion(
     more conservative so it invents fewer non-existent words.
 
     Raises AIServiceError on missing API key, timeout, network error,
-    non-200 status, or a malformed response body.
+    non-200 status, a malformed response body, or a reply that is empty
+    once the model's reasoning block has been stripped out.
     """
     if not settings.groq_api_key:
         logger.error("GROQ_API_KEY non configurata — impossibile chiamare Groq.")

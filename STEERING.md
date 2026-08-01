@@ -797,7 +797,7 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - `settings.groq_api_key` vuota → `AIServiceError` (niente chiamata di rete).
   - Timeout `aiohttp.ClientTimeout(total=20)`; `try/except` su `asyncio.TimeoutError` / `aiohttp.ClientError` / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**.
   - `temperature` **per-comando**: `None` ⇒ default `_TEMPERATURE` (0.9, alto → risposte varie/creative); un valore più basso rende il modello conservativo (meno parole inventate). Usato da `/dialetto` (`_DIALETTO_TEMPERATURE = 0.5`) per tenere il catanese autentico.
-  - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens`. **Nessun campo di moderazione** (requisito di design).
+  - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens` + `reasoning_effort` (se valorizzato). **Nessun campo di moderazione** (requisito di design).
 - Costante `AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."` — usata dagli handler su `AIServiceError`.
 
 ### fun_ai — handler
