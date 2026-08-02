@@ -479,7 +479,7 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | 0.1 | Storage FSM: ping + fallback, `.env.example`, STEERING §2 | ☑ fatta |
 | 0.2 | aiogram 3.13.1 → 3.30.0, isolato | ☑ fatta |
 | 0.3 | Alert admin (`utils/alerts.py`) | ☑ fatta |
-| — | **Gate Fase 0** (§3.4) | ▣ locale ☑, staging a metà — vedi §11 |
+| — | **Gate Fase 0** (§3.4) | ☑ **superato** il 2026-08-02 — gate locali + le due verifiche a mano (§11.2, §11.3) |
 | 1 | Spike `guess/creation.py` con aiogram-dialog | ☐ da fare |
 | — | **Gate spike** (§4.3) — decide l'utente | ☐ |
 | 2 | `admin_dashboard.py` | ☐ subordinata al gate |
@@ -514,13 +514,23 @@ Con un bot Telegram di prova e Redis in Docker:
 - quando Redis torna, riparte su Redis senza warning;
 - il percorso bot → DM verso l'admin funziona (`sendMessage` diretta, `ok: true`).
 
-### 11.3 Rimasto aperto — serve una persona, non un test
+### 11.3 Le due verifiche a mano — **chiuse il 2026-08-02**
 
-- [ ] **L'alert è arrivato davvero in DM?** La catena completa (`log.warning` → handler →
-      buffer → `drain` → consegna) non è mai stata osservata da capo a fondo. I pezzi sono
-      testati singolarmente; è la composizione che manca.
-- [ ] **Un flusso FSM aperto sopravvive al riavvio del processo?** Serve aprire un flusso
-      (es. `/quiz` → creazione) e poi riavviare.
+- [x] **L'alert arriva davvero in DM.** Confermato dall'utente: fermato Redis, il messaggio
+      `[WARNING] __main__ — Redis non raggiungibile…` è arrivato in privato. È la catena
+      intera (`log.warning` → handler → buffer → `drain` → consegna), che nessun test unitario
+      copre: i pezzi erano testati singolarmente, mancava la composizione.
+- [x] **Lo stato FSM sopravvive al riavvio del processo.** Aperta una creazione quiz fino a
+      `waiting_description`, le chiavi sono state lette **da Redis mentre nessun processo era
+      vivo**:
+
+      fsm:<id>:<id>:state  →  QuizCreationStates:waiting_description
+      fsm:<id>:<id>:data   →  {"creator_id": …, "title": "Patata"}
+
+      Un processo **nuovo** ha poi ripreso e gestito gli update senza errori. La prova sta nella
+      lettura a bot spento: è lì che si vede che lo stato non era nel processo. (Il flusso è
+      stato poi abbandonato, quindi nessun quiz è finito a DB — irrilevante per ciò che si
+      voleva dimostrare.)
 
 ### 11.4 I quattro difetti noti — **chiusi il 2026-08-02**
 
