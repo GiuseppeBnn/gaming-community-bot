@@ -1,9 +1,11 @@
 import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -98,14 +100,43 @@ _ADMIN_EXTRA_COMMANDS = [
 _ADMIN_COMMANDS = _PRIVATE_COMMANDS + _ADMIN_EXTRA_COMMANDS
 
 
-def _build_storage():
-    if settings.fsm_storage == "redis":
-        try:
-            from aiogram.fsm.storage.redis import RedisStorage
-            return RedisStorage.from_url(settings.redis_url)
-        except ImportError:
-            logger.warning("redis non installato, uso MemoryStorage")
-    return MemoryStorage()
+async def _build_storage() -> BaseStorage:
+    """Scegli lo storage FSM, degradando a memoria se Redis non risponde.
+
+    `RedisStorage.from_url` builds a client without connecting, so a broken or
+    absent Redis used to sail through startup and surface much later, one
+    amnesiac conversation at a time. The ping moves that discovery here and
+    turns it into a degradation instead of a bot that looks alive and cannot
+    remember anything.
+
+    Degrading rather than refusing to start is the trade STEERING §2 asks for:
+    losing the open FSM flows is worth less than losing the bot.
+    """
+    if settings.fsm_storage != "redis":
+        return MemoryStorage()
+
+    try:
+        from aiogram.fsm.storage.redis import RedisStorage
+    except ImportError:
+        logger.warning("redis non installato, uso MemoryStorage")
+        return MemoryStorage()
+
+    storage = RedisStorage.from_url(settings.redis_url)
+    try:
+        await storage.redis.ping()
+    except Exception as exc:  # noqa: BLE001 — any connection failure degrades
+        logger.warning(
+            "Redis non raggiungibile su %s (%s): uso MemoryStorage. "
+            "Le conversazioni FSM aperte non sopravvivranno a un riavvio.",
+            settings.redis_url, exc,
+        )
+        # The half-built client holds a connection pool; closing it must not be
+        # able to replace a degradation with a crash.
+        with contextlib.suppress(Exception):
+            await storage.close()
+        return MemoryStorage()
+
+    return storage
 
 
 async def main() -> None:
@@ -143,7 +174,7 @@ async def main() -> None:
     # only through this registry (no per-type if/elif).
     event_types.register_builtin()
 
-    storage = _build_storage()
+    storage = await _build_storage()
     logger.info("FSM storage: %s", settings.fsm_storage)
 
     bot = Bot(
