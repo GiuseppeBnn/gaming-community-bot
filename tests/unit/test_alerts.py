@@ -8,6 +8,7 @@ in loop che riempie la chat e fa smettere di guardarla.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -65,6 +66,17 @@ def test_own_records_are_ignored():
     assert not alerts._buffer
 
 
+def test_a_same_prefixed_logger_name_is_not_mistaken_for_our_own():
+    """A bare `.startswith(__name__)` would also swallow `utils.alerts_v2` — a
+    logger that only shares the prefix, not our own submodule. stdlib's own
+    `logging.Filter` guards exactly this case with a dot-boundary check."""
+    handler = alerts.TelegramAlertHandler()
+
+    handler.emit(_record(name="utils.alerts_v2"))
+
+    assert len(alerts._buffer) == 1
+
+
 def test_repeats_inside_the_window_are_suppressed_and_counted():
     now = 1000.0
     fingerprint = ("handlers.guess.lifecycle", "Annuncio round %s fallito")
@@ -95,6 +107,29 @@ def test_different_templates_are_not_deduplicated():
 def test_fingerprint_groups_by_template_not_by_formatted_message():
     """«round 7» e «round 8» sono lo stesso guasto, non due."""
     assert alerts._fingerprint(_record(args=(7,))) == alerts._fingerprint(_record(args=(8,)))
+
+
+def test_fingerprint_distinguishes_exception_types_on_the_same_template():
+    """`handlers.errors` and `aiogram.event` log *every* exception under one
+    template. Without the exception type in the fingerprint, an unrelated second
+    bug sharing that template would be folded into the first one's dedup window
+    — its traceback would never be sent, ever."""
+    import sys
+
+    def _record_for(exc_type: type[Exception]) -> logging.LogRecord:
+        try:
+            raise exc_type("boom")
+        except exc_type:
+            return _record(
+                msg="Unhandled error", args=(), name="aiogram.event", exc_info=sys.exc_info()
+            )
+
+    value_error = _record_for(ValueError)
+    type_error = _record_for(TypeError)
+    another_value_error = _record_for(ValueError)
+
+    assert alerts._fingerprint(value_error) != alerts._fingerprint(type_error)
+    assert alerts._fingerprint(value_error) == alerts._fingerprint(another_value_error)
 
 
 def test_format_carries_level_logger_and_message():
@@ -131,6 +166,22 @@ def test_format_truncates_instead_of_letting_telegram_refuse():
     assert "troncato" in text
 
 
+def test_format_keeps_the_suppressed_count_even_when_the_traceback_is_truncated():
+    """The suppressed count used to be appended after the traceback and cut
+    along with it — losing exactly the signal that tells «one hiccup» from «a
+    storm» apart (see `_fingerprint`)."""
+    import sys
+
+    try:
+        raise ValueError("x" * 6000)
+    except ValueError:
+        record = _record(msg="esploso", args=(), exc_info=sys.exc_info())
+
+    text = alerts.format_alert(record, suppressed=42)
+
+    assert "soppresse" in text
+
+
 def test_level_threshold_comes_from_settings(monkeypatch):
     monkeypatch.setattr(settings, "alert_min_level", "ERROR")
 
@@ -149,6 +200,22 @@ def test_install_attaches_to_the_root_logger(monkeypatch):
     try:
         assert handler in logging.getLogger().handlers
         assert handler.level == logging.ERROR
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+
+def test_a_real_log_call_reaches_the_buffer_and_the_threshold_filters(monkeypatch):
+    """Every other test calls `handler.emit()` directly, which skips
+    `Logger.callHandlers`' own level gate (`record.levelno >= handler.level`) —
+    so the threshold from `_min_level()` was never actually exercised end to end."""
+    monkeypatch.setattr(settings, "alert_min_level", "WARNING")
+    handler = alerts.install()
+    try:
+        log = logging.getLogger("services.whatever")
+        log.setLevel(logging.INFO)
+        log.info("sotto soglia")
+        log.warning("sopra soglia")
+        assert [r.getMessage() for r in alerts._buffer] == ["sopra soglia"]
     finally:
         logging.getLogger().removeHandler(handler)
 
@@ -264,3 +331,29 @@ async def test_drain_on_an_empty_buffer_sends_nothing(monkeypatch):
 
     assert await alerts.drain(bot) == 0
     assert not bot.sent
+
+
+async def test_alert_loop_survives_a_failing_drain_without_logging(monkeypatch, caplog):
+    """Mirrors `test_the_loop_survives_a_failing_tick` in test_backup_loop.py.
+    `alert_loop`'s contract is stricter than the backup loop's: a logged failure
+    here would feed straight back into the buffer it exists to drain, so a raising
+    `drain` must be swallowed silently, not just survived."""
+
+    async def boom(bot):
+        raise RuntimeError("drain exploded")
+
+    class Stop(Exception):
+        pass
+
+    async def fake_sleep(_seconds):
+        raise Stop
+
+    monkeypatch.setattr(alerts, "drain", boom)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    with caplog.at_level(logging.DEBUG):
+        with pytest.raises(Stop):
+            await alerts.alert_loop(object())
+
+    ours = [r for r in caplog.records if r.name.startswith("utils.alerts")]
+    assert not ours, "a logged failure would feed back into the buffer it drains"

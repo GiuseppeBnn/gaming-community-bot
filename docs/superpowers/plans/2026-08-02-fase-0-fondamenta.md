@@ -1201,7 +1201,9 @@ commento è come si è tenuto finora.
 
 Spingi il branch, attendi la CI, punta il bot di test su `latest-<branch>`:
 
-1. il bot parte e il log dice `FSM storage: redis`;
+1. il bot parte e il log dice `FSM storage: RedisStorage` (il nome della classe
+   costruita, non il valore configurato — vedi il fix del finding 1 nella review
+   finale della Fase 0);
 2. un flusso FSM completo (crea un quiz fino alla scheda);
 3. **riavvia il container**: il flusso aperto sopravvive — Redis è davvero in uso.
 

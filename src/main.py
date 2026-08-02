@@ -177,7 +177,9 @@ async def main() -> None:
     event_types.register_builtin()
 
     storage = await _build_storage()
-    logger.info("FSM storage: %s", settings.fsm_storage)
+    # The settings value is what was *requested*; after a degrade it no longer
+    # matches what got built (STEERING §2) — log the class that is actually wired in.
+    logger.info("FSM storage: %s", type(storage).__name__)
 
     bot = Bot(
         token=settings.bot_token,
@@ -235,6 +237,11 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        # A clean SIGTERM (Watchtower restarts the container every
+        # WATCHTOWER_POLL_INTERVAL) must not throw away up to _MAX_BUFFERED alerts
+        # that never got a poll tick to go out.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(alerts.drain(bot), 5)
         scheduler_task.cancel()
         backup_task.cancel()
         alert_task.cancel()

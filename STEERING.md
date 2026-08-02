@@ -71,7 +71,7 @@ Campi importanti:
 - `admin_ids: list[int]` — parse da stringa CSV via `@field_validator`
 - `daily_reward_coins: int` — **NON `daily_reward`** — matcha la `.env`
 - `daily_min_hours: int` (default 6) — gap minimo dall'ultima riscossione, **in AND** con il reset di mezzanotte del `/daily` (§10.a). Tenere **< 24**
-- `fsm_storage: str` — `"memory"` | `"redis"`. **Il default è `redis`**, ed è un cambio del 2026-08-02: prima era `memory` perché `_build_storage` intercettava solo l'`ImportError` del pacchetto e non una connessione fallita, quindi con Redis irraggiungibile il bot non degradava, **non partiva** — e perdere un flusso di creazione vale meno che perdere il bot. Ora quel baratto non esiste: `_build_storage` fa un `ping` all'avvio e, se Redis non risponde, logga un warning e riparte con `MemoryStorage`. Il costo residuo è dichiarato nel log: con la memoria, ogni conversazione FSM aperta muore al riavvio del container (Watchtower ricrea l'immagine ogni `WATCHTOWER_POLL_INTERVAL: 600`). Il degrado non è silenzioso: passa dagli alert admin (§ alert)
+- `fsm_storage: str` — `"memory"` | `"redis"`. **Il default è `redis`**, ed è un cambio del 2026-08-02: prima era `memory` perché `_build_storage` intercettava solo l'`ImportError` del pacchetto e non una connessione fallita, quindi con Redis irraggiungibile il bot non degradava, **non partiva** — e perdere un flusso di creazione vale meno che perdere il bot. Ora quel baratto non esiste: `_build_storage` fa un `ping` all'avvio e, se Redis non risponde, logga un warning e riparte con `MemoryStorage`. Il costo residuo è dichiarato nel log: con la memoria, ogni conversazione FSM aperta muore al riavvio del container (Watchtower ricrea l'immagine ogni `WATCHTOWER_POLL_INTERVAL: 600`). Il degrado non è silenzioso: passa dagli alert admin (§26)
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
 - `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
@@ -1876,10 +1876,16 @@ backup si recuperano via DM `/backup`·/`esporta` o `docker cp`.
 
 ## 26. Alert al maintainer (`utils/alerts.py`)
 
-Ogni `log.warning`/`log.error`/`log.exception` di `src/` a livello ≥ `ALERT_MIN_LEVEL`
-arriva in **DM privato** a ogni id di `ADMIN_IDS`. Non c'è niente da chiamare: è un
-`logging.Handler` agganciato alla radice in `main()`, quindi un modulo nuovo che logga
-un guasto è già coperto.
+Ogni `log.warning`/`log.error`/`log.exception` a livello ≥ `ALERT_MIN_LEVEL` arriva in
+**DM privato** a ogni id di `ADMIN_IDS` — non solo quello emesso da `src/`. Non c'è niente
+da chiamare: è un `logging.Handler` agganciato alla **radice** dei logger di Python
+(`logging.getLogger()`, non un logger nominato) in `main()`, quindi un modulo nuovo che
+logga un guasto è già coperto, e con lui qualunque libreria di terze parti che usi
+`logging`. Non è un effetto collaterale, è il pezzo migliore del design: è così che il
+canale cattura anche `aiogram.event`, cioè i guasti nei middleware esterni che `dp.errors`
+non vede mai — senza la radice resterebbero invisibili. Un admin che riceve un
+`[ERROR] aiogram.event` non sta ricevendo un alert rotto: sta ricevendo esattamente il
+guasto che questo canale esiste per mostrare.
 
 **Le tre regole che lo tengono in piedi:**
 
@@ -1895,7 +1901,10 @@ un guasto è già coperto.
 **Limiti accettati, non difetti aperti:** N admin = N messaggi; riceve solo chi ha già
 avviato il bot in privato (lo stesso limite di `main.py`, dove i comandi admin si
 registrano best-effort); gli admin Telegram del gruppo che `is_admin` riconosce **non**
-ricevono, perché la sorgente è `settings.admin_ids`; nessuna persistenza e nessun ack.
+ricevono, perché la sorgente è `settings.admin_ids`; nessuna persistenza e nessun ack;
+il canale vive nel processo del bot, quindi un guasto che ne impedisce l'avvio — o che
+lo uccide — non produce nessun alert: non c'è un processo rimasto in piedi che possa
+drenare il buffer.
 
 **Formato `parse_mode=None`**: un traceback non è HTML, e un `esc` dimenticato
 trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).

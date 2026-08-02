@@ -66,8 +66,10 @@ class TelegramAlertHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         global _dropped
-        if record.name.startswith(__name__):
-            # Our own failures must never become alerts about themselves.
+        if record.name == __name__ or record.name.startswith(__name__ + "."):
+            # Our own failures must never become alerts about themselves. A bare
+            # startswith() would also swallow an unrelated `utils.alerts_v2` —
+            # stdlib's own `logging.Filter` guards this with the same dot check.
             return
         if len(_buffer) >= _MAX_BUFFERED:
             _dropped += 1
@@ -76,9 +78,17 @@ class TelegramAlertHandler(logging.Handler):
 
 
 def _fingerprint(record: logging.LogRecord) -> tuple[str, str]:
-    """Group by **template**, not by formatted message: «Annuncio round %s
-    fallito» is one problem whether it fires for round 7 or round 8."""
-    return (record.name, str(record.msg))
+    """Group by **template plus exception type**, not by formatted message.
+
+    «Annuncio round %s fallito» is one problem whether it fires for round 7 or
+    round 8 — that's the template half. But catch-all logging (`handlers.errors`,
+    `aiogram.event`) logs *every* exception under one shared template, so the
+    template alone would fold unrelated bugs into a single dedup window and hide
+    every traceback but the first one seen. The exception's type name is the
+    cheapest thing that tells them apart.
+    """
+    exc = record.exc_info[0].__name__ if record.exc_info and record.exc_info[0] else ""
+    return (record.name, f"{record.msg}|{exc}")
 
 
 def _should_send(fingerprint: tuple[str, str], now: float) -> tuple[bool, int]:
@@ -98,14 +108,18 @@ def format_alert(record: logging.LogRecord, suppressed: int = 0) -> str:
     missed escape would turn an alert about a bug into a bug of its own. Sent
     with `parse_mode=None`, like the AI commands' output (STEERING §17).
     """
-    parts = [f"[{record.levelname}] {record.name}", record.getMessage()]
-    if record.exc_info:
-        parts.append(_formatter.formatException(record.exc_info))
+    header = f"[{record.levelname}] {record.name}"
     if suppressed:
-        parts.append(
-            f"(+{suppressed} ripetizioni soppresse negli ultimi "
+        # In the header, not appended at the end: the traceback below is the
+        # first thing truncation cuts, and this count is the one signal that
+        # tells a single hiccup from a storm apart — it must survive that cut.
+        header += (
+            f" (+{suppressed} ripetizioni soppresse negli ultimi "
             f"{int(_DEDUP_WINDOW_SECONDS)}s)"
         )
+    parts = [header, record.getMessage()]
+    if record.exc_info:
+        parts.append(_formatter.formatException(record.exc_info))
     text = "\n".join(parts)
     if len(text) > _MAX_TEXT:
         text = text[:_MAX_TEXT] + "\n…(troncato)"
