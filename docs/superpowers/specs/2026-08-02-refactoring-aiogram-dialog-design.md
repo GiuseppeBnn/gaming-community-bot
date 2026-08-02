@@ -329,12 +329,18 @@ Cinque numeri, scritti nel piano di implementazione prima della prima riga di co
 |---|---|---|
 | righe handler | 898 | `wc -l src/handlers/guess/creation.py` |
 | righe test | 915 | `wc -l tests/integration/test_guess_creation_flow.py` |
-| query di un flusso completo | **da misurare** | listener `before_cursor_execute` di SQLAlchemy su un test che fa 3 domande + 6 edit + pubblicazione |
+| query di un flusso completo | **0** prima della pubblicazione · **2** alla pubblicazione | listener `before_cursor_execute` di SQLAlchemy su un test che fa 3 domande + 2 edit + pubblicazione (`tests/integration/test_creation_query_cost.py`) |
 | tempo della suite | ~40 s | `pytest` |
 | coverage | ≥ 99 | `pytest --cov=src --cov-report=term-missing` |
 
-La riga «query di un flusso completo» è **il primo task della fase**: senza il numero di partenza
-il confronto dopo non vuole dire niente.
+Misurato il 2026-08-02, prima di installare `aiogram_dialog` (Task 1 della fase, com'era previsto).
+Il flusso pre-pubblicazione costa **zero** query — tutto vive nello stato FSM, come atteso — e la
+pubblicazione ne costa **due**: un `INSERT INTO guess_rounds` (`guess_service.create_round`, il
+round nasce `draft`) seguito da un `UPDATE guess_rounds SET status=?` (l'armamento a `ready` in
+`cb_publish`). Conta perché è il termine di paragone per il resto della fase: con una baseline a
+**zero**, un `getter` di aiogram-dialog che interroga il DB per ridisegnare una finestra — il suo
+meccanismo normale, non un caso patologico — sarebbe una **regressione** rispetto a oggi, non un
+pareggio. Il confronto prima/dopo di §4.3 si misura contro questo zero, non contro un valore comodo.
 
 ### 4.2 Cosa si costruisce
 
