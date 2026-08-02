@@ -14,7 +14,7 @@ Bot Telegram per una community di gaming (italiano lato utente, inglese nei comm
 Economia in CoInn, scommesse, quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio,
 suite admin, moderazione, backup.
 
-**Stack vincolante** (§1): Python **3.12** · aiogram **3.13.1** (mai 2.x) · SQLAlchemy 2.0 async ·
+**Stack vincolante** (§1): Python **3.12** · aiogram **3.30.0** (mai 2.x) · SQLAlchemy 2.0 async ·
 pydantic-settings 2.x · PostgreSQL 16/asyncpg in prod, SQLite/aiosqlite in dev e test ·
 aiohttp per le chiamate LLM (**mai** HTTP bloccante) · Groq (opzionale).
 
@@ -25,7 +25,7 @@ aiohttp per le chiamate LLM (**mai** HTTP bloccante) · Groq (opzionale).
 ```bash
 source .venv/bin/activate        # Python 3.12
 
-pytest                           # 2092 test (2062 passed, 30 `pg` skipped), ~40s, nessun token reale
+pytest                           # 2121 test (2091 passed, 30 `pg` skipped), ~40s, nessun token reale
 pytest tests/unit/               # solo unit
 pytest -m "not pg"               # esplicitamente senza Postgres
 pytest --cov=src --cov-report=term-missing   # gate: fail_under = 99
@@ -140,7 +140,7 @@ Elenco completo: **STEERING §22 (regole 1–27)** e **§24 (checklist pre-PR)**
 
 ## Prima di consegnare
 
-- [ ] `pytest` verde (2062 passed, 30 `pg` skipped senza Postgres) e coverage ≥ `fail_under`
+- [ ] `pytest` verde (2091 passed, 30 `pg` skipped senza Postgres) e coverage ≥ `fail_under`
 - [ ] `ruff check src/ tests/` e `mypy` puliti — sono **a zero findings**: ogni segnalazione è una
       regressione nuova, non rumore preesistente
 - [ ] `PYTHONPATH=src python -c "import main"` non esplode

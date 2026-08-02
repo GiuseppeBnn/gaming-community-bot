@@ -476,9 +476,9 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 
 | fase | descrizione | stato |
 |---|---|---|
-| 0.1 | Storage FSM: ping + fallback, `.env.example`, STEERING §2 | ☐ da fare |
-| 0.2 | aiogram 3.13.1 → 3.30.0, isolato | ☐ da fare |
-| 0.3 | Alert admin (`utils/alerts.py`) | ☐ da fare |
+| 0.1 | Storage FSM: ping + fallback, `.env.example`, STEERING §2 | ☑ fatta |
+| 0.2 | aiogram 3.13.1 → 3.30.0, isolato | ☑ fatta |
+| 0.3 | Alert admin (`utils/alerts.py`) | ☑ fatta |
 | — | **Gate Fase 0** (§3.4) | ☐ |
 | 1 | Spike `guess/creation.py` con aiogram-dialog | ☐ da fare |
 | — | **Gate spike** (§4.3) — decide l'utente | ☐ |
