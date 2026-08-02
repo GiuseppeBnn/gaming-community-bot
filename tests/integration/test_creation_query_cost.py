@@ -7,7 +7,7 @@ anche se lo spike venisse abbandonato: un conteggio pinnato è la guardia contro
 le N+1, che è precisamente il difetto che non si vede finché il DB non è grande.
 
 Il numero atteso è basso per costruzione, non per fortuna: tutto il flusso vive
-nello stato FSM e il DB si tocca una volta sola, alla pubblicazione.
+nello stato FSM e il DB si tocca solo alla pubblicazione, mai prima.
 """
 
 from __future__ import annotations
@@ -40,6 +40,13 @@ def sql_counter(engine):
 
 @pytest.fixture
 def state():
+    """Duplicato deliberato di `test_guess_creation_flow.state`.
+
+    Importarla invece farebbe scattare ruff F401 + F811 (il parametro
+    `state` delle due funzioni sotto "ridefinisce" l'import prima che venga
+    letto): otto righe qui, boring e ovviamente corrette, costano meno del
+    sopprimerlo.
+    """
     from aiogram.fsm.context import FSMContext
     from aiogram.fsm.storage.base import StorageKey
     from aiogram.fsm.storage.memory import MemoryStorage
@@ -76,14 +83,20 @@ async def test_publishing_costs_a_known_number_of_statements(
     """Pinna il costo della pubblicazione.
 
     Non si asserisce un numero esatto — un `INSERT` in più per una colonna nuova
-    è un cambio legittimo — ma un tetto: se il costo raddoppia, qualcuno ha
-    introdotto una lettura per riga e questo test è il posto in cui accorgersene.
+    è un cambio legittimo — ma un tetto stretto: se il costo raddoppia, qualcuno
+    ha introdotto una lettura per riga e questo test è il posto in cui
+    accorgersene.
 
     Misurato il 2026-08-02: **2 statement** — un `INSERT INTO guess_rounds`
     (il round nasce `draft`, dentro `guess_service.create_round`) seguito da un
     `UPDATE guess_rounds SET status=?` (l'armamento a `ready` in `cb_publish`).
-    Il tetto resta a 12, il valore proposto dal brief: è già ampiamente sopra il
-    misurato, non abbassato a un numero comodo scelto dopo il fatto.
+
+    Il tetto è **3**, non un multiplo comodo come 12: 12 passerebbe in silenzio
+    fino a un raddoppio da 2 a 4 statement (li lascerebbe scattare solo a 13,
+    un'esplosione di 6 volte e mezzo — non la guardia che questo paragrafo
+    promette). 3 lascia margine per un solo statement in più rispetto al
+    misurato — una colonna nuova, una riga di audit — e scatta già a 4, che è
+    esattamente il raddoppio da intercettare.
     """
     _BOT.reset()
     await _to_card(state)
@@ -92,7 +105,7 @@ async def test_publishing_costs_a_known_number_of_statements(
     await cr.cb_publish(_Cb("guess_new:publish"), state, session)
 
     assert sql_counter, "la pubblicazione deve scrivere qualcosa"
-    assert len(sql_counter) <= 12, (
-        f"la pubblicazione costa {len(sql_counter)} statement, erano ≤12: "
+    assert len(sql_counter) <= 3, (
+        f"la pubblicazione costa {len(sql_counter)} statement, erano ≤3: "
         + "\n".join(sql_counter)
     )
