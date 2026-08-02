@@ -261,7 +261,14 @@ Un `notify_admins()` da chiamare a mano copre meno e va ricordato ogni volta.
 |---|---|
 | `TelegramAlertHandler(logging.Handler)` | `emit()` fa **solo** `queue.put_nowait(record)`. Nessun I/O, nessun `await`: il logging resta sincrono e non blocca mai. Coda con `maxsize`: piena ⇒ scarta e conta |
 | `alert_loop(bot)` | Terzo task in background accanto a scheduler e backup. `try/except` totale come `backup/loop.py`. Drena, formatta, invia |
-| dedup | Impronta `(record.name, record.msg)` → `utils.cooldown.remaining`/`mark`, finestra 300 s. I soppressi si **contano** e il numero entra nel messaggio successivo |
+| dedup | Impronta `(record.name, record.msg)` → un dizionario locale `impronta → (ultimo invio, soppressi)`, finestra 300 s. I soppressi si **contano** e il numero entra nel messaggio successivo |
+
+> **Perché non `utils.cooldown`.** Sembra il riuso ovvio, e non lo è: la sua chiave è
+> `(bucket: str, user_id: int)`, quindi un'impronta testuale ci entra solo passando per un hash
+> — collisioni silenziose su un canale che esiste per segnalare guasti — e non sa contare i
+> soppressi, che è metà del requisito. Servirebbero due strutture invece di una. Dieci righe
+> locali che tengono timestamp e conteggio nello stesso valore sono meno codice **e** più
+> oneste.
 
 **Le tre difese non tagliabili:**
 
