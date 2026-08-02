@@ -25,8 +25,11 @@ Three constraints shape everything here:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections import deque
+from typing import Any
 
 from config_data.config import settings
 
@@ -124,3 +127,81 @@ def reset() -> None:
     _seen.clear()
     _dropped = 0
     _undelivered = 0
+
+
+# How often the loop looks at the buffer. Alerts are not interactive: a couple of
+# seconds of latency costs nothing and keeps the loop cheap.
+_POLL_INTERVAL_SECONDS = 2.0
+
+
+async def _deliver(bot: Any, text: str) -> None:
+    """Best effort, one message per admin. Never raises, **never logs**.
+
+    `bot` is typed loosely on purpose: this module must stay importable and
+    testable without dragging aiogram's Bot into a unit test.
+    """
+    global _undelivered
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.send_message(admin_id, text, parse_mode=None)
+        except Exception:  # noqa: BLE001 — logging here would feed the buffer
+            _undelivered += 1
+
+
+async def _flush_housekeeping(bot: Any) -> int:
+    """Report what this module itself lost: dropped alerts, failed deliveries.
+
+    Two orderings matter here, and both are load-bearing:
+
+    * **Rate-limited before anything else.** A failed delivery increments
+      `_undelivered`, which would make the next tick try again — every two
+      seconds, forever, while the channel is down. Running it through the same
+      dedup window as any other repeat caps that at one attempt per window, and
+      leaves the counters accumulating in the meantime rather than lost.
+    * **Counters reset before the send.** Otherwise a housekeeping message that
+      fails to deliver counts its own failure and re-reports itself.
+    """
+    global _dropped, _undelivered
+    if not _dropped and not _undelivered:
+        return 0
+    send, _ = _should_send((__name__, "housekeeping"), time.monotonic())
+    if not send:
+        return 0
+    dropped, undelivered = _dropped, _undelivered
+    _dropped = _undelivered = 0
+    lines = [f"[WARNING] {__name__}"]
+    if dropped:
+        lines.append(f"{dropped} alert scartati: buffer pieno ({_MAX_BUFFERED}).")
+    if undelivered:
+        lines.append(f"{undelivered} consegne fallite.")
+    await _deliver(bot, "\n".join(lines))
+    return 1
+
+
+async def drain(bot: Any) -> int:
+    """Send whatever is buffered, deduplicated. Returns how many alerts went out."""
+    sent = 0
+    now = time.monotonic()
+    while _buffer:
+        record = _buffer.popleft()
+        send, suppressed = _should_send(_fingerprint(record), now)
+        if not send:
+            continue
+        await _deliver(bot, format_alert(record, suppressed))
+        sent += 1
+    return sent + await _flush_housekeeping(bot)
+
+
+async def alert_loop(bot: Any) -> None:
+    """Endless background loop started from `main()`. Never raises out.
+
+    Mirrors `services.backup.loop.backup_loop`, minus its logging: an exception
+    logged from inside the alert path is the one thing that could turn this into
+    a feedback loop.
+    """
+    while True:
+        try:
+            await drain(bot)
+        except Exception:  # noqa: BLE001 — the loop must never die, nor log
+            pass
+        await asyncio.sleep(_POLL_INTERVAL_SECONDS)

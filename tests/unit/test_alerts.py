@@ -151,3 +151,116 @@ def test_install_attaches_to_the_root_logger(monkeypatch):
         assert handler.level == logging.ERROR
     finally:
         logging.getLogger().removeHandler(handler)
+
+
+class _FakeBot:
+    """Registra le consegne. `fails=True` è il caso che non deve mai loggare."""
+
+    def __init__(self, *, fails: bool = False) -> None:
+        self.sent: list[tuple[int, str]] = []
+        self.parse_modes: list = []
+        self._fails = fails
+
+    async def send_message(self, chat_id, text, parse_mode=None, **kwargs):
+        if self._fails:
+            raise RuntimeError("chat not found")
+        self.sent.append((chat_id, text))
+        self.parse_modes.append(parse_mode)
+
+
+async def test_drain_delivers_to_every_admin(monkeypatch):
+    monkeypatch.setattr(settings, "admin_ids", [11, 22])
+    alerts._buffer.append(_record())
+    bot = _FakeBot()
+
+    sent = await alerts.drain(bot)
+
+    assert sent == 1
+    assert [chat_id for chat_id, _ in bot.sent] == [11, 22]
+    assert bot.parse_modes == [None, None], "un traceback non è HTML"
+
+
+async def test_drain_empties_the_buffer(monkeypatch):
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    alerts._buffer.append(_record())
+    bot = _FakeBot()
+
+    await alerts.drain(bot)
+
+    assert not alerts._buffer
+
+
+async def test_a_delivery_failure_neither_raises_nor_logs(monkeypatch, caplog):
+    """Se il sender loggasse, l'errore rientrerebbe nel buffer, per sempre."""
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    alerts._buffer.append(_record())
+    bot = _FakeBot(fails=True)
+
+    with caplog.at_level(logging.DEBUG):
+        await alerts.drain(bot)
+
+    assert alerts._undelivered == 1, "la consegna fallita si conta"
+    ours = [r for r in caplog.records if r.name.startswith("utils.alerts")]
+    assert not ours, "…e non si logga: rientrerebbe nel buffer, per sempre"
+
+
+async def test_repeats_are_delivered_once(monkeypatch):
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    for _ in range(5):
+        alerts._buffer.append(_record())
+    bot = _FakeBot()
+
+    sent = await alerts.drain(bot)
+
+    assert sent == 1
+    assert len(bot.sent) == 1
+
+
+async def test_housekeeping_reports_what_was_lost(monkeypatch):
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    alerts._dropped = 7
+    alerts._undelivered = 3
+    bot = _FakeBot()
+
+    await alerts.drain(bot)
+
+    assert len(bot.sent) == 1
+    text = bot.sent[0][1]
+    assert "7" in text and "3" in text
+    assert alerts._dropped == 0 and alerts._undelivered == 0
+
+
+async def test_housekeeping_does_not_report_itself_forever(monkeypatch):
+    """I contatori si azzerano **prima** dell'invio: una notifica di consegna
+    fallita che fallisce a sua volta non deve ripresentarsi a ogni giro."""
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    alerts._dropped = 2
+    bot = _FakeBot(fails=True)
+
+    await alerts.drain(bot)
+    await alerts.drain(bot)
+
+    assert alerts._dropped == 0
+
+
+async def test_housekeeping_is_rate_limited(monkeypatch):
+    """Col canale a terra, ogni tick riproverebbe: una chiamata API ogni 2s, per
+    sempre. La notifica di servizio passa dallo stesso dedup di tutto il resto."""
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    bot = _FakeBot()
+
+    alerts._dropped = 2
+    await alerts.drain(bot)
+    alerts._dropped = 3
+    await alerts.drain(bot)
+
+    assert len(bot.sent) == 1, "la seconda cade nella finestra di dedup"
+    assert alerts._dropped == 3, "…e il conteggio resta in attesa, non si perde"
+
+
+async def test_drain_on_an_empty_buffer_sends_nothing(monkeypatch):
+    monkeypatch.setattr(settings, "admin_ids", [11])
+    bot = _FakeBot()
+
+    assert await alerts.drain(bot) == 0
+    assert not bot.sent

@@ -26,6 +26,7 @@ from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 from services import badge_service, catalog_loader, group_registry
 from services.backup.loop import backup_loop
+from utils import alerts
 from utils.atomic_io import probe_writable
 
 logging.basicConfig(
@@ -140,6 +141,7 @@ async def _build_storage() -> BaseStorage:
 
 
 async def main() -> None:
+    alerts.install()
     await create_tables()
     await run_migrations()
     logger.info("Tabelle DB pronte.")
@@ -227,6 +229,7 @@ async def main() -> None:
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot))
     backup_task = asyncio.create_task(backup_loop())
+    alert_task = asyncio.create_task(alerts.alert_loop(bot))
 
     logger.info("Bot avviato — polling in corso.")
     try:
@@ -234,6 +237,7 @@ async def main() -> None:
     finally:
         scheduler_task.cancel()
         backup_task.cancel()
+        alert_task.cancel()
         await bot.session.close()
         logger.info("Bot fermato.")
 

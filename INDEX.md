@@ -43,7 +43,7 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | 10 | Betting payout · 10.a `/daily` | 23 | Test suite |
 | 11 | Locanda: 11.a cosmetici · 11.b consumabili | 24 | **Checklist pre-PR** |
 | 12 | Trofei · 12.1 XP · 12.2 cataloghi CSV | 25 | Backup & export stato |
-| 13 | `group_registry` (id gruppo effettivo) | | |
+| 13 | `group_registry` (id gruppo effettivo) | 26 | Alert al maintainer |
 
 ---
 

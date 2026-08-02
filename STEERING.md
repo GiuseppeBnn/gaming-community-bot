@@ -1871,3 +1871,31 @@ codice: `atomic_io.probe_writable(dir)` (pre-flight `write+unlink`, mai solleva)
 (`main`, warning non bloccante) e a ogni tick (`backup/loop`, salta il giro con un warning chiaro invece di
 uno stack trace `EACCES`); `atomic_write_bytes`/`GzipMemberWriter.open` loggano il path su `OSError`. I
 backup si recuperano via DM `/backup`·/`esporta` o `docker cp`.
+
+---
+
+## 26. Alert al maintainer (`utils/alerts.py`)
+
+Ogni `log.warning`/`log.error`/`log.exception` di `src/` a livello ≥ `ALERT_MIN_LEVEL`
+arriva in **DM privato** a ogni id di `ADMIN_IDS`. Non c'è niente da chiamare: è un
+`logging.Handler` agganciato alla radice in `main()`, quindi un modulo nuovo che logga
+un guasto è già coperto.
+
+**Le tre regole che lo tengono in piedi:**
+
+1. **`emit()` non fa I/O.** Bufferizza e basta. Il logging è sincrono e viene chiamato
+   dentro gli handler: un invio lì bloccherebbe l'event loop a ogni riga di log.
+2. **Il sender non logga mai.** Un errore di consegna che finisse nel logger rientrerebbe
+   nel buffer e il bot si alimenterebbe alert all'infinito. Le consegne fallite si
+   **contano** e si riportano col drain successivo.
+3. **Le ripetizioni si deduplicano per template**, non per messaggio formattato: «Annuncio
+   round %s fallito» è un guasto solo, che riguardi il round 7 o l'8. Finestra 300 s, e le
+   soppresse si riportano — non si buttano.
+
+**Limiti accettati, non difetti aperti:** N admin = N messaggi; riceve solo chi ha già
+avviato il bot in privato (lo stesso limite di `main.py`, dove i comandi admin si
+registrano best-effort); gli admin Telegram del gruppo che `is_admin` riconosce **non**
+ricevono, perché la sorgente è `settings.admin_ids`; nessuna persistenza e nessun ack.
+
+**Formato `parse_mode=None`**: un traceback non è HTML, e un `esc` dimenticato
+trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).
