@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     # CSV format (ADMIN_IDS=123,456) reaches parse_admin_ids as a plain string.
     admin_ids: Annotated[list[int], NoDecode] = []
 
+    # Alert channel: the minimum level that reaches the admins' DMs. Raising it
+    # to CRITICAL is also the off switch — no second variable just for that.
+    alert_min_level: str = "WARNING"
+
     daily_reward_coins: int = 100
     # /daily resets at local midnight (scheduler_timezone). This is the extra
     # minimum gap since the previous claim, ANDed with the midnight rule so a
