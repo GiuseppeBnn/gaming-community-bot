@@ -271,7 +271,9 @@ mypy
 PYTHONPATH=src python -c "import main"
 ```
 
-Expected: suite verde (2.062 passed, 30 skipped senza `TEST_PG_URL`, **più i 3 nuovi** = 2.065 passed), ruff e mypy silenziosi, l'import non esplode.
+Expected: suite verde. Baseline misurata il 2026-08-02: **2067 passed, 30 skipped** senza
+`TEST_PG_URL` — non 2062, che è il numero fermo in `CLAUDE.md` e `INDEX.md`. Coi 3 nuovi:
+**2070 passed, 30 skipped**. Ruff e mypy silenziosi, l'import non esplode.
 
 - [ ] **Step 7: Commit**
 
@@ -356,7 +358,7 @@ Expected: PASS. Se fallisce con un `TypeError`/`AttributeError` dentro `redis`, 
 pytest -q
 ```
 
-Expected: `2065 passed, 30 skipped`. Ogni fallimento qui **è** l'upgrade: la suite era verde
+Expected: `2070 passed, 30 skipped`. Ogni fallimento qui **è** l'upgrade: la suite era verde
 un commit fa.
 
 - [ ] **Step 6: I test `pg` — non saltabili**
@@ -1166,8 +1168,12 @@ mypy
 PYTHONPATH=src python -c "import main"
 ```
 
-Expected: `2086 passed, 30 skipped` (2.062 di partenza + 3 del Task 1 + 21 dei Task 3-4),
-ruff e mypy silenziosi.
+Expected: `2091 passed, 30 skipped` (2067 di baseline misurata + 3 del Task 1 + 21 dei
+Task 3-4), ruff e mypy silenziosi.
+
+> Già che ci sei: `CLAUDE.md` e `INDEX.md` dicono «2092 test (2062 passed)». Il numero vero
+> il 2026-08-02 era **2097 raccolti, 2067 passed**. Correggili in questo commit — un conteggio
+> sbagliato nei documenti fa sembrare rotta una suite verde.
 
 - [ ] **Step 2: I test `pg`**
 
