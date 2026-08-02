@@ -1224,7 +1224,7 @@ docker compose start redis
 docker compose restart bot
 ```
 
-Expected: il log dice di nuovo `redis` e nessun alert.
+Expected: il log dice di nuovo `FSM storage: RedisStorage` e nessun alert.
 
 > Questo passo è il collaudo di tutte e tre le parti in una volta: il fallback del Task 1
 > esiste, l'handler del Task 3 lo cattura, la consegna del Task 4 lo recapita.

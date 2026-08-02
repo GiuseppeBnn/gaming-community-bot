@@ -522,16 +522,19 @@ Con un bot Telegram di prova e Redis in Docker:
 - [ ] **Un flusso FSM aperto sopravvive al riavvio del processo?** Serve aprire un flusso
       (es. `/quiz` → creazione) e poi riavviare.
 
-### 11.4 Quattro difetti noti, consapevolmente non corretti
+### 11.4 I quattro difetti noti — **chiusi il 2026-08-02**
 
-Nessuno tocca la correttezza a runtime. Sono qui perché «differito» non diventi «dimenticato».
+Erano stati parcheggiati perché il metodo non prevede una seconda ondata di fix dopo la review
+finale. Sono stati chiusi subito dopo, in un commit a parte, prima che la Fase 1 ci partisse
+sopra. Restano elencati qui perché la storia di *cosa* è stato sbagliato serve più della
+rassicurazione che ora è a posto.
 
-| dove | cosa | perché non è stato corretto |
+| dove | cosa | com'è stato chiuso |
 |---|---|---|
-| `src/utils/alerts.py` (docstring di modulo) | dice «deduplicated by template», mentre `_fingerprint` ora deduplica per **template + tipo di eccezione**: due docstring nello stesso file che si contraddicono | scoperto dalla re-review dell'ondata di fix, e il metodo non prevede una seconda ondata |
-| `src/main.py` (blocco `finally`) | il drain finale gira **prima** dei `.cancel()`, quindi per ≤5 s il loop di background può drenare in concorrenza. Nessun record perso né consegnato due volte (`_buffer.popleft()` non attraversa mai un `await`); a rischio è solo il *conteggio* dei soppressi | idem. La correzione — cancellare prima, drenare dopo — non è più codice di quello che c'è |
-| `docs/superpowers/plans/2026-08-02-fase-0-fondamenta.md`, Task 5 Step 5 | si aspetta che il log dica `redis`; dopo il fix dice `RedisStorage` | è un runbook **ancora da eseguire**: chi lo esegue cercherà una stringa che il codice non stampa più |
-| `STEERING.md` §26, punto 3 | descrive il dedup «per template», senza il tipo di eccezione | CLAUDE.md impone di aggiornare STEERING quando cambia un invariante documentato, e la chiave di dedup lo è |
+| `src/utils/alerts.py` (docstring di modulo) | diceva «deduplicated by template», mentre `_fingerprint` deduplica per **template + tipo di eccezione**: due docstring nello stesso file che si contraddicevano | docstring riscritto, con la ragione (i logger catch-all riusano un solo template) |
+| `src/main.py` (blocco `finally`) | il drain finale girava **prima** dei `.cancel()`, quindi per ≤5 s il loop di background poteva drenare in concorrenza. Nessun record perso né consegnato due volte (`_buffer.popleft()` non attraversa mai un `await`); a rischio era solo il *conteggio* dei soppressi | `alert_task.cancel()` spostato **prima** del drain: si drena una volta sola, senza contese. Nessun test nuovo — è un riordino in un file di bootstrap escluso dal coverage, e un test su quella corsa sarebbe teatro |
+| piano Fase 0, Task 5 Step 5 | si aspettava che il log dicesse `redis`; dopo il fix dice `RedisStorage` | attesa corretta nel runbook, prima che qualcuno lo esegua cercando una stringa che il codice non stampa più |
+| `STEERING.md` §26, punto 3 | descriveva il dedup «per template», senza il tipo di eccezione | punto riscritto con la ragione per cui il tipo entra nella chiave |
 
 ### 11.5 Il branch
 

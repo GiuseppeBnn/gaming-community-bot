@@ -237,14 +237,18 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        scheduler_task.cancel()
+        backup_task.cancel()
+        # Cancelled *before* the farewell drain, not after: the loop's own tick
+        # runs every _POLL_INTERVAL_SECONDS, so draining alongside a live task
+        # means two coroutines sharing the dedup state, and a suppressed-repeat
+        # count can go unreported. Cancel first, then drain once, uncontested.
+        alert_task.cancel()
         # A clean SIGTERM (Watchtower restarts the container every
         # WATCHTOWER_POLL_INTERVAL) must not throw away up to _MAX_BUFFERED alerts
         # that never got a poll tick to go out.
         with contextlib.suppress(Exception):
             await asyncio.wait_for(alerts.drain(bot), 5)
-        scheduler_task.cancel()
-        backup_task.cancel()
-        alert_task.cancel()
         await bot.session.close()
         logger.info("Bot fermato.")
 

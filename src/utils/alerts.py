@@ -18,9 +18,13 @@ Three constraints shape everything here:
   come straight back into this buffer and the bot would feed itself alerts
   forever. Delivery failures are counted in memory instead, and reported with
   the next successful drain.
-* **Repeats are deduplicated by template.** A group announcement failing in a
-  loop is one warning every few seconds — exactly the flood that makes an alert
-  channel worth ignoring. Repeats are counted and reported, not dropped.
+* **Repeats are deduplicated by template plus exception type.** A group
+  announcement failing in a loop is one warning every few seconds — exactly the
+  flood that makes an alert channel worth ignoring. The exception type is part
+  of the key because the catch-all loggers (`handlers.errors`, `aiogram.event`)
+  reuse one template for every failure they ever see, and grouping on the
+  template alone would bury an unrelated second bug as a repeat of the first.
+  Repeats are counted and reported, not dropped.
 """
 
 from __future__ import annotations

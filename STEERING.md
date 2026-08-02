@@ -1894,9 +1894,13 @@ guasto che questo canale esiste per mostrare.
 2. **Il sender non logga mai.** Un errore di consegna che finisse nel logger rientrerebbe
    nel buffer e il bot si alimenterebbe alert all'infinito. Le consegne fallite si
    **contano** e si riportano col drain successivo.
-3. **Le ripetizioni si deduplicano per template**, non per messaggio formattato: «Annuncio
-   round %s fallito» è un guasto solo, che riguardi il round 7 o l'8. Finestra 300 s, e le
-   soppresse si riportano — non si buttano.
+3. **Le ripetizioni si deduplicano per template + tipo di eccezione**, non per messaggio
+   formattato: «Annuncio round %s fallito» è un guasto solo, che riguardi il round 7 o l'8.
+   Il tipo di eccezione entra nella chiave perché i logger catch-all (`handlers.errors`,
+   `aiogram.event`) usano **un solo** template per ogni guasto che vedranno mai: raggruppare
+   sul solo template seppellirebbe un secondo bug scorrelato come se fosse una ripetizione del
+   primo, e il suo traceback non lo vedrebbe nessuno. Finestra 300 s, e le soppresse si
+   riportano — non si buttano.
 
 **Limiti accettati, non difetti aperti:** N admin = N messaggi; riceve solo chi ha già
 avviato il bot in privato (lo stesso limite di `main.py`, dove i comandi admin si
