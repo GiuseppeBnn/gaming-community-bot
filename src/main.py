@@ -14,6 +14,7 @@ from aiogram.types import (
     BotCommandScopeChat,
     BotCommandScopeChatAdministrators,
 )
+from aiogram_dialog import setup_dialogs
 
 from config_data.config import settings
 from database.connection import async_session_maker, create_tables, run_migrations
@@ -199,6 +200,10 @@ async def main() -> None:
     # is declared once in handlers/__init__.py and asserted by
     # tests/unit/test_router_order.py — including that nothing is left unregistered.
     handlers.register(dp)
+
+    # aiogram-dialog registers its own event observers on the dispatcher; it is
+    # not a router, so it goes after the routers are in place.
+    setup_dialogs(dp)
 
     # Global fallback for anything that escapes a handler: logs with context and
     # replies to the user instead of leaving the bot silent. On the dispatcher

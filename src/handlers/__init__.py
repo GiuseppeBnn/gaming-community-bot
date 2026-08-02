@@ -36,6 +36,7 @@ from handlers import (
     badges,
     betting,
     common,
+    dialog_spike,
     economy,
     events,
     fun_ai,
@@ -66,6 +67,7 @@ ROUTERS: tuple[Router, ...] = (
     schedule.router,
     backup.router,
     fun_ai.router,
+    dialog_spike.router,    # Fase 1 spike (temporary, see the module docstring)
     common.router,          # must stay last (global fallbacks)
 )
 
