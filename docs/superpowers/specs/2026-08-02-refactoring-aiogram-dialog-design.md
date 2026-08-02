@@ -479,7 +479,7 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | 0.1 | Storage FSM: ping + fallback, `.env.example`, STEERING §2 | ☑ fatta |
 | 0.2 | aiogram 3.13.1 → 3.30.0, isolato | ☑ fatta |
 | 0.3 | Alert admin (`utils/alerts.py`) | ☑ fatta |
-| — | **Gate Fase 0** (§3.4) | ☐ |
+| — | **Gate Fase 0** (§3.4) | ▣ locale ☑, staging a metà — vedi §11 |
 | 1 | Spike `guess/creation.py` con aiogram-dialog | ☐ da fare |
 | — | **Gate spike** (§4.3) — decide l'utente | ☐ |
 | 2 | `admin_dashboard.py` | ☐ subordinata al gate |
@@ -488,3 +488,74 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | 5 | hub eventi + `event_types/` (cambia `render_detail`) | ☐ subordinata al gate |
 
 Legenda: ☐ da fare · ▣ in corso · ☑ fatta · ✗ abbandonata (con il perché, in una riga sotto).
+
+---
+
+## 11. Chiusura della Fase 0 — stato reale al 2026-08-02
+
+Scritto qui e non in un file di lavoro perché i file di lavoro spariscono. Chi riprende in una
+sessione nuova trova in questa sezione **tutto** ciò che è rimasto aperto.
+
+### 11.1 Cosa è stato fatto, e dove
+
+Dieci commit su `test_giu`, da `38182d9` a `0886fb9`: questo documento e il piano, poi i cinque
+task, poi un'unica ondata di fix dalla review finale.
+
+Gate locali, misurati sull'albero finale: **2096 passed, 30 skipped** (baseline di partenza
+2067) · **31 test `pg` verdi** contro un PostgreSQL 16 vero · coverage **99.67%** con
+`fail_under = 99` · `ruff` e `mypy` a zero findings · `import main` pulito.
+
+### 11.2 Verificato in esecuzione, non solo dai test
+
+Con un bot Telegram di prova e Redis in Docker:
+
+- il bot parte e usa Redis;
+- **con Redis fermo degrada a `MemoryStorage` e resta vivo** — che è l'intero scopo della 0.1;
+- quando Redis torna, riparte su Redis senza warning;
+- il percorso bot → DM verso l'admin funziona (`sendMessage` diretta, `ok: true`).
+
+### 11.3 Rimasto aperto — serve una persona, non un test
+
+- [ ] **L'alert è arrivato davvero in DM?** La catena completa (`log.warning` → handler →
+      buffer → `drain` → consegna) non è mai stata osservata da capo a fondo. I pezzi sono
+      testati singolarmente; è la composizione che manca.
+- [ ] **Un flusso FSM aperto sopravvive al riavvio del processo?** Serve aprire un flusso
+      (es. `/quiz` → creazione) e poi riavviare.
+
+### 11.4 Quattro difetti noti, consapevolmente non corretti
+
+Nessuno tocca la correttezza a runtime. Sono qui perché «differito» non diventi «dimenticato».
+
+| dove | cosa | perché non è stato corretto |
+|---|---|---|
+| `src/utils/alerts.py` (docstring di modulo) | dice «deduplicated by template», mentre `_fingerprint` ora deduplica per **template + tipo di eccezione**: due docstring nello stesso file che si contraddicono | scoperto dalla re-review dell'ondata di fix, e il metodo non prevede una seconda ondata |
+| `src/main.py` (blocco `finally`) | il drain finale gira **prima** dei `.cancel()`, quindi per ≤5 s il loop di background può drenare in concorrenza. Nessun record perso né consegnato due volte (`_buffer.popleft()` non attraversa mai un `await`); a rischio è solo il *conteggio* dei soppressi | idem. La correzione — cancellare prima, drenare dopo — non è più codice di quello che c'è |
+| `docs/superpowers/plans/2026-08-02-fase-0-fondamenta.md`, Task 5 Step 5 | si aspetta che il log dica `redis`; dopo il fix dice `RedisStorage` | è un runbook **ancora da eseguire**: chi lo esegue cercherà una stringa che il codice non stampa più |
+| `STEERING.md` §26, punto 3 | descrive il dedup «per template», senza il tipo di eccezione | CLAUDE.md impone di aggiornare STEERING quando cambia un invariante documentato, e la chiave di dedup lo è |
+
+### 11.5 Il branch
+
+Il lavoro è su **`test_giu`** e ci resta: nessun merge, nessun push, `main` intatto.
+
+**Attenzione a come lo si porta su `main`.** `main` è un antenato di `test_giu`
+(`git rev-list --left-right --count main...test_giu` → `0 127`), quindi un merge sarebbe un
+fast-forward che porta **127 commit**, non i 10 della Fase 0 — compresa la migrazione del
+modello AI, che è fuori dallo scope di questo documento (§2.3 nodo A). Per portare solo la
+Fase 0 servono i suoi dieci commit, `38182d9..0886fb9`, in cherry-pick.
+
+### 11.6 Difetti del piano, per chi scriverà quello della Fase 1
+
+Il piano della Fase 0 si è rivelato sbagliato **cinque volte**, e tutte e cinque sono state
+trovate dalle review, non dagli implementer:
+
+1. un `import time` prematuro, che ruff segnalava come F401;
+2. un test che asseriva sul contatore sbagliato e **passava identico** sotto la mutazione che
+   avrebbe dovuto catturare;
+3. il criterio di accettazione dello staging (Task 5 step 4) codificava la riga di log errata;
+4. il test sulla soglia richiesto da §3.3 di questo documento è sparito fra spec e piano senza
+   una parola;
+5. la nota sui soppressi era formattata in modo da essere la prima cosa troncata.
+
+La lezione operativa, che vale per la Fase 1: **un test scritto nel piano non è un test
+verificato.** Vanno provati per mutazione — si rompe di proposito il codice che devono
+proteggere, e si guarda se diventano rossi. Due dei cinque difetti sono stati trovati così.
