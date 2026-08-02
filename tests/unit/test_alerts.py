@@ -240,7 +240,7 @@ async def test_housekeeping_does_not_report_itself_forever(monkeypatch):
     await alerts.drain(bot)
     await alerts.drain(bot)
 
-    assert alerts._dropped == 0
+    assert alerts._undelivered == 1, "il fallimento non deve sparire nel reset di se' stesso"
 
 
 async def test_housekeeping_is_rate_limited(monkeypatch):
