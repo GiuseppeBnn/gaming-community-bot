@@ -475,11 +475,15 @@ spacchetta come kwargs lo stesso dict che i middleware aiogram riempiono, nessun
 iniezione separato per i dialoghi. L'asserzione del test dipende da una query vera
 (`"Utenti a DB: 2" in message_manager.last_message().text`, con due utenti creati nel test), non da
 una costante: con un solo utente — così era scritto durante il Task 2 — un getter che ritornasse
-`1` fisso, o che contasse la tabella sbagliata (`user_factory` inserisce anche un `Wallet`, quindi
-anche `SELECT count(*) FROM wallets` avrebbe dato 1), sarebbe passato identico; corretto in questo
-task proprio perché la frase qui sopra fosse vera, non solo scritta. Con due utenti non lo è più.
-Se `db_session` non arrivasse, sarebbe comunque un `TypeError` sull'argomento mancante del getter,
-non un'asserzione sbagliata.
+`1` fisso sarebbe passato identico; con due, no. Corretto in questo task proprio perché la frase
+qui sopra fosse vera, non solo scritta.
+
+> **Quello che due utenti *non* chiudono, ed è bene dirlo.** Un getter che contasse la tabella
+> sbagliata passerebbe ancora: `user_factory` inserisce sempre un `User` **e** un `Wallet`, uno
+> a uno, quindi `SELECT count(*) FROM wallets` dà 2 esattamente come `users`. Per discriminare
+> anche quel caso servirebbe seminare le due tabelle in modo asimmetrico. Non è stato fatto, e
+> la tesi sulla DI non ne dipende: se `db_session` non arrivasse sarebbe un `TypeError`
+> sull'argomento mancante del getter, non un'asserzione sbagliata — è quello il vero testimone.
 
 **3. `IsAdminFilter` alla radice protegge anche il dialogo?** Sì, verificato sia leggendo il
 codice sia rompendolo apposta. `aiogram/dispatcher/router.py::Router._propagate_event` esegue
