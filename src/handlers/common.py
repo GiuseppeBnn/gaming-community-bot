@@ -17,6 +17,7 @@ deep-link landing must not trust that the caller passed the originating command'
 admin filter (a non-admin could craft the ?start=… link directly).
 """
 
+import logging
 import re
 
 from aiogram import Router
@@ -24,7 +25,7 @@ from aiogram.enums import ChatType
 from aiogram.filters import CommandStart
 from aiogram.filters.command import Command, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -40,6 +41,11 @@ from utils.static_reply import reply_static
 from utils.text import esc
 
 router = Router()
+
+log = logging.getLogger(__name__)
+
+#: Risposta per una callback che nessuno ha rivendicato. Corta: esce come toast.
+_UNHANDLED_CALLBACK = "Questo bottone non è più valido."
 
 
 async def _show_help(message: Message, is_admin: bool) -> None:
@@ -377,3 +383,22 @@ async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
 
     is_admin = await is_bot_admin(message.bot, message.from_user.id)
     await message.answer(render_command_or_hint(arg, is_admin))
+
+
+@router.callback_query()
+async def cb_unhandled(callback: CallbackQuery) -> None:
+    """Answer any callback no router claimed, instead of leaving the spinner up.
+
+    `common.router` is last (`handlers/__init__.py`), so nothing that another
+    router wanted can reach here. Two cases do: a button from a keyboard older
+    than the current deploy — normal, and the user deserves a reply — and a
+    handler that stopped matching by mistake, which would otherwise be silent
+    forever. Hence the WARNING: it reaches the admins through utils.alerts
+    (STEERING §26), so a button that quietly stops working reports itself.
+
+    The `%s` is deliberate, not style: utils.alerts deduplicates on the message
+    *template*, so an f-string would turn every stale click into its own alert
+    and drown the channel meant to protect us.
+    """
+    log.warning("Callback non gestita: %s", callback.data)
+    await callback.answer(_UNHANDLED_CALLBACK)
