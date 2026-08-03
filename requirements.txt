@@ -1,5 +1,4 @@
 aiogram==3.30.0
-aiogram-dialog==2.6.0
 SQLAlchemy[asyncio]==2.0.36
 asyncpg==0.30.0
 aiosqlite==0.20.0

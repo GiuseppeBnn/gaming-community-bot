@@ -457,7 +457,13 @@ di chiunque riapra questo file per la Fase 1 vera. La correzione più diretta, s
 è passare `key_builder=DefaultKeyBuilder(with_destiny=True)` a `RedisStorage.from_url` in
 `_build_storage` — non fatto qui.
 
-> **CHIUSO il 2026-08-03, commit `6697d91`** (fuori dal Task 2, perché il rischio sopravviveva a
+> **CHIUSO il 2026-08-03 col commit `6697d91`, poi rientrato con la fetta.** Il gate ha detto stop
+> (§10): senza `setup_dialogs` nessun codice qui scrive un destiny non-default, quindi il flag
+> sarebbe solo il costo delle chiavi orfane senza il beneficio, ed è stato tolto insieme al resto.
+> La trappola resta documentata in `STEERING.md` §2, perché vale per **qualunque** libreria che usi
+> `StorageKey.destiny`, non solo per aiogram_dialog. Quel che segue descrive il fix mentre c'era.
+>
+> (fuori dal Task 2, perché il rischio sopravviveva a
 > qualunque esito del gate: se lo spike va avanti serve corretto, se si ferma resta `setup_dialogs`
 > da revertire e nel frattempo il branch non si avvia con Redis). `_build_storage` ora passa
 > `key_builder=DefaultKeyBuilder(with_destiny=True)`; la guardia è
@@ -763,14 +769,31 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | 0.3 | Alert admin (`utils/alerts.py`) | ☑ fatta |
 | — | **Gate Fase 0** (§3.4) | ☑ **superato** il 2026-08-02 — gate locali + le due verifiche a mano (§11.2, §11.3) |
 | — | **Fetta verticale** (Task 1-3: baseline query + `dialog_spike.py` + verdetto, §4.3) | ☑ fatta — compatibile a livello di meccanismo (DI, filtro admin, ordine router verificati); combinazione con i 4 middleware reali mai girata; il costo del secondo paradigma di test è la voce aperta. Decide l'utente |
-| 1 | Spike `guess/creation.py` con aiogram-dialog | ☐ da fare |
-| — | **Gate spike** (§4.3) — decide l'utente | ☐ |
-| 2 | `admin_dashboard.py` | ☐ subordinata al gate |
-| 3 | `quiz/creation.py` + `quiz/editing.py` | ☐ subordinata al gate |
-| 4 | `shop.py` | ☐ subordinata al gate |
-| 5 | hub eventi + `event_types/` (cambia `render_detail`) | ☐ subordinata al gate |
+| 1 | Spike `guess/creation.py` con aiogram-dialog | ✗ abbandonata |
+| — | **Gate spike** (§4.3) — decide l'utente | ☑ **deciso il 2026-08-03: stop** |
+| 2 | `admin_dashboard.py` | ✗ abbandonata col gate |
+| 3 | `quiz/creation.py` + `quiz/editing.py` | ✗ abbandonata col gate |
+| 4 | `shop.py` | ✗ abbandonata col gate |
+| 5 | hub eventi + `event_types/` (cambia `render_detail`) | ✗ abbandonata col gate |
 
 Legenda: ☐ da fare · ▣ in corso · ☑ fatta · ✗ abbandonata (con il perché, in una riga sotto).
+
+**Perché stop** (decisione dell'utente al gate, motivata così: «ampliare il tutto è mettere pezza su
+pezza»): la fetta ha dimostrato che aiogram-dialog *funziona* in questo stack, e nello stesso
+movimento che il conto è più alto di quanto l'analisi di partenza stimasse — due paradigmi di test
+di integrazione in parallelo **a tempo indeterminato**, `setup_dialogs` che aggiunge middleware sul
+**100%** del traffico (dialogo aperto o no), un `Dialog` che oscura i fallback di `common` senza che
+`state.clear()` possa liberare chi ci resta dentro, e una baseline di **0 query** nel flusso di
+creazione che qualunque getter può solo peggiorare. Adottarlo avrebbe riscritto la superficie
+lasciando intatto ciò che rende il codice difficile da mantenere.
+
+**Cosa resta, e cosa è stato rimosso.** Resta tutta la Fase 0 — alert admin, ping Redis con degrado,
+aiogram 3.30.0 — più `tests/integration/test_creation_query_cost.py`, che pinna il costo in query
+della creazione indipendentemente da chi disegni la UI. Rimossi nel commit di pulizia:
+`src/handlers/dialog_spike.py`, `tests/integration/test_dialog_spike.py`, `setup_dialogs(dp)`, la
+riga in `ROUTERS`, la dipendenza `aiogram-dialog==2.6.0`, e il `key_builder` con `with_destiny=True`
+— che senza dialoghi è solo il costo delle chiavi orfane, senza il beneficio. La conoscenza
+acquisita resta **qui**: è il prodotto dello spike, il codice no.
 
 ---
 

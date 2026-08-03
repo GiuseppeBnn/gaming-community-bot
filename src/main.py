@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.base import BaseStorage, DefaultKeyBuilder
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -14,8 +14,6 @@ from aiogram.types import (
     BotCommandScopeChat,
     BotCommandScopeChatAdministrators,
 )
-from aiogram_dialog import setup_dialogs
-
 from config_data.config import settings
 from database.connection import async_session_maker, create_tables, run_migrations
 import handlers
@@ -123,17 +121,7 @@ async def _build_storage() -> BaseStorage:
         logger.warning("redis non installato, uso MemoryStorage")
         return MemoryStorage()
 
-    # aiogram_dialog stores its stack and context under StorageKey.destiny
-    # ("aiogd:stack:", "aiogd:context:…"), and the default key builder *raises*
-    # ValueError on any destiny but "default". Without this, Redis + setup_dialogs
-    # would blow up on the first message — a combination that had never run
-    # together, because the storage landed before the dialogs did.
-    # Cost of the flag: normal keys gain a ":default" suffix, so FSM keys written
-    # by an older build are orphaned. Open flows die once, at deploy.
-    storage = RedisStorage.from_url(
-        settings.redis_url,
-        key_builder=DefaultKeyBuilder(with_destiny=True),
-    )
+    storage = RedisStorage.from_url(settings.redis_url)
     try:
         await storage.redis.ping()
     except Exception as exc:  # noqa: BLE001 — any connection failure degrades
@@ -210,22 +198,6 @@ async def main() -> None:
     # is declared once in handlers/__init__.py and asserted by
     # tests/unit/test_router_order.py — including that nothing is left unregistered.
     handlers.register(dp)
-
-    # Not an ordering dependency: DialogRegistry.refresh() (which finds the
-    # Dialog sub-routers) is deferred to dp.startup, and inner middleware is
-    # resolved per-trigger by walking each observer's chain_head — both happen
-    # long after this call returns, so this could run before handlers.register
-    # just as well. It goes here for readability only.
-    #
-    # What it actually does: adds outer + inner middleware directly on dp's own
-    # message/business_message/callback_query/my_chat_member/chat_join_request
-    # observers, plus dp.errors (IntentErrorMiddleware wraps errors.on_error
-    # below). Because aiogram resolves inner middleware by walking each
-    # sub-router's own chain_head up to dp, those middleware run for EVERY
-    # handler of EVERY router — one extra FSM-storage read per message/callback
-    # and one extra write per handled update, dialog or not. Full accounting:
-    # docs/superpowers/specs/2026-08-02-refactoring-aiogram-dialog-design.md §4.3.
-    setup_dialogs(dp)
 
     # Global fallback for anything that escapes a handler: logs with context and
     # replies to the user instead of leaving the bot silent. On the dispatcher
