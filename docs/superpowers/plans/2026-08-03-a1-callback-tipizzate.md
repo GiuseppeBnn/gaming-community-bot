@@ -452,7 +452,8 @@ sono argomenti posizionali di `confirm_cancel_kb`, e cercare la parola sbagliata
 grep -n '"sched:\|f"sched:' src/handlers/schedule.py
 ```
 
-Sono **15 righe**: 52, 84, 85, 106, 116, 121, 128, 139, 140, 163, 164, 186, 200, 219, 272, 277.
+Sono **16 righe**: 52, 84, 85, 106, 116, 121, 128, 139, 140, 163, 164, 186, 200, 219, 272, 277.
+Se il tuo conto e il mio non tornano, **vince il `grep`**: i numeri in prosa invecchiano, il comando no.
 Quelle nei decoratori (106, 121, 128, 186, 200, 219, 277) le tratta lo Step successivo; le altre
 sono costruzione di bottoni. Esempi, uno per forma:
 
@@ -560,7 +561,10 @@ payload storto solleverebbe `ValueError` fin dentro `dp.errors`. Adesso non arri
 `item_id is None` copre il caso residuo — `sched:del::` — che è costruibile ma non lo costruisce
 nessuno.
 
-- [ ] **Step 6: aggiornare i 26 punti del test**
+- [ ] **Step 6: aggiornare i payload nel test**
+
+`grep -c '"sched:' tests/integration/test_schedule_flow.py` dà **26 righe**; le occorrenze sono di
+più, perché alcune righe ne contengono due. Conta il `grep`, non questa frase.
 
 In `tests/integration/test_schedule_flow.py`, aggiungi `from handlers.callbacks import SchedCb` e
 sostituisci ogni payload grezzo con l'istanza corrispondente. Il finto `_FakeCallback` **resta**:
