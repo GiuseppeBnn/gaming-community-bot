@@ -530,7 +530,8 @@ async def cb_pick_event(
 ) -> None:
     task_type = callback_data.key
     et = event_types.get(task_type)
-    # `isdigit()` sparisce: un id non numerico non arriva più qui (test_callbacks.py).
+    # No isdigit() guard: a non-numeric id no longer reaches this handler, the
+    # filter drops it (tests/unit/test_callbacks.py).
     if et is None or callback_data.item_id is None:
         await callback.answer()
         return
@@ -879,7 +880,7 @@ async def cb_item(callback: CallbackQuery, callback_data: EventCb, db_session) -
     if et is None or callback_data.item_id is None:
         await callback.answer()
         return
-    ...  # il `raw.isdigit()` sparisce: non arriva più niente di non numerico
+    ...  # corpo invariato. The raw.isdigit() guard goes: nothing non-numeric arrives.
 ```
 
 `cb_confirm` è il punto che cambia di più, perché smette di concatenare payload a mano. Prima
@@ -887,7 +888,7 @@ async def cb_item(callback: CallbackQuery, callback_data: EventCb, db_session) -
 
 ```python
 _CONFIRM: dict[str, tuple[str, str, str]] = {
-    #        azione da eseguire ─┐
+    #        the action to run ─┐  (was the payload prefix "ev:start")
     "askstart": ("start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
     "askclose": ("close", "chiudere ora (pubblica il podio)", "🏁 Sì, chiudi"),
     "askdel":   ("del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
