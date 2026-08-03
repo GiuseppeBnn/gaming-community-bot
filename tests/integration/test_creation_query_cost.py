@@ -17,7 +17,7 @@ from sqlalchemy import event
 
 from handlers.guess import creation as cr
 from tests.integration.test_guess_creation_flow import (
-    _BOT, _Cb, _Msg, _to_card,
+    _BOT, _Cb, _edit, _to_card,
 )
 
 
@@ -68,8 +68,7 @@ async def test_the_questions_and_the_edits_cost_nothing_at_all(
     await _to_card(state)
 
     for field, value in (("title", "Un titolo nuovo"), ("answer", "Quake")):
-        await cr.cb_edit(_Cb(f"guess_new:edit:{field}"), state)
-        await cr.fsm_edit_value(_Msg(value), state)
+        await _edit(state, field, value)
 
     assert sql_counter == [], (
         f"il flusso pre-pubblicazione ha toccato il DB {len(sql_counter)} volte: "
@@ -80,12 +79,10 @@ async def test_the_questions_and_the_edits_cost_nothing_at_all(
 async def test_publishing_costs_a_known_number_of_statements(
     state, sql_counter, session
 ):
-    """Pinna il costo della pubblicazione.
+    """Pinna il costo della pubblicazione, sopra e sotto.
 
     Non si asserisce un numero esatto — un `INSERT` in più per una colonna nuova
-    è un cambio legittimo — ma un tetto stretto: se il costo raddoppia, qualcuno
-    ha introdotto una lettura per riga e questo test è il posto in cui
-    accorgersene.
+    è un cambio legittimo — ma un intervallo stretto: **pavimento 2, tetto 3**.
 
     Misurato il 2026-08-02: **2 statement** — un `INSERT INTO guess_rounds`
     (il round nasce `draft`, dentro `guess_service.create_round`) seguito da un
@@ -97,6 +94,11 @@ async def test_publishing_costs_a_known_number_of_statements(
     promette). 3 lascia margine per un solo statement in più rispetto al
     misurato — una colonna nuova, una riga di audit — e scatta già a 4, che è
     esattamente il raddoppio da intercettare.
+
+    Il pavimento è **2**, non 0: un `assert sql_counter` da solo lascerebbe
+    passare in silenzio un calo da 2 a 1, cioè esattamente la sparizione
+    dell'`UPDATE` che arma il round — un bug vero (il round resterebbe `draft`
+    per sempre), non un'ottimizzazione.
     """
     _BOT.reset()
     await _to_card(state)
@@ -104,8 +106,7 @@ async def test_publishing_costs_a_known_number_of_statements(
 
     await cr.cb_publish(_Cb("guess_new:publish"), state, session)
 
-    assert sql_counter, "la pubblicazione deve scrivere qualcosa"
-    assert len(sql_counter) <= 3, (
-        f"la pubblicazione costa {len(sql_counter)} statement, erano ≤3: "
+    assert 2 <= len(sql_counter) <= 3, (
+        f"la pubblicazione costa {len(sql_counter)} statement, attesi fra 2 e 3: "
         + "\n".join(sql_counter)
     )

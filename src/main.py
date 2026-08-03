@@ -201,8 +201,20 @@ async def main() -> None:
     # tests/unit/test_router_order.py — including that nothing is left unregistered.
     handlers.register(dp)
 
-    # aiogram-dialog registers its own event observers on the dispatcher; it is
-    # not a router, so it goes after the routers are in place.
+    # Not an ordering dependency: DialogRegistry.refresh() (which finds the
+    # Dialog sub-routers) is deferred to dp.startup, and inner middleware is
+    # resolved per-trigger by walking each observer's chain_head — both happen
+    # long after this call returns, so this could run before handlers.register
+    # just as well. It goes here for readability only.
+    #
+    # What it actually does: adds outer + inner middleware directly on dp's own
+    # message/business_message/callback_query/my_chat_member/chat_join_request
+    # observers, plus dp.errors (IntentErrorMiddleware wraps errors.on_error
+    # below). Because aiogram resolves inner middleware by walking each
+    # sub-router's own chain_head up to dp, those middleware run for EVERY
+    # handler of EVERY router — one extra FSM-storage read per message/callback
+    # and one extra write per handled update, dialog or not. Full accounting:
+    # docs/superpowers/specs/2026-08-02-refactoring-aiogram-dialog-design.md §4.3.
     setup_dialogs(dp)
 
     # Global fallback for anything that escapes a handler: logs with context and
