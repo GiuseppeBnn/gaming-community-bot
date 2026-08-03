@@ -309,16 +309,16 @@ un file solo.
 Crea `tests/unit/test_callbacks.py`:
 
 ```python
-"""I payload delle callback, tipizzati.
+"""Typed callback payloads.
 
-Prima di questo modulo ogni schermata inventava la sua grammatica e la
-ri-parsava a mano: `_, _, task_type, raw = callback.data.split(":")`, ripetuto,
-con guardie `isdigit()` sparse e il limite dei 64 byte rispettato a occhio.
+Before this module every screen invented its own grammar and re-parsed it by
+hand — `_, _, task_type, raw = callback.data.split(":")`, over and over, with
+`isdigit()` guards scattered around and the 64-byte limit respected by eye.
 
-Qui si pinnano le tre cose che il parsing a mano non garantiva: che il payload
-prodotto sia quello atteso, che un payload malformato **non arrivi** all'handler,
-e che i limiti di Telegram si presentino come errori in test invece che come
-bottoni rotti in chat.
+What is pinned here is the three things hand-rolled parsing never guaranteed:
+that the payload produced is the one expected, that a malformed payload does
+**not** reach the handler, and that Telegram's limits show up as test failures
+instead of broken buttons in a chat.
 """
 
 from __future__ import annotations
@@ -330,8 +330,8 @@ from handlers.callbacks import SchedCb
 
 
 def _query(data: str) -> CallbackQuery:
-    """Una CallbackQuery vera: il filtro fa `isinstance`, un finto darebbe
-    `False` per il motivo sbagliato."""
+    """A real CallbackQuery: the filter does an `isinstance` check, so a fake
+    would return `False` for the wrong reason."""
     return CallbackQuery(
         id="1", from_user=User(id=1, is_bot=False, first_name="A"),
         chat_instance="x", data=data,
@@ -352,11 +352,11 @@ def test_unpack_restores_the_types():
     cb = SchedCb.unpack("sched:pick:quiz:7")
     assert cb.action == "pick"
     assert cb.key == "quiz"
-    assert cb.item_id == 7, "l'id deve tornare int, non str"
+    assert cb.item_id == 7, "the id must come back as int, not str"
 
 
 async def test_a_non_numeric_id_never_reaches_the_handler():
-    """Oggi `cb_pick_event` si difende con `raw_id.isdigit()`. Domani non arriva."""
+    """Today `cb_pick_event` guards with `raw_id.isdigit()`. Tomorrow it never arrives."""
     assert await SchedCb.filter()(_query("sched:pick:quiz:abc")) is False
 
 
@@ -366,10 +366,10 @@ async def test_a_well_formed_payload_is_injected():
 
 
 async def test_a_payload_from_an_older_deploy_falls_through():
-    """I campi opzionali lasciano i separatori: il payload vecchio è più corto.
+    """Optional fields still cost their separators: the old payload is shorter.
 
-    Non è un difetto da nascondere — è il motivo per cui il catch-all di
-    `common` (Task 1) esiste e va per primo.
+    Not a flaw to hide — it is the reason the catch-all in `common` (Task 1)
+    exists, and the reason it lands first.
     """
     assert await SchedCb.filter()(_query("sched:cancel")) is False
 
@@ -723,9 +723,9 @@ from handlers.callbacks import EventCb, PollCreateCb
     (EventCb(action="home"), "ev:home::"),
     (EventCb(action="list", task_type="quiz"), "ev:list:quiz:"),
     (EventCb(action="item", task_type="quiz", item_id=7), "ev:item:quiz:7"),
-    # identico al payload di oggi, carattere per carattere
+    # byte-for-byte the payload we ship today
     (EventCb(action="askstart", task_type="quiz", item_id=7), "ev:askstart:quiz:7"),
-    # il quinto segmento opzionale di oggi diventa un'azione a sé, stessa lunghezza
+    # today's optional 5th segment becomes an action of its own, same length
     (EventCb(action="sched", task_type="quiz", item_id=7), "ev:sched:quiz:7"),
     (EventCb(action="sched_close", task_type="quiz", item_id=7), "ev:sched_close:quiz:7"),
     (PollCreateCb(action="cancel"), "evpt:cancel"),
@@ -735,13 +735,13 @@ def test_pack_events(cb, expected):
 
 
 async def test_the_poll_triangle_does_not_answer_to_the_hub_prefix():
-    """`evpt` è una famiglia sua: un payload dell'hub non deve farci match."""
+    """`evpt` is a family of its own: a hub payload must not match it."""
     assert await PollCreateCb.filter()(_query("ev:item:quiz:7")) is False
     assert await EventCb.filter()(_query("evpt:cancel")) is False
 
 
 def test_the_longest_real_event_payload_fits():
-    """Il tetto è 64 byte e le chiavi dei tipi-evento le sceglie chi scrive il codice."""
+    """The ceiling is 64 bytes, and event-type keys are chosen by whoever writes the code."""
     packed = EventCb(action="sched_close", task_type="guess_sound", item_id=999_999).pack()
     assert len(packed.encode()) <= 64, packed
 ```
