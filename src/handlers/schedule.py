@@ -196,6 +196,9 @@ async def cb_action(
     action = callback_data.key
     data = await state.get_data()
     if action not in _ACTIONS or "sched_ref" not in data:
+        # Unknown action, or a stale button from a flow that has since been
+        # cleared: there is nothing left to schedule, so say so instead of
+        # arming a run-at step with no target.
         await callback.answer("Ricomincia da /programma.", show_alert=True)
         return
     await _ask_run_at(callback.message, state, data["sched_label"], action)
