@@ -28,6 +28,12 @@ class SchedCb(CallbackData, prefix="sched"):
 
     `key` carries the one string the action refers to: an event-type key for
     "type" and "pick", a schedulable-action key ("start" / "close") for "act".
+
+    `item_id` is two different primary keys depending on `action`: for "pick"
+    it's the id of the item being scheduled (ends up in `ScheduledTask.ref_id`);
+    for "del" it's the id of the `ScheduledTask` row itself. Both are small
+    ints, so copying the wrong one in — e.g. `SchedCb(action="del", item_id=quiz.id)`
+    — cancels an unrelated task and nothing complains.
     """
 
     #: "cancel" | "cancel_yes" | "cancel_no" | "act" | "type" | "pick" | "del"

@@ -1,13 +1,13 @@
-"""I payload delle callback, tipizzati.
+"""The callback payloads, typed.
 
-Prima di questo modulo ogni schermata inventava la sua grammatica e la
-ri-parsava a mano: `_, _, task_type, raw = callback.data.split(":")`, ripetuto,
-con guardie `isdigit()` sparse e il limite dei 64 byte rispettato a occhio.
+Before this module every screen invented its own grammar and re-parsed it by
+hand: `_, _, task_type, raw = callback.data.split(":")`, repeated, with
+scattered `isdigit()` guards and the 64-byte limit respected by eye.
 
-Qui si pinnano le tre cose che il parsing a mano non garantiva: che il payload
-prodotto sia quello atteso, che un payload malformato **non arrivi** all'handler,
-e che i limiti di Telegram si presentino come errori in test invece che come
-bottoni rotti in chat.
+This pins the three things hand-parsing never guaranteed: that the payload
+produced is the one expected, that a malformed payload **never reaches** the
+handler, and that Telegram's limits show up as errors in tests instead of as
+broken buttons in chat.
 """
 
 from __future__ import annotations
@@ -19,8 +19,8 @@ from handlers.callbacks import SchedCb
 
 
 def _query(data: str) -> CallbackQuery:
-    """Una CallbackQuery vera: il filtro fa `isinstance`, un finto darebbe
-    `False` per il motivo sbagliato."""
+    """A real CallbackQuery: the filter does an `isinstance` check, a fake one
+    would return `False` for the wrong reason."""
     return CallbackQuery(
         id="1", from_user=User(id=1, is_bot=False, first_name="A"),
         chat_instance="x", data=data,
@@ -41,11 +41,11 @@ def test_unpack_restores_the_types():
     cb = SchedCb.unpack("sched:pick:quiz:7")
     assert cb.action == "pick"
     assert cb.key == "quiz"
-    assert cb.item_id == 7, "l'id deve tornare int, non str"
+    assert cb.item_id == 7, "the id must come back as int, not str"
 
 
 async def test_a_non_numeric_id_never_reaches_the_handler():
-    """Oggi `cb_pick_event` si difende con `raw_id.isdigit()`. Domani non arriva."""
+    """Today `cb_pick_event` defends itself with `raw_id.isdigit()`. Tomorrow it never arrives."""
     assert await SchedCb.filter()(_query("sched:pick:quiz:abc")) is False
 
 
@@ -55,10 +55,10 @@ async def test_a_well_formed_payload_is_injected():
 
 
 async def test_a_payload_from_an_older_deploy_falls_through():
-    """I campi opzionali lasciano i separatori: il payload vecchio è più corto.
+    """Optional fields leave the separators: the old payload is shorter.
 
-    Non è un difetto da nascondere — è il motivo per cui il catch-all di
-    `common` (Task 1) esiste e va per primo.
+    This isn't a flaw to hide — it's the reason the catch-all in `common`
+    (Task 1) exists and comes first.
     """
     assert await SchedCb.filter()(_query("sched:cancel")) is False
 
