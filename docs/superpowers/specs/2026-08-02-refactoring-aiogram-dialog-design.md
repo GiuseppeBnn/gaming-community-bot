@@ -371,6 +371,168 @@ Si produce il prima/dopo sulle cinque metriche di §4.1, più:
 Se la risposta è no: si è perso **un** flusso, non il bot; si reverte la fase; la Fase 0 resta
 acquisita; e la risposta a «conviene aiogram-dialog?» è **documentata invece che opinata**.
 
+#### Cosa ha detto la fetta verticale (Task 2, commit `1d2f487` e `c6b3ec9`)
+
+**Attenzione al nome:** questo non è il gate qui sopra. Nessuna schermata del prodotto è stata
+convertita, quindi il prima/dopo di §4.1 non esiste ancora. Quello che segue è il gate più stretto
+ed economico che precede quella spesa: la libreria è compatibile con questo stack, sì o no?
+Risponde ai sette punti del brief del Task 3, con fatti — dove un fatto è stato riprodotto in
+questo task (non solo letto nei report del Task 2), lo dico esplicitamente.
+
+Misure raccolte in questo task (comandi del brief, Step 1):
+
+| cosa | valore |
+|---|---|
+| peso su disco di `aiogram_dialog` | 1,4 MB (`du -sh .venv/lib/python3.12/site-packages/aiogram_dialog`) |
+| `aiogram_dialog` | 2.6.0 |
+| `jinja2` | 3.1.6 |
+| `MarkupSafe` | 3.0.3 |
+| `cachetools` | 5.5.2 |
+
+Riconfermato, non ri-misurato per sostanza (era già noto): suite **2103 passed, 30 skipped**,
+coverage **99,66%**, `ruff` e `mypy` puliti — invariati rispetto a quanto già chiuso nel Task 2.
+
+**1. La libreria convive coi quattro middleware?** Risposta parziale, e la parte mancante conta
+più della parte confermata. Verificato leggendo `src/main.py:191-206` e il diff del commit
+`1d2f487`: `setup_dialogs(dp)` si inserisce nel bootstrap reale **dopo** `handlers.register(dp)` e
+dopo i quattro `dp.update.middleware(...)` esistenti (`RateLimitMiddleware`, `DbSessionMiddleware`,
+`BannedUserMiddleware`, `GroupMemberMiddleware`) — quelle quattro righe non sono state toccate,
+`setup_dialogs` si è solo aggiunto in coda, col commento «non è un router, quindi va dopo i
+router». `import main` prova che il modulo si carica senza eccezioni. **Ma `import main` non
+chiama `main()`**: è una `async def` mai eseguita all'import, quindi prova che la wiring è
+sintatticamente valida, non che gira. `tests/integration/test_dialog_spike.py` non usa quella
+wiring: costruisce un `Dispatcher()` proprio con **un solo middleware finto**
+(`_fake_session_middleware`, ~3 righe scritte nel test stesso) che imita solo l'effetto di
+`DbSessionMiddleware` — mettere `db_session` nel dict — senza il resto del suo comportamento
+(upsert dell'utente, sessione vera da `async_session_maker()`), e senza `RateLimitMiddleware`,
+`BannedUserMiddleware`, `GroupMemberMiddleware` per niente. Cercato in tutta la suite
+(`grep -rl "setup_dialogs\|RateLimitMiddleware\|BannedUserMiddleware\|GroupMemberMiddleware"
+tests/`): ognuno dei quattro middleware ha un test **unitario in isolamento**
+(`test_rate_limit.py`, `test_ban_guard.py`, `test_group_guard.py`, la classe
+`TestDbSessionMiddleware` in `test_last_mile.py`), nessuno in combinazione con gli altri tre né
+con `setup_dialogs`, e non esiste un `test_main.py`/`test_bootstrap.py`. **Quindi: nessun test
+automatico, e nessuna prova a mano documentata, ha mai fatto girare i quattro middleware reali
+insieme a `setup_dialogs` su un update vero.** Non c'è una ragione strutturale per aspettarsi un
+conflitto — `ManagerMiddleware` di aiogram-dialog è un `BaseMiddleware` come gli altri, nello
+stesso punto della catena in cui il test finto ha già dimostrato che `db_session` attraversa — ma
+"nessuna ragione di aspettarselo" non è "verificato", ed è la differenza che questo documento si è
+impegnato a rispettare.
+
+**2. `db_session` arriva nel getter senza toccare la DI?** Sì, e qui il verificato è solido.
+`aiogram_dialog/window.py:118` chiama `data.update(await self.getter(**manager.middleware_data))`:
+spacchetta come kwargs lo stesso dict che i middleware aiogram riempiono, nessun canale di
+iniezione separato per i dialoghi. L'asserzione del test dipende da una query vera
+(`"Utenti a DB: 1" in message_manager.last_message().text`), non da una costante — se `db_session`
+non arrivasse, sarebbe un `TypeError` sull'argomento mancante del getter, non un'asserzione
+sbagliata.
+
+**3. `IsAdminFilter` alla radice protegge anche il dialogo?** Sì, verificato sia leggendo il
+codice sia rompendolo apposta. `aiogram/dispatcher/router.py::Router._propagate_event` esegue
+`check_root_filters` **prima** sia degli handler del router sia della discesa nei `sub_routers`:
+un dialogo innestato non viene mai raggiunto se il filtro di radice respinge. Riprodotto (nel
+Task 2) togliendo il filtro e guardando il test passare da verde a rosso, due volte — una per
+`router.message.filter(IsAdminFilter())` (comando `/spike`), una per
+`router.callback_query.filter(IsAdminCallbackFilter())` (bottone "Chiudi", registrato
+sull'observer del `Dialog` innestato, non su quello del router scritto a mano: è il caso che prova
+che la protezione non dipende dal comando, ma dal router genitore). Il secondo filtro non era nel
+codice del brief del Task 2 — aggiunto per STEERING §8 — e in un primo momento non aveva un test
+proprio: corretto in un round di fix, ora `tests/unit/test_admin_routers_gated.py` lo
+parametrizza insieme agli altri sei router 100% admin del progetto.
+
+**4. `test_router_order.py` ha retto, o è stato corretto?** Ha retto **senza una riga toccata** —
+riconfermato qui: `pytest tests/unit/test_router_order.py` passa sull'albero attuale (5 passed).
+Non è fortuna: la scoperta cerca `getattr(module, "router", None)` poi `isinstance(router,
+Router)`; `dialog_spike.router` è un `aiogram.Router()` semplice, e il `Dialog` (`spike_dialog`)
+vive sotto un altro nome di modulo, agganciato solo via `router.include_router(spike_dialog)`. Il
+caso peggiore è stato escluso leggendo il codice, non congetturato: `Dialog.__mro__` mostra che
+eredita da `Router`, quindi anche un ipotetico modulo futuro che chiamasse `router` il `Dialog`
+stesso supererebbe comunque l'`isinstance` — il rischio scritto nel piano di Fase 1 non aveva, con
+l'API pubblica attuale, un modo concreto di materializzarsi.
+
+**5. Quante righe costa una schermata banale?** 69 (`src/handlers/dialog_spike.py`) + 101
+(`tests/integration/test_dialog_spike.py`) = **170 righe**, per **una** finestra, un comando, un
+getter con una query, un bottone. Zero stati multipli, zero campi da modificare, zero media. Non
+va moltiplicato linearmente per stimare `guess/creation.py` (898 righe, 16 handler, 7 stati FSM,
+8 campi, media): è la prova che il meccanismo compila e gira, non un preventivo. Quel preventivo,
+se si arriva a scriverlo, è compito del piano della conversione vera.
+
+**6. `BotClient` + `MockMessageManager` sono più o meno verbosi degli stub attuali?** Il confronto
+grezzo (101 righe/2 test contro 915 righe) non è onesto da solo — sono scale diverse. Misurato con
+l'AST invece che a occhio, contando solo le righe dentro i corpi delle funzioni `test_*`
+(`ast.walk`, somma `end_lineno - lineno + 1` per ogni `FunctionDef`/`AsyncFunctionDef` il cui nome
+inizia per `test_`; il resto del file è "impianto"):
+
+| paradigma | file | funzioni test | righe di test | righe/test | righe di impianto |
+|---|---|---|---|---|---|
+| nuovo (`BotClient`) | `test_dialog_spike.py` | 2 | 31 | 15,5 | 70 |
+| esistente (stub) | `test_guess_creation_flow.py` | 60 (87 casi con `parametrize`) | 537 | 8,9 | 378 |
+
+Sul corpo dei singoli test, il nuovo paradigma non è chiaramente più verboso — 15,5 righe/test
+contro 8,9 — ma il campione è **due test**: troppo poco per pesare, e lo dico esplicitamente
+invece di lasciarlo implicito. Dove il costo si vede è nell'impianto: 70 righe per 2 test (35/test)
+contro 378 righe per 60 (6,3/test). Una fetta grossa delle 70 (~25 righe) è il commento e il reset
+del router-singleton (`dialog_spike.router._parent_router = None`) — un costo che nasce
+dall'**essere il primo test del repo a costruire un `Dispatcher` vero**, non un costo di
+`aiogram_dialog` in sé, e che con ogni probabilità si accorcerebbe centralizzato in una fixture
+condivisa — che oggi non esiste perché non esiste un secondo test dello stesso tipo che la
+giustifichi.
+
+Quello che i numeri non catturano, ed è il punto che l'utente ha chiesto esplicitamente di non
+nascondere: gli stub attuali (`_StubBot`, `_Photo`, `_Msg`, `_Cb`, 132 righe scritte e mantenute a
+mano in `test_guess_creation_flow.py`) guidano gli handler **come funzioni**, senza `Dispatcher`,
+senza middleware, senza routing — il modello che condivide ogni test del repo tranne questi due.
+`BotClient`/`MockMessageManager` (437 righe totali in `aiogram_dialog/test_tools/`, ma di
+libreria: non scritte né mantenute da questo progetto) instradano un update **vero** attraverso un
+`Dispatcher` **vero** — più fedele, come dice il docstring del test — ma anche un meccanismo
+diverso da imparare, con vincoli propri (il parent singolo di `Router` è uno) che finora nessun
+altro test del repo doveva conoscere. E per lo scope dichiarato in §7, questo non è un costo
+transitorio che finisce con l'ultima fase: `quiz/play.py`, `guess/play.py`, `betting.py` restano
+fuori **per sempre**. Quindi anche nello scenario migliore — Fasi 2-5 tutte completate — la suite
+finirebbe con **due paradigmi di test di integrazione permanenti**, non uno che sostituisce
+l'altro. Il costo non è "riscrivere 915 righe una volta": è mantenere due modi di scrivere test di
+integrazione in parallelo, a tempo indeterminato.
+
+**7. I numeri del Task 1.** Flusso di creazione **prima** della pubblicazione: **0 statement
+SQL**. **Pubblicazione**: **2 statement** (`INSERT INTO guess_rounds … RETURNING`, poi `UPDATE
+guess_rounds SET status`). Riportati qui per completezza — non ri-misurati in questo task, come
+da istruzione, perché installare `aiogram_dialog` ha reso quella misura non più vergine. Nessun
+"dopo" da affiancare: nessuna schermata del prodotto è stata convertita, quindi questa riga della
+tabella di §4.1 resta con un solo lato compilato. È esattamente il confronto che la Fase 1 vera
+deve ancora produrre, non qualcosa che questo task potesse produrre.
+
+#### Limiti di questa prova, dichiarati
+
+- **La combinazione dei quattro middleware reali + `setup_dialogs` non è mai girata**, né in un
+  test né a mano (punto 1). È l'unico "sì" della lista che, a rigore, andrebbe scritto "nessun
+  segnale contrario, mai osservato in combinazione".
+- **Un'anomalia di coverage**: `dialog_spike.py` (25 statement) risulta con 1 riga "missing" — il
+  `return` del getter — **solo** quando raggiunta via `aiogram_dialog`, non quando chiamata
+  direttamente. Riprodotta due volte nel Task 2 (chiamata diretta del getter, e rimozione
+  temporanea del file dal path per vedere lo spostamento della riga "missing"): la riga si esegue
+  davvero (il test che dipende dal suo valore passa), è l'attribuzione del tracer a sbagliare.
+  Ipotesi più probabile — non dimostrata — il ponte greenlet di SQLAlchemy async attraversato
+  senza `concurrency = ["greenlet"]` in `pyproject.toml`. Non blocca il gate (99,66% ≫ 99%), ma
+  resta un comportamento di coverage non capito fino in fondo.
+- **170 righe per una finestra sola non stimano il costo di `guess/creation.py`.** Nessun numero
+  di questo task lo fa: è precisamente ciò che il brief del Task 3 dichiara non ancora misurabile.
+- **Il confronto sulle query "prima/dopo" della Fase 1 vera non esiste** (punto 7), per lo stesso
+  motivo: nessuna schermata del prodotto è stata convertita.
+
+#### Le due strade, come le presenta il brief
+
+Il criterio resta quello di §1 e di questo stesso §4.3: **si misura, decide l'utente**. Nessuna
+regola automatica di no-go, qui come altrove in questo documento.
+
+- **Avanti**: si scrive il piano della conversione vera di `guess/creation.py` — è lì che il costo
+  vero, la riscrittura delle 915 righe di test in un secondo paradigma che resterà permanente
+  (punto 6), si paga davvero, e dove nasce il confronto prima/dopo che il punto 7 lascia ancora
+  aperto.
+- **Stop**: si reverte il Task 2 (`src/handlers/dialog_spike.py`, `setup_dialogs` in `main.py`, la
+  riga `aiogram-dialog==2.6.0` in `requirements.txt`). Il Task 1 **resta** — ha valore da solo,
+  indipendente dalla libreria. La Fase 0 resta acquisita in ogni caso (§11). La risposta a «conviene
+  aiogram-dialog?» è comunque **documentata invece che opinata**, che è il risultato che questo
+  documento si era proposto fin da §1.
+
 ---
 
 ## 5. Fasi 2-5 — solo se la Fase 1 passa, una alla volta
@@ -486,6 +648,7 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | 0.2 | aiogram 3.13.1 → 3.30.0, isolato | ☑ fatta |
 | 0.3 | Alert admin (`utils/alerts.py`) | ☑ fatta |
 | — | **Gate Fase 0** (§3.4) | ☑ **superato** il 2026-08-02 — gate locali + le due verifiche a mano (§11.2, §11.3) |
+| — | **Fetta verticale** (Task 1-3: baseline query + `dialog_spike.py` + verdetto, §4.3) | ☑ fatta — compatibile a livello di meccanismo (DI, filtro admin, ordine router verificati); combinazione con i 4 middleware reali mai girata; il costo del secondo paradigma di test è la voce aperta. Decide l'utente |
 | 1 | Spike `guess/creation.py` con aiogram-dialog | ☐ da fare |
 | — | **Gate spike** (§4.3) — decide l'utente | ☐ |
 | 2 | `admin_dashboard.py` | ☐ subordinata al gate |
