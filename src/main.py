@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.fsm.storage.base import BaseStorage
+from aiogram.fsm.storage.base import BaseStorage, DefaultKeyBuilder
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -123,7 +123,17 @@ async def _build_storage() -> BaseStorage:
         logger.warning("redis non installato, uso MemoryStorage")
         return MemoryStorage()
 
-    storage = RedisStorage.from_url(settings.redis_url)
+    # aiogram_dialog stores its stack and context under StorageKey.destiny
+    # ("aiogd:stack:", "aiogd:context:…"), and the default key builder *raises*
+    # ValueError on any destiny but "default". Without this, Redis + setup_dialogs
+    # would blow up on the first message — a combination that had never run
+    # together, because the storage landed before the dialogs did.
+    # Cost of the flag: normal keys gain a ":default" suffix, so FSM keys written
+    # by an older build are orphaned. Open flows die once, at deploy.
+    storage = RedisStorage.from_url(
+        settings.redis_url,
+        key_builder=DefaultKeyBuilder(with_destiny=True),
+    )
     try:
         await storage.redis.ping()
     except Exception as exc:  # noqa: BLE001 — any connection failure degrades

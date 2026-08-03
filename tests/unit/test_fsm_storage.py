@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import main
@@ -50,8 +51,9 @@ def redis_storage(monkeypatch):
 
         class _Factory:
             @staticmethod
-            def from_url(url: str) -> _FakeStorage:
+            def from_url(url: str, **kwargs) -> _FakeStorage:
                 made["url"] = url
+                made["kwargs"] = kwargs
                 made["storage"] = _FakeStorage(fails=fails)
                 return made["storage"]
 
@@ -81,6 +83,25 @@ async def test_reachable_redis_is_used(redis_storage, monkeypatch):
     assert storage is made["storage"]
     assert made["storage"].redis.pinged, "il ping è tutto il punto di questo cambio"
     assert made["url"] == "redis://example:6379/0"
+
+
+async def test_key_builder_accepts_the_destiny_aiogram_dialog_uses(redis_storage, monkeypatch):
+    """Non basta che il kwarg ci sia: deve reggere la chiave che i dialoghi scrivono.
+
+    `aiogram_dialog` salva stack e contesto sotto `StorageKey.destiny`, e il key
+    builder di default *solleva* `ValueError` per qualunque destiny diverso da
+    "default". Con Redis raggiungibile e `setup_dialogs` cablato, il bot moriva al
+    primo messaggio. Qui l'asserzione è sul comportamento, non sul mock: passare
+    `with_destiny=False` non la salverebbe.
+    """
+    made = redis_storage(fails=False)
+    monkeypatch.setattr(settings, "fsm_storage", "redis")
+
+    await main._build_storage()
+
+    key_builder = made["kwargs"]["key_builder"]
+    built = key_builder.build(StorageKey(bot_id=1, chat_id=2, user_id=3, destiny="aiogd:stack:"))
+    assert built.endswith("aiogd:stack:")
 
 
 async def test_unreachable_redis_degrades_to_memory(redis_storage, monkeypatch, caplog):
