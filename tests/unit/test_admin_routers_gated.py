@@ -22,6 +22,7 @@ import handlers.admin as admin
 import handlers.admin_betting as admin_betting
 import handlers.admin_dashboard as admin_dashboard
 import handlers.backup as backup
+import handlers.dialog_spike as dialog_spike
 import handlers.events as events
 import handlers.schedule as schedule
 from services import group_registry
@@ -38,6 +39,7 @@ ADMIN_ROUTERS = [
     backup.router,
     events.router,
     schedule.router,
+    dialog_spike.router,
 ]
 
 

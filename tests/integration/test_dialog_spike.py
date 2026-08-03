@@ -40,7 +40,11 @@ def dp(session, monkeypatch):
     # later one would hit `RuntimeError: Router is already attached to ...`.
     dialog_spike.router._parent_router = None
     dispatcher.include_router(dialog_spike.router)
-    return dispatcher
+    yield dispatcher
+    # Leave the singleton detached: a future test file that also builds a real
+    # `Dispatcher` and attaches `dialog_spike.router` without doing its own
+    # reset must not depend on collection order to avoid the same `RuntimeError`.
+    dialog_spike.router._parent_router = None
 
 
 @pytest.fixture
