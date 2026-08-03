@@ -457,6 +457,19 @@ di chiunque riapra questo file per la Fase 1 vera. La correzione più diretta, s
 è passare `key_builder=DefaultKeyBuilder(with_destiny=True)` a `RedisStorage.from_url` in
 `_build_storage` — non fatto qui.
 
+> **CHIUSO il 2026-08-03, commit `6697d91`** (fuori dal Task 2, perché il rischio sopravviveva a
+> qualunque esito del gate: se lo spike va avanti serve corretto, se si ferma resta `setup_dialogs`
+> da revertire e nel frattempo il branch non si avvia con Redis). `_build_storage` ora passa
+> `key_builder=DefaultKeyBuilder(with_destiny=True)`; la guardia è
+> `tests/unit/test_fsm_storage.py::test_key_builder_accepts_the_destiny_aiogram_dialog_uses`, che
+> asserisce sul **comportamento** — costruisce la chiave col destiny vero — quindi `with_destiny=False`
+> non la passerebbe (verificato per mutazione). **Costo dichiarato, non gratuito:** il flag aggiunge
+> `:default` anche alle chiavi normali (`fsm:2:3` diventa `fsm:2:3:default`), quindi le chiavi FSM
+> scritte da un build precedente restano orfane e i flussi aperti muoiono una volta, al deploy.
+> Stesso commit: `STEERING.md:74` dichiarava `redis` come default del **campo**, ma `config.py:37`
+> dice `memory` e il README pure — a spedire `redis` è `.env.example`. Contraddizione della Fase 0,
+> corretta nel documento normativo.
+
 Sui quattro middleware di progetto in sé, questo task ha ristretto il buco invece di limitarsi a
 descriverlo: `tests/integration/test_dialog_spike.py` ora fa girare `RateLimitMiddleware`,
 `BannedUserMiddleware`, `GroupMemberMiddleware` **veri**, nello stesso ordine di `main.py`, insieme
@@ -576,7 +589,8 @@ deve ancora produrre, non qualcosa che questo task potesse produrre.
   questa review**: con `RedisStorage` costruito come lo costruisce oggi `main._build_storage`
   (senza `key_builder`), il primo messaggio che arriva al bot dopo `setup_dialogs(dp)` solleva
   `ValueError` prima di qualunque handler — verificato nel sorgente, non congetturato (punto 1).
-  Non corretto in questo task: fuori dai findings assegnati e dallo scope della fetta.
+  Non corretto in questo task: fuori dai findings assegnati e dallo scope della fetta. **Corretto
+  poi, il 2026-08-03, nel commit `6697d91`** — vedi il riquadro al punto 1.
 - **Un `Dialog` innestato oscura permanentemente i fallback di `common.router` per chi ci resta
   dentro, e `state.clear()` non lo libera.** Verificato in `aiogram_dialog/dialog.py:187-190`
   (`_register_handlers`): l'unico handler `message` di un `Dialog` si registra **senza filtri
