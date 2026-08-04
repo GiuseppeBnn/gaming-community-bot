@@ -22,6 +22,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.connection import async_session_maker
+from handlers.callbacks import QuizAnswerCb
 from services import quiz_service
 from utils.text import esc, format_seconds_short
 
@@ -39,7 +40,12 @@ def _question_kb(
     display-order randomization (§19)."""
     b = InlineKeyboardBuilder()
     for real_idx, opt in ordered_options:
-        b.button(text=opt[:40], callback_data=f"quiz_ans:{quiz_id}:{question_id}:{real_idx}")
+        b.button(
+            text=opt[:40],
+            callback_data=QuizAnswerCb(
+                action="answer", quiz_id=quiz_id, question_id=question_id, option_id=real_idx
+            ).pack(),
+        )
     b.adjust(1)
     return b.as_markup()
 
@@ -48,12 +54,14 @@ def _question_kb(
 # Private play (one question at a time, with an optional per-question timer)
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _PlayCtx:
     """In-memory state of the question a user is currently looking at — used to
     measure response time and to run the countdown. Keyed by (quiz_id, user_tg_id)."""
+
     question_id: int
-    shown_at: float          # time.monotonic() when the question was sent
+    shown_at: float  # time.monotonic() when the question was sent
     message_id: int
     chat_id: int
     timer: "asyncio.Task | None" = None
@@ -126,8 +134,8 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
     rules = (
         f"Hai <b>{limit} secondi</b> per ogni domanda: allo scadere è data come sbagliata. "
         "A parità di risposte, chi finisce prima sale sul podio!"
-        if limit > 0 else
-        "Nessun limite di tempo, ma chi finisce prima sale sul podio a parità di risposte!"
+        if limit > 0
+        else "Nessun limite di tempo, ma chi finisce prima sale sul podio a parità di risposte!"
     )
     await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n<i>{rules}</i>")
     await _present_question(message.bot, message.chat.id, message.from_user.id, quiz, done)
@@ -150,8 +158,10 @@ async def _present_question(bot: Bot, chat_id: int, user_tg_id: int, quiz, index
     if old is not None:
         _cancel_task(old.timer)
     ctx = _PlayCtx(
-        question_id=question.id, shown_at=time.monotonic(),
-        message_id=sent.message_id, chat_id=chat_id,
+        question_id=question.id,
+        shown_at=time.monotonic(),
+        message_id=sent.message_id,
+        chat_id=chat_id,
     )
     _PLAY[key] = ctx
     if limit > 0:
@@ -185,8 +195,13 @@ async def _advance_or_finish(
 
 
 async def _expire_question(
-    bot: Bot, chat_id: int, quiz_id: int, user_tg_id: int,
-    question_id: int, message_id: int, limit: int,
+    bot: Bot,
+    chat_id: int,
+    quiz_id: int,
+    user_tg_id: int,
+    question_id: int,
+    message_id: int,
+    limit: int,
 ) -> None:
     """Countdown for one question: after `limit` seconds, if still unanswered, mark
     it wrong and advance. Uses its own DB session (the request's is long gone)."""
@@ -213,15 +228,15 @@ async def _expire_question(
             options = quiz_service.question_options(question)
             correct_label = esc(options[outcome.correct_option_id])
             feedback = (
-                "⏱️ <b>Tempo scaduto!</b> Nessuna risposta.\n"
-                f"✅ Giusta: <b>{correct_label}</b>"
+                f"⏱️ <b>Tempo scaduto!</b> Nessuna risposta.\n✅ Giusta: <b>{correct_label}</b>"
             )
             if question.explanation:
                 feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
             try:
                 await bot.edit_message_text(
                     f"❓ {esc(question.text)}\n\n{feedback}",
-                    chat_id=chat_id, message_id=message_id,
+                    chat_id=chat_id,
+                    message_id=message_id,
                 )
             except Exception:  # noqa: BLE001 — message may be too old to edit
                 pass
@@ -230,14 +245,13 @@ async def _expire_question(
         log.exception("Timer domanda quiz %s/%s fallito", quiz_id, question_id)
 
 
-@router.callback_query(F.data.startswith("quiz_ans:"))
-async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    try:
-        _, raw_quiz, raw_q, raw_opt = callback.data.split(":")
-        quiz_id, question_id, opt_idx = int(raw_quiz), int(raw_q), int(raw_opt)
-    except (ValueError, IndexError):
-        await callback.answer("Dati non validi.", show_alert=True)
-        return
+@router.callback_query(QuizAnswerCb.filter(F.action == "answer"))
+async def cb_quiz_answer(
+    callback: CallbackQuery, callback_data: QuizAnswerCb, db_session: AsyncSession
+) -> None:
+    quiz_id = callback_data.quiz_id
+    question_id = callback_data.question_id
+    opt_idx = callback_data.option_id
 
     quiz = await quiz_service.get_quiz(db_session, quiz_id)
     if quiz is None or quiz.status != "running":
@@ -297,4 +311,3 @@ async def cb_quiz_answer(callback: CallbackQuery, db_session: AsyncSession) -> N
 
     await _advance_or_finish(callback.bot, callback.message.chat.id, user_tg_id, quiz, db_session)
     await callback.answer()
-

@@ -33,6 +33,7 @@ from handlers.callbacks import (
     BetOptionCb,
     EventCb,
     PollCreateCb,
+    QuizAnswerCb,
     QuizEditCb,
     QuizNewCb,
     SchedCb,
@@ -99,6 +100,22 @@ def test_pack_quiz_creation_callbacks(cb, packed):
 )
 def test_pack_quiz_edit_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+def test_pack_quiz_answer_callback():
+    """A quiz answer carries its action and all three database identifiers.
+
+    Removing the action segment or serialising one identifier under a different
+    field must make this public callback incompatible with its router filter.
+    """
+    assert (
+        QuizAnswerCb(action="answer", quiz_id=7, question_id=8, option_id=2).pack()
+        == "quiz_ans:answer:7:8:2"
+    )
+
+
+async def test_quiz_answer_numeric_fields_are_typed_by_the_filter():
+    assert await QuizAnswerCb.filter()(_query("quiz_ans:answer:7:8:not-an-option")) is False
 
 
 @pytest.mark.parametrize(
@@ -363,6 +380,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
         "evpt",
         "quiz_new",
         "quiz_edit",
+        "quiz_ans",
         "shop",
     } <= _typed_callback_prefixes().keys()
 

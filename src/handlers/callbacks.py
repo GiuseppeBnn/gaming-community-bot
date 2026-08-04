@@ -178,3 +178,13 @@ class QuizEditCb(CallbackData, prefix="quiz_edit"):
     action: str
     quiz_id: int | None = None
     index: int | None = None
+
+
+class QuizAnswerCb(CallbackData, prefix="quiz_ans"):
+    """A participant's answer to one public quiz question."""
+
+    #: "answer"
+    action: str
+    quiz_id: int
+    question_id: int
+    option_id: int

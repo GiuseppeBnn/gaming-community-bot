@@ -1128,7 +1128,10 @@ esplicitamente che nulla è stato salvato.
   e dallo scheduler. Caller committa. **`/quiz` (admin)**
   non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
 - Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: gioca in privato, una domanda alla
-  volta con **bottoni inline** (`quiz_ans:<quiz>:<question>:<opt>`). Alla risposta: feedback
+  volta con **bottoni inline** `QuizAnswerCb(action="answer", quiz_id=<quiz>,
+  question_id=<question>, option_id=<opt>)` (`quiz_ans:answer:<quiz>:<question>:<opt>`). Il filtro
+  tipizzato accetta solo l'azione `answer` e inietta i tre identificatori interi, quindi payload
+  malformati o bottoni di un deploy precedente non raggiungono l'handler. Alla risposta: feedback
   immediato (✅/❌ + spiegazione), poi domanda successiva. È **resumable** (riprende dalla domanda
   non ancora risposta). `record_answer` è idempotente per (domanda, utente) — dedup + `IntegrityError` guard.
 
