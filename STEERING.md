@@ -1102,9 +1102,13 @@ pronto!» e «🧪 Prova» nel dettaglio dell'hub Eventi.
 **Invariante:** la prova è **interamente in memoria** (`_TRY: dict[(quiz_id, admin_id), _TryCtx]`) e
 **non scrive nessuna riga `quiz_answers`**. Quindi non può raggiungere podio, premi, XP o
 `game_podiums`: l'isolamento è **strutturale**, non un filtro da ricordarsi in ogni query (era
-l'alternativa scartata: colonna `is_test` + filtro in ~6 punti). Namespace callback **`quiz_try:*`**,
-disgiunto da `quiz_ans:*`, così una risposta di prova non può finire nel recorder vero. Handler
-gated **singolarmente** (`quiz.router` è misto, §8). Nessun timer in prova (il vero limite è
+l'alternativa scartata: colonna `is_test` + filtro in ~6 punti). Le callback usano
+`QuizTryCb(action, quiz_id, question_id=None, option_id=None)`: `start` e `stop` richiedono il
+solo `quiz_id`, mentre `answer` richiede anche `question_id` e `option_id`; i loro wire payload
+sono rispettivamente `quiz_try:start:<quiz>::`, `quiz_try:stop:<quiz>::` e
+`quiz_try:answer:<quiz>:<question>:<option>`. Il namespace resta disgiunto da `quiz_ans:*`, così
+una risposta di prova non può finire nel recorder vero. Handler gated **singolarmente**
+(`quiz.router` è misto, §8). Nessun timer in prova (il vero limite è
 comunicato a schermo). Ogni messaggio porta il marker 🧪 e il riepilogo finale dichiara
 esplicitamente che nulla è stato salvato.
 

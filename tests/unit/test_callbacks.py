@@ -36,6 +36,7 @@ from handlers.callbacks import (
     QuizAnswerCb,
     QuizEditCb,
     QuizNewCb,
+    QuizTryCb,
     SchedCb,
     ShopCb,
 )
@@ -116,6 +117,33 @@ def test_pack_quiz_answer_callback():
 
 async def test_quiz_answer_numeric_fields_are_typed_by_the_filter():
     assert await QuizAnswerCb.filter()(_query("quiz_ans:answer:7:8:not-an-option")) is False
+
+
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (QuizTryCb(action="start", quiz_id=7), "quiz_try:start:7::"),
+        (QuizTryCb(action="stop", quiz_id=7), "quiz_try:stop:7::"),
+        (
+            QuizTryCb(action="answer", quiz_id=7, question_id=8, option_id=2),
+            "quiz_try:answer:7:8:2",
+        ),
+    ],
+)
+def test_pack_quiz_try_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "quiz_try:start:not-an-quiz::",
+        "quiz_try:answer:7:not-a-question:2",
+        "quiz_try:answer:7:8:not-an-option",
+    ],
+)
+async def test_quiz_try_numeric_fields_are_typed_by_the_filter(data):
+    assert await QuizTryCb.filter()(_query(data)) is False
 
 
 @pytest.mark.parametrize(
@@ -381,6 +409,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
         "quiz_new",
         "quiz_edit",
         "quiz_ans",
+        "quiz_try",
         "shop",
     } <= _typed_callback_prefixes().keys()
 

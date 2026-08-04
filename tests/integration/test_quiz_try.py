@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
+from handlers.callbacks import QuizTryCb
 from handlers.quiz import trying as quiz_handlers
 from services import quiz_service
 
@@ -69,9 +70,21 @@ def _cbs(markup):
     return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
 
 
+def _answer_callback(markup, choice=0):
+    answers = [
+        callback_data
+        for data in _cbs(markup)
+        if (callback_data := QuizTryCb.unpack(data)).action == "answer"
+    ]
+    assert answers, "the test run should be offering answer buttons"
+    return answers[choice]
+
+
 async def _make_quiz(session, *, status="ready"):
     quiz = await quiz_service.create_quiz(session, 9, "Prova", "d")
-    await quiz_service.add_question(session, quiz.id, "Capitale d'Italia?", ["Roma", "Milano"], 0, "È Roma.")
+    await quiz_service.add_question(
+        session, quiz.id, "Capitale d'Italia?", ["Roma", "Milano"], 0, "È Roma."
+    )
     await quiz_service.add_question(session, quiz.id, "2+2?", ["3", "4"], 1, None)
     await quiz_service.set_status(session, quiz.id, status)
     await session.commit()
@@ -79,22 +92,26 @@ async def _make_quiz(session, *, status="ready"):
 
 
 async def _answer_count(session, quiz_id):
-    return (await session.execute(
-        select(func.count()).select_from(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id)
-    )).scalar_one()
+    return (
+        await session.execute(
+            select(func.count()).select_from(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id)
+        )
+    ).scalar_one()
 
 
 async def _start(message, session, quiz_id):
     """Enter the test run the way production does: a tap on the bot's own message."""
-    await quiz_handlers.cb_try_start(_FakeCallback(f"quiz_try:start:{quiz_id}", message), session)
+    callback_data = QuizTryCb(action="start", quiz_id=quiz_id)
+    await quiz_handlers.cb_try_start(
+        _FakeCallback(callback_data.pack(), message), callback_data, session
+    )
 
 
 async def _answer_current(message, session, *, choice=0):
     """Tap one of the answer buttons the flow last offered. Returns the callback."""
-    cbs = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")]
-    assert cbs, "the test run should be offering answer buttons"
-    cb = _FakeCallback(cbs[choice], message)
-    await quiz_handlers.cb_try_answer(cb, session)
+    callback_data = _answer_callback(message.replies[-1][1], choice)
+    cb = _FakeCallback(callback_data.pack(), message)
+    await quiz_handlers.cb_try_answer(cb, callback_data, session)
     return cb
 
 
@@ -136,7 +153,8 @@ class TestRunIsKeyedOnTheAdmin:
         message = _FakeMessage()
 
         await _start(message, session, quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(f"quiz_try:stop:{quiz.id}", message))
+        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
+        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
         await _start(message, session, quiz.id)
         cb = await _answer_current(message, session)
 
@@ -150,7 +168,8 @@ class TestRunIsKeyedOnTheAdmin:
         message = _FakeMessage()
 
         await _start(message, session, quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(f"quiz_try:stop:{quiz.id}", message))
+        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
+        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
 
         assert quiz_handlers._TRY == {}
 
@@ -160,13 +179,18 @@ class TestRunIsKeyedOnTheAdmin:
         other_admin = 99
 
         await _start(message, session, quiz.id)
+        callback_data = QuizTryCb(action="start", quiz_id=quiz.id)
         await quiz_handlers.cb_try_start(
-            _FakeCallback(f"quiz_try:start:{quiz.id}", message, user_id=other_admin), session
+            _FakeCallback(callback_data.pack(), message, user_id=other_admin),
+            callback_data,
+            session,
         )
         # Only the second admin answers; the first one's progress must not move.
-        cbs = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")]
+        callback_data = _answer_callback(message.replies[-1][1])
         await quiz_handlers.cb_try_answer(
-            _FakeCallback(cbs[0], message, user_id=other_admin), session
+            _FakeCallback(callback_data.pack(), message, user_id=other_admin),
+            callback_data,
+            session,
         )
 
         assert quiz_handlers._TRY[(quiz.id, ADMIN_ID)].index == 0
@@ -243,7 +267,8 @@ class TestRunGuards:
         await _start(message, session, quiz.id)
         assert _try_state(quiz.id) is not None
 
-        await quiz_handlers.cb_try_stop(_FakeCallback(f"quiz_try:stop:{quiz.id}", message))
+        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
+        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
 
         assert _try_state(quiz.id) is None
         assert await _answer_count(session, quiz.id) == 0
@@ -253,8 +278,11 @@ class TestRunGuards:
         message = _FakeMessage()
         loaded = await quiz_service.get_quiz(session, quiz.id)
 
-        cb = _FakeCallback(f"quiz_try:ans:{quiz.id}:{loaded.questions[0].id}:0", message)
-        await quiz_handlers.cb_try_answer(cb, session)
+        callback_data = QuizTryCb(
+            action="answer", quiz_id=quiz.id, question_id=loaded.questions[0].id, option_id=0
+        )
+        cb = _FakeCallback(callback_data.pack(), message)
+        await quiz_handlers.cb_try_answer(cb, callback_data, session)
 
         assert any("scaduta" in (a or "") for a in cb.answers)
         assert await _answer_count(session, quiz.id) == 0
@@ -297,13 +325,20 @@ class TestRunRefusals:
         assert "non trovato" in message.replies[-1][0]
         assert _try_state(quiz.id) is None
 
-    async def test_malformed_answer_data_is_refused(self, session):
+    async def test_answer_without_question_or_option_is_refused_before_side_effects(self, session):
+        quiz = await _make_quiz(session)
         message = _FakeMessage()
-        cb = _FakeCallback("quiz_try:ans:1:2", message)
+        await _start(message, session, quiz.id)
+        ctx = _try_state(quiz.id)
+        callback_data = QuizTryCb(action="answer", quiz_id=quiz.id)
+        cb = _FakeCallback(callback_data.pack(), message)
 
-        await quiz_handlers.cb_try_answer(cb, session)
+        await quiz_handlers.cb_try_answer(cb, callback_data, session)
 
         assert any("non validi" in (a or "") for a in cb.answers)
+        assert _try_state(quiz.id) is ctx
+        assert ctx.index == 0
+        assert await _answer_count(session, quiz.id) == 0
 
     async def test_answering_a_question_already_passed_is_refused(self, session):
         """The previous question's message keeps its buttons; tapping one must not
@@ -311,11 +346,11 @@ class TestRunRefusals:
         quiz = await _make_quiz(session)
         message = _FakeMessage()
         await _start(message, session, quiz.id)
-        stale = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")][0]
+        stale = _answer_callback(message.replies[-1][1])
         await _answer_current(message, session)
 
-        cb = _FakeCallback(stale, message)
-        await quiz_handlers.cb_try_answer(cb, session)
+        cb = _FakeCallback(stale.pack(), message)
+        await quiz_handlers.cb_try_answer(cb, stale, session)
 
         assert any("già risposto" in (a or "") for a in cb.answers)
         assert _try_state(quiz.id).index == 1
@@ -326,12 +361,12 @@ class TestRunRefusals:
         quiz = await _make_quiz(session)
         message = _FakeMessage()
         await _start(message, session, quiz.id)
-        cbs = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")]
+        callback_data = _answer_callback(message.replies[-1][1])
         await quiz_service.set_status(session, quiz.id, "running")
         await session.commit()
 
-        cb = _FakeCallback(cbs[0], message)
-        await quiz_handlers.cb_try_answer(cb, session)
+        cb = _FakeCallback(callback_data.pack(), message)
+        await quiz_handlers.cb_try_answer(cb, callback_data, session)
 
         assert any("non è più in prova" in (a or "") for a in cb.answers)
         assert _try_state(quiz.id) is None
@@ -342,8 +377,11 @@ class TestRunRefusals:
         await _start(message, session, quiz.id)
         question_id = _try_state(quiz.id).order[0]
 
-        cb = _FakeCallback(f"quiz_try:ans:{quiz.id}:{question_id}:99", message)
-        await quiz_handlers.cb_try_answer(cb, session)
+        callback_data = QuizTryCb(
+            action="answer", quiz_id=quiz.id, question_id=question_id, option_id=99
+        )
+        cb = _FakeCallback(callback_data.pack(), message)
+        await quiz_handlers.cb_try_answer(cb, callback_data, session)
 
         assert any("Opzione non valida" in (a or "") for a in cb.answers)
 
@@ -354,8 +392,11 @@ class TestRunRefusals:
         ctx = _try_state(quiz.id)
         ctx.order[ctx.index] = 999_999
 
-        cb = _FakeCallback(f"quiz_try:ans:{quiz.id}:999999:0", message)
-        await quiz_handlers.cb_try_answer(cb, session)
+        callback_data = QuizTryCb(
+            action="answer", quiz_id=quiz.id, question_id=999_999, option_id=0
+        )
+        cb = _FakeCallback(callback_data.pack(), message)
+        await quiz_handlers.cb_try_answer(cb, callback_data, session)
 
         assert any("Domanda non valida" in (a or "") for a in cb.answers)
 
@@ -392,14 +433,13 @@ class TestOldMessages:
         message = _UneditableMessage()
         await _start(message, session, quiz.id)
 
-        await quiz_handlers.cb_try_stop(_FakeCallback(f"quiz_try:stop:{quiz.id}", message))
+        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
+        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
 
         assert "interrotta" in message.replies[-1][0]
         assert _try_state(quiz.id) is None
 
-    async def test_answering_on_an_uneditable_message_still_shows_the_feedback(
-        self, session
-    ):
+    async def test_answering_on_an_uneditable_message_still_shows_the_feedback(self, session):
         """Without the fallback the admin taps, sees nothing change, and taps again."""
         quiz = await _make_quiz(session)
         message = _UneditableMessage()

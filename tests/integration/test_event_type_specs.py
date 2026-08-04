@@ -37,7 +37,7 @@ from sqlalchemy import select
 
 import services.bet_service as bet_svc
 from database.models import BettingEvent, EventStatus, PollTemplate, ScheduledTask
-from handlers.callbacks import EventCb, QuizEditCb
+from handlers.callbacks import EventCb, QuizEditCb, QuizTryCb
 from handlers.event_types.base import StartResult, edit_or_send
 from handlers.event_types.bet_type import BetType
 from handlers.event_types.poll_type import PollType
@@ -586,7 +586,7 @@ class TestQuizTypeDetail:
         actions = _callbacks(message.markups[0])
         assert EventCb(action="askstart", task_type="quiz", item_id=quiz.id).pack() in actions
         assert QuizEditCb(action="nav", quiz_id=quiz.id, index=0).pack() in actions
-        assert f"quiz_try:start:{quiz.id}" in actions
+        assert QuizTryCb(action="start", quiz_id=quiz.id).pack() in actions
         assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in actions
 
     async def test_a_running_quiz_offers_close_and_never_start(self, session, user_factory):

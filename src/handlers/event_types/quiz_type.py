@@ -14,7 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
-from handlers.callbacks import EventCb, QuizEditCb
+from handlers.callbacks import EventCb, QuizEditCb, QuizTryCb
 from services import quiz_service, schedule_service
 from utils.text import esc
 
@@ -108,7 +108,9 @@ class QuizType:
                 text="✏️ Modifica domande",
                 callback_data=QuizEditCb(action="nav", quiz_id=item_id, index=0).pack(),
             )
-            b.button(text="🧪 Prova", callback_data=f"quiz_try:start:{item_id}")
+            b.button(
+                text="🧪 Prova", callback_data=QuizTryCb(action="start", quiz_id=item_id).pack()
+            )
             b.button(
                 text="🗑️ Elimina",
                 callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack(),

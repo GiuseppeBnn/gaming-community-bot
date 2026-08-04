@@ -12,7 +12,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 from database.models import EventStatus
 from exceptions.economy import EventNotFoundError
-from handlers.callbacks import EventCb
+from handlers.callbacks import EventCb, QuizTryCb
 from services import bet_service, poll_service
 
 
@@ -45,7 +45,10 @@ class TestDraftBets:
     async def test_create_draft_and_list(self, session, user_factory):
         await user_factory(1, "creator")
         event = await bet_service.create_event(
-            session, creator_tg_id=1, title="Match", description="d",
+            session,
+            creator_tg_id=1,
+            title="Match",
+            description="d",
             options=[{"label": "A"}, {"label": "B"}],
             status=EventStatus.draft.value,
         )
@@ -60,7 +63,10 @@ class TestDraftBets:
     async def test_activate_draft_opens_it(self, session, user_factory):
         await user_factory(1, "creator")
         event = await bet_service.create_event(
-            session, creator_tg_id=1, title="Match", description="d",
+            session,
+            creator_tg_id=1,
+            title="Match",
+            description="d",
             options=[{"label": "A"}, {"label": "B"}],
             status=EventStatus.draft.value,
         )
@@ -75,7 +81,10 @@ class TestDraftBets:
     async def test_activate_is_idempotent_for_open(self, session, user_factory):
         await user_factory(1, "creator")
         event = await bet_service.create_event(
-            session, creator_tg_id=1, title="M", description="",
+            session,
+            creator_tg_id=1,
+            title="M",
+            description="",
             options=[{"label": "A"}, {"label": "B"}],
             status=EventStatus.draft.value,
         )
@@ -91,7 +100,10 @@ class TestDraftBets:
     async def test_default_status_is_open(self, session, user_factory):
         await user_factory(1, "creator")
         event = await bet_service.create_event(
-            session, creator_tg_id=1, title="M", description="",
+            session,
+            creator_tg_id=1,
+            title="M",
+            description="",
             options=[{"label": "A"}, {"label": "B"}],
         )
         await session.commit()
@@ -101,8 +113,11 @@ class TestDraftBets:
 class TestPollTemplates:
     async def test_create_list_and_use(self, session):
         poll = await poll_service.create_template(
-            session, creator_tg_id=1, question="Best game?",
-            options=["A", "B", "C"], group_id=None,
+            session,
+            creator_tg_id=1,
+            question="Best game?",
+            options=["A", "B", "C"],
+            group_id=None,
         )
         await session.commit()
         assert poll.status == "ready"
@@ -209,7 +224,7 @@ class TestQuizEventType:
         assert EventCb(action="askstart", task_type="quiz", item_id=quiz.id).pack() in cbs
         assert EventCb(action="sched", task_type="quiz", item_id=quiz.id).pack() in cbs
         assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in cbs
-        assert f"quiz_try:start:{quiz.id}" in cbs        # dry-run before going live
+        assert QuizTryCb(action="start", quiz_id=quiz.id).pack() in cbs  # dry-run before going live
         assert not any(c.startswith("ev:start:") for c in cbs)  # no one-tap launch
 
     async def test_render_detail_finished_offers_reset_and_delete(self, session):

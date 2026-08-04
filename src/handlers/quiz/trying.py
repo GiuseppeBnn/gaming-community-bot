@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filters.admin_filter import IsAdminCallbackFilter
+from handlers.callbacks import QuizTryCb
 from services import quiz_service
 from utils.text import esc
 
@@ -41,9 +42,10 @@ from handlers.quiz._shared import (
 class _TryCtx:
     """One admin's test run. Lives only in memory and dies with the process — a
     lost run costs nothing, so there is no persistence to justify."""
+
     quiz_id: int
-    order: list[int]                  # question ids, in this run's display order
-    index: int = 0                    # how many questions are already answered
+    order: list[int]  # question ids, in this run's display order
+    index: int = 0  # how many questions are already answered
     correct: int = 0
 
 
@@ -61,8 +63,15 @@ def _try_question_kb(
 ) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for real_idx, opt in ordered_options:
-        b.button(text=opt[:40], callback_data=f"quiz_try:ans:{quiz_id}:{question_id}:{real_idx}")
-    b.button(text="⏹ Esci dalla prova", callback_data=f"quiz_try:stop:{quiz_id}")
+        b.button(
+            text=opt[:40],
+            callback_data=QuizTryCb(
+                action="answer", quiz_id=quiz_id, question_id=question_id, option_id=real_idx
+            ).pack(),
+        )
+    b.button(
+        text="⏹ Esci dalla prova", callback_data=QuizTryCb(action="stop", quiz_id=quiz_id).pack()
+    )
     b.adjust(1)
     return b.as_markup()
 
@@ -101,9 +110,7 @@ async def start_quiz_try(
         if limit > 0
         else "Nessun limite di tempo, come nel quiz vero."
     )
-    await message.answer(
-        f"{_TRY_BANNER}\n\n🧠 <b>{esc(quiz.title)}</b>\n<i>{timing}</i>"
-    )
+    await message.answer(f"{_TRY_BANNER}\n\n🧠 <b>{esc(quiz.title)}</b>\n<i>{timing}</i>")
     await _present_try_question(message, db_session, quiz, admin_id)
 
 
@@ -129,7 +136,7 @@ async def _finish_try(message: Message, quiz, admin_id: int) -> None:
     total = len(ctx.order) if ctx else 0
     correct = ctx.correct if ctx else 0
     b = InlineKeyboardBuilder()
-    b.button(text="🔁 Riprova", callback_data=f"quiz_try:start:{quiz.id}")
+    b.button(text="🔁 Riprova", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack())
     b.adjust(1)
     await message.answer(
         f"🧪 <b>Prova completata</b>\n\n"
@@ -140,18 +147,20 @@ async def _finish_try(message: Message, quiz, admin_id: int) -> None:
     )
 
 
-@router.callback_query(F.data.startswith("quiz_try:start:"), IsAdminCallbackFilter())
-async def cb_try_start(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    quiz_id = int(callback.data.split(":")[2])
+@router.callback_query(QuizTryCb.filter(F.action == "start"), IsAdminCallbackFilter())
+async def cb_try_start(
+    callback: CallbackQuery, callback_data: QuizTryCb, db_session: AsyncSession
+) -> None:
+    quiz_id = callback_data.quiz_id
     # `callback.from_user` is the admin who tapped; `callback.message.from_user`
     # would be the bot that posted the button (see start_quiz_try's docstring).
     await start_quiz_try(callback.message, db_session, quiz_id, callback.from_user.id)
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("quiz_try:stop:"), IsAdminCallbackFilter())
-async def cb_try_stop(callback: CallbackQuery) -> None:
-    quiz_id = int(callback.data.split(":")[2])
+@router.callback_query(QuizTryCb.filter(F.action == "stop"), IsAdminCallbackFilter())
+async def cb_try_stop(callback: CallbackQuery, callback_data: QuizTryCb) -> None:
+    quiz_id = callback_data.quiz_id
     _TRY.pop(_try_key(quiz_id, callback.from_user.id), None)
     try:
         await callback.message.edit_text("🧪 Prova interrotta. Nessun dato salvato.")
@@ -160,12 +169,14 @@ async def cb_try_stop(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("quiz_try:ans:"), IsAdminCallbackFilter())
-async def cb_try_answer(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    try:
-        _, _, raw_quiz, raw_q, raw_opt = callback.data.split(":")
-        quiz_id, question_id, opt_idx = int(raw_quiz), int(raw_q), int(raw_opt)
-    except (ValueError, IndexError):
+@router.callback_query(QuizTryCb.filter(F.action == "answer"), IsAdminCallbackFilter())
+async def cb_try_answer(
+    callback: CallbackQuery, callback_data: QuizTryCb, db_session: AsyncSession
+) -> None:
+    quiz_id = callback_data.quiz_id
+    question_id = callback_data.question_id
+    opt_idx = callback_data.option_id
+    if question_id is None or opt_idx is None:
         await callback.answer("Dati non validi.", show_alert=True)
         return
 

@@ -188,3 +188,13 @@ class QuizAnswerCb(CallbackData, prefix="quiz_ans"):
     quiz_id: int
     question_id: int
     option_id: int
+
+
+class QuizTryCb(CallbackData, prefix="quiz_try"):
+    """Admin dry-run controls for a ready quiz."""
+
+    #: "start" | "stop" | "answer"
+    action: str
+    quiz_id: int
+    question_id: int | None = None
+    option_id: int | None = None
