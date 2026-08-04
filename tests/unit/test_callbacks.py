@@ -41,6 +41,7 @@ from handlers.callbacks import (
     QuizEditCb,
     QuizNewCb,
     QuizTryCb,
+    RulesCb,
     SchedCb,
     ShopCb,
 )
@@ -80,6 +81,16 @@ def test_pack(cb, expected):
 )
 def test_pack_shop_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+def test_pack_rules_acceptance_callback():
+    """The onboarding button keeps the deployed `rules:accept` payload."""
+    assert RulesCb(action="accept").pack() == "rules:accept"
+
+
+async def test_rules_callback_filter_rejects_a_different_prefix():
+    """A similarly shaped foreign callback must not reach onboarding."""
+    assert await RulesCb.filter()(_query("other:accept")) is False
 
 
 @pytest.mark.parametrize(
@@ -503,6 +514,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
         "guess_new",
         "shop",
         "lead",
+        "rules",
     } <= _typed_callback_prefixes().keys()
 
 

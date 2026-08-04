@@ -39,6 +39,13 @@ class ShopCb(CallbackData, prefix="shop"):
     key: str | None = None
 
 
+class RulesCb(CallbackData, prefix="rules"):
+    """Initial onboarding acceptance — `handlers/onboarding.py`."""
+
+    #: "accept"
+    action: str
+
+
 class LeaderboardCb(CallbackData, prefix="lead"):
     """Public leaderboard switcher controls — `handlers/leaderboard.py`."""
 

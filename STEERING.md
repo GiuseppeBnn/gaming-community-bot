@@ -763,6 +763,15 @@ aggiungere altro rumore (la risposta fresca è già lì).
 
 ## 16. Comandi registrati
 
+### 16.1 Onboarding iniziale (`RulesCb`, prefisso `rules`)
+
+Il solo bottone del prompt regole in chat privata usa `RulesCb(action: str)`: l'unica azione è
+`accept` e il wire payload resta `rules:accept`. `get_rules_keyboard()` lo costruisce sempre con
+`.pack()` e `cb_accept_rules` lo filtra con `RulesCb.filter(F.action == "accept")`; il filtro
+rifiuta prima dell'handler callback di altri prefissi o non conformi. Restano invariati la difesa
+in profondità sulla chat privata, l'identità da `callback.from_user`, l'assegnazione del trofeo e
+i commit dell'handler.
+
 ### Privato
 `/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
