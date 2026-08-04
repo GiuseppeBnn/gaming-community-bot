@@ -16,6 +16,8 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from handlers.callbacks import EventCb
+
 PAGE_SIZE = 8
 
 
@@ -23,7 +25,7 @@ def home_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📊 Statistiche", callback_data="adm:stats")
     b.button(text="🏆 Classifica", callback_data="adm:lead")
-    b.button(text="🎬 Eventi", callback_data="ev:home")
+    b.button(text="🎬 Eventi", callback_data=EventCb(action="home").pack())
     b.button(text="👥 Utenti", callback_data="adm:users:0")
     b.button(text="💰 Economia", callback_data="adm:econ")
     b.button(text="🧾 Audit", callback_data="adm:audit")

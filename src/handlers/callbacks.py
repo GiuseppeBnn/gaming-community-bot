@@ -40,3 +40,36 @@ class SchedCb(CallbackData, prefix="sched"):
     action: str
     key: str | None = None
     item_id: int | None = None
+
+
+class EventCb(CallbackData, prefix="ev"):
+    """The Events hub — `handlers/events.py`, plus the buttons that `event_types/`
+    and `guess/creation.py` draw for it.
+
+    `action` absorbs two things the old grammar smeared across segments. The
+    confirm step glued its verb to the prefix (`ev:askstart`), which is simply an
+    action name here. And scheduling used an optional 5th segment to pin *what* to
+    schedule (`ev:sched:<t>:<id>:close`); that is an action of its own now —
+    "sched_close" — because a field only one action in ten fills would be an empty
+    separator in every other payload, and a field whose meaning depends on the
+    action is the same dishonesty the hand-rolled parsing allowed itself.
+    """
+
+    #: "home" | "list" | "item" | "new"
+    #: | "ask{start,del,close,reset}" | "start" | "close" | "del" | "reset"
+    #: | "sched" | "sched_close"
+    action: str
+    task_type: str | None = None
+    item_id: int | None = None
+
+
+class PollCreateCb(CallbackData, prefix="evpt"):
+    """Cancelling poll creation — `handlers/events.py`, the `ev:pt:*` triangle.
+
+    It squatted under the `ev` prefix without sharing any of its fields. Given a
+    prefix of its own, `EventCb` stays at three fields instead of four and every
+    other hub payload loses a separator.
+    """
+
+    #: "cancel" | "cancel_yes" | "cancel_no"
+    action: str

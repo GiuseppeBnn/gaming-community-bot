@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-
+from handlers.callbacks import EventCb
 from keyboards.admin_dashboard_kb import (
     back_home_kb,
     confirm_kb,
@@ -25,8 +25,8 @@ def _cbs(markup):
 class TestHome:
     def test_has_all_sections_and_close_last(self):
         cbs = _cbs(home_kb())
-        # Quiz + Scommesse are now unified under the "🎬 Eventi" hub (ev:home).
-        for expected in ("adm:stats", "adm:lead", "ev:home", "adm:users:0",
+        # Quiz + Scommesse are now unified under the "🎬 Eventi" hub (EventCb home).
+        for expected in ("adm:stats", "adm:lead", EventCb(action="home").pack(), "adm:users:0",
                          "adm:econ", "adm:audit", "adm:help"):
             assert expected in cbs
         assert _flat(home_kb())[-1].callback_data == "adm:close"

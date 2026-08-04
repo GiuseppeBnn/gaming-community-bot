@@ -20,6 +20,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers.callbacks import EventCb
 from handlers.event_types import edit_or_send
 from services import quiz_service
 from utils.text import esc
@@ -63,7 +64,10 @@ def _edit_cancel_kb() -> InlineKeyboardMarkup:
 
 def _edit_back_kb(quiz_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Torna al quiz", callback_data=f"ev:item:quiz:{quiz_id}")
+        InlineKeyboardButton(
+            text="⬅️ Torna al quiz",
+            callback_data=EventCb(action="item", task_type="quiz", item_id=quiz_id).pack(),
+        )
     ]])
 
 
@@ -94,7 +98,8 @@ def _edit_view_kb(quiz_id: int, idx: int, total: int) -> InlineKeyboardMarkup:
     b.button(text="✏️ Risposte", callback_data=f"quiz_edit:opts:{quiz_id}:{idx}")
     b.button(text="✏️ Spiegazione", callback_data=f"quiz_edit:expl:{quiz_id}:{idx}")
     b.button(text="🔄 Rifai domanda", callback_data=f"quiz_edit:redo:{quiz_id}:{idx}")
-    b.button(text="⬅️ Torna al quiz", callback_data=f"ev:item:quiz:{quiz_id}")
+    b.button(text="⬅️ Torna al quiz",
+             callback_data=EventCb(action="item", task_type="quiz", item_id=quiz_id).pack())
     nav_count = 1 + (1 if idx > 0 else 0) + (1 if idx < total - 1 else 0)
     b.adjust(nav_count, 3, 1, 1)  # nav row · three edit buttons · redo · back
     return b.as_markup()

@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
+from handlers.callbacks import EventCb
 from services import quiz_service, schedule_service
 from utils.text import esc
 
@@ -49,11 +50,12 @@ class QuizType:
         for q in quizzes:
             dot, label = _STATUS.get(q.status, ("•", q.status))
             lines.append(f"{dot} #{q.id} {esc(q.title)} — <i>{label}</i>")
-            b.button(text=f"{dot} #{q.id} {q.title[:22]}", callback_data=f"ev:item:quiz:{q.id}")
+            b.button(text=f"{dot} #{q.id} {q.title[:22]}",
+                     callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack())
         if not quizzes:
             lines.append("<i>Nessun quiz. Creane uno.</i>")
-        b.button(text="➕ Crea quiz", callback_data="ev:new:quiz")
-        b.button(text="⬅️ Eventi", callback_data="ev:home")
+        b.button(text="➕ Crea quiz", callback_data=EventCb(action="new", task_type="quiz").pack())
+        b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
@@ -66,7 +68,7 @@ class QuizType:
         quiz = await quiz_service.get_quiz(db_session, item_id)
         if quiz is None:
             b = InlineKeyboardBuilder()
-            b.button(text="⬅️ Indietro", callback_data="ev:list:quiz")
+            b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type="quiz").pack())
             await edit_or_send(message, "⚠️ Quiz non trovato (eliminato?).", b.as_markup())
             return
 
@@ -90,20 +92,28 @@ class QuizType:
 
         b = InlineKeyboardBuilder()
         if quiz.status == "ready":
-            b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:quiz:{item_id}")
-            b.button(text="🗓️ Programma", callback_data=f"ev:sched:quiz:{item_id}")
+            b.button(text="▶️ Avvia ora",
+                     callback_data=EventCb(action="askstart", task_type="quiz", item_id=item_id).pack())
+            b.button(text="🗓️ Programma",
+                     callback_data=EventCb(action="sched", task_type="quiz", item_id=item_id).pack())
             b.button(text="✏️ Modifica domande", callback_data=f"quiz_edit:nav:{item_id}:0")
             b.button(text="🧪 Prova", callback_data=f"quiz_try:start:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
         elif quiz.status == "running":
-            b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:quiz:{item_id}")
+            b.button(text="🏁 Chiudi",
+                     callback_data=EventCb(action="askclose", task_type="quiz", item_id=item_id).pack())
             b.button(text="🗓️ Programma chiusura",
-                     callback_data=f"ev:sched:quiz:{item_id}:close")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
+                     # was the optional 5th segment ("...:close"), now its own action
+                     callback_data=EventCb(action="sched_close", task_type="quiz", item_id=item_id).pack())
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
         else:  # finished
-            b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:quiz:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:quiz:{item_id}")
-        b.button(text="⬅️ Indietro", callback_data="ev:list:quiz")
+            b.button(text="🔁 Riproponi",
+                     callback_data=EventCb(action="askreset", task_type="quiz", item_id=item_id).pack())
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
+        b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type="quiz").pack())
         b.adjust(2, 2, 1)  # action pairs per row, then Elimina/Indietro on their own rows
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 

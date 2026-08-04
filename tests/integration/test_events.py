@@ -12,6 +12,7 @@ from aiogram.types import InlineKeyboardMarkup
 
 from database.models import EventStatus
 from exceptions.economy import EventNotFoundError
+from handlers.callbacks import EventCb
 from services import bet_service, poll_service
 
 
@@ -142,8 +143,8 @@ class TestPollCreationFlow:
         _text, kb = message.replies[-1]
         assert isinstance(kb, InlineKeyboardMarkup)
         callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
-        assert f"ev:start:poll:{polls[0].id}" in callbacks
-        assert f"ev:sched:poll:{polls[0].id}" in callbacks
+        assert EventCb(action="start", task_type="poll", item_id=polls[0].id).pack() in callbacks
+        assert EventCb(action="sched", task_type="poll", item_id=polls[0].id).pack() in callbacks
         # Flow is finished.
         assert await state.get_state() is None
 
@@ -193,7 +194,8 @@ class TestQuizEventType:
         _text, kb = message.replies[-1]
         cbs = self._cbs(kb)
         for q in (ready, running, finished):
-            assert f"ev:item:quiz:{q.id}" in cbs         # tap → detail, not launch
+            # tap → detail, not launch
+            assert EventCb(action="item", task_type="quiz", item_id=q.id).pack() in cbs
         assert not any(c.startswith("ev:start:") for c in cbs)
 
     async def test_render_detail_ready_confirms_start_and_offers_delete(self, session):
@@ -203,9 +205,10 @@ class TestQuizEventType:
         message = _FakeMessage("", _FakeBot())
         await QuizType().render_detail(message, session, quiz.id)
         cbs = self._cbs(message.replies[-1][1])
-        assert f"ev:askstart:quiz:{quiz.id}" in cbs      # start is confirmed
-        assert f"ev:sched:quiz:{quiz.id}" in cbs
-        assert f"ev:askdel:quiz:{quiz.id}" in cbs
+        # start is confirmed
+        assert EventCb(action="askstart", task_type="quiz", item_id=quiz.id).pack() in cbs
+        assert EventCb(action="sched", task_type="quiz", item_id=quiz.id).pack() in cbs
+        assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in cbs
         assert f"quiz_try:start:{quiz.id}" in cbs        # dry-run before going live
         assert not any(c.startswith("ev:start:") for c in cbs)  # no one-tap launch
 
@@ -216,5 +219,5 @@ class TestQuizEventType:
         message = _FakeMessage("", _FakeBot())
         await QuizType().render_detail(message, session, quiz.id)
         cbs = self._cbs(message.replies[-1][1])
-        assert f"ev:askreset:quiz:{quiz.id}" in cbs
-        assert f"ev:askdel:quiz:{quiz.id}" in cbs
+        assert EventCb(action="askreset", task_type="quiz", item_id=quiz.id).pack() in cbs
+        assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in cbs

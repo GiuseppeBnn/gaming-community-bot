@@ -23,6 +23,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
+from handlers.callbacks import EventCb
 from handlers.guess._shared import kind_of
 from services import guess_service, schedule_service
 from utils.text import esc, format_seconds_short
@@ -78,11 +79,12 @@ class GuessType:
             dot, label = _STATUS.get(r.status, ("•", r.status))
             lines.append(f"{dot} #{r.id} {esc(r.title)} — <i>{label}</i>")
             b.button(text=f"{dot} #{r.id} {r.title[:22]}",
-                     callback_data=f"ev:item:{self.key}:{r.id}")
+                     callback_data=EventCb(action="item", task_type=self.key, item_id=r.id).pack())
         if not rounds:
             lines.append("<i>Nessun round. Creane uno.</i>")
-        b.button(text=self.create_label, callback_data=f"ev:new:{self.key}")
-        b.button(text="⬅️ Eventi", callback_data="ev:home")
+        b.button(text=self.create_label,
+                 callback_data=EventCb(action="new", task_type=self.key).pack())
+        b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
@@ -100,7 +102,8 @@ class GuessType:
         round_ = await guess_service.get_round(db_session, item_id)
         if round_ is None or round_.kind != self.kind:
             b = InlineKeyboardBuilder()
-            b.button(text="⬅️ Indietro", callback_data=f"ev:list:{self.key}")
+            b.button(text="⬅️ Indietro",
+                     callback_data=EventCb(action="list", task_type=self.key).pack())
             await edit_or_send(message, "⚠️ Round non trovato (eliminato?).",
                                b.as_markup())
             return
@@ -143,25 +146,41 @@ class GuessType:
 
         b = InlineKeyboardBuilder()
         if round_.status == "ready":
-            b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:{self.key}:{item_id}")
-            b.button(text="🗓️ Programma", callback_data=f"ev:sched:{self.key}:{item_id}")
+            b.button(text="▶️ Avvia ora",
+                     callback_data=EventCb(action="askstart", task_type=self.key,
+                                            item_id=item_id).pack())
+            b.button(text="🗓️ Programma",
+                     callback_data=EventCb(action="sched", task_type=self.key,
+                                            item_id=item_id).pack())
             b.button(text="🔤 Aggiungi grafie",
                      callback_data=f"guess_alias:add:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type=self.key,
+                                            item_id=item_id).pack())
         elif round_.status == "running":
-            b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:{self.key}:{item_id}")
+            b.button(text="🏁 Chiudi",
+                     callback_data=EventCb(action="askclose", task_type=self.key,
+                                            item_id=item_id).pack())
             b.button(text="🗓️ Programma chiusura",
-                     callback_data=f"ev:sched:{self.key}:{item_id}:close")
+                     # was the optional 5th segment ("...:close"), now its own action
+                     callback_data=EventCb(action="sched_close", task_type=self.key,
+                                            item_id=item_id).pack())
             # The judge is an LLM: it will occasionally turn down a spelling that
             # was right. Accepting it here fixes the round for everyone who guesses
             # from now on, without rebuilding it (see `handlers.guess.editing`).
             b.button(text="🔤 Aggiungi grafie",
                      callback_data=f"guess_alias:add:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type=self.key,
+                                            item_id=item_id).pack())
         else:  # finished
-            b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:{self.key}:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
-        b.button(text="⬅️ Indietro", callback_data=f"ev:list:{self.key}")
+            b.button(text="🔁 Riproponi",
+                     callback_data=EventCb(action="askreset", task_type=self.key,
+                                            item_id=item_id).pack())
+            b.button(text="🗑️ Elimina",
+                     callback_data=EventCb(action="askdel", task_type=self.key,
+                                            item_id=item_id).pack())
+        b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack())
         b.adjust(2, 1, 1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 

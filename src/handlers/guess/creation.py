@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers.callbacks import EventCb
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, guess_service
 from utils.text import esc, format_seconds_short
@@ -357,9 +358,11 @@ def _editing_kb() -> InlineKeyboardMarkup:
 
 def _created_kb(kind: str, round_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:{kind}:{round_id}")
-    b.button(text="🗓️ Programma", callback_data=f"ev:sched:{kind}:{round_id}")
-    b.button(text="⬅️ Lista", callback_data=f"ev:list:{kind}")
+    b.button(text="▶️ Avvia ora",
+             callback_data=EventCb(action="askstart", task_type=kind, item_id=round_id).pack())
+    b.button(text="🗓️ Programma",
+             callback_data=EventCb(action="sched", task_type=kind, item_id=round_id).pack())
+    b.button(text="⬅️ Lista", callback_data=EventCb(action="list", task_type=kind).pack())
     b.adjust(2, 1)
     return b.as_markup()
 

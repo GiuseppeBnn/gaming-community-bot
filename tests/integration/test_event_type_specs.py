@@ -37,6 +37,7 @@ from sqlalchemy import select
 
 import services.bet_service as bet_svc
 from database.models import BettingEvent, EventStatus, PollTemplate, ScheduledTask
+from handlers.callbacks import EventCb
 from handlers.event_types.base import StartResult, edit_or_send
 from handlers.event_types.bet_type import BetType
 from handlers.event_types.poll_type import PollType
@@ -179,7 +180,9 @@ class TestBetTypeHub:
 
         await BetType().render_list(message, session)
 
-        assert f"ev:item:bet:{event.id}" in _callbacks(message.markups[0])
+        assert EventCb(action="item", task_type="bet", item_id=event.id).pack() in _callbacks(
+            message.markups[0]
+        )
 
     async def test_the_empty_list_still_offers_the_create_button(self, session):
         message = _FakeMessage()
@@ -187,7 +190,7 @@ class TestBetTypeHub:
         await BetType().render_list(message, session)
 
         assert "Nessuna bozza" in message.said
-        assert "ev:new:bet" in _callbacks(message.markups[0])
+        assert EventCb(action="new", task_type="bet").pack() in _callbacks(message.markups[0])
 
     async def test_only_drafts_are_schedulable(self, session, user_factory):
         """An already-open event must not appear in the scheduling menu: scheduling
@@ -403,7 +406,9 @@ class TestPollType:
 
         await PollType().render_list(message, session)
 
-        assert f"ev:item:poll:{poll.id}" in _callbacks(message.markups[0])
+        assert EventCb(action="item", task_type="poll", item_id=poll.id).pack() in _callbacks(
+            message.markups[0]
+        )
 
     async def test_the_empty_list_still_offers_the_create_button(self, session):
         message = _FakeMessage()
@@ -411,7 +416,7 @@ class TestPollType:
         await PollType().render_list(message, session)
 
         assert "Nessun sondaggio pronto" in message.said
-        assert "ev:new:poll" in _callbacks(message.markups[0])
+        assert EventCb(action="new", task_type="poll").pack() in _callbacks(message.markups[0])
 
     async def test_a_used_poll_is_neither_listed_nor_schedulable(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="admin")
@@ -545,7 +550,7 @@ class TestQuizTypeDetail:
         await QuizType().render_detail(message, session, 999)
 
         assert "non trovato" in message.said
-        assert "ev:list:quiz" in _callbacks(message.markups[0])
+        assert EventCb(action="list", task_type="quiz").pack() in _callbacks(message.markups[0])
 
     async def test_a_ready_quiz_offers_start_edit_try_and_delete(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="admin")
@@ -555,10 +560,10 @@ class TestQuizTypeDetail:
         await QuizType().render_detail(message, session, quiz.id)
 
         actions = _callbacks(message.markups[0])
-        assert f"ev:askstart:quiz:{quiz.id}" in actions
+        assert EventCb(action="askstart", task_type="quiz", item_id=quiz.id).pack() in actions
         assert f"quiz_edit:nav:{quiz.id}:0" in actions
         assert f"quiz_try:start:{quiz.id}" in actions
-        assert f"ev:askdel:quiz:{quiz.id}" in actions
+        assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in actions
 
     async def test_a_running_quiz_offers_close_and_never_start(self, session, user_factory):
         """Offering «avvia» on a running quiz would restart it under the players."""
@@ -569,7 +574,7 @@ class TestQuizTypeDetail:
         await QuizType().render_detail(message, session, quiz.id)
 
         actions = _callbacks(message.markups[0])
-        assert f"ev:askclose:quiz:{quiz.id}" in actions
+        assert EventCb(action="askclose", task_type="quiz", item_id=quiz.id).pack() in actions
         assert not any(a.startswith("ev:askstart") for a in actions)
 
     async def test_a_finished_quiz_offers_the_re_run(self, session, user_factory):
@@ -579,7 +584,9 @@ class TestQuizTypeDetail:
 
         await QuizType().render_detail(message, session, quiz.id)
 
-        assert f"ev:askreset:quiz:{quiz.id}" in _callbacks(message.markups[0])
+        assert EventCb(action="askreset", task_type="quiz", item_id=quiz.id).pack() in _callbacks(
+            message.markups[0]
+        )
 
     async def test_the_detail_of_a_played_quiz_reports_its_timestamps(
         self, session, user_factory
