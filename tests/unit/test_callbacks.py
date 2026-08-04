@@ -12,6 +12,7 @@ broken buttons in chat.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -138,12 +139,13 @@ async def test_an_unknown_confirm_action_never_reaches_the_handler():
 # ---------------------------------------------------------------------------
 
 def _typed_callback_prefixes() -> dict[str, type[CallbackData]]:
-    """Every `CallbackData` subclass that exists, keyed by its wire prefix.
+    """Direct `CallbackData` subclasses already imported from the central module.
 
     Walks `__subclasses__()` instead of listing `SchedCb, EventCb, PollCreateCb`
     by hand: a class a future task adds to `handlers/callbacks.py` — the only
-    module allowed to define one — is covered here the moment it exists, with no
-    edit to this test required.
+    module allowed to define one — is covered once that module has been imported,
+    with no edit to this test required. This is deliberately neither recursive nor
+    a claim about subclasses in modules the test process has not imported.
     """
     return {cls.__prefix__: cls for cls in CallbackData.__subclasses__()}
 
@@ -196,25 +198,53 @@ def _constructed_actions() -> dict[type[CallbackData], set[str]]:
     `src/`, plus the executor actions that `cb_confirm` derives from `_CONFIRM`,
     grouped by class.
 
-    The constructor scan finds literal string arguments. `cb_confirm` instead
+    The AST scan finds literal string keyword arguments regardless of keyword
+    order. `cb_confirm` instead
     forwards the first value of each `_CONFIRM` tuple as `EventCb.action`; add
     those values directly from their production source so an executor renamed to
     an unclaimed action creates a failing dead-button check rather than another
     hand-maintained action list.
     """
     classes = {cls.__name__: cls for cls in CallbackData.__subclasses__()}
-    ctor = re.compile(
-        r'\b(' + "|".join(re.escape(name) for name in classes) + r')'
-        r'\(\s*action\s*=\s*["\']([^"\']*)["\']'
-    )
     src_dir = Path(__file__).resolve().parents[2] / "src"
 
     found: dict[type[CallbackData], set[str]] = {cls: set() for cls in classes.values()}
     for path in src_dir.rglob("*.py"):
         if path.name == "callbacks.py":
             continue
-        for class_name, action in ctor.findall(path.read_text(encoding="utf-8")):
-            found[classes[class_name]].add(action)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imported: dict[str, type[CallbackData]] = {}
+        module_aliases: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "handlers.callbacks":
+                for alias in node.names:
+                    callback_class = classes.get(alias.name)
+                    if callback_class is not None:
+                        imported[alias.asname or alias.name] = callback_class
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "handlers.callbacks" and alias.asname is not None:
+                        module_aliases.add(alias.asname)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callback_class = imported.get(node.func.id) if isinstance(node.func, ast.Name) else None
+            if (
+                callback_class is None
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in module_aliases
+            ):
+                callback_class = classes.get(node.func.attr)
+            if callback_class is None:
+                continue
+            for keyword in node.keywords:
+                if (
+                    keyword.arg == "action"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
+                ):
+                    found[callback_class].add(keyword.value.value)
     found[EventCb].update(exec_action for exec_action, _, _ in _CONFIRM.values())
     return found
 

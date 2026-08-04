@@ -1,13 +1,12 @@
-"""Una callback che nessuno gestisce riceve comunque una risposta.
+"""An unhandled callback still gets a response.
 
-`common.router` è l'ultimo (`handlers/__init__.py`), e prima di questo handler non
-aveva **nessun** handler di callback: un bottone di una tastiera più vecchia del
-deploy corrente non produceva niente e la rotellina restava a girare finché
-Telegram non mollava.
+`common.router` is last (`handlers/__init__.py`), and before this handler it had
+**no** callback handler: a button from a keyboard older than the current deploy
+did nothing and left Telegram's spinner running until it timed out.
 
-Due cose atterrano qui, e vanno distinte: un bottone vecchio — normale, l'utente
-merita una risposta — e un handler che ha smesso di fare match per sbaglio, che
-senza un log resterebbe muto per sempre.
+Two cases land here and must be distinguished: an old button — normal, and the
+user deserves a response — and a handler that stopped matching by mistake,
+which would otherwise remain silent forever without a log.
 """
 
 from __future__ import annotations
@@ -31,7 +30,7 @@ async def test_unhandled_callback_gets_an_answer():
 
     await common.cb_unhandled(callback)
 
-    assert callback.answers, "senza risposta la rotellina resta a girare"
+    assert callback.answers, "without an answer, Telegram's spinner keeps running"
     text, _alert = callback.answers[0]
     assert text == common._UNHANDLED_CALLBACK
 
@@ -42,9 +41,9 @@ async def test_unhandled_callback_is_logged_for_the_admins(caplog):
     with caplog.at_level(logging.WARNING):
         await common.cb_unhandled(callback)
 
-    record = next(r for r in caplog.records if "Callback non gestita" in r.getMessage())
+    record = next(r for r in caplog.records if "Unhandled callback" in r.getMessage())
     assert "ev:list:quiz" in record.getMessage()
-    assert record.msg == "Callback non gestita: %s", (
-        "il payload deve restare un argomento: utils.alerts deduplica sul template, "
-        "e una f-string trasformerebbe ogni click su un bottone vecchio in un alert nuovo"
+    assert record.msg == "Unhandled callback: %s", (
+        "the payload must remain an argument: utils.alerts deduplicates on the template, "
+        "and an f-string would turn every stale-button click into a new alert"
     )

@@ -226,7 +226,7 @@ ROUTERS: tuple[Router, ...] = (
     admin_betting.router,   # ← DEVE stare prima di betting
     betting.router,
     ...
-    common.router,          # ← DEVE stare per ultimo (catch-all /start)
+    common.router,          # ← DEVE stare per ultimo (fallback comandi + callback non gestite)
 )
 ```
 
@@ -252,6 +252,12 @@ ROUTERS: tuple[Router, ...] = (
 di update disgiunti dagli altri router → ordine indifferente; registrato per primo per chiarezza.
 `allowed_updates=dp.resolve_used_update_types()` auto-iscrive `chat_member`/`my_chat_member` perché
 esistono gli handler.
+
+`common.router` contiene anche il catch-all finale delle callback. I filtri `CallbackData`
+rifiutano prima dell'handler un payload malformato o proveniente da una tastiera di un deploy
+precedente; il catch-all ferma comunque lo spinner con un messaggio breve e logga a `WARNING` il
+payload. Il warning è portante: distingue un bottone legittimamente vecchio da un produttore la cui
+azione non è più rivendicata da alcun filtro (§26).
 
 ### 7.a Handler globale errori (`dp.errors`)
 
@@ -731,7 +737,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
-| `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`sched:act:start\|close`, senza stato: sono bottoni), poi l'orario run-at |
+| `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`SchedCb(action="act", key="start"\|"close")`, packed `sched:act:start:` / `sched:act:close:`), poi l'orario run-at |
 | `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
 
 ---
@@ -903,7 +909,9 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
 - **Riuso, zero logica duplicata**: le viste riusano i renderer **pubblici** di `handlers/admin.py`
   (`render_stats`/`render_leaderboard`/`render_audit`/`render_panel_help`);
   scommesse → `admin_betting._show_event_list`. Le azioni passano dagli **stessi service + `log_action`** dei comandi.
-  **Quiz/sondaggi/scommesse non sono più nella dashboard**: il bottone **🎬 Eventi** apre l'hub (`ev:home`, §18.2) —
+  **Quiz/sondaggi/scommesse non sono più nella dashboard**: il bottone **🎬 Eventi** apre l'hub
+  con `EventCb(action="home").pack()` (`ev:home::`; i due campi opzionali mantengono i separatori,
+  §18.2) —
   il vecchio hub quiz (`adm:quiz*`, `quiz_hub_kb`) e l'avvio con un tap sono stati **rimossi**.
 - **Azioni su utente** (`👥 Utenti`, lista paginata + 🔍 ricerca → `adm:user:<tg>`): credita/addebita/set saldo,
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
@@ -918,7 +926,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   `adm:ask:<ban|kick>:<tg>`, `adm:do:<…>:<tg>`.
 - Il vecchio pannello read-only `admin_panel:*` + `keyboards/admin_panel_kb.py` è **rimosso** (assorbito dalla dashboard).
 
-### 18.2 Hub Eventi (macro-categoria, namespace `ev:*`)
+### 18.2 Hub Eventi (macro-categoria, `EventCb`, prefisso `ev`)
 
 `handlers/events.py` (router incluso dopo `admin_dashboard`, prima di `quiz`). Unifica **quiz ·
 sondaggi · scommesse** (e ogni tipo futuro) sotto un modello unico: ogni evento si **pre-crea**, poi
@@ -932,19 +940,33 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   `if/elif` per tipo. Aggiungere un tipo = una nuova spec + una riga in `register_builtin`, **zero**
   modifiche a `events.py`/`schedule.py`. Le spec **non committano mai** (§5): committa il chiamante
   (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
-- **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (**schermata info**,
-  vedi sotto), `ev:start:<type>:<id>`, `ev:close:<type>:<id>`, `ev:del:<type>:<id>`, `ev:reset:<type>:<id>`,
-  `ev:sched:<type>:<id>[:close]` (l'ultimo segmento **opzionale** fissa l'azione invece di chiederla:
-  lo usano i bottoni su un item già in corso, dove «avvio» non è una delle risposte — §20),
-  `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
-  e `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi presente nel
-  registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py` con il suo gate
-  admin di router (§8).
-- **Schermata info + conferme (no avvio accidentale)**: cliccando un item (`ev:item`) si apre la sua
+- **Factory e wire format** (≤64B): `handlers.callbacks.EventCb` dichiara
+  `action: str`, `task_type: str | None = None`, `item_id: int | None = None`. Si costruisce sempre
+  con `.pack()`, mai concatenando stringhe. I campi opzionali **mantengono i separatori vuoti**:
+  `EventCb(action="home")` → `ev:home::`, `EventCb(action="list", task_type="quiz")` →
+  `ev:list:quiz:`, `EventCb(action="new", task_type="quiz")` → `ev:new:quiz:`. Le forme complete
+  sono `ev:item:<type>:<id>`, `ev:start:<type>:<id>`, `ev:close:<type>:<id>`,
+  `ev:del:<type>:<id>`, `ev:reset:<type>:<id>`, `ev:sched:<type>:<id>` e gli step di conferma
+  `ev:ask{start|close|del|reset}:<type>:<id>`.
+- **La chiusura programmata è un'azione**, non un quinto segmento:
+  `EventCb(action="sched_close", task_type=<type>, item_id=<id>)` →
+  `ev:sched_close:<type>:<id>`. Il vecchio segmento finale opzionale dava a un campo un significato
+  dipendente dall'azione e avrebbe aggiunto un separatore vuoto a tutte le altre azioni; un nome
+  d'azione distinto rende il dispatch esplicito senza allungare il payload reale.
+- **La cancellazione della creazione sondaggio è una famiglia separata**:
+  `PollCreateCb(action="cancel" | "cancel_yes" | "cancel_no")`, prefisso `evpt`, produce
+  `evpt:cancel`, `evpt:cancel_yes`, `evpt:cancel_no`. Non condivide `task_type` o `item_id` con
+  l'hub, quindi tenerla sotto `EventCb` aggiungerebbe campi vuoti e accoppierebbe due flussi senza
+  un contratto comune. Tutti gli handler `EventCb` restano generici per qualsiasi `<type>` presente
+  nel registro; solo la FSM `PollCreateCb` resta in `events.py`, col gate admin di router (§8).
+- **Schermata info + conferme (no avvio accidentale)**: cliccando un item
+  (`EventCb(action="item", ...)`, packed `ev:item:<type>:<id>`) si apre la sua
   **scheda info** — non lo si avvia. Ogni azione impattante (avvia · chiudi · elimina · riproponi) passa
-  da uno step di conferma `ev:ask*` (Sì→esecutore, No→`ev:item`). La scheda è fornita dal tipo con i
+  da uno step di conferma `EventCb(action="ask…", ...)` (Sì→esecutore, No→`action="item"`).
+  La scheda è fornita dal tipo con i
   metodi **opzionali** `render_detail`/`delete`/`reset` (l'hub li rileva via `getattr` e per i tipi che
-  non li implementano ricade sulla vecchia schermata «Avvia ora / Programma» + `ev:start`). Restano fuori
+  non li implementano ricade sulla vecchia schermata «Avvia ora / Programma» +
+  `EventCb(action="start", ...)`). Restano fuori
   dal contratto `EventType` per non rompere `isinstance(et, EventType)`. Stessa logica per l'attributo
   opzionale **`closable`** (§20): dichiara che la chiusura del tipo vale la pena di essere messa su un
   orario, e `handlers/schedule.py` lo legge con `getattr` — un tipo che non lo dichiara si comporta
@@ -1007,7 +1029,8 @@ router, identico a quello che le sezioni avevano nel file unico (47 handler, ver
 ### Creazione
 
 FSM admin in privato (redirect dal gruppo con deep-link `create_quiz`, oppure dall'hub Eventi
-`ev:new:quiz` che passa `creator_id` esplicito perché lì `message.from_user` è il bot): titolo →
+`EventCb(action="new", task_type="quiz")` (packed `ev:new:quiz:`) che passa `creator_id`
+esplicito perché lì `message.from_user` è il bot): titolo →
 descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
 (inline) → spiegazione opzionale} → **riepilogo** {➕ Aggiungi · 🗑 Rimuovi ultima · ✅ Pubblica}.
 **Nessun timer.** A fine: quiz `ready`.
@@ -1045,7 +1068,8 @@ esplicitamente che nulla è stato salvato.
 > **Identità dell'attore — `admin_id` esplicito.** `start_quiz_try` riceve `admin_id` come
 > parametro **obbligatorio, senza default**, e **non** lo deriva mai da `message.from_user`: il
 > bottone «🧪 Prova» vive sempre su un messaggio inviato dal *bot*, quindi lì `from_user` **è il
-> bot** (stessa trappola di `ev:new:quiz` col `creator_id`). Un bug reale: la prova finiva in `_TRY`
+> bot** (stessa trappola dell'azione `EventCb(action="new", task_type="quiz")` col `creator_id`).
+> Un bug reale: la prova finiva in `_TRY`
 > sotto l'id del bot mentre `cb_try_answer`/`cb_try_stop` la cercavano sotto quello dell'admin →
 > ogni risposta rifiutata con «Prova scaduta» e la voce orfana mai ripulita. **Regola: nei flussi
 > avviati da callback, l'identità viene solo da `callback.from_user`**, propagata esplicitamente.
@@ -1057,7 +1081,8 @@ esplicitamente che nulla è stato salvato.
 
 - `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `quiz_<id>`) **poi**
   mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_quiz`, dall'hub Eventi
-  (`ev:start:quiz`, con conferma `ev:askstart`) e dallo scheduler. Caller committa. **`/quiz` (admin)**
+  (`EventCb(action="start", task_type="quiz", item_id=<id>)`, con conferma `action="askstart"`)
+  e dallo scheduler. Caller committa. **`/quiz` (admin)**
   non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
 - Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: gioca in privato, una domanda alla
   volta con **bottoni inline** (`quiz_ans:<quiz>:<question>:<opt>`). Alla risposta: feedback
@@ -1088,9 +1113,10 @@ esplicitamente che nulla è stato salvato.
   sicuro pagare i premi subito dopo. **La transizione è la guardia** — controllare lo stato e
   ribaltarlo dopo sarebbe un read-then-write, e il quiz è spesso già in cache (§22).
 - `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
-  (`ev:close:quiz`, con conferma `ev:askclose`) → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le
-  consolazioni). Un quiz `finished` resta gestibile nell'hub: `ev:reset:quiz` («Riproponi») lo riporta a
-  `ready`, `ev:del:quiz` lo elimina.
+  (`EventCb(action="close", task_type="quiz", item_id=<id>)`, con conferma `action="askclose"`)
+  → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le consolazioni). Un quiz `finished`
+  resta gestibile nell'hub: `action="reset"` («Riproponi») lo riporta a `ready`, `action="del"`
+  lo elimina; entrambe le forme complete conservano `task_type` e `item_id`.
 - `format_prize_summary(quiz)` riassume i premi nelle schede/annunci.
 
 ### Regole
@@ -1465,9 +1491,19 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   e non nelle due funzioni proprio perché nessuna delle due possa dimenticarlo.
   La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
   `payload.action="lock"` armato all'apertura (§18.2) — stesso registry, nessun task-type nuovo.
+- **Factory e wire format del flusso:** `handlers.callbacks.SchedCb` dichiara
+  `action: str`, `key: str | None = None`, `item_id: int | None = None`; anche qui `.pack()` conserva
+  i separatori dei campi opzionali. Le forme spedite sono `sched:cancel::`,
+  `sched:cancel_yes::`, `sched:cancel_no::`, `sched:act:<start|close>:`,
+  `sched:type:<event-type>:`, `sched:pick:<event-type>:<item-id>` e
+  `sched:del::<scheduled-task-id>`. `key` indica il tipo o l'azione schedulabile; `item_id` indica
+  l'item da programmare per `pick`, ma la riga `ScheduledTask` da annullare per `del`. La factory
+  sposta validazione e conversione nel filtro e impedisce che handler e produttori ricostruiscano
+  la grammatica con `split(":")` e concatenazioni divergenti.
 - **Programmare la chiusura, non solo l'avvio.** Un tipo che dichiara `closable = True` (oggi `quiz`,
   `guess`, `sound` — poll e bet no: il loro `close_now` è `None`) fa chiedere **cosa** programmare prima
-  dell'orario: `sched:act:start` | `sched:act:close`. Gli altri tipi vanno dritti al run-at, perché una
+  dell'orario: `SchedCb(action="act", key="start" | "close")` (packed
+  `sched:act:start:` / `sched:act:close:`). Gli altri tipi vanno dritti al run-at, perché una
   domanda con una sola risposta possibile non è una domanda. La chiusura è lo **stesso `task_type`** con
   `payload.action="close"` — identico al `lock` delle scommesse e all'auto-close del guess: **nessun
   task-type nuovo**, nessuna colonna nuova. L'avvio resta senza payload. Ogni spec `closable` gestisce

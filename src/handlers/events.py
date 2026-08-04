@@ -125,7 +125,11 @@ async def cb_hub(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(EventCb.filter(F.action == "list"), IsAdminCallbackFilter())
 async def cb_list(callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession) -> None:
-    et = event_types.get(callback_data.task_type)
+    task_type = callback_data.task_type
+    if task_type is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
     if et is None:
         await callback.answer()
         return
@@ -136,11 +140,14 @@ async def cb_list(callback: CallbackQuery, callback_data: EventCb, db_session: A
 @router.callback_query(EventCb.filter(F.action == "item"), IsAdminCallbackFilter())
 async def cb_item(callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession) -> None:
     task_type = callback_data.task_type
-    et = event_types.get(task_type)
-    if et is None or callback_data.item_id is None:
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    item_id = callback_data.item_id
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
     # Types that provide a detail/info screen (e.g. quiz) show it — tapping an item
     # never launches it. Types without one keep the generic "avvia/programma" screen.
     render_detail = getattr(et, "render_detail", None)
@@ -176,19 +183,21 @@ _CONFIRM: dict[str, tuple[str, str, str]] = {
 @router.callback_query(EventCb.filter(F.action.in_(_CONFIRM)), IsAdminCallbackFilter())
 async def cb_confirm(callback: CallbackQuery, callback_data: EventCb) -> None:
     exec_action, verb, yes_text = _CONFIRM[callback_data.action]
-    et = event_types.get(callback_data.task_type)
-    if et is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    item_id = callback_data.item_id
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
     await edit_or_send(
         callback.message,
         f"⚠️ Vuoi {verb} <b>{et.hub_label} #{item_id}</b>?",
         confirm_cancel_kb(
-            EventCb(action=exec_action, task_type=callback_data.task_type,
-                    item_id=item_id).pack(),
-            EventCb(action="item", task_type=callback_data.task_type,
-                    item_id=item_id).pack(),
+            EventCb(action=exec_action, task_type=task_type, item_id=item_id).pack(),
+            EventCb(action="item", task_type=task_type, item_id=item_id).pack(),
             yes_text=yes_text,
             no_text="⬅️ No, indietro",
         ),
@@ -204,11 +213,16 @@ async def cb_confirm(callback: CallbackQuery, callback_data: EventCb) -> None:
 async def cb_start_now(
     callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession
 ) -> None:
-    et = event_types.get(callback_data.task_type)
-    if et is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    res = await et.start_now(callback.bot, db_session, callback_data.item_id)
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    res = await et.start_now(callback.bot, db_session, item_id)
     if res.ok:
         await db_session.commit()  # spec mutated but never commits (STEERING §5)
     await callback.answer(res.message, show_alert=res.alert)
@@ -219,11 +233,16 @@ async def cb_start_now(
 async def cb_close(
     callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession
 ) -> None:
-    et = event_types.get(callback_data.task_type)
-    if et is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    res = await et.close_now(callback.bot, db_session, callback_data.item_id)
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    res = await et.close_now(callback.bot, db_session, item_id)
     if res is None:  # type has no close action
         await callback.answer()
         return
@@ -237,12 +256,17 @@ async def cb_close(
 async def cb_delete(
     callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession
 ) -> None:
-    et = event_types.get(callback_data.task_type)
-    delete = getattr(et, "delete", None) if et is not None else None
-    if delete is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    res = await delete(db_session, callback_data.item_id)
+    et = event_types.get(task_type)
+    delete = getattr(et, "delete", None) if et is not None else None
+    if delete is None:
+        await callback.answer()
+        return
+    res = await delete(db_session, item_id)
     if res.ok:
         await db_session.commit()  # spec mutated but never commits (STEERING §5)
     await callback.answer(res.message, show_alert=res.alert)
@@ -253,12 +277,16 @@ async def cb_delete(
 async def cb_reset(
     callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession
 ) -> None:
-    et = event_types.get(callback_data.task_type)
-    reset = getattr(et, "reset", None) if et is not None else None
-    if reset is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    item_id = callback_data.item_id
+    et = event_types.get(task_type)
+    reset = getattr(et, "reset", None) if et is not None else None
+    if reset is None:
+        await callback.answer()
+        return
     res = await reset(db_session, item_id)
     if res is None:  # type isn't re-runnable
         await callback.answer()
@@ -287,14 +315,18 @@ async def cb_schedule(
     # "sched_close" pins what to schedule ("close"), used by the buttons on an item
     # that is already running — there, «avvio» is not one of the answers.
     action = "close" if callback_data.action == "sched_close" else None
-    et = event_types.get(callback_data.task_type)
-    if et is None or callback_data.item_id is None:
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    item_id = callback_data.item_id
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
     from handlers.schedule import start_schedule_for
     await start_schedule_for(
-        callback.message, state, callback_data.task_type, item_id,
+        callback.message, state, task_type, item_id,
         f"{et.hub_label} #{item_id}", action,
     )
     await callback.answer()
@@ -306,7 +338,11 @@ async def cb_schedule(
 
 @router.callback_query(EventCb.filter(F.action == "new"), IsAdminCallbackFilter())
 async def cb_new(callback: CallbackQuery, callback_data: EventCb, state: FSMContext) -> None:
-    et = event_types.get(callback_data.task_type)
+    task_type = callback_data.task_type
+    if task_type is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
     if et is None:
         await callback.answer()
         return

@@ -44,7 +44,7 @@ router = Router()
 
 log = logging.getLogger(__name__)
 
-#: Risposta per una callback che nessuno ha rivendicato. Corta: esce come toast.
+#: Response for a callback that no router claimed. Short enough for a toast.
 _UNHANDLED_CALLBACK = "Questo bottone non è più valido."
 
 
@@ -400,5 +400,5 @@ async def cb_unhandled(callback: CallbackQuery) -> None:
     *template*, so an f-string would turn every stale click into its own alert
     and drown the channel meant to protect us.
     """
-    log.warning("Callback non gestita: %s", callback.data)
+    log.warning("Unhandled callback: %s", callback.data)
     await callback.answer(_UNHANDLED_CALLBACK)

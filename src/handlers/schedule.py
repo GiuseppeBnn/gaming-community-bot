@@ -195,7 +195,7 @@ async def cb_action(
 ) -> None:
     action = callback_data.key
     data = await state.get_data()
-    if action not in _ACTIONS or "sched_ref" not in data:
+    if action is None or action not in _ACTIONS or "sched_ref" not in data:
         # Unknown action, or a stale button from a flow that has since been
         # cleared: there is nothing left to schedule, so say so instead of
         # arming a run-at step with no target.
@@ -209,7 +209,11 @@ async def cb_action(
 async def cb_type(
     callback: CallbackQuery, callback_data: SchedCb, state: FSMContext, db_session
 ) -> None:
-    et = event_types.get(callback_data.key)
+    task_type = callback_data.key
+    if task_type is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
     if et is None:
         await callback.answer()
         return
@@ -231,13 +235,17 @@ async def cb_pick_event(
     callback: CallbackQuery, callback_data: SchedCb, state: FSMContext
 ) -> None:
     task_type = callback_data.key
-    et = event_types.get(task_type)
     # No isdigit() guard: a non-numeric id no longer reaches this handler, the
     # filter drops it (tests/unit/test_callbacks.py).
-    if et is None or callback_data.item_id is None:
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    ref_id = callback_data.item_id
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    ref_id = item_id
     await start_schedule_for(
         callback.message, state, task_type, ref_id, f"{et.hub_label} #{ref_id}"
     )

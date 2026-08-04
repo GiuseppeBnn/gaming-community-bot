@@ -314,15 +314,25 @@ Il motivo del passo 3 in verticale è l'opposto: cambia la **forma** del codice 
 vuole una prova prima di essere generalizzato — o si finisce a progettare un'astrazione senza
 consumatori.
 
-### 7.1 Dove finisce il primo piano
+### 7.1 Dove si è fermato davvero il primo piano
 
-Il primo piano eseguibile copre **A.1, A.2 e A.3a** — le due passate orizzontali più la prova su
-`admin_dashboard.py`. Si ferma lì di proposito.
+Il piano completato
+[`2026-08-03-a1-callback-tipizzate.md`](../plans/2026-08-03-a1-callback-tipizzate.md) ha uno scope
+più stretto di quello anticipato dalla prima versione di questa sezione: copre **solo una prima
+ondata di A.1**, non A.1 intera, A.2 o A.3a.
 
-Scrivere adesso anche i passi da A.3b a A.3e significherebbe pianificare quattro conversioni sulla
-base di un pattern che **nessuno ha ancora eseguito**: gli stessi dettagli che si scoprono
-convertendo la prima area sono quelli che renderebbero sbagliati i passi delle altre quattro. Il
-secondo piano si scrive quando A.3a è verde, e parte da come è andata davvero.
+La prima ondata ha consegnato il catch-all delle callback non gestite e ha convertito **2 delle 15
+famiglie/file handler** inventariate per A.1: `handlers/schedule.py` e `handlers/events.py`. Per
+`EventCb` ha convertito nello stesso lavoro anche **tutti i produttori attuali** trovati fuori da
+`events.py` (`handlers/event_types/`, `handlers/guess/creation.py`, `handlers/quiz/editing.py` e
+`keyboards/admin_dashboard_kb.py`), perché convertire un consumer lasciando un producer raw crea un
+bottone morto anche con la suite verde.
+
+Le altre **13 famiglie/file handler** e tutti i loro produttori sono specificati nel follow-up
+[`2026-08-04-a1-callback-tipizzate-restanti.md`](../plans/2026-08-04-a1-callback-tipizzate-restanti.md).
+Quel piano completa A.1 e basta. `utils/panel.py` (A.2) e la prova delle viste in
+`admin_dashboard.py` (A.3a) restano lavori successivi separati: nessuno dei due è stato
+implementato o pianificato dal piano completato.
 
 ---
 
@@ -384,11 +394,11 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | passo | descrizione | stato |
 |---|---|---|
 | — | Design approvato (questo documento) | ☑ 2026-08-03 |
-| — | **Piano 1** in `docs/superpowers/plans/` — copre A.1, A.2, A.3a (§7.1) | ☐ da scrivere |
-| A.1 | `CallbackData` su tutto il bot + catch-all in `common` (§4) | ☐ |
+| — | **Piano A.1, prima ondata** — `2026-08-03-a1-callback-tipizzate.md`: catch-all + `schedule.py` + `events.py` e tutti i producer Events attuali (§7.1) | ☑ 2026-08-04 |
+| A.1 | `CallbackData` su tutto il bot + catch-all in `common` (§4): **2/15 famiglie handler convertite** (`schedule.py`, `events.py`), catch-all e producer Events completati | ▣ parziale |
+| — | **Follow-up A.1** — `2026-08-04-a1-callback-tipizzate-restanti.md`: le 13 famiglie restanti + tutti i loro producer (§7.1) | ☐ piano scritto, da eseguire |
 | A.2 | `utils/panel.py` + i tre chiamanti convertiti (§5) | ☐ |
 | A.3a | Viste — `admin_dashboard.py` (la prova, §6.4) | ☐ |
-| — | **Piano 2** — si scrive quando A.3a è verde, non prima (§7.1) | ☐ |
 | A.3b | Viste — `guess/creation.py` (la conferma su un wizard) | ☐ |
 | A.3c | Viste — `quiz/creation.py` + `quiz/editing.py` | ☐ |
 | A.3d | Viste — `shop.py` | ☐ |
