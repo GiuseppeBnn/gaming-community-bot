@@ -749,7 +749,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `BetCreationStates.waiting_for_window_custom` | `handlers/betting.py` | durata custom (`schedule_service.parse_duration`, 30m/2h/1d) |
 | `BetCustomAmountState.waiting_for_amount` | `handlers/betting.py` | |
 | `QuizCreationStates.*` | `handlers/quiz/creation.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Callback `QuizNewCb` (`quiz_new`, campi `action`/`key`/`value`): azioni semplici, `time_limit(value=secondi)`, `randomize(key=q\|a\|both\|none)` e `correct(value=indice)`. Tasti «⬅️ Indietro» (mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
-| `QuizEditStates.*` | `handlers/quiz/editing.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `quiz_edit:nav:<quiz_id>:0`). Namespace callback `quiz_edit:*`: scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
+| `QuizEditStates.*` | `handlers/quiz/editing.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `QuizEditCb(action="nav", quiz_id=<id>, index=0)`). `QuizEditCb` (`quiz_edit`, campi `action`/`quiz_id`/`index`): `noop`/`cancel`/`redo_skip_explanation` senza coordinate; `nav`/`text`/`options`/`explanation`/`redo` con entrambe; `correct` con il solo indice. Scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
@@ -1081,6 +1081,17 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
   `quiz_service` sono solo la **rete di sicurezza** allineata alle colonne DB.
+
+### Modifica domande
+
+Dal dettaglio di un quiz `ready`, «✏️ Modifica domande» apre la domanda iniziale con
+`QuizEditCb(action="nav", quiz_id=<id>, index=0)`. Tutto il namespace `quiz_edit` è tipizzato:
+`noop`, `cancel` e `redo_skip_explanation` non trasportano coordinate; `nav`, `text`, `options`,
+`explanation` e `redo` richiedono `quiz_id` e `index`; `correct` porta il solo `index`, perché la
+domanda è già nel contesto FSM. Ogni handler verifica le coordinate che consuma prima di chiamare
+servizi o cambiare stato. I nomi delle azioni rimpiazzano le vecchie abbreviazioni di payload
+manuali (`opts`, `expl`, `redoskipexpl`), senza cambiare prompt, stati, commit o le guardie
+`ready` del servizio.
 
 ### Prova admin (dry-run, §19.b)
 

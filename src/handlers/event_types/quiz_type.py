@@ -14,7 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
-from handlers.callbacks import EventCb
+from handlers.callbacks import EventCb, QuizEditCb
 from services import quiz_service, schedule_service
 from utils.text import esc
 
@@ -50,8 +50,10 @@ class QuizType:
         for q in quizzes:
             dot, label = _STATUS.get(q.status, ("•", q.status))
             lines.append(f"{dot} #{q.id} {esc(q.title)} — <i>{label}</i>")
-            b.button(text=f"{dot} #{q.id} {q.title[:22]}",
-                     callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack())
+            b.button(
+                text=f"{dot} #{q.id} {q.title[:22]}",
+                callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack(),
+            )
         if not quizzes:
             lines.append("<i>Nessun quiz. Creane uno.</i>")
         b.button(text="➕ Crea quiz", callback_data=EventCb(action="new", task_type="quiz").pack())
@@ -59,16 +61,16 @@ class QuizType:
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
-    async def render_detail(
-        self, message: Message, db_session: AsyncSession, item_id: int
-    ) -> None:
+    async def render_detail(self, message: Message, db_session: AsyncSession, item_id: int) -> None:
         """Info screen for a single quiz with status-aware actions. Every impactful
         action (avvia / chiudi / elimina / riproponi) routes through an ``ev:ask*``
         confirmation — no one-tap launch."""
         quiz = await quiz_service.get_quiz(db_session, item_id)
         if quiz is None:
             b = InlineKeyboardBuilder()
-            b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type="quiz").pack())
+            b.button(
+                text="⬅️ Indietro", callback_data=EventCb(action="list", task_type="quiz").pack()
+            )
             await edit_or_send(message, "⚠️ Quiz non trovato (eliminato?).", b.as_markup())
             return
 
@@ -84,7 +86,9 @@ class QuizType:
         if quiz.status in ("running", "finished"):
             participants, answers = await quiz_service.answer_stats(db_session, item_id)
             finishers = len(await quiz_service.podium(db_session, item_id))
-            lines.append(f"👥 {participants} partecipanti · ✍️ {answers} risposte · 🏁 {finishers} finisher")
+            lines.append(
+                f"👥 {participants} partecipanti · ✍️ {answers} risposte · 🏁 {finishers} finisher"
+            )
         if quiz.started_at:
             lines.append(f"▶️ Avviato: {_fmt_dt(quiz.started_at)}")
         if quiz.finished_at:
@@ -92,27 +96,48 @@ class QuizType:
 
         b = InlineKeyboardBuilder()
         if quiz.status == "ready":
-            b.button(text="▶️ Avvia ora",
-                     callback_data=EventCb(action="askstart", task_type="quiz", item_id=item_id).pack())
-            b.button(text="🗓️ Programma",
-                     callback_data=EventCb(action="sched", task_type="quiz", item_id=item_id).pack())
-            b.button(text="✏️ Modifica domande", callback_data=f"quiz_edit:nav:{item_id}:0")
+            b.button(
+                text="▶️ Avvia ora",
+                callback_data=EventCb(action="askstart", task_type="quiz", item_id=item_id).pack(),
+            )
+            b.button(
+                text="🗓️ Programma",
+                callback_data=EventCb(action="sched", task_type="quiz", item_id=item_id).pack(),
+            )
+            b.button(
+                text="✏️ Modifica domande",
+                callback_data=QuizEditCb(action="nav", quiz_id=item_id, index=0).pack(),
+            )
             b.button(text="🧪 Prova", callback_data=f"quiz_try:start:{item_id}")
-            b.button(text="🗑️ Elimina",
-                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack(),
+            )
         elif quiz.status == "running":
-            b.button(text="🏁 Chiudi",
-                     callback_data=EventCb(action="askclose", task_type="quiz", item_id=item_id).pack())
-            b.button(text="🗓️ Programma chiusura",
-                     # was the optional 5th segment ("...:close"), now its own action
-                     callback_data=EventCb(action="sched_close", task_type="quiz", item_id=item_id).pack())
-            b.button(text="🗑️ Elimina",
-                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
+            b.button(
+                text="🏁 Chiudi",
+                callback_data=EventCb(action="askclose", task_type="quiz", item_id=item_id).pack(),
+            )
+            b.button(
+                text="🗓️ Programma chiusura",
+                # was the optional 5th segment ("...:close"), now its own action
+                callback_data=EventCb(
+                    action="sched_close", task_type="quiz", item_id=item_id
+                ).pack(),
+            )
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack(),
+            )
         else:  # finished
-            b.button(text="🔁 Riproponi",
-                     callback_data=EventCb(action="askreset", task_type="quiz", item_id=item_id).pack())
-            b.button(text="🗑️ Elimina",
-                     callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack())
+            b.button(
+                text="🔁 Riproponi",
+                callback_data=EventCb(action="askreset", task_type="quiz", item_id=item_id).pack(),
+            )
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type="quiz", item_id=item_id).pack(),
+            )
         b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type="quiz").pack())
         b.adjust(2, 2, 1)  # action pairs per row, then Elimina/Indietro on their own rows
         await edit_or_send(message, "\n".join(lines), b.as_markup())
@@ -125,7 +150,8 @@ class QuizType:
         ok = await quiz_service.reset_quiz(db_session, item_id)
         return StartResult(
             ok,
-            "🔁 Quiz riproposto: risposte azzerate, di nuovo pronto." if ok
+            "🔁 Quiz riproposto: risposte azzerate, di nuovo pronto."
+            if ok
             else "Impossibile riproporre (solo i quiz conclusi).",
             alert=not ok,
         )
@@ -137,9 +163,7 @@ class QuizType:
             if q.status == "ready"
         ]
 
-    async def start_creation(
-        self, message: Message, state: FSMContext, creator_id: int
-    ) -> None:
+    async def start_creation(self, message: Message, state: FSMContext, creator_id: int) -> None:
         from handlers.quiz import start_quiz_creation
 
         await start_quiz_creation(message, state, creator_id=creator_id)
@@ -176,9 +200,7 @@ class QuizType:
         if not ok:
             raise RuntimeError(msg)
 
-    async def close_now(
-        self, bot, db_session: AsyncSession, item_id: int
-    ) -> StartResult | None:
+    async def close_now(self, bot, db_session: AsyncSession, item_id: int) -> StartResult | None:
         from handlers.quiz import close_quiz
 
         ok, msg = await close_quiz(bot, db_session, item_id)

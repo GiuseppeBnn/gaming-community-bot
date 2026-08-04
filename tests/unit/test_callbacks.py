@@ -33,6 +33,7 @@ from handlers.callbacks import (
     BetOptionCb,
     EventCb,
     PollCreateCb,
+    QuizEditCb,
     QuizNewCb,
     SchedCb,
     ShopCb,
@@ -44,43 +45,81 @@ def _query(data: str) -> CallbackQuery:
     """A real CallbackQuery: the filter does an `isinstance` check, a fake one
     would return `False` for the wrong reason."""
     return CallbackQuery(
-        id="1", from_user=User(id=1, is_bot=False, first_name="A"),
-        chat_instance="x", data=data,
+        id="1",
+        from_user=User(id=1, is_bot=False, first_name="A"),
+        chat_instance="x",
+        data=data,
     )
 
 
-@pytest.mark.parametrize("cb, expected", [
-    (SchedCb(action="cancel"), "sched:cancel::"),
-    (SchedCb(action="type", key="quiz"), "sched:type:quiz:"),
-    (SchedCb(action="pick", key="quiz", item_id=7), "sched:pick:quiz:7"),
-    (SchedCb(action="del", item_id=7), "sched:del::7"),
-])
+@pytest.mark.parametrize(
+    "cb, expected",
+    [
+        (SchedCb(action="cancel"), "sched:cancel::"),
+        (SchedCb(action="type", key="quiz"), "sched:type:quiz:"),
+        (SchedCb(action="pick", key="quiz", item_id=7), "sched:pick:quiz:7"),
+        (SchedCb(action="del", item_id=7), "sched:del::7"),
+    ],
+)
 def test_pack(cb, expected):
     assert cb.pack() == expected
 
 
-@pytest.mark.parametrize(("cb", "packed"), [
-    (ShopCb(action="home"), "shop:home:"),
-    (ShopCb(action="exec", key="tag_dragon"), "shop:exec:tag_dragon"),
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (ShopCb(action="home"), "shop:home:"),
+        (ShopCb(action="exec", key="tag_dragon"), "shop:exec:tag_dragon"),
+    ],
+)
 def test_pack_shop_callbacks(cb, packed):
     assert cb.pack() == packed
 
 
-@pytest.mark.parametrize(("cb", "packed"), [
-    (QuizNewCb(action="cancel"), "quiz_new:cancel::"),
-    (QuizNewCb(action="time_limit", value=60), "quiz_new:time_limit::60"),
-    (QuizNewCb(action="randomize", key="both"), "quiz_new:randomize:both:"),
-    (QuizNewCb(action="correct", value=2), "quiz_new:correct::2"),
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (QuizNewCb(action="cancel"), "quiz_new:cancel::"),
+        (QuizNewCb(action="time_limit", value=60), "quiz_new:time_limit::60"),
+        (QuizNewCb(action="randomize", key="both"), "quiz_new:randomize:both:"),
+        (QuizNewCb(action="correct", value=2), "quiz_new:correct::2"),
+    ],
+)
 def test_pack_quiz_creation_callbacks(cb, packed):
     assert cb.pack() == packed
 
 
-@pytest.mark.parametrize("data", [
-    "quiz_new:time_limit::not-a-number",
-    "quiz_new:correct::not-a-number",
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (QuizEditCb(action="cancel"), "quiz_edit:cancel::"),
+        (QuizEditCb(action="nav", quiz_id=7, index=2), "quiz_edit:nav:7:2"),
+        (QuizEditCb(action="correct", index=1), "quiz_edit:correct::1"),
+    ],
+)
+def test_pack_quiz_edit_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "quiz_edit:nav:not-an-id:2",
+        "quiz_edit:nav:7:not-an-index",
+        "quiz_edit:correct::not-an-index",
+    ],
+)
+async def test_quiz_edit_numeric_fields_are_typed_by_the_filter(data):
+    assert await QuizEditCb.filter()(_query(data)) is False
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "quiz_new:time_limit::not-a-number",
+        "quiz_new:correct::not-a-number",
+    ],
+)
 async def test_quiz_creation_numeric_fields_are_typed_by_the_filter(data):
     assert await QuizNewCb.filter()(_query(data)) is False
 
@@ -91,21 +130,27 @@ def test_shop_callback_values_cannot_contain_the_separator(action, key):
         ShopCb(action=action, key=key).pack()
 
 
-@pytest.mark.parametrize(("cb", "packed"), [
-    (AdminCb(action="home"), "adm:home::"),
-    (AdminCb(action="lead_board", key="coins"), "adm:lead_board:coins:"),
-    (AdminCb(action="users", item_id=2), "adm:users::2"),
-    (AdminCb(action="act", key="credit", item_id=42), "adm:act:credit:42"),
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (AdminCb(action="home"), "adm:home::"),
+        (AdminCb(action="lead_board", key="coins"), "adm:lead_board:coins:"),
+        (AdminCb(action="users", item_id=2), "adm:users::2"),
+        (AdminCb(action="act", key="credit", item_id=42), "adm:act:credit:42"),
+    ],
+)
 def test_pack_admin_callbacks(cb, packed):
     assert cb.pack() == packed
 
 
-@pytest.mark.parametrize(("cb", "packed"), [
-    (AdminBetCb(action="list"), "admin_bet:list::"),
-    (AdminBetCb(action="event", event_id=7), "admin_bet:event:7:"),
-    (AdminBetCb(action="pick_winner", event_id=7, option_id=9), "admin_bet:pick_winner:7:9"),
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (AdminBetCb(action="list"), "admin_bet:list::"),
+        (AdminBetCb(action="event", event_id=7), "admin_bet:event:7:"),
+        (AdminBetCb(action="pick_winner", event_id=7, option_id=9), "admin_bet:pick_winner:7:9"),
+    ],
+)
 def test_pack_admin_betting_callbacks(cb, packed):
     assert cb.pack() == packed
 
@@ -114,27 +159,39 @@ async def test_admin_bet_numeric_fields_are_typed_by_the_filter():
     assert await AdminBetCb.filter()(_query("admin_bet:event:x:")) is False
 
 
-@pytest.mark.parametrize(("cb", "packed"), [
-    (BetCb(action="cancel_creation"), "bet:cancel_creation:"),
-    (BetCb(action="window", seconds=60), "bet:window:60"),
-    (BetEventCb(action="view", event_id=7), "event:view:7"),
-    (BetOptionCb(action="pick", event_id=7, option_id=9), "bet_option:pick:7:9"),
-    (BetAmountCb(action="pick", event_id=7, option_id=9, amount=100), "bet_amount:pick:7:9:100"),
-    (BetCustomCb(action="open", event_id=7, option_id=9), "bet_custom:open:7:9"),
-    (BetConfirmCb(action="place", event_id=7, option_id=9, amount=100), "bet_confirm:place:7:9:100"),
-])
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (BetCb(action="cancel_creation"), "bet:cancel_creation:"),
+        (BetCb(action="window", seconds=60), "bet:window:60"),
+        (BetEventCb(action="view", event_id=7), "event:view:7"),
+        (BetOptionCb(action="pick", event_id=7, option_id=9), "bet_option:pick:7:9"),
+        (
+            BetAmountCb(action="pick", event_id=7, option_id=9, amount=100),
+            "bet_amount:pick:7:9:100",
+        ),
+        (BetCustomCb(action="open", event_id=7, option_id=9), "bet_custom:open:7:9"),
+        (
+            BetConfirmCb(action="place", event_id=7, option_id=9, amount=100),
+            "bet_confirm:place:7:9:100",
+        ),
+    ],
+)
 def test_pack_betting_callbacks(cb, packed):
     assert cb.pack() == packed
 
 
-@pytest.mark.parametrize(("callback_class", "data"), [
-    (BetCb, "bet:window:not-a-number"),
-    (BetEventCb, "event:view:not-an-id"),
-    (BetOptionCb, "bet_option:pick:not-an-id:9"),
-    (BetAmountCb, "bet_amount:pick:7:9:not-an-amount"),
-    (BetCustomCb, "bet_custom:open:7:not-an-id"),
-    (BetConfirmCb, "bet_confirm:place:not-an-id:9:100"),
-])
+@pytest.mark.parametrize(
+    ("callback_class", "data"),
+    [
+        (BetCb, "bet:window:not-a-number"),
+        (BetEventCb, "event:view:not-an-id"),
+        (BetOptionCb, "bet_option:pick:not-an-id:9"),
+        (BetAmountCb, "bet_amount:pick:7:9:not-an-amount"),
+        (BetCustomCb, "bet_custom:open:7:not-an-id"),
+        (BetConfirmCb, "bet_confirm:place:not-an-id:9:100"),
+    ],
+)
 async def test_betting_numeric_fields_are_typed_by_the_filter(callback_class, data):
     assert await callback_class.filter()(_query(data)) is False
 
@@ -179,17 +236,20 @@ def test_the_64_byte_ceiling_shows_up_in_tests_not_in_chat():
         SchedCb(action="x" * 70).pack()
 
 
-@pytest.mark.parametrize("cb, expected", [
-    (EventCb(action="home"), "ev:home::"),
-    (EventCb(action="list", task_type="quiz"), "ev:list:quiz:"),
-    (EventCb(action="item", task_type="quiz", item_id=7), "ev:item:quiz:7"),
-    # byte-for-byte the payload we ship today
-    (EventCb(action="askstart", task_type="quiz", item_id=7), "ev:askstart:quiz:7"),
-    # today's optional 5th segment becomes an action of its own, same length
-    (EventCb(action="sched", task_type="quiz", item_id=7), "ev:sched:quiz:7"),
-    (EventCb(action="sched_close", task_type="quiz", item_id=7), "ev:sched_close:quiz:7"),
-    (PollCreateCb(action="cancel"), "evpt:cancel"),
-])
+@pytest.mark.parametrize(
+    "cb, expected",
+    [
+        (EventCb(action="home"), "ev:home::"),
+        (EventCb(action="list", task_type="quiz"), "ev:list:quiz:"),
+        (EventCb(action="item", task_type="quiz", item_id=7), "ev:item:quiz:7"),
+        # byte-for-byte the payload we ship today
+        (EventCb(action="askstart", task_type="quiz", item_id=7), "ev:askstart:quiz:7"),
+        # today's optional 5th segment becomes an action of its own, same length
+        (EventCb(action="sched", task_type="quiz", item_id=7), "ev:sched:quiz:7"),
+        (EventCb(action="sched_close", task_type="quiz", item_id=7), "ev:sched_close:quiz:7"),
+        (PollCreateCb(action="cancel"), "evpt:cancel"),
+    ],
+)
 def test_pack_events(cb, expected):
     assert cb.pack() == expected
 
@@ -236,6 +296,7 @@ async def test_an_unknown_confirm_action_never_reaches_the_handler():
 # that has to accept it later.
 # ---------------------------------------------------------------------------
 
+
 def test_valid_action_probe_fills_required_fields():
     class RequiredProbeCb(CallbackData, prefix="required_probe"):
         action: str
@@ -255,11 +316,7 @@ _REQUIRED_FIELD_PROBES: dict[object, object] = {
 
 
 def _central_callback_classes() -> list[type[CallbackData]]:
-    return [
-        cls
-        for cls in CallbackData.__subclasses__()
-        if cls.__module__ == "handlers.callbacks"
-    ]
+    return [cls for cls in CallbackData.__subclasses__() if cls.__module__ == "handlers.callbacks"]
 
 
 def _valid_action_probe(cls: type[CallbackData], action: str) -> CallbackData:
@@ -293,8 +350,20 @@ def test_the_prefix_scan_actually_finds_callback_classes():
     """Guards the guard: an empty result would make the test below pass forever
     for the wrong reason — nothing left to shadow."""
     assert {
-        "adm", "admin_bet", "bet", "event", "bet_option", "bet_amount", "bet_custom",
-        "bet_confirm", "sched", "ev", "evpt", "quiz_new", "shop",
+        "adm",
+        "admin_bet",
+        "bet",
+        "event",
+        "bet_option",
+        "bet_amount",
+        "bet_custom",
+        "bet_confirm",
+        "sched",
+        "ev",
+        "evpt",
+        "quiz_new",
+        "quiz_edit",
+        "shop",
     } <= _typed_callback_prefixes().keys()
 
 
@@ -305,7 +374,7 @@ def test_no_handwritten_payload_shadows_a_typed_prefix():
     that draws a button in this grammar — not just that one file.
     """
     patterns = {
-        prefix: re.compile(rf'''["']{re.escape(prefix)}:''')
+        prefix: re.compile(rf"""["']{re.escape(prefix)}:""")
         for prefix in _typed_callback_prefixes()
     }
     src_dir = Path(__file__).resolve().parents[2] / "src"
@@ -334,6 +403,7 @@ def test_no_handwritten_payload_shadows_a_typed_prefix():
 # No prefix ever goes hand-rolled in that scenario, so the scan above stays
 # green while every 🗑️ Elimina button in the project stops responding.
 # ---------------------------------------------------------------------------
+
 
 def _constructed_actions() -> dict[type[CallbackData], set[str]]:
     """Every `action="..."` literal passed to `<Class>(action=...)` anywhere under
@@ -448,9 +518,7 @@ def test_callback_declarations_have_no_project_local_imports():
     callback_module = src_dir / "handlers" / "callbacks.py"
     local_roots = {path.stem for path in src_dir.glob("*.py")}
     local_roots.update(
-        path.name
-        for path in src_dir.iterdir()
-        if path.is_dir() and (path / "__init__.py").exists()
+        path.name for path in src_dir.iterdir() if path.is_dir() and (path / "__init__.py").exists()
     )
     tree = ast.parse(callback_module.read_text(encoding="utf-8"), filename=str(callback_module))
     offenders: list[str] = []

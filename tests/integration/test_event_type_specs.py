@@ -37,7 +37,7 @@ from sqlalchemy import select
 
 import services.bet_service as bet_svc
 from database.models import BettingEvent, EventStatus, PollTemplate, ScheduledTask
-from handlers.callbacks import EventCb
+from handlers.callbacks import EventCb, QuizEditCb
 from handlers.event_types.base import StartResult, edit_or_send
 from handlers.event_types.bet_type import BetType
 from handlers.event_types.poll_type import PollType
@@ -53,6 +53,7 @@ GROUP_ID = -100_777
 # Stubs
 # ---------------------------------------------------------------------------
 
+
 class _FakeBot:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
@@ -60,6 +61,7 @@ class _FakeBot:
 
     async def get_me(self):
         from types import SimpleNamespace
+
         return SimpleNamespace(username="testbot")
 
     async def send_message(self, chat_id, text, **kw):
@@ -102,8 +104,9 @@ class _FakeMessage:
 
 
 def _state() -> FSMContext:
-    return FSMContext(storage=MemoryStorage(),
-                      key=StorageKey(bot_id=1, chat_id=ADMIN_ID, user_id=ADMIN_ID))
+    return FSMContext(
+        storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=ADMIN_ID, user_id=ADMIN_ID)
+    )
 
 
 def _callbacks(markup) -> list[str]:
@@ -128,9 +131,13 @@ def no_group():
 
 async def _draft(session, *, title="Derby", window=None) -> BettingEvent:
     event = await bet_svc.create_event(
-        session, creator_tg_id=ADMIN_ID, title=title, description="chi vince",
+        session,
+        creator_tg_id=ADMIN_ID,
+        title=title,
+        description="chi vince",
         options=[{"label": "Casa"}, {"label": "Trasferta"}],
-        status=EventStatus.draft.value, window_seconds=window,
+        status=EventStatus.draft.value,
+        window_seconds=window,
     )
     await session.commit()
     return event
@@ -149,6 +156,7 @@ def _task(**kw) -> ScheduledTask:
 # ---------------------------------------------------------------------------
 # base.edit_or_send — used by every render_list
 # ---------------------------------------------------------------------------
+
 
 class TestEditOrSend:
     async def test_it_edits_in_place_when_it_can(self):
@@ -171,6 +179,7 @@ class TestEditOrSend:
 # ---------------------------------------------------------------------------
 # BetType
 # ---------------------------------------------------------------------------
+
 
 class TestBetTypeHub:
     async def test_the_list_offers_one_button_per_draft(self, session, user_factory):
@@ -198,7 +207,10 @@ class TestBetTypeHub:
         await user_factory(tg_id=ADMIN_ID, username="admin")
         draft = await _draft(session)
         await bet_svc.create_event(
-            session, creator_tg_id=ADMIN_ID, title="Aperta", description="x",
+            session,
+            creator_tg_id=ADMIN_ID,
+            title="Aperta",
+            description="x",
             options=[{"label": "A"}, {"label": "B"}],
         )
         await session.commit()
@@ -247,9 +259,7 @@ class TestBetTypeStartNow:
         assert (task.task_type, task.ref_id) == ("bet", event.id)
         assert json.loads(task.payload_json)["action"] == "lock"
 
-    async def test_starting_an_unknown_event_answers_an_alert_instead_of_raising(
-        self, session
-    ):
+    async def test_starting_an_unknown_event_answers_an_alert_instead_of_raising(self, session):
         """`start_now` runs inside a callback: an exception here would surface as a
         dead button, so every failure has to come back as a StartResult."""
         result = await BetType().start_now(_FakeBot(), session, 999)
@@ -281,9 +291,7 @@ class TestBetTypeStartNow:
         assert result.ok
         assert (await session.get(BettingEvent, event.id)).status == EventStatus.open.value
 
-    async def test_with_no_group_configured_nothing_is_sent(
-        self, session, user_factory, no_group
-    ):
+    async def test_with_no_group_configured_nothing_is_sent(self, session, user_factory, no_group):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         event = await _draft(session)
         bot = _FakeBot()
@@ -334,9 +342,15 @@ class TestBetTypeScheduledOpen:
         """Tasks scheduled before the draft model exist in production databases; the
         payload path must keep working or they'd fail on the night they fire."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
-        task = _task(payload_json=json.dumps({
-            "title": "Vecchia", "description": "schedulata prima", "options": ["A", "B"],
-        }))
+        task = _task(
+            payload_json=json.dumps(
+                {
+                    "title": "Vecchia",
+                    "description": "schedulata prima",
+                    "options": ["A", "B"],
+                }
+            )
+        )
         bot = _FakeBot()
 
         await BetType().execute_scheduled(bot, session, task, GROUP_ID)
@@ -387,15 +401,24 @@ class TestBetTypeScheduledOpen:
 
 async def _options(session, event_id: int):
     from database.models import BettingOption
-    return list((await session.execute(
-        select(BettingOption).where(BettingOption.event_id == event_id)
-        .order_by(BettingOption.id)
-    )).scalars().all())
+
+    return list(
+        (
+            await session.execute(
+                select(BettingOption)
+                .where(BettingOption.event_id == event_id)
+                .order_by(BettingOption.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 # ---------------------------------------------------------------------------
 # PollType
 # ---------------------------------------------------------------------------
+
 
 class TestPollType:
     async def test_the_list_offers_one_button_per_ready_poll(self, session, user_factory):
@@ -441,9 +464,7 @@ class TestPollType:
         assert bot.polls == [{"chat_id": GROUP_ID, "question": "Meglio?", "options": ["A", "B"]}]
         assert (await session.get(PollTemplate, poll.id)).status == "used"
 
-    async def test_publishing_the_same_poll_twice_is_refused(
-        self, session, user_factory, in_group
-    ):
+    async def test_publishing_the_same_poll_twice_is_refused(self, session, user_factory, in_group):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         poll = await poll_service.create_template(session, ADMIN_ID, "Meglio?", ["A", "B"])
         await session.commit()
@@ -472,8 +493,9 @@ class TestPollType:
 
         assert not result.ok and "GROUP_ID" in result.message
         assert bot.polls == []
-        assert (await session.get(PollTemplate, poll.id)).status == "ready", \
+        assert (await session.get(PollTemplate, poll.id)).status == "ready", (
             "a template must not be consumed by a send that never happened"
+        )
 
     async def test_a_scheduled_poll_is_published_and_consumed(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="admin")
@@ -481,8 +503,9 @@ class TestPollType:
         await session.commit()
         bot = _FakeBot()
 
-        await PollType().execute_scheduled(bot, session, _task(task_type="poll", ref_id=poll.id),
-                                           GROUP_ID)
+        await PollType().execute_scheduled(
+            bot, session, _task(task_type="poll", ref_id=poll.id), GROUP_ID
+        )
 
         assert bot.polls[0]["question"] == "Meglio?"
         assert (await session.get(PollTemplate, poll.id)).status == "used"
@@ -495,13 +518,14 @@ class TestPollType:
 
     async def test_a_legacy_scheduled_poll_uses_its_payload(self, session):
         bot = _FakeBot()
-        task = _task(task_type="poll",
-                     payload_json=json.dumps({"question": "Vecchia?", "options": ["Sì", "No"]}))
+        task = _task(
+            task_type="poll",
+            payload_json=json.dumps({"question": "Vecchia?", "options": ["Sì", "No"]}),
+        )
 
         await PollType().execute_scheduled(bot, session, task, GROUP_ID)
 
-        assert bot.polls == [{"chat_id": GROUP_ID, "question": "Vecchia?",
-                              "options": ["Sì", "No"]}]
+        assert bot.polls == [{"chat_id": GROUP_ID, "question": "Vecchia?", "options": ["Sì", "No"]}]
 
     async def test_creating_from_the_hub_enters_the_poll_fsm(self, session):
         state = _state()
@@ -518,6 +542,7 @@ class TestPollType:
 # QuizType — the parts the scheduler and the hub reach
 # ---------------------------------------------------------------------------
 
+
 async def _quiz_status(session, quiz_id: int) -> str:
     """Read the status as a *column*.
 
@@ -527,9 +552,8 @@ async def _quiz_status(session, quiz_id: int) -> str:
     saying "running". A column select never goes through the map (STEERING §22).
     """
     from database.models import Quiz
-    return (await session.execute(
-        select(Quiz.status).where(Quiz.id == quiz_id)
-    )).scalar_one()
+
+    return (await session.execute(select(Quiz.status).where(Quiz.id == quiz_id))).scalar_one()
 
 
 async def _quiz(session, *, status="ready", questions=1, title="Capitali"):
@@ -561,7 +585,7 @@ class TestQuizTypeDetail:
 
         actions = _callbacks(message.markups[0])
         assert EventCb(action="askstart", task_type="quiz", item_id=quiz.id).pack() in actions
-        assert f"quiz_edit:nav:{quiz.id}:0" in actions
+        assert QuizEditCb(action="nav", quiz_id=quiz.id, index=0).pack() in actions
         assert f"quiz_try:start:{quiz.id}" in actions
         assert EventCb(action="askdel", task_type="quiz", item_id=quiz.id).pack() in actions
 
@@ -588,9 +612,7 @@ class TestQuizTypeDetail:
             message.markups[0]
         )
 
-    async def test_the_detail_of_a_played_quiz_reports_its_timestamps(
-        self, session, user_factory
-    ):
+    async def test_the_detail_of_a_played_quiz_reports_its_timestamps(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         quiz = await _quiz(session, status="running")
         quiz.started_at = quiz_service._now()
@@ -717,6 +739,7 @@ class TestQuizTypeActions:
 # ---------------------------------------------------------------------------
 # The shared result object
 # ---------------------------------------------------------------------------
+
 
 def test_a_start_result_is_immutable():
     """The hub passes it around and renders it; a spec must not be able to mutate

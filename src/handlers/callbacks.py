@@ -163,3 +163,18 @@ class QuizNewCb(CallbackData, prefix="quiz_new"):
     action: str
     key: str | None = None
     value: int | None = None
+
+
+class QuizEditCb(CallbackData, prefix="quiz_edit"):
+    """Quiz-question editing controls — `handlers/quiz/editing.py`.
+
+    ``quiz_id`` and ``index`` locate a question for editor navigation and its
+    field-edit/redo actions. ``correct`` deliberately carries only ``index``:
+    the question being edited is already held by the FSM.
+    """
+
+    #: "noop" | "cancel" | "redo_skip_explanation"
+    #: | "nav" | "text" | "options" | "explanation" | "redo" | "correct"
+    action: str
+    quiz_id: int | None = None
+    index: int | None = None
