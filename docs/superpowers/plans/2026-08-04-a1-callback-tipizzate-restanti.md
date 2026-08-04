@@ -28,8 +28,8 @@
   call boundary gains an injected typed object; do not change its business assertions. Genuine
   economy/XP logic changes belong to the later repository-wide audit unless A.1 exposes a proven bug.
 - Before Task 1, record `git rev-parse HEAD` as `A1 follow-up base` in
-  `.superpowers/sdd/2026-08-03-a1-callback-tipizzate/progress.md`; final scope checks compare against
-  that exact commit rather than assuming a fixed number of review/fix commits.
+  `.superpowers/sdd/2026-08-04-a1-callback-tipizzate-restanti/progress.md`; final scope checks
+  compare against that exact commit rather than assuming a fixed number of review/fix commits.
 
 ---
 
