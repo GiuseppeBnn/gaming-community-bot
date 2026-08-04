@@ -33,6 +33,7 @@ from handlers.callbacks import (
     BetOptionCb,
     EventCb,
     PollCreateCb,
+    QuizNewCb,
     SchedCb,
     ShopCb,
 )
@@ -64,6 +65,24 @@ def test_pack(cb, expected):
 ])
 def test_pack_shop_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(("cb", "packed"), [
+    (QuizNewCb(action="cancel"), "quiz_new:cancel::"),
+    (QuizNewCb(action="time_limit", value=60), "quiz_new:time_limit::60"),
+    (QuizNewCb(action="randomize", key="both"), "quiz_new:randomize:both:"),
+    (QuizNewCb(action="correct", value=2), "quiz_new:correct::2"),
+])
+def test_pack_quiz_creation_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize("data", [
+    "quiz_new:time_limit::not-a-number",
+    "quiz_new:correct::not-a-number",
+])
+async def test_quiz_creation_numeric_fields_are_typed_by_the_filter(data):
+    assert await QuizNewCb.filter()(_query(data)) is False
 
 
 @pytest.mark.parametrize(("action", "key"), [("bad:action", None), ("exec", "bad:key")])
@@ -275,7 +294,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
     for the wrong reason — nothing left to shadow."""
     assert {
         "adm", "admin_bet", "bet", "event", "bet_option", "bet_amount", "bet_custom",
-        "bet_confirm", "sched", "ev", "evpt", "shop",
+        "bet_confirm", "sched", "ev", "evpt", "quiz_new", "shop",
     } <= _typed_callback_prefixes().keys()
 
 

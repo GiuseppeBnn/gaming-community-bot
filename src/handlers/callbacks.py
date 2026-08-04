@@ -151,3 +151,15 @@ class PollCreateCb(CallbackData, prefix="evpt"):
 
     #: "cancel" | "cancel_yes" | "cancel_no"
     action: str
+
+
+class QuizNewCb(CallbackData, prefix="quiz_new"):
+    """Quiz-creation flow controls — `handlers/quiz/creation.py`."""
+
+    #: "cancel" | "cancel_yes" | "cancel_no" | "back" | "review"
+    #: | "quickprize" | "customprize" | "noprize" | "usedefault"
+    #: | "time_limit" | "time_limit_custom" | "randomize" | "correct"
+    #: | "skip_explanation" | "add" | "remove_last" | "publish"
+    action: str
+    key: str | None = None
+    value: int | None = None

@@ -29,6 +29,7 @@ from sqlalchemy import select
 
 from config_data.config import settings
 from database.models import Quiz, QuizQuestion
+from handlers.callbacks import QuizNewCb
 from handlers.quiz import _shared
 from handlers.quiz import creation as qz
 from services import quiz_service
@@ -122,12 +123,18 @@ async def _walk_to_questions(session, state, *, prize: str = "quick") -> None:
     await qz.fsm_description(_FakeMessage("Quiz di geografia"), state)
 
     if prize == "quick":
-        await qz.cb_quick_prize(_FakeCallback("quiz_new:quickprize"), state)
+        await qz.cb_quick_prize(_FakeCallback(QuizNewCb(action="quickprize").pack()), state)
     else:
-        await qz.cb_no_prize(_FakeCallback("quiz_new:noprize"), state)
+        await qz.cb_no_prize(_FakeCallback(QuizNewCb(action="noprize").pack()), state)
 
-    await qz.cb_time_limit(_FakeCallback("quiz_new:tl:30"), state, session)
-    await qz.cb_randomize(_FakeCallback("quiz_new:rnd:none"), state, session)
+    await qz.cb_time_limit(
+        _FakeCallback(QuizNewCb(action="time_limit", value=30).pack()), state, session,
+        callback_data=QuizNewCb(action="time_limit", value=30),
+    )
+    await qz.cb_randomize(
+        _FakeCallback(QuizNewCb(action="randomize", key="none").pack()), state, session,
+        callback_data=QuizNewCb(action="randomize", key="none"),
+    )
 
 
 async def _add_question(session, state, *, text="Capitale d'Italia?",
@@ -135,11 +142,51 @@ async def _add_question(session, state, *, text="Capitale d'Italia?",
                         explanation: str | None = "È Roma") -> None:
     await qz.fsm_question_text(_FakeMessage(text), state)
     await qz.fsm_question_options(_FakeMessage(options), state)
-    await qz.cb_correct(_FakeCallback(f"quiz_new:correct:{correct}"), state)
+    await qz.cb_correct(
+        _FakeCallback(QuizNewCb(action="correct", value=correct).pack()), state,
+        callback_data=QuizNewCb(action="correct", value=correct),
+    )
     if explanation is None:
-        await qz.cb_skip_explanation(_FakeCallback("quiz_new:skipexpl"), state, session)
+        await qz.cb_skip_explanation(
+            _FakeCallback(QuizNewCb(action="skip_explanation").pack()), state, session
+        )
     else:
         await qz.fsm_explanation(_FakeMessage(explanation), state, session)
+
+
+class TestMissingQuizCreationCallbackFields:
+    async def test_time_limit_without_a_value_is_a_no_op(self, session):
+        state = _state()
+        await state.set_state(qz.QuizCreationStates.waiting_time_limit)
+        callback = _FakeCallback(QuizNewCb(action="time_limit").pack())
+
+        await qz.cb_time_limit(callback, state, session, callback_data=QuizNewCb(action="time_limit"))
+
+        assert await state.get_state() == qz.QuizCreationStates.waiting_time_limit
+        assert callback.message.texts == []
+        assert callback.answers == [(None, False)]
+
+    async def test_randomize_without_a_key_is_a_no_op(self, session):
+        state = _state()
+        await state.set_state(qz.QuizCreationStates.waiting_randomize)
+        callback = _FakeCallback(QuizNewCb(action="randomize").pack())
+
+        await qz.cb_randomize(callback, state, session, callback_data=QuizNewCb(action="randomize"))
+
+        assert await state.get_state() == qz.QuizCreationStates.waiting_randomize
+        assert callback.message.texts == []
+        assert callback.answers == [(None, False)]
+
+    async def test_correct_without_a_value_is_a_no_op(self):
+        state = _state()
+        await state.set_state(qz.QuizCreationStates.waiting_correct)
+        callback = _FakeCallback(QuizNewCb(action="correct").pack())
+
+        await qz.cb_correct(callback, state, callback_data=QuizNewCb(action="correct"))
+
+        assert await state.get_state() == qz.QuizCreationStates.waiting_correct
+        assert callback.message.texts == []
+        assert callback.answers == [(None, False)]
 
 
 class TestTheWholeFlow:
@@ -156,7 +203,7 @@ class TestTheWholeFlow:
             options="Parigi\nLione", correct=0, explanation=None,
         )
 
-        publish = _FakeCallback("quiz_new:publish")
+        publish = _FakeCallback(QuizNewCb(action="publish").pack())
         await qz.cb_publish(publish, state, session)
 
         quiz_id = (await session.execute(select(Quiz.id))).scalar_one()
@@ -186,7 +233,7 @@ class TestTheWholeFlow:
 
         await _walk_to_questions(session, state, prize="none")
         await _add_question(session, state)
-        await qz.cb_publish(_FakeCallback("quiz_new:publish"), state, session)
+        await qz.cb_publish(_FakeCallback(QuizNewCb(action="publish").pack()), state, session)
 
         quiz = await _quiz_row(session, (await session.execute(select(Quiz.id))).scalar_one())
         assert (quiz.prize_first, quiz.prize_second, quiz.prize_third) == (0, 0, 0)
@@ -201,7 +248,7 @@ class TestTheWholeFlow:
         await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
         await qz.fsm_title(_FakeMessage("Custom"), state)
         await qz.fsm_description(_FakeMessage("d"), state)
-        await qz.cb_custom_prize(_FakeCallback("quiz_new:customprize"), state)
+        await qz.cb_custom_prize(_FakeCallback(QuizNewCb(action="customprize").pack()), state)
 
         for value in ("900", "600", "300", "100"):
             await qz.fsm_prize_value(_FakeMessage(value), state)
@@ -212,8 +259,14 @@ class TestTheWholeFlow:
         assert data["prize_third"] == 300
         assert data["prize_consolation"] == 100
 
-        await qz.cb_time_limit(_FakeCallback("quiz_new:tl:0"), state, session)
-        await qz.cb_randomize(_FakeCallback("quiz_new:rnd:none"), state, session)
+        await qz.cb_time_limit(
+            _FakeCallback(QuizNewCb(action="time_limit", value=0).pack()), state, session,
+            callback_data=QuizNewCb(action="time_limit", value=0),
+        )
+        await qz.cb_randomize(
+            _FakeCallback(QuizNewCb(action="randomize", key="none").pack()), state, session,
+            callback_data=QuizNewCb(action="randomize", key="none"),
+        )
 
         quiz = await _quiz_row(session, (await state.get_data())["quiz_id"])
         assert quiz.prize_min == quiz_service.participation_floor(100)
@@ -228,9 +281,9 @@ class TestTheWholeFlow:
         await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
         await qz.fsm_title(_FakeMessage("Custom"), state)
         await qz.fsm_description(_FakeMessage("d"), state)
-        await qz.cb_custom_prize(_FakeCallback("quiz_new:customprize"), state)
+        await qz.cb_custom_prize(_FakeCallback(QuizNewCb(action="customprize").pack()), state)
 
-        await qz.cb_use_default(_FakeCallback("quiz_new:usedefault"), state)
+        await qz.cb_use_default(_FakeCallback(QuizNewCb(action="usedefault").pack()), state)
 
         assert (await state.get_data())["prize_first"] == settings.quiz_default_first
 
@@ -242,10 +295,16 @@ class TestTheWholeFlow:
             await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
             await qz.fsm_title(_FakeMessage(f"Quiz {choice}"), state)
             await qz.fsm_description(_FakeMessage("d"), state)
-            await qz.cb_no_prize(_FakeCallback("quiz_new:noprize"), state)
-            await qz.cb_time_limit(_FakeCallback("quiz_new:tl:0"), state, session)
+            await qz.cb_no_prize(_FakeCallback(QuizNewCb(action="noprize").pack()), state)
+            await qz.cb_time_limit(
+                _FakeCallback(QuizNewCb(action="time_limit", value=0).pack()), state, session,
+                callback_data=QuizNewCb(action="time_limit", value=0),
+            )
 
-            await qz.cb_randomize(_FakeCallback(f"quiz_new:rnd:{choice}"), state, session)
+            await qz.cb_randomize(
+                _FakeCallback(QuizNewCb(action="randomize", key=choice).pack()), state, session,
+                callback_data=QuizNewCb(action="randomize", key=choice),
+            )
 
             quiz = await _quiz_row(session, (await state.get_data())["quiz_id"])
             assert quiz.randomize_questions is questions, choice
@@ -334,8 +393,8 @@ class TestRefusals:
         await qz.fsm_question_text(_FakeMessage("Capitale d'Italia?"), state)
         await qz.fsm_question_options(_FakeMessage("Roma\nMilano"), state)
 
-        callback = _FakeCallback("quiz_new:correct:4")
-        await qz.cb_correct(callback, state)
+        callback = _FakeCallback(QuizNewCb(action="correct", value=4).pack())
+        await qz.cb_correct(callback, state, callback_data=QuizNewCb(action="correct", value=4))
 
         assert callback.alerts and "non valida" in callback.alerts[0]
         assert "q_correct" not in (await state.get_data())
@@ -346,7 +405,10 @@ class TestRefusals:
         await _walk_to_questions(session, state)
         await qz.fsm_question_text(_FakeMessage("Capitale d'Italia?"), state)
         await qz.fsm_question_options(_FakeMessage("Roma\nMilano"), state)
-        await qz.cb_correct(_FakeCallback("quiz_new:correct:0"), state)
+        await qz.cb_correct(
+            _FakeCallback(QuizNewCb(action="correct", value=0).pack()), state,
+            callback_data=QuizNewCb(action="correct", value=0),
+        )
 
         message = _FakeMessage("x" * (_shared._MAX_EXPLANATION + 1))
         await qz.fsm_explanation(message, state, session)
@@ -364,7 +426,7 @@ class TestRefusals:
         await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
         await qz.fsm_title(_FakeMessage("Quiz"), state)
         await qz.fsm_description(_FakeMessage("d"), state)
-        await qz.cb_no_prize(_FakeCallback("quiz_new:noprize"), state)
+        await qz.cb_no_prize(_FakeCallback(QuizNewCb(action="noprize").pack()), state)
 
         for raw in ("presto", "1", "4", "301", "-10"):
             message = _FakeMessage(raw)
@@ -384,7 +446,7 @@ class TestRefusals:
         state = _state()
         await _walk_to_questions(session, state)
 
-        callback = _FakeCallback("quiz_new:publish")
+        callback = _FakeCallback(QuizNewCb(action="publish").pack())
         await qz.cb_publish(callback, state, session)
 
         quiz = await _quiz_row(session, (await state.get_data())["quiz_id"])
@@ -401,7 +463,7 @@ class TestReviewStep:
         await _walk_to_questions(session, state)
         await _add_question(session, state)
 
-        await qz.cb_add_question(_FakeCallback("quiz_new:add"), state)
+        await qz.cb_add_question(_FakeCallback(QuizNewCb(action="add").pack()), state)
         await _add_question(session, state, text="Seconda domanda?", options="Sì\nNo")
 
         quiz_id = (await state.get_data())["quiz_id"]
@@ -414,10 +476,10 @@ class TestReviewStep:
         state = _state()
         await _walk_to_questions(session, state)
         await _add_question(session, state)
-        await qz.cb_add_question(_FakeCallback("quiz_new:add"), state)
+        await qz.cb_add_question(_FakeCallback(QuizNewCb(action="add").pack()), state)
         await _add_question(session, state, text="Seconda domanda?", options="Sì\nNo")
 
-        await qz.cb_remove_last(_FakeCallback("quiz_new:removelast"), state, session)
+        await qz.cb_remove_last(_FakeCallback(QuizNewCb(action="remove_last").pack()), state, session)
 
         quiz_id = (await state.get_data())["quiz_id"]
         remaining = await _questions(session, quiz_id)
@@ -433,7 +495,7 @@ class TestReviewStep:
         await _walk_to_questions(session, state)
         await _add_question(session, state)
 
-        callback = _FakeCallback("quiz_new:removelast")
+        callback = _FakeCallback(QuizNewCb(action="remove_last").pack())
         await qz.cb_remove_last(callback, state, session)
 
         assert await state.get_state() == qz.QuizCreationStates.waiting_question_text
@@ -445,19 +507,19 @@ class TestCancelAndBack:
         state = _state()
         await state.set_state(qz.QuizCreationStates.waiting_title)
 
-        ask = _FakeCallback("quiz_new:cancel")
+        ask = _FakeCallback(QuizNewCb(action="cancel").pack())
         await qz.cb_quiz_cancel(ask, state)
         assert await state.get_state() is not None, "the flow was dropped without asking"
         assert ask.message.said
 
-        await qz.cb_quiz_cancel_yes(_FakeCallback("quiz_new:cancel_yes"), state)
+        await qz.cb_quiz_cancel_yes(_FakeCallback(QuizNewCb(action="cancel_yes").pack()), state)
         assert await state.get_state() is None
 
     async def test_saying_no_to_the_cancellation_keeps_the_flow(self, session):
         state = _state()
         await state.set_state(qz.QuizCreationStates.waiting_title)
 
-        await qz.cb_quiz_cancel_no(_FakeCallback("quiz_new:cancel_no"))
+        await qz.cb_quiz_cancel_no(_FakeCallback(QuizNewCb(action="cancel_no").pack()))
 
         assert await state.get_state() == qz.QuizCreationStates.waiting_title
 
@@ -481,7 +543,7 @@ class TestCancelAndBack:
         state = _state()
         await state.set_state(qz.QuizCreationStates.waiting_description)
 
-        callback = _FakeCallback("quiz_new:back")
+        callback = _FakeCallback(QuizNewCb(action="back").pack())
         await qz.cb_back(callback, state)
 
         assert await state.get_state() == qz.QuizCreationStates.waiting_title
@@ -548,7 +610,7 @@ class TestRemainingRefusals:
     async def test_cancelling_outside_the_flow_is_a_no_op(self, session):
         """The cancel button lives on a message that stays on screen after the flow
         ended; tapping it then must not pop a confirmation about nothing."""
-        callback = _FakeCallback("quiz_new:cancel")
+        callback = _FakeCallback(QuizNewCb(action="cancel").pack())
 
         await qz.cb_quiz_cancel(callback, _state())
 
@@ -597,7 +659,7 @@ class TestRemainingRefusals:
         await qz.start_quiz_creation(_FakeMessage(), state, ADMIN_ID)
         await qz.fsm_title(_FakeMessage("Capitali"), state)
         await qz.fsm_description(_FakeMessage("Geo"), state)
-        await qz.cb_custom_prize(_FakeCallback("quiz_new:customprize"), state)
+        await qz.cb_custom_prize(_FakeCallback(QuizNewCb(action="customprize").pack()), state)
         message = _FakeMessage(raw)
 
         await qz.fsm_prize_value(message, state)
@@ -607,14 +669,14 @@ class TestRemainingRefusals:
 
     async def test_the_default_button_outside_a_prize_step_is_ignored(self, session):
         """An old keyboard from a previous run: there is no step to fill in."""
-        callback = _FakeCallback("quiz_new:usedefault")
+        callback = _FakeCallback(QuizNewCb(action="usedefault").pack())
 
         await qz.cb_use_default(callback, _state())
 
         assert callback.message.texts == []
 
     async def test_the_custom_time_limit_button_asks_for_seconds(self, session):
-        callback = _FakeCallback("quiz_new:tlcustom")
+        callback = _FakeCallback(QuizNewCb(action="time_limit_custom").pack())
 
         await qz.cb_time_limit_custom(callback)
 
@@ -627,9 +689,12 @@ class TestRemainingRefusals:
         await _walk_to_questions(session, state)
         await qz.fsm_question_text(_FakeMessage("Capitale d'Italia?"), state)
         await qz.fsm_question_options(_FakeMessage("Roma\nMilano"), state)
-        await qz.cb_correct(_FakeCallback("quiz_new:correct:0"), state)
+        await qz.cb_correct(
+            _FakeCallback(QuizNewCb(action="correct", value=0).pack()), state,
+            callback_data=QuizNewCb(action="correct", value=0),
+        )
         await qz.fsm_explanation(_FakeMessage("-"), state, session)
-        callback = _FakeCallback("quiz_new:review")
+        callback = _FakeCallback(QuizNewCb(action="review").pack())
 
         await qz.cb_review(callback, state, session)
 
