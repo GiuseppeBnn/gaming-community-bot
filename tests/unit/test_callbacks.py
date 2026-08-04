@@ -193,13 +193,14 @@ def test_no_handwritten_payload_shadows_a_typed_prefix():
 
 def _constructed_actions() -> dict[type[CallbackData], set[str]]:
     """Every `action="..."` literal passed to `<Class>(action=...)` anywhere under
-    `src/`, grouped by class.
+    `src/`, plus the executor actions that `cb_confirm` derives from `_CONFIRM`,
+    grouped by class.
 
-    Only literal string arguments are found. `events.py`'s `cb_confirm` is the one
-    call site that computes `action` from a variable (`_CONFIRM`'s own values,
-    forwarded as the executor action) — a single-file round trip already anchored
-    by `_CONFIRM`'s keys reaching the filter built from the same dict, not the
-    cross-file typo risk every hard-coded producer literal is.
+    The constructor scan finds literal string arguments. `cb_confirm` instead
+    forwards the first value of each `_CONFIRM` tuple as `EventCb.action`; add
+    those values directly from their production source so an executor renamed to
+    an unclaimed action creates a failing dead-button check rather than another
+    hand-maintained action list.
     """
     classes = {cls.__name__: cls for cls in CallbackData.__subclasses__()}
     ctor = re.compile(
@@ -214,6 +215,7 @@ def _constructed_actions() -> dict[type[CallbackData], set[str]]:
             continue
         for class_name, action in ctor.findall(path.read_text(encoding="utf-8")):
             found[classes[class_name]].add(action)
+    found[EventCb].update(exec_action for exec_action, _, _ in _CONFIRM.values())
     return found
 
 
@@ -248,8 +250,9 @@ def test_the_action_scan_actually_finds_something():
 async def test_every_constructed_action_reaches_a_registered_filter():
     """No `action` a builder actually constructs may be one a real router filter
     disowns — that is a button no tap will ever reach, with no hand-rolled string
-    anywhere to catch it. Rename `_CONFIRM`'s `"askdel"` key to `"ask_del"` in
-    `events.py` without updating its three producers, and this is what turns red.
+    anywhere to catch it. Rename `_CONFIRM`'s executor value `"del"` to
+    `"delete"` in `events.py`, and this turns red because `cb_confirm` builds
+    exactly that otherwise-unclaimed Yes button.
     """
     constructed = _constructed_actions()
     registered = _registered_action_filters()
