@@ -75,7 +75,7 @@ def _hub_kb() -> InlineKeyboardMarkup:
     types = event_types.all_types()
     for et in types:
         b.button(text=et.hub_label, callback_data=EventCb(action="list", task_type=et.key).pack())
-    b.button(text="⬅️ Dashboard", callback_data="adm:home")   # `adm` non è di questo task
+    b.button(text="⬅️ Dashboard", callback_data="adm:home")
     b.adjust(len(types) or 1, 1)
     return b.as_markup()
 

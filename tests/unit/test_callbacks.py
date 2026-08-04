@@ -17,10 +17,12 @@ from pathlib import Path
 
 import pytest
 from aiogram import F
-from aiogram.filters.callback_data import CallbackData
+from aiogram.filters.callback_data import CallbackData, CallbackQueryFilter
 from aiogram.types import CallbackQuery, User
 
+import handlers
 from handlers.callbacks import EventCb, PollCreateCb, SchedCb
+from handlers.events import _CONFIRM
 
 
 def _query(data: str) -> CallbackQuery:
@@ -114,8 +116,13 @@ async def test_a_non_numeric_event_id_never_reaches_the_handler(data):
 async def test_an_unknown_confirm_action_never_reaches_the_handler():
     """`cb_confirm` used to default an unrecognised `ask*` action to a silent no-op
     (`conf is None`); now the filter only admits the four known ones, so a fifth
-    action never gets there and that branch is gone."""
-    confirm_filter = EventCb.filter(F.action.in_({"askstart", "askclose", "askdel", "askreset"}))
+    action never gets there and that branch is gone.
+
+    Built from `_CONFIRM` itself, not a copy of its keys: a fifth key added there
+    without a matching update here would otherwise leave this test asserting
+    something no longer true.
+    """
+    confirm_filter = EventCb.filter(F.action.in_(_CONFIRM))
     assert await confirm_filter(_query("ev:askqualcosa:fake:7")) is False
 
 
@@ -170,4 +177,92 @@ def test_no_handwritten_payload_shadows_a_typed_prefix():
     assert offenders == [], (
         "hand-rolled payload(s) shadow a typed CallbackData prefix — pack the "
         "class instead of writing the string:\n" + "\n".join(offenders)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wiring, round 2: nothing else may spell a typed *action* the router disowns.
+#
+# The scan above catches a hand-rolled prefix, but a button built entirely
+# through the class — `EventCb(action="askdel", ...).pack()`, no literal in
+# sight — is just as dead if the router's own filter no longer accepts that
+# action (e.g. `_CONFIRM`'s key renamed to `"ask_del"` and a producer missed).
+# No prefix ever goes hand-rolled in that scenario, so the scan above stays
+# green while every 🗑️ Elimina button in the project stops responding.
+# ---------------------------------------------------------------------------
+
+def _constructed_actions() -> dict[type[CallbackData], set[str]]:
+    """Every `action="..."` literal passed to `<Class>(action=...)` anywhere under
+    `src/`, grouped by class.
+
+    Only literal string arguments are found. `events.py`'s `cb_confirm` is the one
+    call site that computes `action` from a variable (`_CONFIRM`'s own values,
+    forwarded as the executor action) — a single-file round trip already anchored
+    by `_CONFIRM`'s keys reaching the filter built from the same dict, not the
+    cross-file typo risk every hard-coded producer literal is.
+    """
+    classes = {cls.__name__: cls for cls in CallbackData.__subclasses__()}
+    ctor = re.compile(
+        r'\b(' + "|".join(re.escape(name) for name in classes) + r')'
+        r'\(\s*action\s*=\s*["\']([^"\']*)["\']'
+    )
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+
+    found: dict[type[CallbackData], set[str]] = {cls: set() for cls in classes.values()}
+    for path in src_dir.rglob("*.py"):
+        if path.name == "callbacks.py":
+            continue
+        for class_name, action in ctor.findall(path.read_text(encoding="utf-8")):
+            found[classes[class_name]].add(action)
+    return found
+
+
+def _registered_action_filters() -> dict[type[CallbackData], list[CallbackQueryFilter]]:
+    """Every `CallbackQueryFilter` actually registered on a real router, grouped by
+    the class it guards — the live objects the dispatcher itself runs, not a
+    re-parsed guess at what `F.action == "..."` or `F.action.in_(...)` means. That
+    is what makes this robust to whatever a filter expression looks like next
+    (`&`, `~`, a set built elsewhere, …) instead of a regex that only understands
+    today's two spellings.
+    """
+    classes = CallbackData.__subclasses__()
+    found: dict[type[CallbackData], list[CallbackQueryFilter]] = {cls: [] for cls in classes}
+    for router in handlers.ROUTERS:
+        for handler in router.callback_query.handlers:
+            for filter_obj in handler.filters or []:
+                cb_filter = filter_obj.callback
+                if isinstance(cb_filter, CallbackQueryFilter) and cb_filter.callback_data in found:
+                    found[cb_filter.callback_data].append(cb_filter)
+    return found
+
+
+def test_the_action_scan_actually_finds_something():
+    """Guards the guard: an empty result on either side would make the test below
+    pass forever for the wrong reason — nothing left to compare."""
+    constructed = _constructed_actions()
+    registered = _registered_action_filters()
+    assert any(constructed.values()), "the constructor scan found no actions — it broke"
+    assert any(registered.values()), "no registered CallbackQueryFilter found — it broke"
+
+
+async def test_every_constructed_action_reaches_a_registered_filter():
+    """No `action` a builder actually constructs may be one a real router filter
+    disowns — that is a button no tap will ever reach, with no hand-rolled string
+    anywhere to catch it. Rename `_CONFIRM`'s `"askdel"` key to `"ask_del"` in
+    `events.py` without updating its three producers, and this is what turns red.
+    """
+    constructed = _constructed_actions()
+    registered = _registered_action_filters()
+
+    dead = []
+    for cls, actions in constructed.items():
+        filters = registered[cls]
+        for action in sorted(actions):
+            probe = _query(cls(action=action).pack())
+            if not any([await f(probe) for f in filters]):
+                dead.append(f"{cls.__name__}(action={action!r})")
+
+    assert dead == [], (
+        "constructed action(s) with no registered filter that accepts them — "
+        "dead button(s):\n" + "\n".join(dead)
     )
