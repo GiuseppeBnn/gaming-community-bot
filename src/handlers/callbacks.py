@@ -23,6 +23,14 @@ from __future__ import annotations
 from aiogram.filters.callback_data import CallbackData
 
 
+class AdminCb(CallbackData, prefix="adm"):
+    """Button-driven admin dashboard."""
+
+    action: str
+    key: str | None = None
+    item_id: int | None = None
+
+
 class SchedCb(CallbackData, prefix="sched"):
     """The scheduling flow — `handlers/schedule.py`.
 

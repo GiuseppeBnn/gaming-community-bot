@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
 from handlers._privacy import redirect_to_private
-from handlers.callbacks import EventCb, PollCreateCb
+from handlers.callbacks import AdminCb, EventCb, PollCreateCb
 from handlers.event_types import edit_or_send
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, poll_service
@@ -75,7 +75,7 @@ def _hub_kb() -> InlineKeyboardMarkup:
     types = event_types.all_types()
     for et in types:
         b.button(text=et.hub_label, callback_data=EventCb(action="list", task_type=et.key).pack())
-    b.button(text="⬅️ Dashboard", callback_data="adm:home")
+    b.button(text="⬅️ Dashboard", callback_data=AdminCb(action="home").pack())
     b.adjust(len(types) or 1, 1)
     return b.as_markup()
 

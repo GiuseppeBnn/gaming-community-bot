@@ -32,7 +32,7 @@ from sqlalchemy import select
 
 from database.models import PollTemplate
 from handlers import event_types, events
-from handlers.callbacks import EventCb, PollCreateCb
+from handlers.callbacks import AdminCb, EventCb, PollCreateCb
 from handlers.event_types import StartResult
 
 ADMIN_ID = 1
@@ -229,7 +229,7 @@ class TestHub:
             EventCb(action="list", task_type="sound").pack(),
             EventCb(action="list", task_type="poll").pack(),
             EventCb(action="list", task_type="bet").pack(),
-            "adm:home",
+            AdminCb(action="home").pack(),
         }
 
     async def test_a_newly_registered_type_appears_without_touching_the_hub(self, session):

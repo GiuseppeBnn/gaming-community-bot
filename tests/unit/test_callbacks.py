@@ -22,7 +22,7 @@ from aiogram.filters.callback_data import CallbackData, CallbackQueryFilter
 from aiogram.types import CallbackQuery, User
 
 import handlers
-from handlers.callbacks import EventCb, PollCreateCb, SchedCb
+from handlers.callbacks import AdminCb, EventCb, PollCreateCb, SchedCb
 from handlers.events import _CONFIRM
 
 
@@ -43,6 +43,20 @@ def _query(data: str) -> CallbackQuery:
 ])
 def test_pack(cb, expected):
     assert cb.pack() == expected
+
+
+@pytest.mark.parametrize(("cb", "packed"), [
+    (AdminCb(action="home"), "adm:home::"),
+    (AdminCb(action="lead_board", key="coins"), "adm:lead_board:coins:"),
+    (AdminCb(action="users", item_id=2), "adm:users::2"),
+    (AdminCb(action="act", key="credit", item_id=42), "adm:act:credit:42"),
+])
+def test_pack_admin_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+async def test_admin_numeric_field_is_typed_by_the_filter():
+    assert await AdminCb.filter()(_query("adm:users::two")) is False
 
 
 def test_unpack_restores_the_types():

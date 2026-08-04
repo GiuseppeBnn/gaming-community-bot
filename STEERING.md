@@ -913,17 +913,21 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   con `EventCb(action="home").pack()` (`ev:home::`; i due campi opzionali mantengono i separatori,
   §18.2) —
   il vecchio hub quiz (`adm:quiz*`, `quiz_hub_kb`) e l'avvio con un tap sono stati **rimossi**.
-- **Azioni su utente** (`👥 Utenti`, lista paginata + 🔍 ricerca → `adm:user:<tg>`): credita/addebita/set saldo,
+- **Azioni su utente** (`👥 Utenti`, lista paginata + 🔍 ricerca → `AdminCb(action="user", item_id=tg)`): credita/addebita/set saldo,
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
-  Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`adm:ask:…` → `adm:do:…`).
-- **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`adm:airdrop`) e **`⚡ Airdrop XP`** (`adm:xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
-- **Classifica**: `adm:lead` con switcher `adm:lead:<coins|xp|trofei>` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
-- **Gating**: ogni callback `adm:*` con `IsAdminCallbackFilter` + **catch-all deny** `adm:` in fondo al router;
+  Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`ask` → `do`).
+- **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`airdrop`) e **`⚡ Airdrop XP`** (`xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
+- **Classifica**: `lead` con switcher `lead_board` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
+- **Gating**: ogni callback `adm:*` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
   dopo `admin.router` in `main.py`.
-- **Grammatica callback** (≤ 64 byte): `adm:home|stats|lead|audit|help|close`, `adm:lead:<board>`,
-  `adm:bets`, `adm:econ|airdrop|xpairdrop|search`, `adm:users:<page>`, `adm:user:<tg>`, `adm:act:<credit|debit|setbal|xpgrant|xpset|mute|warn>:<tg>`,
-  `adm:ask:<ban|kick>:<tg>`, `adm:do:<…>:<tg>`.
+- **Callback tipizzata** (≤ 64 byte): `AdminCb(action: str, key: str | None = None, item_id: int | None = None)`,
+  prefisso `adm`. Le azioni semplici sono `home|stats|lead|audit|help|close|bets|econ|airdrop|xpairdrop|search`;
+  `lead_board` usa `key=<coins|xp|trofei>`, `users` usa `item_id=<pagina>`, `user` usa `item_id=<tg>`,
+  mentre `act|ask|do` usano `key=<verbo>, item_id=<tg>`. I campi opzionali mantengono il separatore vuoto:
+  `AdminCb(action="home").pack()` è `adm:home::`, `AdminCb(action="lead_board", key="coins").pack()` è
+  `adm:lead_board:coins:`, `AdminCb(action="users", item_id=2).pack()` è `adm:users::2`. Il deny deriva il
+  prefisso dalla classe (`f"{AdminCb.__prefix__}:"`) per non poter divergere se il namespace cambia.
 - Il vecchio pannello read-only `admin_panel:*` + `keyboards/admin_panel_kb.py` è **rimosso** (assorbito dalla dashboard).
 
 ### 18.2 Hub Eventi (macro-categoria, `EventCb`, prefisso `ev`)

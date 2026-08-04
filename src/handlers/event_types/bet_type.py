@@ -16,7 +16,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import BettingEvent, ScheduledTask
-from handlers.callbacks import EventCb
+from handlers.callbacks import AdminCb, EventCb
 from services import bet_service, group_registry, schedule_service
 from utils.text import esc
 
@@ -41,7 +41,7 @@ class BetType:
         if not drafts:
             lines.append("<i>Nessuna bozza. Creane una.</i>")
         b.button(text="➕ Crea scommessa", callback_data=EventCb(action="new", task_type="bet").pack())
-        b.button(text="🛠️ Scommesse attive", callback_data="adm:bets")
+        b.button(text="🛠️ Scommesse attive", callback_data=AdminCb(action="bets").pack())
         b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
