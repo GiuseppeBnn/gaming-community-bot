@@ -97,17 +97,21 @@ file, stessa duplicazione.
 L'utente ha scelto esplicitamente **mano libera**: conta il risultato finale, le schermate possono
 cambiare forma, i test delle schermate si riscrivono insieme al codice.
 
-Questo **non** significa lavorare senza rete. Restano intoccabili, in ogni area e in ogni momento:
+Questo **non** significa lavorare senza rete. Durante A.1 restano invariati i risultati osservabili
+su denaro, XP, gating admin, ordine dei router e transizioni di stato. I test che invocano
+direttamente un callback handler possono essere adattati per passare l'oggetto `CallbackData`
+tipizzato iniettato da aiogram; le loro asserzioni economiche e di autorizzazione devono restare
+equivalenti.
 
-- i test su **denaro** e **XP** (`tests/integration/test_money_concurrency_pg.py` e tutto ciò che
-  asserisce saldi, transizioni di stato, tetti giornalieri);
-- i test sul **gating admin** (`tests/unit/test_admin_routers_gated.py`);
-- i test sull'**ordine dei router** (`tests/unit/test_router_order.py`);
-- i **gate**: `pytest` verde, coverage ≥ 99, `ruff` e `mypy` a zero findings, prima di ogni commit.
+I file di test non sono immutabili per principio. Un test su denaro o XP può cambiare quando serve
+a esprimere meglio la stessa garanzia oppure, nel successivo audit dedicato, a riprodurre un difetto
+concreto. A.1 non cambia importi, formule, cap giornalieri, classificazioni capped/uncapped o regole
+di business. Un cambiamento di quella natura richiede il processo separato descritto in
+[`2026-08-04-audit-denaro-xp-design.md`](2026-08-04-audit-denaro-xp-design.md).
 
-Se uno di questi diventa rosso è una **regressione**, mai un aggiornamento. Un test di schermata
-rosso invece può essere un cambio voluto — ma va detto nel messaggio di commit, non lasciato
-dedurre.
+Restano obbligatori i gate: `pytest` verde, coverage ≥ 99%, `ruff` e `mypy` senza findings prima di
+ogni commit. Un test economico, di gating o di ordine router rosso durante A.1 è una regressione da
+correggere, non un nuovo risultato atteso.
 
 ### 3.2 Cosa cambia in STEERING, e cosa no
 
@@ -187,6 +191,20 @@ Una classe per famiglia (`EventCb`, `ShopCb`, `QuizNewCb`…) con un campo `acti
 `F.action == "…"`. L'alternativa — un prefisso e una classe per singola azione — moltiplicherebbe
 le classi per 120 senza aggiungere niente. La forma scelta ricalca come il codice è **già**
 organizzato.
+
+### 4.6 Completezza verificata sulla struttura reale
+
+Due guardie impediscono che factory e filtri divergano: nessun producer può ricostruire a mano un
+prefisso già tipizzato e ogni azione costruita deve raggiungere almeno un filtro registrato. La
+seconda guardia non può assumere che `action` sia l'unico campo obbligatorio: alcune factory
+richiedono anche identificativi numerici.
+
+Prima di aggiungere le factory restanti, il test costruisce quindi un'istanza valida per ogni classe
+usando i campi dichiarati dalla factory. Assegna all'azione il valore sotto esame e agli altri campi
+obbligatori sentinelle deterministiche compatibili con il tipo. Una prova per mutazione rimuove o
+altera temporaneamente un filtro e deve rendere il test rosso; solo dopo il ripristino si procede
+alle conversioni. In questo modo il guard verifica il cablaggio vivo, non soltanto la possibilità di
+istanziare le classi più semplici.
 
 ---
 
@@ -328,6 +346,12 @@ famiglie/file handler** inventariate per A.1: `handlers/schedule.py` e `handlers
 `keyboards/admin_dashboard_kb.py`), perché convertire un consumer lasciando un producer raw crea un
 bottone morto anche con la suite verde.
 
+La prima ondata dichiara 3 factory centrali: `SchedCb`, `EventCb` e `PollCreateCb`. Il follow-up ne
+aggiunge 18; a chiusura di A.1 `handlers/callbacks.py` contiene quindi **21 classi**, non 18.
+L'ultima baseline verificata dopo la prima ondata è **2125 passed, 30 skipped, coverage 99,41%**;
+Ruff, mypy configurato e import smoke sono verdi. I 30 skip dipendono dall'assenza di
+`TEST_PG_URL`, non sono fallimenti.
+
 Le altre **13 famiglie/file handler** e tutti i loro produttori sono specificati nel follow-up
 [`2026-08-04-a1-callback-tipizzate-restanti.md`](../plans/2026-08-04-a1-callback-tipizzate-restanti.md).
 Quel piano completa A.1 e basta. `utils/panel.py` (A.2) e la prova delle viste in
@@ -338,12 +362,17 @@ implementato o pianificato dal piano completato.
 
 ## 8. Fuori scope, dichiarato
 
-- **`services/`**: SQL, denaro, XP, transizioni di stato. Non si tocca. È dove sta il valore.
-- **I giochi in gruppo**: `quiz/play.py`, `guess/play.py`, `betting.py` per la parte di gioco. Sono
-  guidati dagli eventi e vivono in gruppo. (`betting.py` viene toccato **solo** per il suo pannello,
-  §5, e per le callback, §4 — non ridisegnato.)
+- **Logica dei `services/` durante A.1**: SQL, denaro, XP e transizioni di stato non cambiano nella
+  conversione delle callback. Saranno analizzati separatamente subito dopo A.1 secondo la spec
+  dell'audit; non sono esclusi dal programma complessivo.
+- **Ridisegno dei giochi in gruppo**: `quiz/play.py`, `guess/play.py` e `betting.py` vengono toccati
+  in A.1 per convertire consumer e producer callback, ma il gameplay e i relativi valori non vengono
+  ridisegnati.
 - **`fun_ai.py`**: otto comandi, nessuna UI.
-- **Scheduler, backup, moderazione, deep link, `/help`, onboarding.**
+- **Ridisegno di scheduler e onboarding**: la loro conversione callback è in scope A.1; funzionalità
+  ulteriori restano fuori scope. La factory onboarding sarà documentata nella sezione normativa
+  esatta `STEERING.md` **§16.1 «Onboarding iniziale (`RulesCb`, prefisso `rules`)»**.
+- **Backup, moderazione, deep link e `/help`**, salvo producer callback esplicitamente inventariati.
 - **`handlers/errors.py`** su `dp.errors`.
 - **Nessuna dipendenza nuova.** Tutto quel che serve è in aiogram o nella stdlib.
 - **Alembic, `pg_insert`, `get_settings()`**: tre scelte già prese (STEERING §22), non si riaprono.
