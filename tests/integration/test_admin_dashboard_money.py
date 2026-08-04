@@ -997,6 +997,53 @@ class TestModerationGuard:
         assert await state.get_state() is None
 
 
+class TestOptionalCallbackStateGuards:
+    @pytest.mark.parametrize(
+        ("handler", "callback_data"),
+        [
+            (ad.cb_users, AdminCb(action="users")),
+            (ad.cb_user, AdminCb(action="user")),
+            (ad.cb_do, AdminCb(action="do", key="ban")),
+            (ad.cb_do, AdminCb(action="do", item_id=TARGET_ID)),
+        ],
+        ids=("users-missing-page", "user-missing-id", "do-missing-id", "do-missing-key"),
+    )
+    async def test_incomplete_payload_preserves_the_active_flow(
+        self, handler, callback_data, session
+    ):
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_search)
+        await state.update_data(marker="keep")
+        callback = _FakeCallback(callback_data.pack())
+
+        await handler(callback, callback_data, state, session)
+
+        assert await state.get_state() == ad.AdminPanelStates.waiting_search
+        assert await state.get_data() == {"marker": "keep"}
+
+    @pytest.mark.parametrize(
+        ("handler", "callback_data"),
+        [
+            (ad.cb_users, AdminCb(action="users", item_id=0)),
+            (ad.cb_user, AdminCb(action="user", item_id=999_999)),
+            (ad.cb_do, AdminCb(action="do", key="ban", item_id=ADMIN_ID)),
+        ],
+        ids=("users", "user", "do"),
+    )
+    async def test_complete_payload_still_clears_the_previous_flow(
+        self, handler, callback_data, session, in_group
+    ):
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_search)
+        await state.update_data(marker="discard")
+        callback = _FakeCallback(callback_data.pack())
+
+        await handler(callback, callback_data, state, session)
+
+        assert await state.get_state() is None
+        assert await state.get_data() == {}
+
+
 class TestStaleScreens:
     async def test_the_dashboard_home_falls_back_to_a_new_message(
         self, session, as_callback

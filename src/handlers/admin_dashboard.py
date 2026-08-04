@@ -269,11 +269,11 @@ async def fsm_xp_airdrop(message: Message, state: FSMContext, db_session: AsyncS
 async def cb_users(
     callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
 ) -> None:
-    await state.clear()
     page = callback_data.item_id
     if page is None:
         await callback.answer()
         return
+    await state.clear()
     page = max(0, page)
     rows = await admin_service.list_users(db_session, page * PAGE_SIZE, PAGE_SIZE + 1)
     has_next = len(rows) > PAGE_SIZE
@@ -324,11 +324,11 @@ async def fsm_search(message: Message, state: FSMContext, db_session: AsyncSessi
 async def cb_user(
     callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
 ) -> None:
-    await state.clear()
     tg_id = callback_data.item_id
     if tg_id is None:
         await callback.answer()
         return
+    await state.clear()
     await _show_detail_cb(callback, db_session, tg_id)
     await callback.answer()
 
@@ -405,12 +405,12 @@ async def cb_ask(callback: CallbackQuery, callback_data: AdminCb) -> None:
 async def cb_do(
     callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
 ) -> None:
-    await state.clear()
     action = callback_data.key
     tg_id = callback_data.item_id
     if action is None or tg_id is None:
         await callback.answer()
         return
+    await state.clear()
     bot, admin_id, chat_id = callback.bot, callback.from_user.id, group_registry.get_group_id()
 
     if action == "warn":  # warn with no reason (from the «Senza motivo» button)
