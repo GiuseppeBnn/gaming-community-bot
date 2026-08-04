@@ -116,8 +116,16 @@ def test_pack_guess_alias_callbacks(cb, packed):
     assert cb.pack() == packed
 
 
-@pytest.mark.parametrize("data", ["guess_alias:add:not-a-round-id", "guess_alias:add:-"])
-async def test_guess_alias_round_id_is_typed_by_the_filter(data):
+@pytest.mark.parametrize(
+    "data",
+    [
+        "guess_alias:add:not-a-round-id",
+        "guess_alias:add:-",
+        "guess_alias:add:1.0",
+        "guess_alias:add:+1",
+    ],
+)
+async def test_guess_alias_round_id_must_contain_only_digits(data):
     assert await GuessAliasCb.filter()(_query(data)) is False
 
 

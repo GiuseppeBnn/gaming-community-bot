@@ -21,6 +21,7 @@ by an older deploy no longer matches, and falls through to the catch-all in
 from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
+from pydantic import field_validator
 
 
 class AdminCb(CallbackData, prefix="adm"):
@@ -181,6 +182,13 @@ class GuessAliasCb(CallbackData, prefix="guess_alias"):
     #: "add" | "cancel"
     action: str
     round_id: int | None = None
+
+    @field_validator("round_id", mode="before")
+    @classmethod
+    def _round_id_must_contain_only_digits(cls, value: object) -> object:
+        if isinstance(value, str) and not value.isdigit():
+            raise ValueError("round id must contain only digits")
+        return value
 
 
 class QuizEditCb(CallbackData, prefix="quiz_edit"):
