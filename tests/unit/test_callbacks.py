@@ -442,6 +442,26 @@ async def test_a1_numeric_slots_preserve_their_legacy_plus_and_whitespace_contra
     assert (result is not False) is accepted
 
 
+@pytest.mark.parametrize(
+    ("callback_class", "data", "expected"),
+    [
+        (
+            GuessPlayCb,
+            "guess_play:resume:١",
+            GuessPlayCb(action="resume", round_id=1),
+        ),
+        (
+            GuessAliasCb,
+            "guess_alias:add:１２",
+            GuessAliasCb(action="add", round_id=12),
+        ),
+    ],
+)
+async def test_a1_numeric_filters_normalize_legacy_unicode_digits(callback_class, data, expected):
+    """Both legacy parsers accepted Unicode digits and converted them to integers."""
+    assert await callback_class.filter()(_query(data)) == {"callback_data": expected}
+
+
 def test_unpack_restores_the_types():
     cb = SchedCb.unpack("sched:pick:quiz:7")
     assert cb.action == "pick"

@@ -35,7 +35,7 @@ def _legacy_int_text(value: object) -> object:
     """
     if isinstance(value, str):
         try:
-            int(value)
+            return int(value)
         except ValueError as exc:
             raise ValueError("integer text required") from exc
     return value
@@ -43,8 +43,10 @@ def _legacy_int_text(value: object) -> object:
 
 def _digit_only_text(value: object) -> object:
     """Preserve a legacy ``str.isdigit()`` callback guard."""
-    if isinstance(value, str) and not value.isdigit():
-        raise ValueError("integer text must contain only digits")
+    if isinstance(value, str):
+        if not value.isdigit():
+            raise ValueError("integer text must contain only digits")
+        return int(value)
     return value
 
 
