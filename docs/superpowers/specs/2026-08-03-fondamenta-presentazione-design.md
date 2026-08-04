@@ -347,16 +347,18 @@ famiglie/file handler** inventariate per A.1: `handlers/schedule.py` e `handlers
 bottone morto anche con la suite verde.
 
 La prima ondata dichiara 3 factory centrali: `SchedCb`, `EventCb` e `PollCreateCb`. Il follow-up ne
-aggiunge 18; a chiusura di A.1 `handlers/callbacks.py` contiene quindi **21 classi**, non 18.
-L'ultima baseline verificata dopo la prima ondata è **2125 passed, 30 skipped, coverage 99,41%**;
-Ruff, mypy configurato e import smoke sono verdi. I 30 skip dipendono dall'assenza di
-`TEST_PG_URL`, non sono fallimenti.
+ha aggiunte 18: A.1 chiusa contiene quindi **21 classi**, non 18, per tutte le **15/15 famiglie di
+handler** e tutti i producer callback correnti. La completezza resta protetta dalle quattro guardie
+strutturali in `tests/unit/test_callbacks.py`: scan dei prefissi, assenza di wire payload manuali,
+scan delle azioni e raggiungibilita' di ogni azione costruita da un filtro registrato.
 
-Le altre **13 famiglie/file handler** e tutti i loro produttori sono specificati nel follow-up
-[`2026-08-04-a1-callback-tipizzate-restanti.md`](../plans/2026-08-04-a1-callback-tipizzate-restanti.md).
-Quel piano completa A.1 e basta. `utils/panel.py` (A.2) e la prova delle viste in
-`admin_dashboard.py` (A.3a) restano lavori successivi separati: nessuno dei due è stato
-implementato o pianificato dal piano completato.
+Il follow-up
+[`2026-08-04-a1-callback-tipizzate-restanti.md`](../plans/2026-08-04-a1-callback-tipizzate-restanti.md)
+ha completato A.1 e basta. La chiusura ha riverificato l'assenza di parsing manuale in `handlers/`,
+gli unici `F.data` come deny admin derivati dai prefissi delle classi, la parita' delle asserzioni
+economiche/XP rispetto alla base `3726038`, i gate di routing e l'intera suite. I 30 skip dipendono
+dall'assenza di `TEST_PG_URL`, non sono test disabilitati. `utils/panel.py` (A.2) e la prova delle
+viste in `admin_dashboard.py` (A.3a) restano lavori non avviati e separati.
 
 ---
 
@@ -424,8 +426,8 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 |---|---|---|
 | — | Design approvato (questo documento) | ☑ 2026-08-03 |
 | — | **Piano A.1, prima ondata** — `2026-08-03-a1-callback-tipizzate.md`: catch-all + `schedule.py` + `events.py` e tutti i producer Events attuali (§7.1) | ☑ 2026-08-04 |
-| A.1 | `CallbackData` su tutto il bot + catch-all in `common` (§4): **2/15 famiglie handler convertite** (`schedule.py`, `events.py`), catch-all e producer Events completati | ▣ parziale |
-| — | **Follow-up A.1** — `2026-08-04-a1-callback-tipizzate-restanti.md`: le 13 famiglie restanti + tutti i loro producer (§7.1) | ☐ piano scritto, da eseguire |
+| A.1 | `CallbackData` su tutto il bot + catch-all in `common` (§4): **15/15 famiglie handler convertite**, 21 factory centrali e tutti i producer callback correnti convertiti | ☑ 2026-08-04 |
+| — | **Follow-up A.1 completato** — `2026-08-04-a1-callback-tipizzate-restanti.md`: le 13 famiglie restanti + tutti i loro producer (§7.1) | ☑ 2026-08-04 |
 | A.2 | `utils/panel.py` + i tre chiamanti convertiti (§5) | ☐ |
 | A.3a | Viste — `admin_dashboard.py` (la prova, §6.4) | ☐ |
 | A.3b | Viste — `guess/creation.py` (la conferma su un wizard) | ☐ |

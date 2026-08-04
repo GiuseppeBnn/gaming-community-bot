@@ -259,6 +259,46 @@ precedente; il catch-all ferma comunque lo spinner con un messaggio breve e logg
 payload. Il warning è portante: distingue un bottone legittimamente vecchio da un produttore la cui
 azione non è più rivendicata da alcun filtro (§26).
 
+### Contratto globale delle callback tipizzate
+
+Le 21 factory correnti vivono tutte in `handlers.callbacks`, deliberatamente senza import di
+handler: tastiere, `event_types/` e altri producer possono costruire lo stesso contratto senza
+creare dipendenze fra handler. Ogni producer esterno usa `.pack()` e ogni consumer riceve
+l'oggetto gia' validato dal filtro `Factory.filter(F.action == ...)`; non si fa parsing di
+`callback.data` negli handler. Un campo opzionale `None` conserva il suo segmento vuoto nel wire
+format: non abbreviare mai un payload togliendo i `:`. Le uniche eccezioni a questa regola di filtro
+sono i deny admin finali, che usano `F.data.startswith(f"{Factory.__prefix__}:")` per rifiutare
+il prefisso senza copiarlo in una stringa. `common.router`, ultimo, risponde ai payload non gestiti.
+
+| Factory (prefisso) | Campi | Wire `.pack()` con separatori vuoti |
+| --- | --- | --- |
+| `AdminCb` (`adm`) | `action`, `key: str \| None`, `item_id: int \| None` | `adm:home::`; `adm:users::2` |
+| `ShopCb` (`shop`) | `action`, `key: str \| None` | `shop:list:`; `shop:exec:<key>` |
+| `RulesCb` (`rules`) | `action` | `rules:accept` |
+| `LeaderboardCb` (`lead`) | `action`, `board: str \| None` | `lead:close:`; `lead:show:<board>` |
+| `AdminBetCb` (`admin_bet`) | `action`, `event_id: int \| None`, `option_id: int \| None` | `admin_bet:list::`; `admin_bet:event:<id>:` |
+| `BetCb` (`bet`) | `action`, `seconds: int \| None` | `bet:close:`; `bet:window:<seconds>` |
+| `BetEventCb` (`event`) | `action`, `event_id: int` | `event:view:<id>` |
+| `BetOptionCb` (`bet_option`) | `action`, `event_id: int`, `option_id: int` | `bet_option:pick:<event>:<option>` |
+| `BetAmountCb` (`bet_amount`) | `action`, `event_id: int`, `option_id: int`, `amount: int` | `bet_amount:pick:<event>:<option>:<amount>` |
+| `BetCustomCb` (`bet_custom`) | `action`, `event_id: int`, `option_id: int` | `bet_custom:open:<event>:<option>` |
+| `BetConfirmCb` (`bet_confirm`) | `action`, `event_id: int`, `option_id: int`, `amount: int` | `bet_confirm:place:<event>:<option>:<amount>` |
+| `SchedCb` (`sched`) | `action`, `key: str \| None`, `item_id: int \| None` | `sched:cancel::`; `sched:del::<task>` |
+| `EventCb` (`ev`) | `action`, `task_type: str \| None`, `item_id: int \| None` | `ev:home::`; `ev:item:<type>:<id>` |
+| `PollCreateCb` (`evpt`) | `action` | `evpt:cancel` |
+| `QuizNewCb` (`quiz_new`) | `action`, `key: str \| None`, `value: int \| None` | `quiz_new:cancel::`; `quiz_new:time_limit::<seconds>` |
+| `GuessNewCb` (`guess_new`) | `action`, `key: str \| None`, `value: int \| None` | `guess_new:cancel::`; `guess_new:hint_at::<threshold>` |
+| `GuessAliasCb` (`guess_alias`) | `action`, `round_id: int \| None` | `guess_alias:cancel:`; `guess_alias:add:<round>` |
+| `GuessPlayCb` (`guess_play`) | `action`, `round_id: int \| None` | `guess_play:quit:`; `guess_play:resume:<round>` |
+| `QuizEditCb` (`quiz_edit`) | `action`, `quiz_id: int \| None`, `index: int \| None` | `quiz_edit:noop::`; `quiz_edit:nav:<quiz>:<index>` |
+| `QuizAnswerCb` (`quiz_ans`) | `action`, `quiz_id: int`, `question_id: int`, `option_id: int` | `quiz_ans:answer:<quiz>:<question>:<option>` |
+| `QuizTryCb` (`quiz_try`) | `action`, `quiz_id: int`, `question_id: int \| None`, `option_id: int \| None` | `quiz_try:start:<quiz>::`; `quiz_try:answer:<quiz>:<question>:<option>` |
+
+Questa architettura rende il limite Telegram di 64 byte verificabile al producer, sposta conversione
+e validazione numerica nel filtro, e fa cadere wire form vecchie o malformate nel fallback invece
+di lasciarle modificare stato o denaro. Le forme manuali rimosse non sono contratti correnti: la
+fonte autorevole e' sempre una factory della tabella, non una concatenazione di stringhe.
+
 ### 7.a Handler globale errori (`dp.errors`)
 
 `dp.errors.register(errors.on_error)` in `main.py`, **dopo** `handlers.register(dp)`.
