@@ -337,6 +337,9 @@ Due scelte deliberate:
 ## 8. Filtri admin
 
 ```python
+from aiogram import F
+from aiogram.filters.command import Command
+
 from filters.admin_filter import IsAdminFilter, IsAdminCallbackFilter
 from handlers.callbacks import AdminBetCb
 
