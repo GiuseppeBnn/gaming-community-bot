@@ -48,7 +48,14 @@ from keyboards.betting_kb import (
 from config_data.config import settings
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
-from handlers.callbacks import BetAmountCb, BetCb, BetConfirmCb, BetCustomCb, BetEventCb, BetOptionCb
+from handlers.callbacks import (
+    BetAmountCb,
+    BetCb,
+    BetConfirmCb,
+    BetCustomCb,
+    BetEventCb,
+    BetOptionCb,
+)
 from keyboards.common_kb import confirm_cancel_kb
 from services import badge_service, bet_service, group_registry, schedule_service
 from utils import cooldown
@@ -67,8 +74,8 @@ class BetCreationStates(StatesGroup):
     waiting_for_title = State()
     waiting_for_description = State()
     waiting_for_options = State()
-    waiting_for_window = State()          # pick the betting-window duration (preset)
-    waiting_for_window_custom = State()   # or type a custom duration (30m/2h/1d)
+    waiting_for_window = State()  # pick the betting-window duration (preset)
+    waiting_for_window_custom = State()  # or type a custom duration (30m/2h/1d)
 
 
 # Betting-window presets offered at creation (label, seconds). 0 / illimitata is a
@@ -117,6 +124,7 @@ class BetCustomAmountState(StatesGroup):
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def parse_bet_amount(raw: str) -> tuple[int | None, str | None]:
     """Validate a user-typed bet amount. Returns ``(amount, None)`` on success or
     ``(None, error_message)`` for non-numeric, non-positive, or over-cap input.
@@ -134,9 +142,15 @@ def parse_bet_amount(raw: str) -> tuple[int | None, str | None]:
 
 
 def _cancel_creation_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Annulla", callback_data=BetCb(action="cancel_creation").pack())
-    ]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Annulla", callback_data=BetCb(action="cancel_creation").pack()
+                )
+            ]
+        ]
+    )
 
 
 async def _clear_active_bet_msg(bot, chat_id: int, state: FSMContext) -> None:
@@ -153,6 +167,7 @@ async def _clear_active_bet_msg(bot, chat_id: int, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 # /scommesse
 # ---------------------------------------------------------------------------
+
 
 @router.message(Command("scommesse"))
 async def cmd_scommesse(message: Message, db_session: AsyncSession, state: FSMContext) -> None:
@@ -183,7 +198,9 @@ async def show_events_private(
         return
 
     event_ids = [e.id for e in events]
-    placed_ids = await bet_service.get_user_placed_event_ids(db_session, message.from_user.id, event_ids)
+    placed_ids = await bet_service.get_user_placed_event_ids(
+        db_session, message.from_user.id, event_ids
+    )
 
     await _clear_active_bet_msg(message.bot, message.chat.id, state)
     sent = await message.answer(
@@ -198,18 +215,23 @@ async def show_events_private(
 # /crea_scommessa + FSM creation
 # ---------------------------------------------------------------------------
 
+
 @router.message(Command("crea_scommessa"))
 async def cmd_crea_scommessa(message: Message, state: FSMContext) -> None:
     if message.chat.type != "private":
         bot_info = await message.bot.get_me()
         await message.answer(
             "🎲 Crea la scommessa in chat privata:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(
-                    text="➡️ Crea scommessa",
-                    url=f"https://t.me/{bot_info.username}?start=create_bet",
-                )
-            ]]),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text="➡️ Crea scommessa",
+                            url=f"https://t.me/{bot_info.username}?start=create_bet",
+                        )
+                    ]
+                ]
+            ),
         )
         return
 
@@ -261,7 +283,9 @@ async def cb_cancel_creation_no(callback: CallbackQuery, callback_data: BetCb) -
 async def fsm_bet_title(message: Message, state: FSMContext) -> None:
     title = (message.text or "").strip()[:200]
     if len(title) < 4:
-        await message.answer("⚠️ Il titolo deve avere almeno 4 caratteri.", reply_markup=_cancel_creation_kb())
+        await message.answer(
+            "⚠️ Il titolo deve avere almeno 4 caratteri.", reply_markup=_cancel_creation_kb()
+        )
         return
     await state.update_data(title=title)
     await state.set_state(BetCreationStates.waiting_for_description)
@@ -276,7 +300,9 @@ async def fsm_bet_title(message: Message, state: FSMContext) -> None:
 async def fsm_bet_description(message: Message, state: FSMContext) -> None:
     description = (message.text or "").strip()[:500]
     if len(description) < 4:
-        await message.answer("⚠️ La descrizione deve avere almeno 4 caratteri.", reply_markup=_cancel_creation_kb())
+        await message.answer(
+            "⚠️ La descrizione deve avere almeno 4 caratteri.", reply_markup=_cancel_creation_kb()
+        )
         return
     await state.update_data(description=description)
     await state.set_state(BetCreationStates.waiting_for_options)
@@ -292,14 +318,18 @@ async def fsm_bet_options(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     options = [o.strip() for o in raw.splitlines() if o.strip()]
     if len(options) < 2:
-        await message.answer("⚠️ Servono almeno 2 opzioni (una per riga).", reply_markup=_cancel_creation_kb())
+        await message.answer(
+            "⚠️ Servono almeno 2 opzioni (una per riga).", reply_markup=_cancel_creation_kb()
+        )
         return
     if len(options) > 8:
         await message.answer("⚠️ Massimo 8 opzioni.", reply_markup=_cancel_creation_kb())
         return
     for opt in options:
         if len(opt) > 100:
-            await message.answer("⚠️ Ogni opzione deve essere max 100 caratteri.", reply_markup=_cancel_creation_kb())
+            await message.answer(
+                "⚠️ Ogni opzione deve essere max 100 caratteri.", reply_markup=_cancel_creation_kb()
+            )
             return
 
     # Options are stashed; the event is created only after the window step, so the
@@ -331,13 +361,20 @@ async def cb_bet_window(
         )
         await callback.answer()
         return
-    sec = callback_data.seconds or 0  # 0 = illimitata
-    await _finalize_bet_creation(callback.message, state, db_session, sec or None, callback.from_user.id)
+    sec = callback_data.seconds
+    if sec is None:
+        await callback.answer()
+        return
+    await _finalize_bet_creation(
+        callback.message, state, db_session, sec or None, callback.from_user.id
+    )
     await callback.answer()
 
 
 @router.message(BetCreationStates.waiting_for_window_custom, ~F.text.startswith("/"))
-async def fsm_bet_window_custom(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+async def fsm_bet_window_custom(
+    message: Message, state: FSMContext, db_session: AsyncSession
+) -> None:
     try:
         sec = schedule_service.parse_duration(message.text or "")
     except ValueError as e:
@@ -406,9 +443,8 @@ async def _finalize_bet_creation(
 # Entry-points from deep-links
 # ---------------------------------------------------------------------------
 
-async def start_bet_creation(
-    message: Message, state: FSMContext, as_draft: bool = False
-) -> None:
+
+async def start_bet_creation(message: Message, state: FSMContext, as_draft: bool = False) -> None:
     """Start the bet-creation FSM. ``as_draft`` (Events hub) creates a draft to be
     activated/scheduled later; otherwise (deep-link/community) it opens directly."""
     await state.clear()
@@ -416,11 +452,11 @@ async def start_bet_creation(
     await state.set_state(BetCreationStates.waiting_for_title)
     intro = (
         "🎲 <b>Crea una scommessa</b> <i>(bozza, da avviare o programmare)</i>"
-        if as_draft else "🎲 <b>Crea una nuova scommessa</b>"
+        if as_draft
+        else "🎲 <b>Crea una nuova scommessa</b>"
     )
     await message.answer(
-        f"{intro}\n\n"
-        "<b>Step 1/4</b> — Invia il titolo dell'evento (max 200 caratteri):",
+        f"{intro}\n\n<b>Step 1/4</b> — Invia il titolo dell'evento (max 200 caratteri):",
         reply_markup=_cancel_creation_kb(),
     )
 
@@ -459,15 +495,14 @@ async def start_custom_amount(
     await _clear_active_bet_msg(message.bot, message.chat.id, state)
     await state.update_data(custom_bet_event=event_id, custom_bet_option=option_id)
     await state.set_state(BetCustomAmountState.waiting_for_amount)
-    sent = await message.answer(
-        "✏️ Inserisci l'importo che vuoi scommettere (in CoInn):"
-    )
+    sent = await message.answer("✏️ Inserisci l'importo che vuoi scommettere (in CoInn):")
     await state.update_data(bet_active_msg_id=sent.message_id)
 
 
 # ---------------------------------------------------------------------------
 # Callbacks: event browsing
 # ---------------------------------------------------------------------------
+
 
 @router.callback_query(BetEventCb.filter(F.action == "view"))
 async def cb_event_view(
@@ -583,11 +618,7 @@ async def _show_confirm(
     # Proportional payout estimate
     total_pool = sum(o.total_wagered for o in event.options) + amount
     winning_pool_after = option.total_wagered + amount
-    estimated = (
-        int((amount / winning_pool_after) * total_pool)
-        if winning_pool_after > 0
-        else 0
-    )
+    estimated = int((amount / winning_pool_after) * total_pool) if winning_pool_after > 0 else 0
 
     await callback.message.edit_text(
         f"🎲 <b>#{event.id} {esc(event.title)}</b>\n\n"
@@ -619,9 +650,7 @@ async def cb_bet_custom(
 
 
 @router.message(BetCustomAmountState.waiting_for_amount, ~F.text.startswith("/"))
-async def fsm_custom_amount(
-    message: Message, state: FSMContext, db_session: AsyncSession
-) -> None:
+async def fsm_custom_amount(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     amount, err = parse_bet_amount(message.text or "")
     if err:
         await message.answer(err)
@@ -675,21 +704,20 @@ async def fsm_custom_amount(
 
 @router.callback_query(BetConfirmCb.filter(F.action == "place"))
 async def cb_bet_confirm(
-    callback: CallbackQuery, callback_data: BetConfirmCb, db_session: AsyncSession, state: FSMContext
+    callback: CallbackQuery,
+    callback_data: BetConfirmCb,
+    db_session: AsyncSession,
+    state: FSMContext,
 ) -> None:
     event_id = callback_data.event_id
     option_id = callback_data.option_id
     amount = callback_data.amount
 
     try:
-        await bet_service.place_bet(
-            db_session, callback.from_user.id, event_id, option_id, amount
-        )
+        await bet_service.place_bet(db_session, callback.from_user.id, event_id, option_id, amount)
         await db_session.commit()
     except AlreadyBetError:
-        await callback.answer(
-            "⚠️ Hai già scommesso su questo evento.", show_alert=True
-        )
+        await callback.answer("⚠️ Hai già scommesso su questo evento.", show_alert=True)
         return
     except BettingClosedError:
         await callback.answer("⚠️ Questa scommessa non accetta più puntate.", show_alert=True)
@@ -704,17 +732,14 @@ async def cb_bet_confirm(
         )
         return
 
-    newly_earned = await badge_service.check_and_award_milestones(
-        db_session, callback.from_user.id
-    )
+    newly_earned = await badge_service.check_and_award_milestones(db_session, callback.from_user.id)
     if newly_earned:
         await db_session.commit()
         # Announced in the group (tagging the user), not appended in private.
         await announce_trophies(callback.bot, db_session, callback.from_user.id, newly_earned)
 
     xp_line = (
-        f"⚡ <b>+{settings.xp_per_bet_placed} XP</b> per la partecipazione "
-        f"(altri se vinci!).\n"
+        f"⚡ <b>+{settings.xp_per_bet_placed} XP</b> per la partecipazione (altri se vinci!).\n"
         if settings.xp_per_bet_placed > 0
         else ""
     )

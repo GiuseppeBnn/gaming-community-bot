@@ -21,7 +21,31 @@ by an older deploy no longer matches, and falls through to the catch-all in
 from __future__ import annotations
 
 from aiogram.filters.callback_data import CallbackData
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
+
+
+def _legacy_int_text(value: object) -> object:
+    """Reject text that the replaced ``int()`` call would have rejected.
+
+    Aiogram gives callback fields to Pydantic as strings.  Pydantic accepts the
+    wire text ``"1.0"`` for an ``int`` field, while Python's ``int("1.0")``
+    did not.  Validate with the legacy conversion and let Pydantic perform the
+    actual coercion so its normal ``+1`` and surrounding-whitespace behavior is
+    retained.
+    """
+    if isinstance(value, str):
+        try:
+            int(value)
+        except ValueError as exc:
+            raise ValueError("integer text required") from exc
+    return value
+
+
+def _digit_only_text(value: object) -> object:
+    """Preserve a legacy ``str.isdigit()`` callback guard."""
+    if isinstance(value, str) and not value.isdigit():
+        raise ValueError("integer text must contain only digits")
+    return value
 
 
 class AdminCb(CallbackData, prefix="adm"):
@@ -30,6 +54,11 @@ class AdminCb(CallbackData, prefix="adm"):
     action: str
     key: str | None = None
     item_id: int | None = None
+
+    @field_validator("item_id", mode="before")
+    @classmethod
+    def _item_id_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class ShopCb(CallbackData, prefix="shop"):
@@ -61,6 +90,11 @@ class AdminBetCb(CallbackData, prefix="admin_bet"):
     event_id: int | None = None
     option_id: int | None = None
 
+    @field_validator("event_id", "option_id", mode="before")
+    @classmethod
+    def _ids_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
 
 class BetCb(CallbackData, prefix="bet"):
     """Navigation and creation-window controls for player betting."""
@@ -70,6 +104,11 @@ class BetCb(CallbackData, prefix="bet"):
     action: str
     seconds: int | None = None
 
+    @field_validator("seconds", mode="before")
+    @classmethod
+    def _seconds_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
 
 class BetEventCb(CallbackData, prefix="event"):
     """Open one betting event from the private player list."""
@@ -77,6 +116,11 @@ class BetEventCb(CallbackData, prefix="event"):
     #: "view"
     action: str
     event_id: int
+
+    @field_validator("event_id", mode="before")
+    @classmethod
+    def _event_id_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class BetOptionCb(CallbackData, prefix="bet_option"):
@@ -86,6 +130,11 @@ class BetOptionCb(CallbackData, prefix="bet_option"):
     action: str
     event_id: int
     option_id: int
+
+    @field_validator("event_id", "option_id", mode="before")
+    @classmethod
+    def _ids_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class BetAmountCb(CallbackData, prefix="bet_amount"):
@@ -97,6 +146,11 @@ class BetAmountCb(CallbackData, prefix="bet_amount"):
     option_id: int
     amount: int
 
+    @field_validator("event_id", "option_id", "amount", mode="before")
+    @classmethod
+    def _numbers_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
 
 class BetCustomCb(CallbackData, prefix="bet_custom"):
     """Open the custom-stake FSM."""
@@ -105,6 +159,11 @@ class BetCustomCb(CallbackData, prefix="bet_custom"):
     action: str
     event_id: int
     option_id: int
+
+    @field_validator("event_id", "option_id", mode="before")
+    @classmethod
+    def _ids_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class BetConfirmCb(CallbackData, prefix="bet_confirm"):
@@ -115,6 +174,11 @@ class BetConfirmCb(CallbackData, prefix="bet_confirm"):
     event_id: int
     option_id: int
     amount: int
+
+    @field_validator("event_id", "option_id", "amount", mode="before")
+    @classmethod
+    def _numbers_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class SchedCb(CallbackData, prefix="sched"):
@@ -180,6 +244,11 @@ class QuizNewCb(CallbackData, prefix="quiz_new"):
     key: str | None = None
     value: int | None = None
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
 
 class GuessNewCb(CallbackData, prefix="guess_new"):
     """Guess and sound creation controls — `handlers/guess/creation.py`."""
@@ -189,6 +258,11 @@ class GuessNewCb(CallbackData, prefix="guess_new"):
     action: str
     key: str | None = None
     value: int | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class GuessAliasCb(CallbackData, prefix="guess_alias"):
@@ -201,9 +275,7 @@ class GuessAliasCb(CallbackData, prefix="guess_alias"):
     @field_validator("round_id", mode="before")
     @classmethod
     def _round_id_must_contain_only_digits(cls, value: object) -> object:
-        if isinstance(value, str) and not value.isdigit():
-            raise ValueError("round id must contain only digits")
-        return value
+        return _digit_only_text(value)
 
 
 class GuessPlayCb(CallbackData, prefix="guess_play"):
@@ -215,10 +287,8 @@ class GuessPlayCb(CallbackData, prefix="guess_play"):
 
     @field_validator("round_id", mode="before")
     @classmethod
-    def _round_id_must_contain_only_digits(cls, value: object) -> object:
-        if isinstance(value, str) and not value.isdigit():
-            raise ValueError("round id must contain only digits")
-        return value
+    def _round_id_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class QuizEditCb(CallbackData, prefix="quiz_edit"):
@@ -235,6 +305,13 @@ class QuizEditCb(CallbackData, prefix="quiz_edit"):
     quiz_id: int | None = None
     index: int | None = None
 
+    @field_validator("quiz_id", "index", mode="before")
+    @classmethod
+    def _coordinates_match_their_legacy_parser(cls, value: object, info: ValidationInfo) -> object:
+        if info.data.get("action") == "nav":
+            return _digit_only_text(value)
+        return _legacy_int_text(value)
+
 
 class QuizAnswerCb(CallbackData, prefix="quiz_ans"):
     """A participant's answer to one public quiz question."""
@@ -245,6 +322,11 @@ class QuizAnswerCb(CallbackData, prefix="quiz_ans"):
     question_id: int
     option_id: int
 
+    @field_validator("quiz_id", "question_id", "option_id", mode="before")
+    @classmethod
+    def _ids_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
 
 class QuizTryCb(CallbackData, prefix="quiz_try"):
     """Admin dry-run controls for a ready quiz."""
@@ -254,3 +336,8 @@ class QuizTryCb(CallbackData, prefix="quiz_try"):
     quiz_id: int
     question_id: int | None = None
     option_id: int | None = None
+
+    @field_validator("quiz_id", "question_id", "option_id", mode="before")
+    @classmethod
+    def _ids_match_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)

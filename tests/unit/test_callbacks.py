@@ -167,10 +167,9 @@ def test_pack_guess_play_callbacks(cb, packed):
     [
         "guess_play:resume:not-a-round-id",
         "guess_play:resume:1.0",
-        "guess_play:resume:+1",
     ],
 )
-async def test_guess_play_round_id_must_contain_only_digits(data):
+async def test_guess_play_round_id_rejects_decimal_or_non_numeric_text(data):
     assert await GuessPlayCb.filter()(_query(data)) is False
 
 
@@ -344,6 +343,103 @@ async def test_betting_numeric_fields_are_typed_by_the_filter(callback_class, da
 
 async def test_admin_numeric_field_is_typed_by_the_filter():
     assert await AdminCb.filter()(_query("adm:users::two")) is False
+
+
+_A1_DECIMAL_NUMERIC_PAYLOADS = [
+    # Dashboard and admin betting
+    (AdminCb, "adm:users::1.0"),
+    (AdminBetCb, "admin_bet:event:1.0:"),
+    (AdminBetCb, "admin_bet:pick_winner:7:1.0"),
+    # Player betting
+    (BetCb, "bet:window:1.0"),
+    (BetEventCb, "event:view:1.0"),
+    (BetOptionCb, "bet_option:pick:1.0:9"),
+    (BetOptionCb, "bet_option:pick:7:1.0"),
+    (BetAmountCb, "bet_amount:pick:1.0:9:100"),
+    (BetAmountCb, "bet_amount:pick:7:1.0:100"),
+    (BetAmountCb, "bet_amount:pick:7:9:1.0"),
+    (BetCustomCb, "bet_custom:open:1.0:9"),
+    (BetCustomCb, "bet_custom:open:7:1.0"),
+    (BetConfirmCb, "bet_confirm:place:1.0:9:100"),
+    (BetConfirmCb, "bet_confirm:place:7:1.0:100"),
+    (BetConfirmCb, "bet_confirm:place:7:9:1.0"),
+    # Quiz and Guess creation/editing/play
+    (QuizNewCb, "quiz_new:time_limit::1.0"),
+    (GuessNewCb, "guess_new:hint_at::1.0"),
+    (GuessAliasCb, "guess_alias:add:1.0"),
+    (GuessPlayCb, "guess_play:resume:1.0"),
+    (QuizEditCb, "quiz_edit:nav:1.0:2"),
+    (QuizEditCb, "quiz_edit:nav:7:1.0"),
+    (QuizEditCb, "quiz_edit:text:1.0:2"),
+    (QuizEditCb, "quiz_edit:correct::1.0"),
+    (QuizAnswerCb, "quiz_ans:answer:1.0:8:2"),
+    (QuizAnswerCb, "quiz_ans:answer:7:1.0:2"),
+    (QuizAnswerCb, "quiz_ans:answer:7:8:1.0"),
+    (QuizTryCb, "quiz_try:start:1.0::"),
+    (QuizTryCb, "quiz_try:answer:7:1.0:2"),
+    (QuizTryCb, "quiz_try:answer:7:8:1.0"),
+]
+
+
+@pytest.mark.parametrize(("callback_class", "data"), _A1_DECIMAL_NUMERIC_PAYLOADS)
+async def test_a1_numeric_slots_reject_decimal_wire_text(callback_class, data):
+    """A ``1.0`` callback segment must never be coerced into database id ``1``.
+
+    This exercises the real ``CallbackQuery`` filter boundary.  A failure here
+    would otherwise let a malformed bet reach its confirm/place paths, a quiz
+    id reach answer recording and XP, or an admin id reach settlement/refund.
+    """
+    assert await callback_class.filter()(_query(data)) is False
+
+
+_A1_PLUS_SPACE_LEGACY_PAYLOADS = [
+    # ``int()`` in 3726038 accepted signs and surrounding whitespace.
+    (AdminCb, "adm:users::+1", True),
+    (AdminCb, "adm:users:: 1 ", True),
+    (AdminBetCb, "admin_bet:event:+1:", True),
+    (AdminBetCb, "admin_bet:pick_winner:7: 1 ", True),
+    (BetCb, "bet:window:+1", True),
+    (BetCb, "bet:window: 1 ", True),
+    (BetEventCb, "event:view:+1", True),
+    (BetOptionCb, "bet_option:pick: 1 :9", True),
+    (BetOptionCb, "bet_option:pick:7:+1", True),
+    (BetAmountCb, "bet_amount:pick:+1:9:100", True),
+    (BetAmountCb, "bet_amount:pick:7: 1 :100", True),
+    (BetAmountCb, "bet_amount:pick:7:9:+1", True),
+    (BetCustomCb, "bet_custom:open:+1:9", True),
+    (BetCustomCb, "bet_custom:open:7: 1 ", True),
+    (BetConfirmCb, "bet_confirm:place:+1:9:100", True),
+    (BetConfirmCb, "bet_confirm:place:7: 1 :100", True),
+    (BetConfirmCb, "bet_confirm:place:7:9:+1", True),
+    (QuizNewCb, "quiz_new:time_limit:: 1 ", True),
+    (GuessNewCb, "guess_new:hint_at::+1", True),
+    # Alias used ``isdigit()`` in 3726038 and therefore rejects both forms.
+    (GuessAliasCb, "guess_alias:add:+1", False),
+    (GuessAliasCb, "guess_alias:add: 1 ", False),
+    # GuessPlay used Python ``int()``, despite the pre-fix strict validator.
+    (GuessPlayCb, "guess_play:resume:+1", True),
+    (GuessPlayCb, "guess_play:resume: 1 ", True),
+    # Only QuizEdit navigation used ``isdigit()``; its other id actions used ``int()``.
+    (QuizEditCb, "quiz_edit:nav:+1:2", False),
+    (QuizEditCb, "quiz_edit:nav:7: 1 ", False),
+    (QuizEditCb, "quiz_edit:text:+1:2", True),
+    (QuizEditCb, "quiz_edit:correct:: 1 ", True),
+    (QuizAnswerCb, "quiz_ans:answer:+1:8:2", True),
+    (QuizAnswerCb, "quiz_ans:answer:7: 1 :2", True),
+    (QuizAnswerCb, "quiz_ans:answer:7:8:+1", True),
+    (QuizTryCb, "quiz_try:start: 1 ::", True),
+    (QuizTryCb, "quiz_try:answer:7:+1:2", True),
+    (QuizTryCb, "quiz_try:answer:7:8: 1 ", True),
+]
+
+
+@pytest.mark.parametrize(("callback_class", "data", "accepted"), _A1_PLUS_SPACE_LEGACY_PAYLOADS)
+async def test_a1_numeric_slots_preserve_their_legacy_plus_and_whitespace_contract(
+    callback_class, data, accepted
+):
+    """Typed parsing preserves the exact lexical contract of the replaced parser."""
+    result = await callback_class.filter()(_query(data))
+    assert (result is not False) is accepted
 
 
 def test_unpack_restores_the_types():

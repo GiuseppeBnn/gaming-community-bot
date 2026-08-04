@@ -38,7 +38,14 @@ import services.bet_service as bet_svc
 from config_data.config import settings
 from database.models import BettingEvent, EventStatus, ScheduledTask, UserBet, Wallet
 from handlers import betting
-from handlers.callbacks import BetAmountCb, BetCb, BetConfirmCb, BetCustomCb, BetEventCb, BetOptionCb
+from handlers.callbacks import (
+    BetAmountCb,
+    BetCb,
+    BetConfirmCb,
+    BetCustomCb,
+    BetEventCb,
+    BetOptionCb,
+)
 from services import group_registry
 from utils import cooldown
 
@@ -49,6 +56,7 @@ CREATOR = 1
 # ---------------------------------------------------------------------------
 # Stubs — the handlers are driven directly, no dispatcher and no network
 # ---------------------------------------------------------------------------
+
 
 class _FakeBot:
     id = 999_999
@@ -80,12 +88,14 @@ class _DeafBot(_FakeBot):
 
 
 class _FakeMessage:
-    def __init__(self, text: str = "", *, user_id: int = PLAYER,
-                 chat_type: str = "private", bot=None) -> None:
+    def __init__(
+        self, text: str = "", *, user_id: int = PLAYER, chat_type: str = "private", bot=None
+    ) -> None:
         self.text = text
         self.bot = bot or _FakeBot()
-        self.from_user = SimpleNamespace(id=user_id, username=f"u{user_id}",
-                                         full_name=f"User {user_id}")
+        self.from_user = SimpleNamespace(
+            id=user_id, username=f"u{user_id}", full_name=f"User {user_id}"
+        )
         self.chat = SimpleNamespace(
             id=user_id if chat_type == "private" else -100_123, type=chat_type
         )
@@ -125,8 +135,9 @@ class _FakeCallback:
         self.callback_data = callback_data
         self.message = message or _FakeMessage(user_id=user_id)
         self.bot = self.message.bot
-        self.from_user = SimpleNamespace(id=user_id, username=f"u{user_id}",
-                                         full_name=f"User {user_id}")
+        self.from_user = SimpleNamespace(
+            id=user_id, username=f"u{user_id}", full_name=f"User {user_id}"
+        )
         self.answers: list[tuple[str | None, bool]] = []
 
     async def answer(self, text=None, show_alert=False):
@@ -142,8 +153,9 @@ class _FakeCallback:
 
 
 def _state() -> FSMContext:
-    return FSMContext(storage=MemoryStorage(),
-                      key=StorageKey(bot_id=1, chat_id=PLAYER, user_id=PLAYER))
+    return FSMContext(
+        storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=PLAYER, user_id=PLAYER)
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -159,24 +171,31 @@ def _clean_cooldowns():
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
-async def _open_event(session, *, title="Derby", window=None,
-                      status=EventStatus.open.value) -> BettingEvent:
+
+async def _open_event(
+    session, *, title="Derby", window=None, status=EventStatus.open.value
+) -> BettingEvent:
     event = await bet_svc.create_event(
-        session, creator_tg_id=CREATOR, title=title, description="chi vince",
+        session,
+        creator_tg_id=CREATOR,
+        title=title,
+        description="chi vince",
         options=[{"label": "Casa"}, {"label": "Trasferta"}],
-        status=status, window_seconds=window,
+        status=status,
+        window_seconds=window,
     )
     await session.commit()
-    return (await session.execute(
-        select(BettingEvent).where(BettingEvent.id == event.id)
-        .options(selectinload(BettingEvent.options))
-    )).scalar_one()
+    return (
+        await session.execute(
+            select(BettingEvent)
+            .where(BettingEvent.id == event.id)
+            .options(selectinload(BettingEvent.options))
+        )
+    ).scalar_one()
 
 
 async def _coins(session, tg_id: int) -> int:
-    return (await session.execute(
-        select(Wallet.coins).where(Wallet.tg_id == tg_id)
-    )).scalar_one()
+    return (await session.execute(select(Wallet.coins).where(Wallet.tg_id == tg_id))).scalar_one()
 
 
 async def _bets(session) -> list[UserBet]:
@@ -194,6 +213,7 @@ async def _invoke(handler, callback: _FakeCallback, *args) -> None:
 # ---------------------------------------------------------------------------
 # /scommesse — the list
 # ---------------------------------------------------------------------------
+
 
 class TestEventList:
     async def test_no_open_events_says_so_without_a_keyboard(self, session, user_factory):
@@ -263,6 +283,7 @@ class TestEventList:
 # event:view — opening one event
 # ---------------------------------------------------------------------------
 
+
 class TestEventView:
     async def test_an_unknown_event_is_refused(self, session):
         callback = _FakeCallback(BetEventCb(action="view", event_id=999))
@@ -291,9 +312,10 @@ class TestEventView:
         await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert "300" in callback.said
-        assert _callbacks(callback.message.markups[0])[0] == BetOptionCb(
-            action="pick", event_id=event.id, option_id=event.options[0].id
-        ).pack()
+        assert (
+            _callbacks(callback.message.markups[0])[0]
+            == BetOptionCb(action="pick", event_id=event.id, option_id=event.options[0].id).pack()
+        )
 
     async def test_a_windowed_event_shows_its_deadline(self, session, user_factory):
         """A player must know the cutoff *before* choosing an amount — an event with
@@ -319,6 +341,7 @@ class TestEventView:
 # ---------------------------------------------------------------------------
 # bet_option / bet_amount — choosing what and how much
 # ---------------------------------------------------------------------------
+
 
 class TestOptionAndAmount:
     async def test_betting_on_a_closed_event_is_refused(self, session, user_factory):
@@ -357,8 +380,9 @@ class TestOptionAndAmount:
 
         await _invoke(betting.cb_bet_option, callback, session)
 
-        amounts = [c for c in _callbacks(callback.message.markups[0])
-                   if c.startswith("bet_amount:")]
+        amounts = [
+            c for c in _callbacks(callback.message.markups[0]) if c.startswith("bet_amount:")
+        ]
         assert [c.rsplit(":", 1)[1] for c in amounts] == ["50", "100"]
         assert "120" in callback.said
 
@@ -383,9 +407,11 @@ class TestOptionAndAmount:
         check deleted, because 'event not available' is also an alert."""
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback(BetAmountCb(
-            action="pick", event_id=event.id, option_id=event.options[0].id, amount=amount
-        ))
+        callback = _FakeCallback(
+            BetAmountCb(
+                action="pick", event_id=event.id, option_id=event.options[0].id, amount=amount
+            )
+        )
 
         await _invoke(betting.cb_bet_amount, callback, session, _state())
 
@@ -401,8 +427,9 @@ class TestOptionAndAmount:
 
         await _invoke(betting.cb_bet_amount, callback, session, _state())
 
-        assert BetConfirmCb(action="place", event_id=event.id, option_id=option.id, amount=100).pack() \
-            in _callbacks(callback.message.markups[0])
+        assert BetConfirmCb(
+            action="place", event_id=event.id, option_id=option.id, amount=100
+        ).pack() in _callbacks(callback.message.markups[0])
 
     async def test_the_payout_estimate_is_the_whole_pool_for_the_only_bettor(
         self, session, user_factory
@@ -414,9 +441,9 @@ class TestOptionAndAmount:
         event = await _open_event(session)
         await bet_svc.place_bet(session, PLAYER + 1, event.id, event.options[1].id, 300)
         await session.commit()
-        callback = _FakeCallback(BetAmountCb(
-            action="pick", event_id=event.id, option_id=event.options[0].id, amount=100
-        ))
+        callback = _FakeCallback(
+            BetAmountCb(action="pick", event_id=event.id, option_id=event.options[0].id, amount=100)
+        )
 
         await _invoke(betting.cb_bet_amount, callback, session, _state())
 
@@ -425,9 +452,9 @@ class TestOptionAndAmount:
     async def test_confirming_an_amount_on_a_closed_event_is_refused(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(BetAmountCb(
-            action="pick", event_id=event.id, option_id=event.options[0].id, amount=100
-        ))
+        callback = _FakeCallback(
+            BetAmountCb(action="pick", event_id=event.id, option_id=event.options[0].id, amount=100)
+        )
 
         await _invoke(betting.cb_bet_amount, callback, session, _state())
 
@@ -448,6 +475,7 @@ class TestOptionAndAmount:
 # ---------------------------------------------------------------------------
 # The custom amount (free text)
 # ---------------------------------------------------------------------------
+
 
 class TestCustomAmount:
     async def test_the_custom_button_arms_the_fsm_with_event_and_option(self, session):
@@ -487,8 +515,7 @@ class TestCustomAmount:
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
         state = _state()
-        await state.update_data(custom_bet_event=event.id,
-                                custom_bet_option=event.options[0].id)
+        await state.update_data(custom_bet_event=event.id, custom_bet_option=event.options[0].id)
         message = _FakeMessage("100")
 
         await betting.fsm_custom_amount(message, state, session)
@@ -519,14 +546,16 @@ class TestCustomAmount:
 
         await betting.fsm_custom_amount(message, state, session)
 
-        assert BetConfirmCb(action="place", event_id=event.id, option_id=option.id, amount=175).pack() \
-            in _callbacks(message.markups[-1])
+        assert BetConfirmCb(
+            action="place", event_id=event.id, option_id=option.id, amount=175
+        ).pack() in _callbacks(message.markups[-1])
         assert await state.get_state() is None
 
 
 # ---------------------------------------------------------------------------
 # bet_confirm — the only handler in this file that moves money
 # ---------------------------------------------------------------------------
+
 
 class TestConfirm:
     async def test_a_confirmed_bet_debits_exactly_the_amount(self, session, user_factory):
@@ -545,19 +574,20 @@ class TestConfirm:
         assert (placed[0].amount, placed[0].option_id) == (250, option.id)
         assert "Scommessa piazzata" in callback.said
 
-    async def test_the_confirm_message_announces_the_participation_xp(
-        self, session, user_factory
-    ):
+    async def test_the_confirm_message_announces_the_participation_xp(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback(BetConfirmCb(
-            action="place", event_id=event.id, option_id=event.options[0].id, amount=100
-        ))
+        callback = _FakeCallback(
+            BetConfirmCb(
+                action="place", event_id=event.id, option_id=event.options[0].id, amount=100
+            )
+        )
 
         await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
-        assert (f"+{settings.xp_per_bet_placed} XP" in callback.said) == \
-            (settings.xp_per_bet_placed > 0)
+        assert (f"+{settings.xp_per_bet_placed} XP" in callback.said) == (
+            settings.xp_per_bet_placed > 0
+        )
 
     async def test_pressing_confirm_twice_debits_once(self, session, user_factory):
         """The keyboard stays on screen after the first tap, so the second tap is a
@@ -579,9 +609,11 @@ class TestConfirm:
     async def test_a_bet_on_a_locked_event_takes_no_money(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(BetConfirmCb(
-            action="place", event_id=event.id, option_id=event.options[0].id, amount=250
-        ))
+        callback = _FakeCallback(
+            BetConfirmCb(
+                action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+            )
+        )
 
         await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
@@ -590,7 +622,9 @@ class TestConfirm:
 
     async def test_a_bet_on_a_deleted_event_takes_no_money(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
-        callback = _FakeCallback(BetConfirmCb(action="place", event_id=999, option_id=1, amount=250))
+        callback = _FakeCallback(
+            BetConfirmCb(action="place", event_id=999, option_id=1, amount=250)
+        )
 
         await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
@@ -602,9 +636,11 @@ class TestConfirm:
     ):
         await user_factory(tg_id=PLAYER, coins=100)
         event = await _open_event(session)
-        callback = _FakeCallback(BetConfirmCb(
-            action="place", event_id=event.id, option_id=event.options[0].id, amount=250
-        ))
+        callback = _FakeCallback(
+            BetConfirmCb(
+                action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+            )
+        )
 
         await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
@@ -624,7 +660,9 @@ class TestConfirm:
         bot = _DeafBot()
         message = _FakeMessage(bot=bot)
         callback = _FakeCallback(
-            BetConfirmCb(action="place", event_id=event.id, option_id=event.options[0].id, amount=250),
+            BetConfirmCb(
+                action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+            ),
             message=message,
         )
         group_registry.set_runtime_group_id(-100_555)
@@ -642,6 +680,7 @@ class TestConfirm:
 # Navigation
 # ---------------------------------------------------------------------------
 
+
 class TestNavigation:
     async def test_back_returns_to_the_list(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
@@ -650,7 +689,9 @@ class TestNavigation:
 
         await _invoke(betting.cb_bet_back, callback, session, _state())
 
-        assert BetEventCb(action="view", event_id=event.id).pack() in _callbacks(callback.message.markups[0])
+        assert BetEventCb(action="view", event_id=event.id).pack() in _callbacks(
+            callback.message.markups[0]
+        )
 
     async def test_back_with_nothing_left_open_says_so(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
@@ -685,6 +726,7 @@ class TestNavigation:
 # ---------------------------------------------------------------------------
 # Deep-link entry points (from common.cmd_start)
 # ---------------------------------------------------------------------------
+
 
 class TestDeepLinks:
     async def test_a_bet_deep_link_opens_the_options(self, session, user_factory):
@@ -731,6 +773,7 @@ class TestDeepLinks:
 # ---------------------------------------------------------------------------
 # Creation FSM
 # ---------------------------------------------------------------------------
+
 
 class TestCreationEntry:
     async def test_in_a_group_it_sends_a_link_instead_of_starting_the_fsm(self, session):
@@ -803,7 +846,8 @@ class TestCreationCancel:
 
         assert "Sicuro" in callback.said
         assert set(_callbacks(callback.message.markups[0])) == {
-            BetCb(action="cancel_yes").pack(), BetCb(action="cancel_no").pack()
+            BetCb(action="cancel_yes").pack(),
+            BetCb(action="cancel_no").pack(),
         }
         assert await state.get_state() is not None, "asking is not cancelling"
 
@@ -826,8 +870,7 @@ class TestCreationCancel:
 
         await _invoke(betting.cb_cancel_creation_no, callback)
 
-        assert await state.get_state() == \
-            betting.BetCreationStates.waiting_for_description.state
+        assert await state.get_state() == betting.BetCreationStates.waiting_for_description.state
         assert (await state.get_data())["title"] == "mezzo lavoro"
 
 
@@ -858,8 +901,7 @@ class TestCreationSteps:
         await betting.fsm_bet_description(message, state)
 
         assert "almeno 4 caratteri" in message.said
-        assert await state.get_state() == \
-            betting.BetCreationStates.waiting_for_description.state
+        assert await state.get_state() == betting.BetCreationStates.waiting_for_description.state
 
     async def test_a_valid_description_moves_on_to_the_options(self, session):
         state = _state()
@@ -870,11 +912,14 @@ class TestCreationSteps:
         assert await state.get_state() == betting.BetCreationStates.waiting_for_options.state
         assert (await state.get_data())["description"] == "partita di cartello"
 
-    @pytest.mark.parametrize("raw,expected", [
-        ("solo una", "almeno 2 opzioni"),
-        ("\n".join(f"opt{i}" for i in range(9)), "Massimo 8 opzioni"),
-        ("valida\n" + "x" * 101, "max 100 caratteri"),
-    ])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("solo una", "almeno 2 opzioni"),
+            ("\n".join(f"opt{i}" for i in range(9)), "Massimo 8 opzioni"),
+            ("valida\n" + "x" * 101, "max 100 caratteri"),
+        ],
+    )
     async def test_bad_option_lists_are_refused(self, session, raw, expected):
         state = _state()
         await state.set_state(betting.BetCreationStates.waiting_for_options)
@@ -889,8 +934,34 @@ class TestCreationSteps:
 class TestCreationWindow:
     async def _armed(self, state: FSMContext) -> None:
         await state.set_state(betting.BetCreationStates.waiting_for_window)
-        await state.update_data(title="Derby", description="chi vince",
-                                options=["Casa", "Trasferta"])
+        await state.update_data(
+            title="Derby", description="chi vince", options=["Casa", "Trasferta"]
+        )
+
+    async def test_a_window_without_seconds_leaves_the_armed_fsm_unchanged(
+        self, session, user_factory
+    ):
+        """A typed optional field is not a valid unlimited-window choice.
+
+        Removing the ``seconds is None`` guard would create an unlimited event,
+        clear this armed FSM and send a confirmation before the user chose a
+        duration.  The callback answer itself is intentionally still sent to
+        stop Telegram's spinner.
+        """
+        await user_factory(tg_id=CREATOR, username="creator")
+        state = _state()
+        await self._armed(state)
+        state_before = await state.get_data()
+        callback = _FakeCallback(BetCb(action="window"), user_id=CREATOR)
+
+        await _invoke(betting.cb_bet_window, callback, state, session)
+
+        assert (await session.execute(select(BettingEvent))).scalars().all() == []
+        assert (await session.execute(select(ScheduledTask))).scalars().all() == []
+        assert callback.message.texts == []
+        assert await state.get_state() == betting.BetCreationStates.waiting_for_window.state
+        assert await state.get_data() == state_before
+        assert callback.answers == [(None, False)]
 
     async def test_a_preset_window_sets_a_deadline_and_schedules_the_lock(
         self, session, user_factory
@@ -931,10 +1002,10 @@ class TestCreationWindow:
 
         await _invoke(betting.cb_bet_window, callback, state, session)
 
-        assert await state.get_state() == \
-            betting.BetCreationStates.waiting_for_window_custom.state
-        assert (await session.execute(select(BettingEvent))).scalars().all() == [], \
+        assert await state.get_state() == betting.BetCreationStates.waiting_for_window_custom.state
+        assert (await session.execute(select(BettingEvent))).scalars().all() == [], (
             "nothing may be created until the duration is known"
+        )
 
     async def test_an_unparseable_duration_creates_nothing(self, session, user_factory):
         state = _state()
@@ -945,8 +1016,7 @@ class TestCreationWindow:
         await betting.fsm_bet_window_custom(message, state, session)
 
         assert (await session.execute(select(BettingEvent))).scalars().all() == []
-        assert await state.get_state() == \
-            betting.BetCreationStates.waiting_for_window_custom.state
+        assert await state.get_state() == betting.BetCreationStates.waiting_for_window_custom.state
 
     async def test_a_valid_custom_duration_creates_the_event(self, session, user_factory):
         await user_factory(tg_id=CREATOR, username="creator")

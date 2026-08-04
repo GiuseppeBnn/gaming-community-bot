@@ -299,6 +299,14 @@ e validazione numerica nel filtro, e fa cadere wire form vecchie o malformate ne
 di lasciarle modificare stato o denaro. Le forme manuali rimosse non sono contratti correnti: la
 fonte autorevole e' sempre una factory della tabella, non una concatenazione di stringhe.
 
+Il tipo Pydantic `int` da solo non e' un contratto lessicale sufficiente: accetterebbe il segmento
+wire `"1.0"` e lo convertirebbe in `1`. Per i campi numerici introdotti in A.1, un validatore
+`before` replica invece il parser sostituito: tutti rifiutano `1.0`; i campi che usavano Python
+`int()` mantengono `+1` e lo spazio ai lati, mentre `GuessAliasCb.round_id` e le coordinate
+`QuizEditCb(action="nav")` mantengono `isdigit()` e li rifiutano. `GuessPlayCb.round_id` usa
+storicamente `int()` (non `isdigit()`), quindi resta nel primo gruppo. Le factory pre-A.1
+`SchedCb` e `EventCb` non cambiano contratto in questa tranche e richiedono un audit separato.
+
 ### 7.a Handler globale errori (`dp.errors`)
 
 `dp.errors.register(errors.on_error)` in `main.py`, **dopo** `handlers.register(dp)`.
@@ -454,7 +462,9 @@ option_id, amount)` (`bet_amount`), `BetCustomCb(action, event_id, option_id)`
 (`bet_custom`) e `BetConfirmCb(action, event_id, option_id, amount)` (`bet_confirm`).
 Le azioni sono rispettivamente `cancel_creation|cancel_yes|cancel_no|window|window_custom|back|close`,
 `view`, `pick`, `pick`, `open`, `place`; i filtri scartano i campi numerici malformati
-prima dell'handler. Il controllo business `amount <= 0` resta nel consumer del preset.
+prima dell'handler. Per `window`, un segmento `seconds` vuoto risponde senza creare, programmare,
+inviare messaggi o mutare la FSM: solo l'intero `0` e' la scelta esplicita «illimitata». Il controllo
+business `amount <= 0` resta nel consumer del preset.
 
 ---
 
@@ -1426,9 +1436,10 @@ trasformare una risposta corretta in un errore.
 
 I controlli di gioco passano da `GuessPlayCb`: `quit` non porta dati
 (`guess_play:quit:`), mentre `resume` porta l'id intero del round
-(`guess_play:resume:<id>`). Il filtro ferma una grafia dell'id che non sia fatta solo di cifre
-prima dell'handler; `resume` controlla comunque che l'id opzionale sia presente prima di
-richiamare `start_guess_session`, `quit` non ne riceve né ne richiede uno.
+(`guess_play:resume:<id>`). Il filtro replica il precedente `int()`: rifiuta, per esempio,
+`1.0`, ma conserva segno e spazi che quel parser accettava. `resume` controlla comunque che l'id
+opzionale sia presente prima di richiamare `start_guess_session`, `quit` non ne riceve né ne
+richiede uno.
 
 ### I suggerimenti: nessuna sintassi, quindi niente da sbagliare
 
