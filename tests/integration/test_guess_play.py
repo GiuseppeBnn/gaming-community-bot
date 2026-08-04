@@ -24,6 +24,7 @@ import pytest
 from sqlalchemy import select
 
 from database.models import GuessAttempt, GuessSession
+from handlers.callbacks import GuessPlayCb
 from handlers.guess import play as pl
 from services import guess_judge, schedule_service
 from services import guess_service as gs
@@ -104,8 +105,9 @@ class _ResumeCb:
         self.message = _FrozenUserMsg(user_id=user_id)
         # Construction, not reassignment — the same way pydantic builds a frozen
         # model. Every later write to `from_user` is what must raise.
-        object.__setattr__(self.message, "from_user",
-                           types.SimpleNamespace(id=bot_id, full_name="Bot"))
+        object.__setattr__(
+            self.message, "from_user", types.SimpleNamespace(id=bot_id, full_name="Bot")
+        )
         self.from_user = types.SimpleNamespace(id=user_id, full_name="Player")
 
     async def answer(self, *a, **kw):
@@ -118,8 +120,7 @@ def state():
     from aiogram.fsm.storage.base import StorageKey
     from aiogram.fsm.storage.memory import MemoryStorage
 
-    return FSMContext(storage=MemoryStorage(),
-                      key=StorageKey(bot_id=999, chat_id=7, user_id=7))
+    return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=999, chat_id=7, user_id=7))
 
 
 @pytest.fixture(autouse=True)
@@ -137,10 +138,18 @@ def _no_cooldown(monkeypatch):
 @pytest.fixture
 async def round_(session):
     r = await gs.create_round(
-        session, kind="guess", creator_tg_id=1, title="Indovina",
-        media_file_id="FILE", media_kind="photo", answer="Doom",
-        aliases=[], hints=[(2, "Sparatutto")], max_attempts=3,
-        time_limit_seconds=0, prize_first=100,
+        session,
+        kind="guess",
+        creator_tg_id=1,
+        title="Indovina",
+        media_file_id="FILE",
+        media_kind="photo",
+        answer="Doom",
+        aliases=[],
+        hints=[(2, "Sparatutto")],
+        max_attempts=3,
+        time_limit_seconds=0,
+        prize_first=100,
     )
     r.status = "running"
     await session.flush()
@@ -171,15 +180,13 @@ async def _playing(session, round_, state):
 
 
 async def _solved_at(session, uid: int = 7):
-    return (await session.execute(
-        select(GuessSession.solved_at).where(GuessSession.user_tg_id == uid)
-    )).scalar_one()
+    return (
+        await session.execute(select(GuessSession.solved_at).where(GuessSession.user_tg_id == uid))
+    ).scalar_one()
 
 
 class TestEntry:
-    async def test_entering_sends_the_medium_and_arms_the_state(
-        self, session, round_, state
-    ):
+    async def test_entering_sends_the_medium_and_arms_the_state(self, session, round_, state):
         m = _Msg()
 
         await pl.start_guess_session(m, session, state, round_.id)
@@ -188,18 +195,14 @@ class TestEntry:
         assert await state.get_state() == pl.GuessPlayStates.answering.state
         assert (await state.get_data())["round_id"] == round_.id
 
-    async def test_the_player_is_told_how_many_attempts_they_have(
-        self, session, round_, state
-    ):
+    async def test_the_player_is_told_how_many_attempts_they_have(self, session, round_, state):
         m = _Msg()
 
         await pl.start_guess_session(m, session, state, round_.id)
 
         assert "3" in m.said
 
-    async def test_a_time_limit_is_shown_as_a_wall_clock_deadline(
-        self, session, round_, state
-    ):
+    async def test_a_time_limit_is_shown_as_a_wall_clock_deadline(self, session, round_, state):
         """Nobody should sit waiting for a "time's up!" that no timer will send."""
         round_.time_limit_seconds = 600
         await session.flush()
@@ -245,9 +248,7 @@ class TestEntry:
 
         assert (await gs.get_session(session, round_.id, 7)).started_at == started
 
-    async def test_a_player_who_already_solved_it_is_told_so(
-        self, session, round_, state
-    ):
+    async def test_a_player_who_already_solved_it_is_told_so(self, session, round_, state):
         await _playing(session, round_, state)
         await pl.fsm_answer(_Msg("Doom"), session, state)
         m = _Msg()
@@ -256,9 +257,7 @@ class TestEntry:
 
         assert "già" in m.said and m.bot.media == [], "no need to resend the medium"
 
-    async def test_a_player_out_of_attempts_cannot_re_enter(
-        self, session, round_, state
-    ):
+    async def test_a_player_out_of_attempts_cannot_re_enter(self, session, round_, state):
         await _playing(session, round_, state)
         for _ in range(3):
             await pl.fsm_answer(_Msg("Quake"), session, state)
@@ -276,6 +275,7 @@ class TestEntry:
 
         async def _boom(*a, **kw):
             raise RuntimeError("wrong file identifier")
+
         m.bot.send_photo = _boom
 
         await pl.start_guess_session(m, session, state, round_.id)
@@ -285,9 +285,7 @@ class TestEntry:
 
 
 class TestAnswering:
-    async def test_a_wrong_answer_is_told_how_many_are_left(
-        self, session, round_, state
-    ):
+    async def test_a_wrong_answer_is_told_how_many_are_left(self, session, round_, state):
         await _playing(session, round_, state)
         m = _Msg("Quake")
 
@@ -295,9 +293,7 @@ class TestAnswering:
 
         assert "2" in m.said
 
-    async def test_a_right_answer_wins_and_clears_the_state(
-        self, session, round_, state
-    ):
+    async def test_a_right_answer_wins_and_clears_the_state(self, session, round_, state):
         await _playing(session, round_, state)
         m = _Msg("Doom")
 
@@ -324,16 +320,20 @@ class TestAnswering:
 
         assert "1 tentativo" in m.said
 
-    async def test_the_answer_is_persisted_even_when_wrong(
-        self, session, round_, state
-    ):
+    async def test_the_answer_is_persisted_even_when_wrong(self, session, round_, state):
         await _playing(session, round_, state)
 
         await pl.fsm_answer(_Msg("Quake"), session, state)
 
-        rows = (await session.execute(
-            select(GuessAttempt.raw_answer).where(GuessAttempt.round_id == round_.id)
-        )).scalars().all()
+        rows = (
+            (
+                await session.execute(
+                    select(GuessAttempt.raw_answer).where(GuessAttempt.round_id == round_.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert rows == ["Quake"]
 
     async def test_a_hint_is_delivered_at_its_threshold(self, session, round_, state):
@@ -345,9 +345,7 @@ class TestAnswering:
 
         assert "Sparatutto" in m.said
 
-    async def test_running_out_of_attempts_ends_the_session(
-        self, session, round_, state
-    ):
+    async def test_running_out_of_attempts_ends_the_session(self, session, round_, state):
         await _playing(session, round_, state)
         for _ in range(2):
             await pl.fsm_answer(_Msg("Quake"), session, state)
@@ -358,9 +356,7 @@ class TestAnswering:
         assert "esauriti" in m.said.lower()
         assert await state.get_state() is None
 
-    async def test_an_expired_deadline_refuses_the_answer(
-        self, session, round_, state
-    ):
+    async def test_an_expired_deadline_refuses_the_answer(self, session, round_, state):
         round_.time_limit_seconds = 60
         await session.flush()
         await _playing(session, round_, state)
@@ -374,9 +370,7 @@ class TestAnswering:
         assert "tempo" in m.said.lower()
         assert await _solved_at(session) is None, "a late correct answer must not win"
 
-    async def test_a_round_closed_mid_play_stops_accepting(
-        self, session, round_, state
-    ):
+    async def test_a_round_closed_mid_play_stops_accepting(self, session, round_, state):
         await _playing(session, round_, state)
         round_.status = "finished"
         await session.flush()
@@ -394,6 +388,7 @@ class TestAnswering:
 
         async def _down(session_, round__, raw):
             return Verdict(correct=False, source="unavailable", verified=False)
+
         monkeypatch.setattr(guess_judge, "judge", _down)
         m = _Msg("qualcosa altro")
 
@@ -420,9 +415,7 @@ class TestAnswering:
 
         assert await gs.attempts_left(session, round_, 7) == 3
 
-    async def test_a_stale_state_pointing_at_nothing_is_survived(
-        self, session, round_, state
-    ):
+    async def test_a_stale_state_pointing_at_nothing_is_survived(self, session, round_, state):
         """FSM state has no TTL: a state left over from a deleted round must end
         the session, not raise."""
         await state.set_state(pl.GuessPlayStates.answering)
@@ -433,9 +426,7 @@ class TestAnswering:
 
         assert "chiuso" in m.said.lower() and await state.get_state() is None
 
-    async def test_a_state_with_no_round_id_at_all_is_survived(
-        self, session, state
-    ):
+    async def test_a_state_with_no_round_id_at_all_is_survived(self, session, state):
         await state.set_state(pl.GuessPlayStates.answering)
         m = _Msg("Doom")
 
@@ -443,9 +434,7 @@ class TestAnswering:
 
         assert await state.get_state() is None
 
-    async def test_a_stale_state_after_solving_accepts_nothing_more(
-        self, session, round_, state
-    ):
+    async def test_a_stale_state_after_solving_accepts_nothing_more(self, session, round_, state):
         """FSM state has no TTL (STEERING §8). A state re-armed after a win — a
         leftover from another chat, a restart, a manual deep-link — must not let
         the round be re-solved."""
@@ -486,8 +475,15 @@ class TestAnswering:
         await _playing(session, round_, state)
 
         async def _dup(*a, **kw):
-            return gs.Attempt(recorded=False, verdict=Verdict(False, "ai"),
-                              attempt_no=1, attempts_left=0, solved=False, hint=None)
+            return gs.Attempt(
+                recorded=False,
+                verdict=Verdict(False, "ai"),
+                attempt_no=1,
+                attempts_left=0,
+                solved=False,
+                hint=None,
+            )
+
         monkeypatch.setattr(gs, "record_attempt", _dup)
         m = _Msg("Quake")
 
@@ -533,9 +529,7 @@ class TestTheGuardOrderIsLoadBearing:
 
         assert judge == []
 
-    async def test_a_late_message_never_reaches_the_model(
-        self, session, round_, state, judge
-    ):
+    async def test_a_late_message_never_reaches_the_model(self, session, round_, state, judge):
         round_.time_limit_seconds = 60
         await session.flush()
         await _playing(session, round_, state)
@@ -573,9 +567,7 @@ class TestTheGuardOrderIsLoadBearing:
 
         assert judge == []
 
-    async def test_an_empty_message_never_reaches_the_model(
-        self, session, round_, state, judge
-    ):
+    async def test_an_empty_message_never_reaches_the_model(self, session, round_, state, judge):
         await _playing(session, round_, state)
         judge.clear()
 
@@ -612,9 +604,7 @@ class TestTheGuardOrderIsLoadBearing:
         assert await gs.attempts_left(session, round_, 7) == 3, "budget untouched"
         assert "giudice" in msg.said.lower()
 
-    async def test_a_real_attempt_does_reach_the_model(
-        self, session, round_, state, judge
-    ):
+    async def test_a_real_attempt_does_reach_the_model(self, session, round_, state, judge):
         """The mirror assertion: with every guard passed, the judge must run —
         otherwise the tests above would also pass on a handler that judges nothing."""
         await _playing(session, round_, state)
@@ -670,9 +660,7 @@ class TestTheWaitSignal:
 
         assert "typing" in msg.bot.actions
 
-    async def test_the_signal_stops_on_its_own(
-        self, session, round_, state, monkeypatch
-    ):
+    async def test_the_signal_stops_on_its_own(self, session, round_, state, monkeypatch):
         """A chat action rather than a "⏳ attendi" message precisely so there is
         nothing to clean up: Telegram expires it, and the verdict is the next
         thing the player sees."""
@@ -701,9 +689,7 @@ class TestStaleButtons:
     chat, all of them still working, none of them obviously the current one.
     """
 
-    async def test_the_previous_message_loses_its_keyboard(
-        self, session, round_, state
-    ):
+    async def test_the_previous_message_loses_its_keyboard(self, session, round_, state):
         await _playing(session, round_, state)
         msg = _Msg("Quake")
 
@@ -711,9 +697,7 @@ class TestStaleButtons:
 
         assert msg.bot.markup_cleared, "the superseded prompt must be stripped"
 
-    async def test_a_failed_cleanup_never_breaks_the_answer(
-        self, session, round_, state
-    ):
+    async def test_a_failed_cleanup_never_breaks_the_answer(self, session, round_, state):
         """Cleanup is cosmetic; the verdict is not. A message too old to edit must
         not turn a correct answer into an error."""
         await _playing(session, round_, state)
@@ -738,9 +722,7 @@ class TestTheStatusLine:
     the two you could not see.
     """
 
-    async def test_a_wrong_answer_says_how_many_attempts_are_left(
-        self, session, round_, state
-    ):
+    async def test_a_wrong_answer_says_how_many_attempts_are_left(self, session, round_, state):
         await _playing(session, round_, state)
         msg = _Msg("Quake")
 
@@ -763,9 +745,7 @@ class TestTheStatusLine:
         expected = schedule_service.to_local(gs.deadline(round_, sess))
         assert f"{expected:%H:%M}" in msg.said
 
-    async def test_a_round_without_a_limit_shows_no_clock(
-        self, session, round_, state
-    ):
+    async def test_a_round_without_a_limit_shows_no_clock(self, session, round_, state):
         await _playing(session, round_, state)
         msg = _Msg("Quake")
 
@@ -804,19 +784,19 @@ class TestQuit:
         cb = _Cb()
         await pl.cb_quit(cb, state)
 
-        buttons = [
-            b.callback_data
-            for row in cb.message.markups[-1].inline_keyboard for b in row
-        ]
+        buttons = [b.callback_data for row in cb.message.markups[-1].inline_keyboard for b in row]
         assert f"guess_play:resume:{round_.id}" in buttons
 
-    async def test_the_resume_button_puts_the_player_back_in(
-        self, session, round_, state
-    ):
+    async def test_the_resume_button_puts_the_player_back_in(self, session, round_, state):
         await _playing(session, round_, state)
         await pl.cb_quit(_ResumeCb(""), state)
 
-        await pl.cb_resume(_ResumeCb(f"guess_play:resume:{round_.id}"), session, state)
+        await pl.cb_resume(
+            _ResumeCb(f"guess_play:resume:{round_.id}"),
+            session,
+            state,
+            GuessPlayCb(action="resume", round_id=round_.id),
+        )
 
         assert await state.get_state() == pl.GuessPlayStates.answering.state
 
@@ -833,8 +813,12 @@ class TestQuit:
         """
         await pl.cb_quit(_ResumeCb(""), state)
 
-        await pl.cb_resume(_ResumeCb(f"guess_play:resume:{round_.id}", bot_id=999),
-                           session, state)
+        await pl.cb_resume(
+            _ResumeCb(f"guess_play:resume:{round_.id}", bot_id=999),
+            session,
+            state,
+            GuessPlayCb(action="resume", round_id=round_.id),
+        )
 
         assert await gs.get_session(session, round_.id, 7) is not None, (
             "the session must belong to the player, not to the bot"
@@ -875,3 +859,17 @@ class TestQuit:
         await pl.start_guess_session(_Msg(), session, state, round_.id)
 
         assert (await gs.get_session(session, round_.id, 7)).started_at == started
+
+    async def test_resume_without_a_round_id_does_not_start_a_session(self, session, state):
+        """A typed callback still permits the optional field, so the handler must
+        stop it before it reaches the start-or-resume side effect."""
+        callback = _ResumeCb("guess_play:resume:")
+        await pl.cb_resume(
+            callback,
+            session,
+            state,
+            GuessPlayCb(action="resume"),
+        )
+
+        assert callback.message.answers == []
+        assert await state.get_state() is None

@@ -1372,6 +1372,12 @@ La pulizia è **best-effort e non può fallire rumorosamente**: è cosmetica, me
 accompagna è il verdetto — un `edit` rifiutato perché il messaggio è vecchio non deve
 trasformare una risposta corretta in un errore.
 
+I controlli di gioco passano da `GuessPlayCb`: `quit` non porta dati
+(`guess_play:quit:`), mentre `resume` porta l'id intero del round
+(`guess_play:resume:<id>`). Il filtro ferma una grafia dell'id che non sia fatta solo di cifre
+prima dell'handler; `resume` controlla comunque che l'id opzionale sia presente prima di
+richiamare `start_guess_session`, `quit` non ne riceve né ne richiede uno.
+
 ### I suggerimenti: nessuna sintassi, quindi niente da sbagliare
 
 Prima si scriveva `3 | È uno sparatutto` a mano. Un separatore, un ordine degli argomenti e

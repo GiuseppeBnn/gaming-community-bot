@@ -34,6 +34,7 @@ from handlers.callbacks import (
     EventCb,
     GuessAliasCb,
     GuessNewCb,
+    GuessPlayCb,
     PollCreateCb,
     QuizAnswerCb,
     QuizEditCb,
@@ -114,6 +115,29 @@ def test_pack_guess_creation_callbacks(cb, packed):
 )
 def test_pack_guess_alias_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (GuessPlayCb(action="quit"), "guess_play:quit:"),
+        (GuessPlayCb(action="resume", round_id=7), "guess_play:resume:7"),
+    ],
+)
+def test_pack_guess_play_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        "guess_play:resume:not-a-round-id",
+        "guess_play:resume:1.0",
+        "guess_play:resume:+1",
+    ],
+)
+async def test_guess_play_round_id_must_contain_only_digits(data):
+    assert await GuessPlayCb.filter()(_query(data)) is False
 
 
 @pytest.mark.parametrize(

@@ -191,6 +191,21 @@ class GuessAliasCb(CallbackData, prefix="guess_alias"):
         return value
 
 
+class GuessPlayCb(CallbackData, prefix="guess_play"):
+    """Private Guess and Sound play controls — `handlers/guess/play.py`."""
+
+    #: "quit" | "resume"
+    action: str
+    round_id: int | None = None
+
+    @field_validator("round_id", mode="before")
+    @classmethod
+    def _round_id_must_contain_only_digits(cls, value: object) -> object:
+        if isinstance(value, str) and not value.isdigit():
+            raise ValueError("round id must contain only digits")
+        return value
+
+
 class QuizEditCb(CallbackData, prefix="quiz_edit"):
     """Quiz-question editing controls — `handlers/quiz/editing.py`.
 
