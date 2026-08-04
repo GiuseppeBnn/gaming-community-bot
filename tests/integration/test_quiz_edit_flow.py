@@ -132,14 +132,19 @@ class TestViewing:
 
         assert "Domanda 2/2" in cb.message.said
 
-    async def test_navigation_without_a_question_locator_is_ignored(self, session, user_factory):
-        """Removing either guard would let an incomplete typed payload reach the renderer."""
+    async def test_incomplete_navigation_leaves_an_active_edit_untouched(self, session):
+        """An incomplete typed payload must not discard the field edit it cannot navigate from."""
         cb = _FakeCallback(QuizEditCb(action="nav").pack())
+        state = _state()
+        await state.set_state(qz.QuizEditStates.editing_text)
+        await state.update_data(edit_quiz_id=7, edit_idx=1, edit_question_id=9)
 
-        await qz.cb_edit_nav(cb, _state(), session, QuizEditCb(action="nav"))
+        await qz.cb_edit_nav(cb, state, session, QuizEditCb(action="nav"))
 
         assert cb.message.texts == []
         assert cb.answers == [(None, False)]
+        assert await state.get_state() == qz.QuizEditStates.editing_text
+        assert await state.get_data() == {"edit_quiz_id": 7, "edit_idx": 1, "edit_question_id": 9}
 
     async def test_a_running_quiz_cannot_be_edited(self, session, user_factory):
         """Recorded answers reference options by stored index, so editing a running

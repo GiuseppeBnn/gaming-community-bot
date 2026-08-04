@@ -232,12 +232,12 @@ async def cb_edit_cancel(
 async def cb_edit_nav(
     callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
 ) -> None:
-    await state.clear()  # entering/scrolling the editor abandons any half-done field edit
     quiz_id = callback_data.quiz_id
     index = callback_data.index
     if quiz_id is None or index is None:
         await callback.answer()
         return
+    await state.clear()  # entering/scrolling the editor abandons any half-done field edit
     await _render_question_edit(callback.message, db_session, quiz_id, index)
     await callback.answer()
 
