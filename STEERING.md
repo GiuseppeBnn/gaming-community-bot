@@ -406,6 +406,16 @@ leftover  → al biggest winner (evita monete perse per arrotondamento)
 Implementato in `services/bet_service.py::resolve_event`.
 La preview (stima) per l'utente nella schermata di conferma usa la stessa formula applicata sul pool simulato *dopo* il suo bet.
 
+Le callback del flusso giocatore sono factory tipizzate in `handlers.callbacks`, sempre
+costruite con `.pack()`: `BetCb(action, seconds: int | None = None)` (`bet`) per
+annullamento, finestra, indietro e chiusura; `BetEventCb(action, event_id)` (`event`),
+`BetOptionCb(action, event_id, option_id)` (`bet_option`), `BetAmountCb(action, event_id,
+option_id, amount)` (`bet_amount`), `BetCustomCb(action, event_id, option_id)`
+(`bet_custom`) e `BetConfirmCb(action, event_id, option_id, amount)` (`bet_confirm`).
+Le azioni sono rispettivamente `cancel_creation|cancel_yes|cancel_no|window|window_custom|back|close`,
+`view`, `pick`, `pick`, `open`, `place`; i filtri scartano i campi numerici malformati
+prima dell'handler. Il controllo business `amount <= 0` resta nel consumer del preset.
+
 ---
 
 ## 10.a Premio giornaliero (`/daily`)
@@ -729,7 +739,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `BetCreationStates.waiting_for_title` | `handlers/betting.py` | |
 | `BetCreationStates.waiting_for_description` | `handlers/betting.py` | |
 | `BetCreationStates.waiting_for_options` | `handlers/betting.py` | |
-| `BetCreationStates.waiting_for_window` | `handlers/betting.py` | finestra puntate: preset (`bet:win:<sec>`)/♾️ (`bet:win:0`)/✏️ custom → crea l'evento |
+| `BetCreationStates.waiting_for_window` | `handlers/betting.py` | finestra puntate: `BetCb(action="window", seconds=<sec>)`/♾️ (`seconds=0`)/✏️ `BetCb(action="window_custom")` → crea l'evento |
 | `BetCreationStates.waiting_for_window_custom` | `handlers/betting.py` | durata custom (`schedule_service.parse_duration`, 30m/2h/1d) |
 | `BetCustomAmountState.waiting_for_amount` | `handlers/betting.py` | |
 | `QuizCreationStates.*` | `handlers/quiz/creation.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |

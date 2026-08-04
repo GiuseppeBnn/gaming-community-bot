@@ -48,6 +48,7 @@ from keyboards.betting_kb import (
 from config_data.config import settings
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
+from handlers.callbacks import BetAmountCb, BetCb, BetConfirmCb, BetCustomCb, BetEventCb, BetOptionCb
 from keyboards.common_kb import confirm_cancel_kb
 from services import badge_service, bet_service, group_registry, schedule_service
 from utils import cooldown
@@ -83,10 +84,10 @@ _WINDOW_PRESETS: list[tuple[str, int]] = [
 def _window_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for label, sec in _WINDOW_PRESETS:
-        b.button(text=f"⏱️ {label}", callback_data=f"bet:win:{sec}")
-    b.button(text="✏️ Personalizzata", callback_data="bet:win:custom")
-    b.button(text="♾️ Illimitata", callback_data="bet:win:0")
-    b.button(text="❌ Annulla", callback_data="bet:cancel_creation")
+        b.button(text=f"⏱️ {label}", callback_data=BetCb(action="window", seconds=sec).pack())
+    b.button(text="✏️ Personalizzata", callback_data=BetCb(action="window_custom").pack())
+    b.button(text="♾️ Illimitata", callback_data=BetCb(action="window", seconds=0).pack())
+    b.button(text="❌ Annulla", callback_data=BetCb(action="cancel_creation").pack())
     b.adjust(2, 2, 1, 1, 1)
     return b.as_markup()
 
@@ -134,7 +135,7 @@ def parse_bet_amount(raw: str) -> tuple[int | None, str | None]:
 
 def _cancel_creation_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Annulla", callback_data="bet:cancel_creation")
+        InlineKeyboardButton(text="❌ Annulla", callback_data=BetCb(action="cancel_creation").pack())
     ]])
 
 
@@ -225,27 +226,33 @@ async def cmd_crea_scommessa(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(F.data == "bet:cancel_creation")
-async def cb_cancel_creation(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(BetCb.filter(F.action == "cancel_creation"))
+async def cb_cancel_creation(
+    callback: CallbackQuery, callback_data: BetCb, state: FSMContext
+) -> None:
     if await state.get_state() is None:
         await callback.answer()
         return
     await callback.message.answer(
         "⚠️ Sicuro di voler annullare la creazione della scommessa? I dati inseriti andranno persi.",
-        reply_markup=confirm_cancel_kb("bet:cancel_yes", "bet:cancel_no"),
+        reply_markup=confirm_cancel_kb(
+            BetCb(action="cancel_yes").pack(), BetCb(action="cancel_no").pack()
+        ),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "bet:cancel_yes")
-async def cb_cancel_creation_yes(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(BetCb.filter(F.action == "cancel_yes"))
+async def cb_cancel_creation_yes(
+    callback: CallbackQuery, callback_data: BetCb, state: FSMContext
+) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Creazione scommessa annullata.")
     await callback.answer()
 
 
-@router.callback_query(F.data == "bet:cancel_no")
-async def cb_cancel_creation_no(callback: CallbackQuery) -> None:
+@router.callback_query(BetCb.filter(F.action == "cancel_no"))
+async def cb_cancel_creation_no(callback: CallbackQuery, callback_data: BetCb) -> None:
     await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
     await callback.answer()
 
@@ -309,10 +316,14 @@ async def fsm_bet_options(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.callback_query(BetCreationStates.waiting_for_window, F.data.startswith("bet:win:"))
-async def cb_bet_window(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    raw = callback.data.split(":")[2]
-    if raw == "custom":
+@router.callback_query(
+    BetCreationStates.waiting_for_window,
+    BetCb.filter(F.action.in_({"window", "window_custom"})),
+)
+async def cb_bet_window(
+    callback: CallbackQuery, callback_data: BetCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    if callback_data.action == "window_custom":
         await state.set_state(BetCreationStates.waiting_for_window_custom)
         await callback.message.edit_text(
             "✏️ Invia la durata della finestra: <code>30m</code>, <code>2h</code> oppure <code>1d</code>.",
@@ -320,7 +331,7 @@ async def cb_bet_window(callback: CallbackQuery, state: FSMContext, db_session: 
         )
         await callback.answer()
         return
-    sec = int(raw)  # 0 = illimitata
+    sec = callback_data.seconds or 0  # 0 = illimitata
     await _finalize_bet_creation(callback.message, state, db_session, sec or None, callback.from_user.id)
     await callback.answer()
 
@@ -458,13 +469,11 @@ async def start_custom_amount(
 # Callbacks: event browsing
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data.startswith("event:view:"))
-async def cb_event_view(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext) -> None:
-    try:
-        event_id = int(callback.data.split(":")[2])
-    except (ValueError, IndexError):
-        await callback.answer("⚠️ ID non valido.", show_alert=True)
-        return
+@router.callback_query(BetEventCb.filter(F.action == "view"))
+async def cb_event_view(
+    callback: CallbackQuery, callback_data: BetEventCb, db_session: AsyncSession, state: FSMContext
+) -> None:
+    event_id = callback_data.event_id
 
     result = await db_session.execute(
         select(BettingEvent)
@@ -495,20 +504,12 @@ async def cb_event_view(callback: CallbackQuery, db_session: AsyncSession, state
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("bet_option:"))
+@router.callback_query(BetOptionCb.filter(F.action == "pick"))
 async def cb_bet_option(
-    callback: CallbackQuery, db_session: AsyncSession
+    callback: CallbackQuery, callback_data: BetOptionCb, db_session: AsyncSession
 ) -> None:
-    parts = callback.data.split(":")
-    if len(parts) < 3:
-        await callback.answer("⚠️ Dati non validi.", show_alert=True)
-        return
-    try:
-        event_id = int(parts[1])
-        option_id = int(parts[2])
-    except ValueError:
-        await callback.answer("⚠️ ID non valido.", show_alert=True)
-        return
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
 
     event_result = await db_session.execute(
         select(BettingEvent)
@@ -542,21 +543,13 @@ async def cb_bet_option(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("bet_amount:"))
+@router.callback_query(BetAmountCb.filter(F.action == "pick"))
 async def cb_bet_amount(
-    callback: CallbackQuery, db_session: AsyncSession, state: FSMContext
+    callback: CallbackQuery, callback_data: BetAmountCb, db_session: AsyncSession, state: FSMContext
 ) -> None:
-    parts = callback.data.split(":")
-    if len(parts) < 4:
-        await callback.answer("⚠️ Dati non validi.", show_alert=True)
-        return
-    try:
-        event_id = int(parts[1])
-        option_id = int(parts[2])
-        amount = int(parts[3])
-    except ValueError:
-        await callback.answer("⚠️ Importo non valido.", show_alert=True)
-        return
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
+    amount = callback_data.amount
 
     if amount <= 0:
         await callback.answer("⚠️ L'importo deve essere positivo.", show_alert=True)
@@ -608,18 +601,12 @@ async def _show_confirm(
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("bet_custom:"))
-async def cb_bet_custom(callback: CallbackQuery, state: FSMContext) -> None:
-    parts = callback.data.split(":")
-    if len(parts) < 3:
-        await callback.answer("⚠️ Dati non validi.", show_alert=True)
-        return
-    try:
-        event_id = int(parts[1])
-        option_id = int(parts[2])
-    except ValueError:
-        await callback.answer("⚠️ ID non valido.", show_alert=True)
-        return
+@router.callback_query(BetCustomCb.filter(F.action == "open"))
+async def cb_bet_custom(
+    callback: CallbackQuery, callback_data: BetCustomCb, state: FSMContext
+) -> None:
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
 
     await state.update_data(custom_bet_event=event_id, custom_bet_option=option_id)
     await state.update_data(bet_active_msg_id=callback.message.message_id)
@@ -686,21 +673,13 @@ async def fsm_custom_amount(
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("bet_confirm:"))
+@router.callback_query(BetConfirmCb.filter(F.action == "place"))
 async def cb_bet_confirm(
-    callback: CallbackQuery, db_session: AsyncSession, state: FSMContext
+    callback: CallbackQuery, callback_data: BetConfirmCb, db_session: AsyncSession, state: FSMContext
 ) -> None:
-    parts = callback.data.split(":")
-    if len(parts) < 4:
-        await callback.answer("⚠️ Dati non validi.", show_alert=True)
-        return
-    try:
-        event_id = int(parts[1])
-        option_id = int(parts[2])
-        amount = int(parts[3])
-    except ValueError:
-        await callback.answer("⚠️ Importo non valido.", show_alert=True)
-        return
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
+    amount = callback_data.amount
 
     try:
         await bet_service.place_bet(
@@ -749,8 +728,10 @@ async def cb_bet_confirm(
     await callback.answer("✅ Scommessa registrata!")
 
 
-@router.callback_query(F.data == "bet:back")
-async def cb_bet_back(callback: CallbackQuery, db_session: AsyncSession, state: FSMContext) -> None:
+@router.callback_query(BetCb.filter(F.action == "back"))
+async def cb_bet_back(
+    callback: CallbackQuery, callback_data: BetCb, db_session: AsyncSession, state: FSMContext
+) -> None:
     events = await bet_service.get_open_events(db_session)
     if not events:
         await callback.message.edit_text("🎲 Nessuna scommessa aperta.")
@@ -764,8 +745,8 @@ async def cb_bet_back(callback: CallbackQuery, db_session: AsyncSession, state: 
     await callback.answer()
 
 
-@router.callback_query(F.data == "bet:close")
-async def cb_bet_close(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(BetCb.filter(F.action == "close"))
+async def cb_bet_close(callback: CallbackQuery, callback_data: BetCb, state: FSMContext) -> None:
     try:
         await callback.message.delete()
     except Exception:

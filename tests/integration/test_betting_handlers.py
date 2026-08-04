@@ -38,6 +38,7 @@ import services.bet_service as bet_svc
 from config_data.config import settings
 from database.models import BettingEvent, EventStatus, ScheduledTask, UserBet, Wallet
 from handlers import betting
+from handlers.callbacks import BetAmountCb, BetCb, BetConfirmCb, BetCustomCb, BetEventCb, BetOptionCb
 from services import group_registry
 from utils import cooldown
 
@@ -119,8 +120,9 @@ class _UndeletableMessage(_FakeMessage):
 
 
 class _FakeCallback:
-    def __init__(self, data: str, message=None, user_id: int = PLAYER) -> None:
-        self.data = data
+    def __init__(self, callback_data, message=None, user_id: int = PLAYER) -> None:
+        self.data = callback_data.pack()
+        self.callback_data = callback_data
         self.message = message or _FakeMessage(user_id=user_id)
         self.bot = self.message.bot
         self.from_user = SimpleNamespace(id=user_id, username=f"u{user_id}",
@@ -183,6 +185,10 @@ async def _bets(session) -> list[UserBet]:
 
 def _callbacks(markup) -> list[str]:
     return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
+
+
+async def _invoke(handler, callback: _FakeCallback, *args) -> None:
+    await handler(callback, callback.callback_data, *args)
 
 
 # ---------------------------------------------------------------------------
@@ -258,26 +264,19 @@ class TestEventList:
 # ---------------------------------------------------------------------------
 
 class TestEventView:
-    async def test_a_malformed_id_is_refused_before_the_query(self, session):
-        callback = _FakeCallback("event:view:abc")
-
-        await betting.cb_event_view(callback, session, _state())
-
-        assert callback.alerts and "non valido" in callback.alerts[0]
-
     async def test_an_unknown_event_is_refused(self, session):
-        callback = _FakeCallback("event:view:999")
+        callback = _FakeCallback(BetEventCb(action="view", event_id=999))
 
-        await betting.cb_event_view(callback, session, _state())
+        await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert callback.alerts and "non trovato" in callback.alerts[0]
 
     async def test_a_closed_event_shows_no_options(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(f"event:view:{event.id}")
+        callback = _FakeCallback(BetEventCb(action="view", event_id=event.id))
 
-        await betting.cb_event_view(callback, session, _state())
+        await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert "non accetta più puntate" in callback.said
         assert callback.message.markups == [None]
@@ -287,31 +286,32 @@ class TestEventView:
         event = await _open_event(session)
         await bet_svc.place_bet(session, PLAYER, event.id, event.options[0].id, 300)
         await session.commit()
-        callback = _FakeCallback(f"event:view:{event.id}")
+        callback = _FakeCallback(BetEventCb(action="view", event_id=event.id))
 
-        await betting.cb_event_view(callback, session, _state())
+        await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert "300" in callback.said
-        assert _callbacks(callback.message.markups[0])[0] == \
-            f"bet_option:{event.id}:{event.options[0].id}"
+        assert _callbacks(callback.message.markups[0])[0] == BetOptionCb(
+            action="pick", event_id=event.id, option_id=event.options[0].id
+        ).pack()
 
     async def test_a_windowed_event_shows_its_deadline(self, session, user_factory):
         """A player must know the cutoff *before* choosing an amount — an event with
         an illimitata window has no such line at all."""
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, window=3600)
-        callback = _FakeCallback(f"event:view:{event.id}")
+        callback = _FakeCallback(BetEventCb(action="view", event_id=event.id))
 
-        await betting.cb_event_view(callback, session, _state())
+        await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert "Chiude alle" in callback.said
 
     async def test_an_unlimited_event_shows_no_deadline(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, window=None)
-        callback = _FakeCallback(f"event:view:{event.id}")
+        callback = _FakeCallback(BetEventCb(action="view", event_id=event.id))
 
-        await betting.cb_event_view(callback, session, _state())
+        await _invoke(betting.cb_event_view, callback, session, _state())
 
         assert "Chiude alle" not in callback.said
 
@@ -321,20 +321,14 @@ class TestEventView:
 # ---------------------------------------------------------------------------
 
 class TestOptionAndAmount:
-    @pytest.mark.parametrize("data", ["bet_option:1", "bet_option:x:2"])
-    async def test_malformed_option_data_is_refused(self, session, data):
-        callback = _FakeCallback(data)
-
-        await betting.cb_bet_option(callback, session)
-
-        assert callback.alerts
-
     async def test_betting_on_a_closed_event_is_refused(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(f"bet_option:{event.id}:{event.options[0].id}")
+        callback = _FakeCallback(
+            BetOptionCb(action="pick", event_id=event.id, option_id=event.options[0].id)
+        )
 
-        await betting.cb_bet_option(callback, session)
+        await _invoke(betting.cb_bet_option, callback, session)
 
         assert callback.alerts and "non disponibile" in callback.alerts[0]
 
@@ -344,9 +338,11 @@ class TestOptionAndAmount:
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
         other = await _open_event(session, title="Altra")
-        callback = _FakeCallback(f"bet_option:{event.id}:{other.options[0].id}")
+        callback = _FakeCallback(
+            BetOptionCb(action="pick", event_id=event.id, option_id=other.options[0].id)
+        )
 
-        await betting.cb_bet_option(callback, session)
+        await _invoke(betting.cb_bet_option, callback, session)
 
         assert callback.alerts and "Opzione non trovata" in callback.alerts[0]
 
@@ -355,9 +351,11 @@ class TestOptionAndAmount:
     ):
         await user_factory(tg_id=PLAYER, coins=120)
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_option:{event.id}:{event.options[0].id}")
+        callback = _FakeCallback(
+            BetOptionCb(action="pick", event_id=event.id, option_id=event.options[0].id)
+        )
 
-        await betting.cb_bet_option(callback, session)
+        await _invoke(betting.cb_bet_option, callback, session)
 
         amounts = [c for c in _callbacks(callback.message.markups[0])
                    if c.startswith("bet_amount:")]
@@ -368,21 +366,15 @@ class TestOptionAndAmount:
         """`cb_bet_option` is reachable before the user ever has a Wallet row (a
         keyboard forwarded from someone else). Zero, not a crash."""
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_option:{event.id}:{event.options[0].id}")
+        callback = _FakeCallback(
+            BetOptionCb(action="pick", event_id=event.id, option_id=event.options[0].id)
+        )
 
-        await betting.cb_bet_option(callback, session)
+        await _invoke(betting.cb_bet_option, callback, session)
 
         assert "0 🪙" in callback.said
 
-    @pytest.mark.parametrize("data", ["bet_amount:1:2", "bet_amount:1:2:x"])
-    async def test_malformed_amounts_are_refused(self, session, data):
-        callback = _FakeCallback(data)
-
-        await betting.cb_bet_amount(callback, session, _state())
-
-        assert callback.alerts
-
-    @pytest.mark.parametrize("amount", ["0", "-100"])
+    @pytest.mark.parametrize("amount", [0, -100])
     async def test_a_non_positive_amount_is_refused_on_a_real_event(
         self, session, user_factory, amount
     ):
@@ -391,9 +383,11 @@ class TestOptionAndAmount:
         check deleted, because 'event not available' is also an alert."""
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_amount:{event.id}:{event.options[0].id}:{amount}")
+        callback = _FakeCallback(BetAmountCb(
+            action="pick", event_id=event.id, option_id=event.options[0].id, amount=amount
+        ))
 
-        await betting.cb_bet_amount(callback, session, _state())
+        await _invoke(betting.cb_bet_amount, callback, session, _state())
 
         assert callback.alerts and "positivo" in callback.alerts[0]
 
@@ -401,11 +395,14 @@ class TestOptionAndAmount:
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
         option = event.options[0]
-        callback = _FakeCallback(f"bet_amount:{event.id}:{option.id}:100")
+        callback = _FakeCallback(
+            BetAmountCb(action="pick", event_id=event.id, option_id=option.id, amount=100)
+        )
 
-        await betting.cb_bet_amount(callback, session, _state())
+        await _invoke(betting.cb_bet_amount, callback, session, _state())
 
-        assert f"bet_confirm:{event.id}:{option.id}:100" in _callbacks(callback.message.markups[0])
+        assert BetConfirmCb(action="place", event_id=event.id, option_id=option.id, amount=100).pack() \
+            in _callbacks(callback.message.markups[0])
 
     async def test_the_payout_estimate_is_the_whole_pool_for_the_only_bettor(
         self, session, user_factory
@@ -417,27 +414,33 @@ class TestOptionAndAmount:
         event = await _open_event(session)
         await bet_svc.place_bet(session, PLAYER + 1, event.id, event.options[1].id, 300)
         await session.commit()
-        callback = _FakeCallback(f"bet_amount:{event.id}:{event.options[0].id}:100")
+        callback = _FakeCallback(BetAmountCb(
+            action="pick", event_id=event.id, option_id=event.options[0].id, amount=100
+        ))
 
-        await betting.cb_bet_amount(callback, session, _state())
+        await _invoke(betting.cb_bet_amount, callback, session, _state())
 
         assert "400" in callback.said
 
     async def test_confirming_an_amount_on_a_closed_event_is_refused(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(f"bet_amount:{event.id}:{event.options[0].id}:100")
+        callback = _FakeCallback(BetAmountCb(
+            action="pick", event_id=event.id, option_id=event.options[0].id, amount=100
+        ))
 
-        await betting.cb_bet_amount(callback, session, _state())
+        await _invoke(betting.cb_bet_amount, callback, session, _state())
 
         assert callback.alerts and "non disponibile" in callback.alerts[0]
 
     async def test_confirming_an_unknown_option_is_refused(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_amount:{event.id}:9999:100")
+        callback = _FakeCallback(
+            BetAmountCb(action="pick", event_id=event.id, option_id=9999, amount=100)
+        )
 
-        await betting.cb_bet_amount(callback, session, _state())
+        await _invoke(betting.cb_bet_amount, callback, session, _state())
 
         assert callback.alerts and "Opzione non trovata" in callback.alerts[0]
 
@@ -447,21 +450,11 @@ class TestOptionAndAmount:
 # ---------------------------------------------------------------------------
 
 class TestCustomAmount:
-    @pytest.mark.parametrize("data", ["bet_custom:1", "bet_custom:x:2"])
-    async def test_malformed_custom_data_is_refused(self, session, data):
-        callback = _FakeCallback(data)
-        state = _state()
-
-        await betting.cb_bet_custom(callback, state)
-
-        assert callback.alerts
-        assert await state.get_state() is None
-
     async def test_the_custom_button_arms_the_fsm_with_event_and_option(self, session):
-        callback = _FakeCallback("bet_custom:7:9")
+        callback = _FakeCallback(BetCustomCb(action="open", event_id=7, option_id=9))
         state = _state()
 
-        await betting.cb_bet_custom(callback, state)
+        await _invoke(betting.cb_bet_custom, callback, state)
 
         data = await state.get_data()
         assert (data["custom_bet_event"], data["custom_bet_option"]) == (7, 9)
@@ -526,7 +519,8 @@ class TestCustomAmount:
 
         await betting.fsm_custom_amount(message, state, session)
 
-        assert f"bet_confirm:{event.id}:{option.id}:175" in _callbacks(message.markups[-1])
+        assert BetConfirmCb(action="place", event_id=event.id, option_id=option.id, amount=175).pack() \
+            in _callbacks(message.markups[-1])
         assert await state.get_state() is None
 
 
@@ -535,26 +529,15 @@ class TestCustomAmount:
 # ---------------------------------------------------------------------------
 
 class TestConfirm:
-    @pytest.mark.parametrize("data", ["bet_confirm:1:2", "bet_confirm:1:2:x"])
-    async def test_malformed_confirm_data_never_reaches_the_service(
-        self, session, user_factory, data
-    ):
-        await user_factory(tg_id=PLAYER, coins=1000)
-        callback = _FakeCallback(data)
-
-        await betting.cb_bet_confirm(callback, session, _state())
-
-        assert callback.alerts
-        assert await _coins(session, PLAYER) == 1000
-        assert await _bets(session) == []
-
     async def test_a_confirmed_bet_debits_exactly_the_amount(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
         option = event.options[0]
-        callback = _FakeCallback(f"bet_confirm:{event.id}:{option.id}:250")
+        callback = _FakeCallback(
+            BetConfirmCb(action="place", event_id=event.id, option_id=option.id, amount=250)
+        )
 
-        await betting.cb_bet_confirm(callback, session, _state())
+        await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
         assert await _coins(session, PLAYER) == 750
         placed = await _bets(session)
@@ -567,9 +550,11 @@ class TestConfirm:
     ):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_confirm:{event.id}:{event.options[0].id}:100")
+        callback = _FakeCallback(BetConfirmCb(
+            action="place", event_id=event.id, option_id=event.options[0].id, amount=100
+        ))
 
-        await betting.cb_bet_confirm(callback, session, _state())
+        await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
         assert (f"+{settings.xp_per_bet_placed} XP" in callback.said) == \
             (settings.xp_per_bet_placed > 0)
@@ -579,11 +564,13 @@ class TestConfirm:
         normal thing for a player to do — not an attack."""
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        data = f"bet_confirm:{event.id}:{event.options[0].id}:250"
+        data = BetConfirmCb(
+            action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+        )
 
-        await betting.cb_bet_confirm(_FakeCallback(data), session, _state())
+        await _invoke(betting.cb_bet_confirm, _FakeCallback(data), session, _state())
         second = _FakeCallback(data)
-        await betting.cb_bet_confirm(second, session, _state())
+        await _invoke(betting.cb_bet_confirm, second, session, _state())
 
         assert second.alerts and "già scommesso" in second.alerts[0]
         assert await _coins(session, PLAYER) == 750
@@ -592,18 +579,20 @@ class TestConfirm:
     async def test_a_bet_on_a_locked_event_takes_no_money(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session, status=EventStatus.locked.value)
-        callback = _FakeCallback(f"bet_confirm:{event.id}:{event.options[0].id}:250")
+        callback = _FakeCallback(BetConfirmCb(
+            action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+        ))
 
-        await betting.cb_bet_confirm(callback, session, _state())
+        await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
         assert callback.alerts and "non accetta più puntate" in callback.alerts[0]
         assert await _coins(session, PLAYER) == 1000
 
     async def test_a_bet_on_a_deleted_event_takes_no_money(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
-        callback = _FakeCallback("bet_confirm:999:1:250")
+        callback = _FakeCallback(BetConfirmCb(action="place", event_id=999, option_id=1, amount=250))
 
-        await betting.cb_bet_confirm(callback, session, _state())
+        await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
         assert callback.alerts and "Evento non trovato" in callback.alerts[0]
         assert await _coins(session, PLAYER) == 1000
@@ -613,9 +602,11 @@ class TestConfirm:
     ):
         await user_factory(tg_id=PLAYER, coins=100)
         event = await _open_event(session)
-        callback = _FakeCallback(f"bet_confirm:{event.id}:{event.options[0].id}:250")
+        callback = _FakeCallback(BetConfirmCb(
+            action="place", event_id=event.id, option_id=event.options[0].id, amount=250
+        ))
 
-        await betting.cb_bet_confirm(callback, session, _state())
+        await _invoke(betting.cb_bet_confirm, callback, session, _state())
 
         assert callback.alerts and "100" in callback.alerts[0] and "250" in callback.alerts[0]
         assert await _coins(session, PLAYER) == 100
@@ -633,11 +624,12 @@ class TestConfirm:
         bot = _DeafBot()
         message = _FakeMessage(bot=bot)
         callback = _FakeCallback(
-            f"bet_confirm:{event.id}:{event.options[0].id}:250", message=message
+            BetConfirmCb(action="place", event_id=event.id, option_id=event.options[0].id, amount=250),
+            message=message,
         )
         group_registry.set_runtime_group_id(-100_555)
         try:
-            await betting.cb_bet_confirm(callback, session, _state())
+            await _invoke(betting.cb_bet_confirm, callback, session, _state())
         finally:
             group_registry.set_runtime_group_id(None)
 
@@ -654,26 +646,26 @@ class TestNavigation:
     async def test_back_returns_to_the_list(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
         event = await _open_event(session)
-        callback = _FakeCallback("bet:back")
+        callback = _FakeCallback(BetCb(action="back"))
 
-        await betting.cb_bet_back(callback, session, _state())
+        await _invoke(betting.cb_bet_back, callback, session, _state())
 
-        assert f"event:view:{event.id}" in _callbacks(callback.message.markups[0])
+        assert BetEventCb(action="view", event_id=event.id).pack() in _callbacks(callback.message.markups[0])
 
     async def test_back_with_nothing_left_open_says_so(self, session, user_factory):
         await user_factory(tg_id=PLAYER, coins=1000)
-        callback = _FakeCallback("bet:back")
+        callback = _FakeCallback(BetCb(action="back"))
 
-        await betting.cb_bet_back(callback, session, _state())
+        await _invoke(betting.cb_bet_back, callback, session, _state())
 
         assert "Nessuna scommessa aperta" in callback.said
 
     async def test_close_deletes_the_prompt_and_forgets_it(self, session):
         state = _state()
         await state.update_data(bet_active_msg_id=42)
-        callback = _FakeCallback("bet:close")
+        callback = _FakeCallback(BetCb(action="close"))
 
-        await betting.cb_bet_close(callback, state)
+        await _invoke(betting.cb_bet_close, callback, state)
 
         assert callback.message.deleted
         assert (await state.get_data())["bet_active_msg_id"] is None
@@ -683,9 +675,9 @@ class TestNavigation:
         delete the same dead message."""
         state = _state()
         await state.update_data(bet_active_msg_id=42)
-        callback = _FakeCallback("bet:close", message=_UndeletableMessage())
+        callback = _FakeCallback(BetCb(action="close"), message=_UndeletableMessage())
 
-        await betting.cb_bet_close(callback, state)
+        await _invoke(betting.cb_bet_close, callback, state)
 
         assert (await state.get_data())["bet_active_msg_id"] is None
 
@@ -703,7 +695,9 @@ class TestDeepLinks:
 
         await betting.start_bet_view(message, session, event.id, state)
 
-        assert f"bet_option:{event.id}:{event.options[0].id}" in _callbacks(message.markups[0])
+        assert BetOptionCb(
+            action="pick", event_id=event.id, option_id=event.options[0].id
+        ).pack() in _callbacks(message.markups[0])
         assert (await state.get_data())["bet_active_msg_id"] is not None
 
     async def test_a_deep_link_to_a_closed_event_is_refused(self, session, user_factory):
@@ -794,30 +788,32 @@ class TestCreationCancel:
     async def test_cancel_outside_the_fsm_is_a_no_op(self, session):
         """The button lives on a message that stays on screen after the FSM ended:
         tapping it then must not pop a confirmation for nothing."""
-        callback = _FakeCallback("bet:cancel_creation")
+        callback = _FakeCallback(BetCb(action="cancel_creation"))
 
-        await betting.cb_cancel_creation(callback, _state())
+        await _invoke(betting.cb_cancel_creation, callback, _state())
 
         assert callback.message.texts == []
 
     async def test_cancel_inside_the_fsm_asks_first(self, session):
         state = _state()
         await state.set_state(betting.BetCreationStates.waiting_for_title)
-        callback = _FakeCallback("bet:cancel_creation")
+        callback = _FakeCallback(BetCb(action="cancel_creation"))
 
-        await betting.cb_cancel_creation(callback, state)
+        await _invoke(betting.cb_cancel_creation, callback, state)
 
         assert "Sicuro" in callback.said
-        assert set(_callbacks(callback.message.markups[0])) == {"bet:cancel_yes", "bet:cancel_no"}
+        assert set(_callbacks(callback.message.markups[0])) == {
+            BetCb(action="cancel_yes").pack(), BetCb(action="cancel_no").pack()
+        }
         assert await state.get_state() is not None, "asking is not cancelling"
 
     async def test_confirming_the_cancel_clears_the_fsm(self, session):
         state = _state()
         await state.set_state(betting.BetCreationStates.waiting_for_title)
         await state.update_data(title="mezzo lavoro")
-        callback = _FakeCallback("bet:cancel_yes")
+        callback = _FakeCallback(BetCb(action="cancel_yes"))
 
-        await betting.cb_cancel_creation_yes(callback, state)
+        await _invoke(betting.cb_cancel_creation_yes, callback, state)
 
         assert await state.get_state() is None
         assert await state.get_data() == {}
@@ -826,9 +822,9 @@ class TestCreationCancel:
         state = _state()
         await state.set_state(betting.BetCreationStates.waiting_for_description)
         await state.update_data(title="mezzo lavoro")
-        callback = _FakeCallback("bet:cancel_no")
+        callback = _FakeCallback(BetCb(action="cancel_no"))
 
-        await betting.cb_cancel_creation_no(callback)
+        await _invoke(betting.cb_cancel_creation_no, callback)
 
         assert await state.get_state() == \
             betting.BetCreationStates.waiting_for_description.state
@@ -904,9 +900,9 @@ class TestCreationWindow:
         await user_factory(tg_id=CREATOR, username="creator")
         state = _state()
         await self._armed(state)
-        callback = _FakeCallback("bet:win:3600", user_id=CREATOR)
+        callback = _FakeCallback(BetCb(action="window", seconds=3600), user_id=CREATOR)
 
-        await betting.cb_bet_window(callback, state, session)
+        await _invoke(betting.cb_bet_window, callback, state, session)
 
         event = (await session.execute(select(BettingEvent))).scalar_one()
         assert event.status == EventStatus.open.value
@@ -919,9 +915,9 @@ class TestCreationWindow:
         await user_factory(tg_id=CREATOR, username="creator")
         state = _state()
         await self._armed(state)
-        callback = _FakeCallback("bet:win:0", user_id=CREATOR)
+        callback = _FakeCallback(BetCb(action="window", seconds=0), user_id=CREATOR)
 
-        await betting.cb_bet_window(callback, state, session)
+        await _invoke(betting.cb_bet_window, callback, state, session)
 
         event = (await session.execute(select(BettingEvent))).scalar_one()
         assert event.closes_at is None
@@ -931,9 +927,9 @@ class TestCreationWindow:
     async def test_the_custom_button_asks_for_a_duration(self, session, user_factory):
         state = _state()
         await self._armed(state)
-        callback = _FakeCallback("bet:win:custom", user_id=CREATOR)
+        callback = _FakeCallback(BetCb(action="window_custom"), user_id=CREATOR)
 
-        await betting.cb_bet_window(callback, state, session)
+        await _invoke(betting.cb_bet_window, callback, state, session)
 
         assert await state.get_state() == \
             betting.BetCreationStates.waiting_for_window_custom.state
@@ -972,9 +968,9 @@ class TestCreationWindow:
         state = _state()
         await self._armed(state)
         await state.update_data(bet_as_draft=True)
-        callback = _FakeCallback("bet:win:3600", user_id=CREATOR)
+        callback = _FakeCallback(BetCb(action="window", seconds=3600), user_id=CREATOR)
 
-        await betting.cb_bet_window(callback, state, session)
+        await _invoke(betting.cb_bet_window, callback, state, session)
 
         event = (await session.execute(select(BettingEvent))).scalar_one()
         assert event.status == EventStatus.draft.value

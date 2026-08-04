@@ -2,11 +2,12 @@ from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from database.models import BettingEvent, BettingOption
+from handlers.callbacks import BetAmountCb, BetCb, BetConfirmCb, BetCustomCb, BetEventCb, BetOptionCb
 
 PRESET_AMOUNTS = [50, 100, 250, 500]
 
 _CLOSE_TEXT = "✖ Chiudi"
-_CLOSE_CB = "bet:close"
+_CLOSE_CB = BetCb(action="close").pack()
 
 
 # NOTE: the former `get_group_events_keyboard` (URL buttons posted in the group)
@@ -24,7 +25,7 @@ def get_events_keyboard(
         prefix = "✅ " if event.id in placed_ids else ""
         builder.button(
             text=f"{prefix}#{event.id} {event.title[:30]} — {total} 🪙",
-            callback_data=f"event:view:{event.id}",
+            callback_data=BetEventCb(action="view", event_id=event.id).pack(),
         )
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     builder.adjust(1)
@@ -38,9 +39,9 @@ def get_options_keyboard(
     for opt in options:
         builder.button(
             text=f"{opt.label} — {opt.total_wagered} 🪙",
-            callback_data=f"bet_option:{event_id}:{opt.id}",
+            callback_data=BetOptionCb(action="pick", event_id=event_id, option_id=opt.id).pack(),
         )
-    builder.button(text="🔙 Indietro", callback_data="bet:back")
+    builder.button(text="🔙 Indietro", callback_data=BetCb(action="back").pack())
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     builder.adjust(1)
     return builder.as_markup()
@@ -54,13 +55,15 @@ def get_amount_keyboard(
     for amount in affordable:
         builder.button(
             text=f"{amount} 🪙",
-            callback_data=f"bet_amount:{event_id}:{option_id}:{amount}",
+            callback_data=BetAmountCb(
+                action="pick", event_id=event_id, option_id=option_id, amount=amount
+            ).pack(),
         )
     builder.button(
         text="✏️ Importo personalizzato",
-        callback_data=f"bet_custom:{event_id}:{option_id}",
+        callback_data=BetCustomCb(action="open", event_id=event_id, option_id=option_id).pack(),
     )
-    builder.button(text="🔙 Indietro", callback_data=f"event:view:{event_id}")
+    builder.button(text="🔙 Indietro", callback_data=BetEventCb(action="view", event_id=event_id).pack())
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     n = len(affordable)
     if n >= 2:
@@ -76,11 +79,13 @@ def get_confirm_bet_keyboard(
     builder = InlineKeyboardBuilder()
     builder.button(
         text=f"✅ Conferma {amount} 🪙",
-        callback_data=f"bet_confirm:{event_id}:{option_id}:{amount}",
+        callback_data=BetConfirmCb(
+            action="place", event_id=event_id, option_id=option_id, amount=amount
+        ).pack(),
     )
     builder.button(
         text="🔙 Cambia importo",
-        callback_data=f"bet_option:{event_id}:{option_id}",
+        callback_data=BetOptionCb(action="pick", event_id=event_id, option_id=option_id).pack(),
     )
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     builder.adjust(1)

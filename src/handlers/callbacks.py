@@ -39,6 +39,61 @@ class AdminBetCb(CallbackData, prefix="admin_bet"):
     option_id: int | None = None
 
 
+class BetCb(CallbackData, prefix="bet"):
+    """Navigation and creation-window controls for player betting."""
+
+    #: "cancel_creation" | "cancel_yes" | "cancel_no" | "window"
+    #: | "window_custom" | "back" | "close"
+    action: str
+    seconds: int | None = None
+
+
+class BetEventCb(CallbackData, prefix="event"):
+    """Open one betting event from the private player list."""
+
+    #: "view"
+    action: str
+    event_id: int
+
+
+class BetOptionCb(CallbackData, prefix="bet_option"):
+    """Pick one option of a betting event."""
+
+    #: "pick"
+    action: str
+    event_id: int
+    option_id: int
+
+
+class BetAmountCb(CallbackData, prefix="bet_amount"):
+    """Choose one preset stake amount."""
+
+    #: "pick"
+    action: str
+    event_id: int
+    option_id: int
+    amount: int
+
+
+class BetCustomCb(CallbackData, prefix="bet_custom"):
+    """Open the custom-stake FSM."""
+
+    #: "open"
+    action: str
+    event_id: int
+    option_id: int
+
+
+class BetConfirmCb(CallbackData, prefix="bet_confirm"):
+    """Place a confirmed player bet."""
+
+    #: "place"
+    action: str
+    event_id: int
+    option_id: int
+    amount: int
+
+
 class SchedCb(CallbackData, prefix="sched"):
     """The scheduling flow — `handlers/schedule.py`.
 

@@ -22,7 +22,19 @@ from aiogram.filters.callback_data import CallbackData, CallbackQueryFilter
 from aiogram.types import CallbackQuery, User
 
 import handlers
-from handlers.callbacks import AdminBetCb, AdminCb, EventCb, PollCreateCb, SchedCb
+from handlers.callbacks import (
+    AdminBetCb,
+    AdminCb,
+    BetAmountCb,
+    BetCb,
+    BetConfirmCb,
+    BetCustomCb,
+    BetEventCb,
+    BetOptionCb,
+    EventCb,
+    PollCreateCb,
+    SchedCb,
+)
 from handlers.events import _CONFIRM
 
 
@@ -66,6 +78,31 @@ def test_pack_admin_betting_callbacks(cb, packed):
 
 async def test_admin_bet_numeric_fields_are_typed_by_the_filter():
     assert await AdminBetCb.filter()(_query("admin_bet:event:x:")) is False
+
+
+@pytest.mark.parametrize(("cb", "packed"), [
+    (BetCb(action="cancel_creation"), "bet:cancel_creation:"),
+    (BetCb(action="window", seconds=60), "bet:window:60"),
+    (BetEventCb(action="view", event_id=7), "event:view:7"),
+    (BetOptionCb(action="pick", event_id=7, option_id=9), "bet_option:pick:7:9"),
+    (BetAmountCb(action="pick", event_id=7, option_id=9, amount=100), "bet_amount:pick:7:9:100"),
+    (BetCustomCb(action="open", event_id=7, option_id=9), "bet_custom:open:7:9"),
+    (BetConfirmCb(action="place", event_id=7, option_id=9, amount=100), "bet_confirm:place:7:9:100"),
+])
+def test_pack_betting_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(("callback_class", "data"), [
+    (BetCb, "bet:window:not-a-number"),
+    (BetEventCb, "event:view:not-an-id"),
+    (BetOptionCb, "bet_option:pick:not-an-id:9"),
+    (BetAmountCb, "bet_amount:pick:7:9:not-an-amount"),
+    (BetCustomCb, "bet_custom:open:7:not-an-id"),
+    (BetConfirmCb, "bet_confirm:place:not-an-id:9:100"),
+])
+async def test_betting_numeric_fields_are_typed_by_the_filter(callback_class, data):
+    assert await callback_class.filter()(_query(data)) is False
 
 
 async def test_admin_numeric_field_is_typed_by_the_filter():
@@ -221,7 +258,10 @@ def _typed_callback_prefixes() -> dict[str, type[CallbackData]]:
 def test_the_prefix_scan_actually_finds_callback_classes():
     """Guards the guard: an empty result would make the test below pass forever
     for the wrong reason — nothing left to shadow."""
-    assert {"adm", "admin_bet", "sched", "ev", "evpt"} <= _typed_callback_prefixes().keys()
+    assert {
+        "adm", "admin_bet", "bet", "event", "bet_option", "bet_amount", "bet_custom",
+        "bet_confirm", "sched", "ev", "evpt",
+    } <= _typed_callback_prefixes().keys()
 
 
 def test_no_handwritten_payload_shadows_a_typed_prefix():

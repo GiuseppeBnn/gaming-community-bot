@@ -20,7 +20,15 @@ from keyboards.shop_kb import (
     get_shop_confirm_kb,
 )
 from services.catalog_loader import ConsumableCategory, ConsumableItem, CosmeticItem
-from handlers.callbacks import AdminBetCb
+from handlers.callbacks import (
+    AdminBetCb,
+    BetAmountCb,
+    BetCb,
+    BetConfirmCb,
+    BetCustomCb,
+    BetEventCb,
+    BetOptionCb,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +69,7 @@ class TestEventsKeyboard:
     def test_close_button_callback(self):
         kb = get_events_keyboard([_make_event()])
         close_btn = _flat_buttons(kb)[-1]
-        assert close_btn.callback_data == "bet:close"
+        assert close_btn.callback_data == BetCb(action="close").pack()
 
     def test_event_button_shows_total_wagered(self):
         event = _make_event(options_wagered=[100, 200])  # total = 300
@@ -73,7 +81,7 @@ class TestEventsKeyboard:
         event = _make_event(id=7)
         kb = get_events_keyboard([event])
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "event:view:7"
+        assert btn.callback_data == BetEventCb(action="view", event_id=7).pack()
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +112,7 @@ class TestOptionsKeyboard:
         opts = [SimpleNamespace(id=3, label="X", odds_multiplier=1.0, total_wagered=0)]
         kb = get_options_keyboard(event_id=9, options=opts)
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "bet_option:9:3"
+        assert btn.callback_data == BetOptionCb(action="pick", event_id=9, option_id=3).pack()
 
 
 # ---------------------------------------------------------------------------
@@ -117,12 +125,14 @@ class TestAmountKeyboard:
         buttons = _flat_buttons(kb)
         # Only: custom + back + close = 3
         cbs = [b.callback_data for b in buttons if b.callback_data]
-        assert not any(cb.startswith("bet_amount:") for cb in cbs)
+        assert not any(cb.startswith(f"{BetAmountCb.__prefix__}:") for cb in cbs)
 
     def test_only_affordable_presets_shown(self):
         kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=150)
         buttons = _flat_buttons(kb)
-        amount_buttons = [b for b in buttons if b.callback_data and "bet_amount:" in b.callback_data]
+        amount_buttons = [
+            b for b in buttons if b.callback_data and b.callback_data.startswith(f"{BetAmountCb.__prefix__}:")
+        ]
         amounts = [int(b.callback_data.split(":")[-1]) for b in amount_buttons]
         # PRESET_AMOUNTS = [50, 100, 250, 500] — only 50 and 100 fit
         assert 50 in amounts
@@ -134,7 +144,7 @@ class TestAmountKeyboard:
         kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=1000)
         amount_buttons = [
             b for b in _flat_buttons(kb)
-            if b.callback_data and "bet_amount:" in b.callback_data
+            if b.callback_data and b.callback_data.startswith(f"{BetAmountCb.__prefix__}:")
         ]
         assert len(amount_buttons) == len(PRESET_AMOUNTS)
 
@@ -142,7 +152,7 @@ class TestAmountKeyboard:
         for balance in [0, 50, 1000]:
             kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=balance)
             cbs = [b.callback_data for b in _flat_buttons(kb) if b.callback_data]
-            assert any("bet_custom:" in cb for cb in cbs)
+            assert any(cb.startswith(f"{BetCustomCb.__prefix__}:") for cb in cbs)
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +168,9 @@ class TestConfirmBetKeyboard:
     def test_confirm_callback_data(self):
         kb = get_confirm_bet_keyboard(event_id=3, option_id=5, amount=100)
         confirm_btn = _flat_buttons(kb)[0]
-        assert confirm_btn.callback_data == "bet_confirm:3:5:100"
+        assert confirm_btn.callback_data == BetConfirmCb(
+            action="place", event_id=3, option_id=5, amount=100
+        ).pack()
 
     def test_three_buttons_total(self):
         kb = get_confirm_bet_keyboard(event_id=1, option_id=1, amount=50)
