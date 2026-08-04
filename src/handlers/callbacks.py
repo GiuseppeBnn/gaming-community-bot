@@ -25,13 +25,13 @@ from pydantic import ValidationInfo, field_validator
 
 
 def _legacy_int_text(value: object) -> object:
-    """Reject text that the replaced ``int()`` call would have rejected.
+    """Apply the replaced ``int()`` parser's lexical contract and normalization.
 
     Aiogram gives callback fields to Pydantic as strings.  Pydantic accepts the
     wire text ``"1.0"`` for an ``int`` field, while Python's ``int("1.0")``
-    did not.  Validate with the legacy conversion and let Pydantic perform the
-    actual coercion so its normal ``+1`` and surrounding-whitespace behavior is
-    retained.
+    did not.  Returning ``int(value)`` both rejects that looser form before
+    Pydantic sees it and preserves the legacy acceptance of ``+1`` and
+    surrounding whitespace as a normalized integer.
     """
     if isinstance(value, str):
         try:

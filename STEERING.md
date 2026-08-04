@@ -230,7 +230,9 @@ ROUTERS: tuple[Router, ...] = (
 )
 ```
 
-`admin_betting` prima di `betting` perché in fondo ad `admin_betting.router` c'è un catch-all deny per tutti i callback `admin_bet:*`. Se `betting.router` fosse registrato prima, i callback `admin_bet:*` non verrebbero mai visti dall'admin.
+`admin_betting` prima di `betting` perché in fondo ad `admin_betting.router` c'è un catch-all deny
+per il prefisso `f"{AdminBetCb.__prefix__}:"`. Se `betting.router` fosse registrato prima, i
+callback `AdminBetCb` non verrebbero mai visti dall'admin.
 
 > **`tests/unit/test_router_order.py` lo verifica**, e la cosa che vale più delle due
 > asserzioni sull'ordine è la terza: **cammina il package** e pretende che ogni modulo che
@@ -336,12 +338,15 @@ Due scelte deliberate:
 
 ```python
 from filters.admin_filter import IsAdminFilter, IsAdminCallbackFilter
+from handlers.callbacks import AdminBetCb
 
 # Per comandi (Message)
 @router.message(Command("credita"), IsAdminFilter())
 
 # Per callback (CallbackQuery)
-@router.callback_query(F.data.startswith("admin_bet:event:"), IsAdminCallbackFilter())
+@router.callback_query(
+    F.data.startswith(f"{AdminBetCb.__prefix__}:"), IsAdminCallbackFilter()
+)
 ```
 
 Entrambi delegano a **`is_admin(bot, user_id)`**: `True` se `user_id in settings.admin_ids`
@@ -385,7 +390,7 @@ Motivo: gli handler guidati **solo dallo stato FSM** (input di un wizard, picker
 ri-controllerebbero `is_admin`, e lo stato FSM **non ha TTL** (sopravvive in Redis/Memory). Senza
 il gate di router, un admin che entra in un flusso e poi **perde i diritti** potrebbe portarlo a
 termine (privilege escalation). Il gate di router chiude l'intera classe. I router **misti**
-(`betting` con `/crea_scommessa` community, `quiz` con `quiz_ans:*` pubblico) **non** possono
+(`betting` con `/crea_scommessa` community, `quiz` con `QuizAnswerCb` pubblico) **non** possono
 montarlo: lì ogni handler admin va gated singolarmente.
 
 ---
@@ -519,7 +524,8 @@ handler `handlers/shop.py` · kb `keyboards/shop_kb.py`
 
 Il vecchio "negozio" è ora **La Locanda del Drago**: comando **`/locanda`** (alias nascosto
 `/negozio`, deep-link `shop_<chat_id>` invariato). Due sezioni nello stesso pannello inline
-(`shop:home`): **🏷️ Personalizzazioni** (cosmetici) e **🍖 Menù della Locanda** (consumabili),
+(`ShopCb(action="home").pack()`, cioè `shop:home:`): **🏷️ Personalizzazioni** (cosmetici) e
+**🍖 Menù della Locanda** (consumabili),
 più **🎒 Dispensa** (inventario). In gruppo fa **redirect** in privato (il catalogo svela il
 saldo dell'apertore). Niente item di moderazione (rimossi: erano grief).
 
@@ -529,8 +535,10 @@ Acquisto **ripetibile** (non idempotente, a differenza dei cosmetici): spende Co
 riga `ShopPurchase` (`group_id=0`, `success=True`) e accumula la **dispensa** dell'utente
 (mostrata sul profilo). **Nessun permesso Telegram, nessun effetto di gioco** → puro sink +
 fuel trofei. L'inventario è **derivato** da `shop_purchases` (COUNT per `item_key`): nessuna
-colonna su `User`. Flusso: `shop:menu` → `shop:cat:<key>` → `shop:cbuy:<key>` →
-`shop:cexec:<key>` (debit con lock wallet → `record_consumption` → **flush** → milestone check →
+colonna su `User`. Flusso: `ShopCb(action="menu").pack()` (`shop:menu:`) →
+`ShopCb(action="cat", key=<key>).pack()` (`shop:cat:<key>`) → `ShopCb(action="cbuy",
+key=<key>).pack()` (`shop:cbuy:<key>`) → `ShopCb(action="cexec", key=<key>).pack()`
+(`shop:cexec:<key>`) (debit con lock wallet → `record_consumption` → **flush** → milestone check →
 commit). Il **flush prima del milestone check** è obbligatorio (autoflush off: la query dei
 conteggi non vedrebbe l'INSERT pendente). Catalogo CSV `consumables.csv` +
 `consumable_categories.csv` (§12.2).
@@ -565,12 +573,12 @@ ritorno immediato.
 
 ```
 /locanda → privato: _show_home (sezioni) · gruppo: redirect deep-link
-shop:home → landing · shop:list → catalogo cosmetici · shop:menu → categorie consumabili · shop:pantry → dispensa
+shop:home: → landing · shop:list: → catalogo cosmetici · shop:menu: → categorie consumabili · shop:pantry: → dispensa
 shop:buy:<key>  → idempotenza (già posseduto? alert) → balance check → conferma + anteprima tag
 shop:exec:<key> → debit (lock wallet) → re-check idempotenza SOTTO LOCK → record_purchase (no-commit) → apply_cosmetic → commit
 shop:cbuy:<key> → balance check → conferma (consumabile, ripetibile)
 shop:cexec:<key> → debit (lock wallet) → record_consumption → flush → milestone check → commit
-shop:owned      → alert "già posseduto" · shop:list/menu/home → naviga · shop:close → elimina
+shop:owned:     → alert "già posseduto" · shop:list:/shop:menu:/shop:home: → naviga · shop:close: → elimina
 ```
 
 Il re-check di `has_cosmetic` **dopo** il debit (che prende il lock di riga del wallet) chiude la
@@ -589,7 +597,9 @@ ordinata di `item_key`; `User.cosmetic_tag` resta come **fallback legacy** singl
   fallback al `cosmetic_tag` legacy se la lista attiva è vuota. **Tutto il rendering** (profilo §,
   traguardi, dossier admin, **classifiche**) passa di qui.
 - `ensure_active_seeded` migra al volo il vecchio `cosmetic_tag` nella lista attiva alla prima apertura
-  dello switcher (`shop:tags` → toggle `shop:tag:<key>`). Nessuna migrazione DDL di backfill richiesta.
+  dello switcher (`ShopCb(action="tags").pack()`, `shop:tags:` → toggle
+  `ShopCb(action="tag", key=<key>).pack()`, `shop:tag:<key>`). Nessuna migrazione DDL di backfill
+  richiesta.
 
 ### Invarianti di sicurezza shop (anti-grief / anti-escalation)
 
@@ -710,7 +720,8 @@ Comando utente `/classifiche` con switcher inline `LeaderboardCb(action: str, bo
 = None)`, prefisso `lead`: `show` trasporta una board `coins|xp|trofei`, `close` non ne
 trasporta una. I wire payload sono `lead:show:<board>` e `lead:close:`; tastiere e filtri usano
 sempre `.pack()` / `LeaderboardCb.filter(F.action == ...)`. `render_board` è riusato anche dalla
-dashboard `adm:lead:*`. Board: 💰 `admin_service.leaderboard`, ⚡ `xp_service.leaderboard`, 🏆
+dashboard con `AdminCb(action="lead_board", key=<board>).pack()`
+(`adm:lead_board:<board>:`). Board: 💰 `admin_service.leaderboard`, ⚡ `xp_service.leaderboard`, 🏆
 `badge_service.leaderboard_trophies`.
 
 ---
@@ -977,7 +988,7 @@ Wrapper su Bot API che ritornano **`(success: bool, reason: str)`** con errori m
 - **Chat di moderazione**: `message.chat.id` se in gruppo, altrimenti `settings.group_id` (errore se 0).
 - **Warn escalation** in `/warn`: a `warn_mute_threshold` → mute automatico; a `warn_ban_threshold` → ban automatico (entrambi loggati). La logica è estratta in `admin.apply_warning(bot, session, admin_id, target_id, chat_id, reason) -> (count, escalation_html)`, **condivisa** tra `/warn` e la dashboard (parità di comportamento + audit).
 
-### 18.1 Dashboard `/admin` (namespace `adm:*`)
+### 18.1 Dashboard `/admin` (`AdminCb`, prefisso `adm`)
 
 UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto senza digitare comandi**.
 
@@ -996,7 +1007,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`ask` → `do`).
 - **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`airdrop`) e **`⚡ Airdrop XP`** (`xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
 - **Classifica**: `lead` con switcher `lead_board` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
-- **Gating**: ogni callback `adm:*` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
+- **Gating**: ogni callback `AdminCb` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
   dopo `admin.router` in `main.py`.
 - **Callback tipizzata** (≤ 64 byte): `AdminCb(action: str, key: str | None = None, item_id: int | None = None)`,
@@ -1098,7 +1109,8 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
 
 ### Regole
 
-- Il namespace `adm:*` (dashboard) non collide con `admin_bet:*` né con `ev:*` né con gli altri → ordine router indifferente, ma `admin_dashboard.router` va dopo `admin.router` e comunque prima di `common.router`.
+- I namespace di `AdminCb`, `AdminBetCb` ed `EventCb` sono disgiunti → ordine router indifferente,
+  ma `admin_dashboard.router` va dopo `admin.router` e comunque prima di `common.router`.
 - Tutte le azioni che modificano valuta/moderazione **devono** chiamare `log_action` prima del commit (vale per comandi **e** dashboard).
 - I comandi admin **non** vanno nelle command list pubbliche (`_PRIVATE/_GROUP_COMMANDS`), ma vanno documentati nella sezione admin di `/help`.
 
@@ -1132,7 +1144,8 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 - **Premi**: schermata `prize_mode` con ⚡ Consigliati (default da settings) · ✏️ Personalizza · 🚫 Nessuno.
   In personalizzato si impostano 1°/2°/3° e la **consolazione (4°)**; il `prize_min` è **derivato**
   (`quiz_service.participation_floor`). Il quiz viene creato (`create_quiz`) a fine flusso premi.
-- **Navigazione**: ogni step ha «⬅️ Indietro» (`quiz_new:back`, dispatch via `_BACK_PROMPTERS` per stato);
+- **Navigazione**: ogni step ha «⬅️ Indietro» (`QuizNewCb(action="back").pack()`,
+  `quiz_new:back::`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
