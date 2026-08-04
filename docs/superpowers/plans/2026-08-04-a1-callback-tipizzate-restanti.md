@@ -11,18 +11,25 @@
 ## Global Constraints
 
 - Work only on branch `test_giu`; never touch `main`.
-- Current measured baseline: **2125 passed, 30 skipped, coverage 99.65%; Ruff and configured mypy clean**.
+- Current measured baseline: **2125 passed, 30 skipped, coverage 99.41%; Ruff and configured mypy clean**.
 - Preserve user-visible and business behavior. The only accepted runtime difference is the already-approved one: malformed or old callback payloads fail their typed filter and reach `common.cb_unhandled`.
 - Do not modify anything under `src/services/`, database models, migrations, money logic, XP logic, state-transition logic, gating semantics, or router order.
-- These tests are immutable: all money/XP tests, `tests/unit/test_admin_routers_gated.py`, and `tests/unit/test_router_order.py`.
+- Money/XP, admin-gating, and router-order outcomes are regression guards. Direct-handler tests may
+  pass the typed `callback_data` object that aiogram injects in production, but their economic,
+  authorization, state-transition, and ordering assertions must remain equivalent.
 - User-facing messages stay Italian. New developer-facing names, comments, docstrings, logs, tests, and plan prose are English.
 - Keep top-level imports (`from handlers.callbacks import AdminCb`), `from __future__ import annotations`, no new dependency, and no type-ignore for optional callback fields.
 - Optional fields retain empty wire separators. Bind them to locals and guard `is None` before registry lookups, integer use, or calls requiring `str`/`int`.
 - Every producer under `src/keyboards/`, `src/handlers/event_types/`, other handlers, and tests must use the same factory as its consumer. Deep-link payloads such as `bet_custom_<event>_<option>` are not callback data and remain unchanged.
 - Preserve parameterized logs and the unhandled-callback deduplication contract.
 - In every conversion task, run the two structural wiring guards and a repo-wide old-prefix search before the task gate.
-- Before every commit run the focused tests, immutable guards, `.venv/bin/pytest --cov=src --cov-report=term-missing`, `.venv/bin/ruff check src/ tests/`, `.venv/bin/mypy`, and `PYTHONPATH=src .venv/bin/python -c 'import main'`.
-- Commit after every task. Do not combine money/XP/gating/router-order test edits with callback work; those files must remain byte-for-byte unchanged.
+- Before every commit run the focused tests, regression guards, `.venv/bin/pytest --cov=src --cov-report=term-missing`, `.venv/bin/ruff check src/ tests/`, `.venv/bin/mypy`, and `PYTHONPATH=src .venv/bin/python -c 'import main'`.
+- Commit after every task. A callback task may adapt a direct-handler money/XP test only when its
+  call boundary gains an injected typed object; do not change its business assertions. Genuine
+  economy/XP logic changes belong to the later repository-wide audit unless A.1 exposes a proven bug.
+- Before Task 1, record `git rev-parse HEAD` as `A1 follow-up base` in
+  `.superpowers/sdd/2026-08-03-a1-callback-tipizzate/progress.md`; final scope checks compare against
+  that exact commit rather than assuming a fixed number of review/fix commits.
 
 ---
 
@@ -30,12 +37,12 @@
 
 | File | Responsibility in this plan | Tasks |
 |---|---|---|
-| `src/handlers/callbacks.py` | Pure central declarations for all callback families; no project-local imports | 1–14 |
+| `src/handlers/callbacks.py` | Pure central declarations for all callback families; no project-local imports | 2–14; mutation-only verification in 1 |
 | `tests/unit/test_callbacks.py` | AST leaf-module guard, pack/unpack/filter tests, prefix scan, live registered-action wiring | 1–14 |
 | `src/handlers/admin_dashboard.py`, `src/keyboards/admin_dashboard_kb.py`, `src/handlers/events.py`, `src/handlers/event_types/bet_type.py` | `AdminCb` consumer and every `adm` producer | 2 |
 | `src/handlers/admin_betting.py`, `src/keyboards/admin_betting_kb.py` | `AdminBetCb` consumer/producers | 3 |
 | `src/handlers/betting.py`, `src/keyboards/betting_kb.py` | Six typed betting callback families | 4 |
-| `src/handlers/shop.py`, `src/keyboards/shop_kb.py` | `ShopCb`; immutable PG test compatibility | 5 |
+| `src/handlers/shop.py`, `src/keyboards/shop_kb.py` | `ShopCb`; typed direct-call PG test compatibility | 5 |
 | `src/handlers/quiz/creation.py` | `QuizNewCb` | 6 |
 | `src/handlers/quiz/editing.py`, `src/handlers/event_types/quiz_type.py` | `QuizEditCb` and external producer | 7 |
 | `src/handlers/quiz/play.py` | `QuizAnswerCb` | 8 |
@@ -48,7 +55,8 @@
 | Existing focused integration/unit tests named in each task | Direct-handler calls and producer assertions use typed instances | 2–14 |
 | `STEERING.md`, `docs/superpowers/specs/2026-08-03-fondamenta-presentazione-design.md` | Normative factory/wire documentation and final A.1 status | 2–15 |
 
-No task creates or modifies a service, model, migration, gating guard, router registry, or money/XP test.
+No task creates or modifies a service, model, migration, gating guard, or router registry. Affected
+money/XP tests may receive typed callback arguments, while their business assertions remain unchanged.
 
 ---
 
@@ -70,7 +78,7 @@ test files:
 .venv/bin/pytest tests/unit/test_callbacks.py::test_no_handwritten_payload_shadows_a_typed_prefix tests/unit/test_callbacks.py::test_every_constructed_action_reaches_a_registered_filter -v
 ```
 
-7. Run every focused test path listed in the task, then the immutable and global gates:
+7. Run every focused test path listed in the task, then the regression and global gates:
 
 ```bash
 .venv/bin/pytest tests/unit/test_admin_routers_gated.py tests/unit/test_router_order.py -v
@@ -84,17 +92,128 @@ PYTHONPATH=src .venv/bin/python -c 'import main'
 
 ---
 
-### Task 1: Enforce the callback declaration leaf-module invariant
+### Task 1: Harden the callback structural guards
 
 **Files:**
 - Modify: `tests/unit/test_callbacks.py`
-- Verify only: `src/handlers/callbacks.py`
+- Mutation only, then restore: `src/handlers/callbacks.py`, `src/keyboards/admin_dashboard_kb.py`
 
 **Interfaces:**
-- Consumes: `src/` top-level packages/modules and Python `ast`.
-- Produces: `test_callback_declarations_have_no_project_local_imports`, which permits standard-library/third-party imports and rejects relative or project-local imports in `handlers/callbacks.py`.
+- Consumes: Pydantic `model_fields` exposed by aiogram `CallbackData`, `src/` top-level
+  packages/modules, and Python `ast`.
+- Produces: `_central_callback_classes()`, `_valid_action_probe(cls, action)`,
+  `test_valid_action_probe_fills_required_fields`, and
+  `test_callback_declarations_have_no_project_local_imports`.
 
-- [ ] **Step 1: Add the AST invariant test**
+- [ ] **Step 1: Write the RED regression for required callback fields**
+
+Add this test before defining `_valid_action_probe`:
+
+```python
+def test_valid_action_probe_fills_required_fields():
+    class RequiredProbeCb(CallbackData, prefix="required_probe"):
+        action: str
+        event_id: int
+        option_id: int
+
+    probe = _valid_action_probe(RequiredProbeCb, "open")
+
+    assert probe == RequiredProbeCb(action="open", event_id=1, option_id=1)
+```
+
+Run:
+
+```bash
+.venv/bin/pytest tests/unit/test_callbacks.py::test_valid_action_probe_fills_required_fields -v
+```
+
+Expected: FAIL with `NameError: name '_valid_action_probe' is not defined`. This is the defect that
+would otherwise surface as a Pydantic `ValidationError` as soon as Task 4 adds required ids.
+
+- [ ] **Step 2: Add central-class discovery and deterministic valid probes**
+
+Add above `_typed_callback_prefixes`:
+
+```python
+_REQUIRED_FIELD_PROBES: dict[object, object] = {
+    str: "probe",
+    int: 1,
+    bool: True,
+}
+
+
+def _central_callback_classes() -> list[type[CallbackData]]:
+    return [
+        cls
+        for cls in CallbackData.__subclasses__()
+        if cls.__module__ == "handlers.callbacks"
+    ]
+
+
+def _valid_action_probe(cls: type[CallbackData], action: str) -> CallbackData:
+    values: dict[str, object] = {"action": action}
+    for name, field in cls.model_fields.items():
+        if name == "action" or not field.is_required():
+            continue
+        try:
+            values[name] = _REQUIRED_FIELD_PROBES[field.annotation]
+        except KeyError as exc:
+            raise AssertionError(
+                f"no deterministic probe for required field "
+                f"{cls.__name__}.{name}: {field.annotation!r}"
+            ) from exc
+    return cls(**values)
+```
+
+Make `_typed_callback_prefixes`, `_constructed_actions`, and
+`_registered_action_filters` use `_central_callback_classes()` instead of raw
+`CallbackData.__subclasses__()`. In `test_every_constructed_action_reaches_a_registered_filter`,
+replace:
+
+```python
+probe = _query(cls(action=action).pack())
+```
+
+with:
+
+```python
+probe = _query(_valid_action_probe(cls, action).pack())
+```
+
+Run:
+
+```bash
+.venv/bin/pytest tests/unit/test_callbacks.py::test_valid_action_probe_fills_required_fields tests/unit/test_callbacks.py::test_every_constructed_action_reaches_a_registered_filter -v
+```
+
+Expected: 2 passed. An unknown required annotation fails loudly instead of silently omitting a
+field or inventing an invalid value.
+
+- [ ] **Step 3: Prove that the live action guard still detects a dead producer**
+
+Temporarily replace the existing Events-home producer in
+`src/keyboards/admin_dashboard_kb.py`:
+
+```python
+EventCb(action="home").pack()
+```
+
+with:
+
+```python
+EventCb(action="unregistered_probe").pack()
+```
+
+Run:
+
+```bash
+.venv/bin/pytest tests/unit/test_callbacks.py::test_every_constructed_action_reaches_a_registered_filter -v
+```
+
+Expected: FAIL listing `EventCb(action='unregistered_probe')` as a dead button. Restore exactly the
+`home` action and rerun; expected PASS.
+
+- [ ] **Step 4: Add the AST leaf-module invariant**
 
 ```python
 def test_callback_declarations_have_no_project_local_imports():
@@ -123,7 +242,7 @@ def test_callback_declarations_have_no_project_local_imports():
     )
 ```
 
-- [ ] **Step 2: Prove RED by mutation, then restore**
+- [ ] **Step 5: Prove the leaf guard RED by mutation, then restore**
 
 Temporarily add `from handlers import events` below the aiogram import in `src/handlers/callbacks.py`.
 
@@ -131,7 +250,7 @@ Run: `.venv/bin/pytest tests/unit/test_callbacks.py::test_callback_declarations_
 
 Expected: FAIL listing `handlers`. Remove exactly that temporary import.
 
-- [ ] **Step 3: Verify GREEN and commit**
+- [ ] **Step 6: Verify GREEN and commit**
 
 Run:
 
@@ -143,7 +262,7 @@ Run:
 .venv/bin/mypy
 PYTHONPATH=src .venv/bin/python -c 'import main'
 git add tests/unit/test_callbacks.py
-git commit -m "test: callbacks resta un modulo foglia"
+git commit -m "test: irrobustisce i guard callback"
 ```
 
 ---
@@ -293,7 +412,8 @@ Replace fake payload construction with `AdminBetCb`; do not edit `tests/unit/tes
 rg -n 'callback_data\s*=\s*f?["'"']admin_bet:' src tests --glob '*.py'
 .venv/bin/pytest tests/unit/test_callbacks.py::test_no_handwritten_payload_shadows_a_typed_prefix tests/unit/test_callbacks.py::test_every_constructed_action_reaches_a_registered_filter tests/unit/test_keyboards.py tests/integration/test_admin_betting.py tests/unit/test_admin_routers_gated.py tests/unit/test_router_order.py -v
 .venv/bin/pytest --cov=src --cov-report=term-missing
-.venv/bin/ruff check src/ tests/ && .venv/bin/mypy
+.venv/bin/ruff check src/ tests/
+.venv/bin/mypy
 PYTHONPATH=src .venv/bin/python -c 'import main'
 git add src/handlers/callbacks.py src/handlers/admin_betting.py src/keyboards/admin_betting_kb.py tests/unit/test_callbacks.py tests/unit/test_keyboards.py tests/integration/test_admin_betting.py STEERING.md
 git commit -m "refactor: tipizza le callback delle scommesse admin"
@@ -351,22 +471,22 @@ Pin `bet:cancel_creation:`, `bet:window:60`, `event:view:7`, `bet_option:pick:7:
 
 Replace every keyboard literal with the relevant `.pack()`. `bet:win:custom` becomes `BetCb(action="window_custom")`; numeric presets use `BetCb(action="window", seconds=sec)`. Handlers consume integer fields directly; keep the `amount <= 0` business guard and all service/commit/error branches unchanged. Do not alter `bet_custom_<e>_<o>` deep links in `common.py`.
 
-- [ ] **Step 3: Update tests and STEERING §16**
+- [ ] **Step 3: Update tests and STEERING §10/§15**
 
 Move malformed-number coverage from direct handler parsing to real `CallbackQuery` filter tests. Direct business tests pass typed instances. Do not modify money/XP or router-order tests.
 
 - [ ] **Step 4: Completeness, wiring, gate, commit**
 
-Search every prefix: `bet:`, `event:`, `bet_option:`, `bet_amount:`, `bet_custom:`, `bet_confirm:` in `callback_data=` assignments across `src/` and `tests/`; expected no hand-written producer. Run structural guards, all focused files above, immutable guards, full coverage, Ruff, mypy, import smoke; then commit `refactor: tipizza il flusso scommesse`.
+Search every prefix: `bet:`, `event:`, `bet_option:`, `bet_amount:`, `bet_custom:`, `bet_confirm:` in `callback_data=` assignments across `src/` and `tests/`; expected no hand-written producer. Run structural guards, all focused files above, regression guards, full coverage, Ruff, mypy, import smoke; then commit `refactor: tipizza il flusso scommesse`.
 
 ---
 
-### Task 5: Convert `shop.py` while preserving the immutable money guard
+### Task 5: Convert `shop.py` while preserving money behavior
 
 **Files:**
 - Modify: `src/handlers/callbacks.py`, `src/handlers/shop.py`, `src/keyboards/shop_kb.py`, `STEERING.md`
 - Test: `tests/unit/test_callbacks.py`, `tests/unit/test_keyboards.py`, `tests/integration/test_shop_handlers.py`, `tests/integration/test_shop_home_balance.py`
-- Immutable verification: `tests/integration/test_money_concurrency_pg.py`
+- PostgreSQL regression test: `tests/integration/test_money_concurrency_pg.py`
 
 **Interfaces:**
 - Produces: `ShopCb(action: str, key: str | None = None)`, prefix `shop`; actions `home|list|owned|buy|exec|menu|cat|cbuy|cexec|pantry|tags|tag|close`.
@@ -381,29 +501,34 @@ class ShopCb(CallbackData, prefix="shop"):
     key: str | None = None
 ```
 
-- [ ] **Step 2: Convert production with the immutable-test adapter**
+- [ ] **Step 2: Convert production and its direct-handler tests**
 
-All keyed handlers receive `callback_data: ShopCb` and guard `key is None`. The immutable PG guard directly calls `cb_exec(callback, db_session)` with the valid old full form `shop:exec:<key>`. Preserve that call without editing the test by using this exact boundary adapter only on `cb_exec`:
+All keyed handlers receive `callback_data: ShopCb` and guard `key is None`. Keep the production
+boundary strict; do not add a fallback parser that exists only for tests:
 
 ```python
 @router.callback_query(ShopCb.filter(F.action == "exec"))
 async def cb_exec(
     callback: CallbackQuery,
+    callback_data: ShopCb,
     db_session: AsyncSession,
-    callback_data: ShopCb | None = None,
 ) -> None:
-    data = callback_data or ShopCb.unpack(callback.data)
-    item_key = data.key
+    item_key = callback_data.key
     if item_key is None:
         await callback.answer()
         return
 ```
 
-Production always receives the injected object; the fallback exists solely to keep the immutable direct-call concurrency guard intact. Do not touch debit, purchase, flush, milestone, or commit code.
+Adapt the direct call in `tests/integration/test_money_concurrency_pg.py` to pass
+`callback_data=ShopCb(action="exec", key=item_key)`. Preserve every balance, row-count, ledger,
+purchase, flush, milestone, and commit assertion byte-for-byte.
 
 - [ ] **Step 3: Tests, docs, completeness, gate, commit**
 
-Convert every other shop fake and keyboard assertion. Document the adapter and class in STEERING §11. Search hand-written `shop:` producers, run structural/focused/immutable gates including the PG file when `TEST_PG_URL` is available, full coverage/static/import gates, and commit `refactor: tipizza le callback della locanda`.
+Convert every other shop fake and keyboard assertion. Document the class in STEERING §11. Search
+hand-written `shop:` producers, run structural/focused/regression gates including the PG file when
+`TEST_PG_URL` is available, full coverage/static/import gates, and commit
+`refactor: tipizza le callback della locanda`.
 
 ---
 
@@ -428,7 +553,7 @@ Use `QuizNewCb.filter(F.action == ...)`, injected data for the three field actio
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Update STEERING §19 creation callback description. Search `quiz_new:` producers repo-wide; run structural guards, `test_quiz_creation_flow.py`, immutable guards, full coverage/static/import gates; commit `refactor: tipizza le callback di creazione quiz`.
+Update STEERING §19 creation callback description. Search `quiz_new:` producers repo-wide; run structural guards, `test_quiz_creation_flow.py`, regression guards, full coverage/static/import gates; commit `refactor: tipizza le callback di creazione quiz`.
 
 ---
 
@@ -452,7 +577,7 @@ Convert the Edit button in `event_types/quiz_type.py`. Each data-consuming handl
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Update STEERING §15/§19. Search `quiz_edit:` producers, run both structural tests, focused tests, immutable guards, full gates; commit `refactor: tipizza le callback di modifica quiz`.
+Update STEERING §15/§19. Search `quiz_edit:` producers, run both structural tests, focused tests, regression guards, full gates; commit `refactor: tipizza le callback di modifica quiz`.
 
 ---
 
@@ -484,7 +609,7 @@ The builder packs the exact class. `cb_answer` filters `F.action == "answer"`, r
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `quiz_ans:` producers, run structural/focused/immutable/full gates, update STEERING §19, commit `refactor: tipizza le risposte quiz`.
+Search `quiz_ans:` producers, run structural/focused/regression/full gates, update STEERING §19, commit `refactor: tipizza le risposte quiz`.
 
 ---
 
@@ -508,7 +633,7 @@ Use injected ids and explicit `None` guards for `answer`; `start`/`stop` require
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `quiz_try:` producers, run structural and all focused files, immutable/full gates, update STEERING §19 dry-run section, commit `refactor: tipizza le callback di prova quiz`.
+Search `quiz_try:` producers, run structural and all focused files, regression/full gates, update STEERING §19 dry-run section, commit `refactor: tipizza le callback di prova quiz`.
 
 ---
 
@@ -532,7 +657,7 @@ All builders and positional confirmation strings use `.pack()`. `edit` guards `k
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `guess_new:` producers, run structural/focused/immutable/full gates, update STEERING §19.b creation, commit `refactor: tipizza le callback di creazione guess`.
+Search `guess_new:` producers, run structural/focused/regression/full gates, update STEERING §19.b creation, commit `refactor: tipizza le callback di creazione guess`.
 
 ---
 
@@ -555,7 +680,7 @@ Convert both `event_types/guess_type.py` Add spellings buttons and the cancel ke
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `guess_alias:` producers, run structural/focused/immutable/full gates, update STEERING §19.b alias section, commit `refactor: tipizza le callback delle grafie guess`.
+Search `guess_alias:` producers, run structural/focused/regression/full gates, update STEERING §19.b alias section, commit `refactor: tipizza le callback delle grafie guess`.
 
 ---
 
@@ -578,7 +703,7 @@ Use action filters, inject/guard `round_id` for resume, and preserve state/time/
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `guess_play:` producers, run structural/focused/immutable/full gates, update STEERING §19.b play controls, commit `refactor: tipizza i controlli di gioco guess`.
+Search `guess_play:` producers, run structural/focused/regression/full gates, update STEERING §19.b play controls, commit `refactor: tipizza i controlli di gioco guess`.
 
 ---
 
@@ -601,7 +726,7 @@ The switcher uses `LeaderboardCb(action="show", board=key)`. The handler filters
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `lead:` producers, run structural/focused/immutable/full gates, update STEERING §12.1, commit `refactor: tipizza le callback delle classifiche`.
+Search `lead:` producers, run structural/focused/regression/full gates, update STEERING §12.1, commit `refactor: tipizza le callback delle classifiche`.
 
 ---
 
@@ -630,7 +755,9 @@ Pin `rules:accept`, verify a different prefix does not match, require the missin
 
 - [ ] **Step 3: Docs, completeness, gate, commit**
 
-Search `rules:` producers, run structural/focused/immutable/full gates, update the onboarding section of STEERING, commit `refactor: tipizza la callback di onboarding`.
+Search `rules:` producers, run structural/focused/regression/full gates, create or update the exact
+normative section `STEERING.md` §16.1 «Onboarding iniziale (`RulesCb`, prefisso `rules`)», and commit
+`refactor: tipizza la callback di onboarding`.
 
 ---
 
@@ -657,7 +784,9 @@ Expected: no manual parsing. The only `F.data` uses permitted are prefix-derived
 
 - [ ] **Step 2: Inventory every producer and prefix**
 
-Run `rg -n 'callback_data\s*=' src tests --glob '*.py'` and inspect every match. All callback producers for the 18 central classes must call `.pack()`; URL deep links are excluded. Then run:
+Run `rg -n 'callback_data\s*=' src tests --glob '*.py'` and inspect every match. All callback
+producers for the **21 central classes** (3 existing plus 18 introduced by this plan) must call
+`.pack()`; URL deep links are excluded. Then run:
 
 ```bash
 .venv/bin/pytest tests/unit/test_callbacks.py::test_the_prefix_scan_actually_finds_callback_classes tests/unit/test_callbacks.py::test_no_handwritten_payload_shadows_a_typed_prefix tests/unit/test_callbacks.py::test_the_action_scan_actually_finds_something tests/unit/test_callbacks.py::test_every_constructed_action_reaches_a_registered_filter -v
@@ -665,11 +794,13 @@ Run `rg -n 'callback_data\s*=' src tests --glob '*.py'` and inspect every match.
 
 Expected: all four pass against live registered filters.
 
-- [ ] **Step 3: Verify immutable files were not edited**
+- [ ] **Step 3: Verify that callback work did not change business logic**
 
-Run `git diff --name-only HEAD~14..HEAD` and confirm it does not list
-`tests/unit/test_admin_routers_gated.py`, `tests/unit/test_router_order.py`, any money/XP test, or
-any file under `src/services/`. This range is exact because Tasks 1–14 each end in one commit.
+Read the exact `A1 follow-up base` recorded before Task 1 and use that hash as the left revision of
+`git diff --name-only`. Confirm the result does not list any file under `src/services/`, database
+models, migrations, gating guards, or the router registry. Review any changed money/XP test and
+confirm its only semantic change is passing a typed callback object; compare its economic
+assertions with the recorded base and require them to remain equivalent.
 
 - [ ] **Step 4: Update normative status without overstating scope**
 
@@ -705,7 +836,10 @@ git commit -m "docs: chiude A.1 su tutte le callback"
 - All thirteen remaining handler files map one-to-one to Tasks 2–14.
 - Every external producer found in `src/keyboards/`, `handlers/event_types/`, and other handlers is named in the owning task.
 - Every class used by a later task is declared in that task before producer or consumer conversion.
-- Task 1 enforces the smaller dependency solution: `handlers/callbacks.py` stays project-import-free; declarations are not moved.
+- Task 1 keeps `handlers/callbacks.py` project-import-free and makes the live action guard work for
+  both optional-only and required-id callback factories.
 - No task touches a service or changes money, XP, gating, state transitions, or router order.
-- The immutable money/XP/gating/router-order tests remain unchanged; Task 5 supplies the one direct-call adapter required by the immutable PG shop guard.
+- Money/XP, gating, and router-order outcomes remain unchanged. Task 5 adapts the direct PG shop
+  handler call to the typed injection boundary instead of weakening production with a test-only
+  fallback parser.
 - Developer-facing plan text and code comments are English; Italian appears only in preserved user-facing strings and commit subjects.
