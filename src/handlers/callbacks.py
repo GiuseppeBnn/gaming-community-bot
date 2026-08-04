@@ -165,6 +165,16 @@ class QuizNewCb(CallbackData, prefix="quiz_new"):
     value: int | None = None
 
 
+class GuessNewCb(CallbackData, prefix="guess_new"):
+    """Guess and sound creation controls — `handlers/guess/creation.py`."""
+
+    #: "edit" | "hint_add" | "hint_undo" | "hint_clear" | "hint_done"
+    #: | "hint_at" | "back" | "publish" | "cancel" | "cancel_yes" | "cancel_no"
+    action: str
+    key: str | None = None
+    value: int | None = None
+
+
 class QuizEditCb(CallbackData, prefix="quiz_edit"):
     """Quiz-question editing controls — `handlers/quiz/editing.py`.
 

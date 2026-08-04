@@ -32,6 +32,7 @@ from handlers.callbacks import (
     BetEventCb,
     BetOptionCb,
     EventCb,
+    GuessNewCb,
     PollCreateCb,
     QuizAnswerCb,
     QuizEditCb,
@@ -89,6 +90,23 @@ def test_pack_shop_callbacks(cb, packed):
 )
 def test_pack_quiz_creation_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (GuessNewCb(action="cancel"), "guess_new:cancel::"),
+        (GuessNewCb(action="edit", key="title"), "guess_new:edit:title:"),
+        (GuessNewCb(action="hint_at", value=3), "guess_new:hint_at::3"),
+    ],
+)
+def test_pack_guess_creation_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize("data", ["guess_new:hint_at::not-a-number", "guess_new:hint_at::-"])
+async def test_guess_creation_threshold_is_typed_by_the_filter(data):
+    assert await GuessNewCb.filter()(_query(data)) is False
 
 
 @pytest.mark.parametrize(
@@ -410,6 +428,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
         "quiz_edit",
         "quiz_ans",
         "quiz_try",
+        "guess_new",
         "shop",
     } <= _typed_callback_prefixes().keys()
 

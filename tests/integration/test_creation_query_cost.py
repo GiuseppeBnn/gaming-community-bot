@@ -17,7 +17,10 @@ from sqlalchemy import event
 
 from handlers.guess import creation as cr
 from tests.integration.test_guess_creation_flow import (
-    _BOT, _Cb, _edit, _to_card,
+    _BOT,
+    _Cb,
+    _edit,
+    _to_card,
 )
 
 
@@ -51,13 +54,10 @@ def state():
     from aiogram.fsm.storage.base import StorageKey
     from aiogram.fsm.storage.memory import MemoryStorage
 
-    return FSMContext(storage=MemoryStorage(),
-                      key=StorageKey(bot_id=999, chat_id=1, user_id=1))
+    return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=999, chat_id=1, user_id=1))
 
 
-async def test_the_questions_and_the_edits_cost_nothing_at_all(
-    state, sql_counter, session
-):
+async def test_the_questions_and_the_edits_cost_nothing_at_all(state, sql_counter, session):
     """Il flusso prima della pubblicazione non deve toccare il DB.
 
     È l'invariante che rende sensato il confronto con i `getter`: se qui
@@ -71,14 +71,11 @@ async def test_the_questions_and_the_edits_cost_nothing_at_all(
         await _edit(state, field, value)
 
     assert sql_counter == [], (
-        f"il flusso pre-pubblicazione ha toccato il DB {len(sql_counter)} volte: "
-        f"{sql_counter}"
+        f"il flusso pre-pubblicazione ha toccato il DB {len(sql_counter)} volte: {sql_counter}"
     )
 
 
-async def test_publishing_costs_a_known_number_of_statements(
-    state, sql_counter, session
-):
+async def test_publishing_costs_a_known_number_of_statements(state, sql_counter, session):
     """Pinna il costo della pubblicazione, sopra e sotto.
 
     Non si asserisce un numero esatto — un `INSERT` in più per una colonna nuova

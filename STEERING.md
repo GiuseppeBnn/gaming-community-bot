@@ -1385,8 +1385,13 @@ lunghezza.
 
 `free_thresholds()` è la **sola** fonte dei numeri validi: la tastiera la renderizza **e** il
 callback la ri-controlla. Non possono divergere, ed è questo che rende innocuo un
-`guess_new:hint:at:99` costruito a mano o premuto su una schermata vecchia. Una soglia già
+`guess_new:hint_at::99` costruito a mano o premuto su una schermata vecchia. Una soglia già
 presa **non viene offerta** — e viene comunque rifiutata se arriva lo stesso.
+
+I comandi della creazione passano da `GuessNewCb`: `edit` porta la chiave del campo e
+`hint_at` la soglia intera. I segmenti opzionali restano espliciti (`guess_new:cancel::`),
+così un payload vecchio o una soglia non numerica non raggiungono l'handler; una chiave o
+una soglia assente viene invece rifiutata senza modificare lo stato del flusso.
 
 > Le difese sul percorso della soglia sono tre e volutamente ridondanti, perché è un percorso
 > che finisce in un round che paga monete: la tastiera offre solo numeri liberi; il callback
