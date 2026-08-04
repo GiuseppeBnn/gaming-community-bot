@@ -930,6 +930,18 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   prefisso dalla classe (`f"{AdminCb.__prefix__}:"`) per non poter divergere se il namespace cambia.
 - Il vecchio pannello read-only `admin_panel:*` + `keyboards/admin_panel_kb.py` è **rimosso** (assorbito dalla dashboard).
 
+### 18.1.1 Gestione scommesse admin (`AdminBetCb`, prefisso `admin_bet`)
+
+`handlers.admin_betting` e `keyboards.admin_betting_kb` costruiscono le callback solo con
+`AdminBetCb(action: str, event_id: int | None = None, option_id: int | None = None).pack()`:
+`list|close` non portano ID; `event|lock|confirm_lock|resolve|cancel|confirm_cancel` portano
+`event_id`; `pick_winner|confirm_resolve` portano `event_id` e `option_id`. I campi opzionali
+conservano sempre il separatore vuoto: `AdminBetCb(action="list").pack()` è
+`admin_bet:list::`, `AdminBetCb(action="event", event_id=7).pack()` è
+`admin_bet:event:7:`. I filtri tipizzati scartano ID non numerici; gli handler mantengono una
+guardia esplicita per ogni ID `None`, e il deny finale deriva il prefisso dalla classe senza
+modificare l'ordine del router.
+
 ### 18.2 Hub Eventi (macro-categoria, `EventCb`, prefisso `ev`)
 
 `handlers/events.py` (router incluso dopo `admin_dashboard`, prima di `quiz`). Unifica **quiz ·

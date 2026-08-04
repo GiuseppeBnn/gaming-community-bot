@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from exceptions.economy import EventAlreadySettledError, EventNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers._trophy_announce import announce_trophies
+from handlers.callbacks import AdminBetCb
 from keyboards.admin_betting_kb import (
     get_admin_confirm_cancel_keyboard,
     get_admin_confirm_lock_keyboard,
@@ -101,7 +102,11 @@ async def _show_event_list(
         else "📋 <b>Gestione Scommesse</b>\n\n<i>Nessun evento attivo al momento.</i>"
     )
     markup = get_admin_events_keyboard(events) if events else InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="✖ Chiudi", callback_data="admin_bet:close")]]
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="✖ Chiudi", callback_data=AdminBetCb(action="close").pack()
+            )
+        ]]
     )
 
     if isinstance(target, CallbackQuery):
@@ -146,22 +151,32 @@ async def _show_event_menu(
 # Callbacks
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data == "admin_bet:list", IsAdminCallbackFilter())
+@router.callback_query(AdminBetCb.filter(F.action == "list"), IsAdminCallbackFilter())
 async def cb_admin_list(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await _show_event_list(callback, db_session)
 
 
-@router.callback_query(F.data.startswith("admin_bet:event:"), IsAdminCallbackFilter())
-async def cb_admin_event(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    event_id = int(callback.data.split(":")[2])
+@router.callback_query(AdminBetCb.filter(F.action == "event"), IsAdminCallbackFilter())
+async def cb_admin_event(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
     await _show_event_menu(callback, db_session, event_id)
 
 
 # --- LOCK ---
 
-@router.callback_query(F.data.startswith("admin_bet:lock:"), IsAdminCallbackFilter())
-async def cb_admin_lock(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    event_id = int(callback.data.split(":")[2])
+@router.callback_query(AdminBetCb.filter(F.action == "lock"), IsAdminCallbackFilter())
+async def cb_admin_lock(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
     event = await bet_service.get_event_detail(db_session, event_id)
     if event is None:
         await callback.answer("❌ Evento non trovato.", show_alert=True)
@@ -180,9 +195,14 @@ async def cb_admin_lock(callback: CallbackQuery, db_session: AsyncSession) -> No
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_bet:confirm_lock:"), IsAdminCallbackFilter())
-async def cb_admin_confirm_lock(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    event_id = int(callback.data.split(":")[2])
+@router.callback_query(AdminBetCb.filter(F.action == "confirm_lock"), IsAdminCallbackFilter())
+async def cb_admin_confirm_lock(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
 
     try:
         await bet_service.lock_event(db_session, event_id)
@@ -203,8 +223,12 @@ async def cb_admin_confirm_lock(callback: CallbackQuery, db_session: AsyncSessio
         f"Non sono più accettate nuove scommesse. "
         f"Quando sei pronto, torna al pannello per dichiarare il vincitore.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 Torna alla lista", callback_data="admin_bet:list"),
-            InlineKeyboardButton(text="✖ Chiudi", callback_data="admin_bet:close"),
+            InlineKeyboardButton(
+                text="🔙 Torna alla lista", callback_data=AdminBetCb(action="list").pack()
+            ),
+            InlineKeyboardButton(
+                text="✖ Chiudi", callback_data=AdminBetCb(action="close").pack()
+            ),
         ]]),
     )
     await callback.answer("🔒 Bloccato!")
@@ -212,9 +236,14 @@ async def cb_admin_confirm_lock(callback: CallbackQuery, db_session: AsyncSessio
 
 # --- RESOLVE ---
 
-@router.callback_query(F.data.startswith("admin_bet:resolve:"), IsAdminCallbackFilter())
-async def cb_admin_resolve(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    event_id = int(callback.data.split(":")[2])
+@router.callback_query(AdminBetCb.filter(F.action == "resolve"), IsAdminCallbackFilter())
+async def cb_admin_resolve(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
     event = await bet_service.get_event_detail(db_session, event_id)
     if event is None:
         await callback.answer("❌ Evento non trovato.", show_alert=True)
@@ -235,10 +264,15 @@ async def cb_admin_resolve(callback: CallbackQuery, db_session: AsyncSession) ->
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin_bet:pick_winner:"), IsAdminCallbackFilter())
-async def cb_admin_pick_winner(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    parts = callback.data.split(":")
-    event_id, option_id = int(parts[2]), int(parts[3])
+@router.callback_query(AdminBetCb.filter(F.action == "pick_winner"), IsAdminCallbackFilter())
+async def cb_admin_pick_winner(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
+    if event_id is None or option_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
 
     event = await bet_service.get_event_detail(db_session, event_id)
     if event is None:
@@ -286,14 +320,15 @@ async def cb_admin_pick_winner(callback: CallbackQuery, db_session: AsyncSession
     await callback.answer()
 
 
-@router.callback_query(
-    F.data.startswith("admin_bet:confirm_resolve:"), IsAdminCallbackFilter()
-)
+@router.callback_query(AdminBetCb.filter(F.action == "confirm_resolve"), IsAdminCallbackFilter())
 async def cb_admin_confirm_resolve(
-    callback: CallbackQuery, db_session: AsyncSession
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
 ) -> None:
-    parts = callback.data.split(":")
-    event_id, option_id = int(parts[2]), int(parts[3])
+    event_id = callback_data.event_id
+    option_id = callback_data.option_id
+    if event_id is None or option_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
 
     try:
         summary = await bet_service.resolve_event(db_session, event_id, option_id)
@@ -362,8 +397,12 @@ async def cb_admin_confirm_resolve(
         f"💸 CoInn distribuiti: <b>{summary['total_distributed']} 🪙</b>\n\n"
         f"<i>I vincitori sono stati notificati in privato.</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 Torna alla lista", callback_data="admin_bet:list"),
-            InlineKeyboardButton(text="✖ Chiudi", callback_data="admin_bet:close"),
+            InlineKeyboardButton(
+                text="🔙 Torna alla lista", callback_data=AdminBetCb(action="list").pack()
+            ),
+            InlineKeyboardButton(
+                text="✖ Chiudi", callback_data=AdminBetCb(action="close").pack()
+            ),
         ]]),
     )
     await callback.answer("✅ Risolto!")
@@ -371,9 +410,14 @@ async def cb_admin_confirm_resolve(
 
 # --- CANCEL ---
 
-@router.callback_query(F.data.startswith("admin_bet:cancel:"), IsAdminCallbackFilter())
-async def cb_admin_cancel(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    event_id = int(callback.data.split(":")[2])
+@router.callback_query(AdminBetCb.filter(F.action == "cancel"), IsAdminCallbackFilter())
+async def cb_admin_cancel(
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
+) -> None:
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
     event = await bet_service.get_event_detail(db_session, event_id)
     if event is None:
         await callback.answer("❌ Evento non trovato.", show_alert=True)
@@ -397,13 +441,14 @@ async def cb_admin_cancel(callback: CallbackQuery, db_session: AsyncSession) -> 
     await callback.answer()
 
 
-@router.callback_query(
-    F.data.startswith("admin_bet:confirm_cancel:"), IsAdminCallbackFilter()
-)
+@router.callback_query(AdminBetCb.filter(F.action == "confirm_cancel"), IsAdminCallbackFilter())
 async def cb_admin_confirm_cancel(
-    callback: CallbackQuery, db_session: AsyncSession
+    callback: CallbackQuery, callback_data: AdminBetCb, db_session: AsyncSession
 ) -> None:
-    event_id = int(callback.data.split(":")[2])
+    event_id = callback_data.event_id
+    if event_id is None:
+        await callback.answer("❌ Dati callback non validi.", show_alert=True)
+        return
 
     try:
         result = await bet_service.cancel_event(db_session, event_id)
@@ -435,8 +480,12 @@ async def cb_admin_confirm_cancel(
         f"💰 Rimborsi emessi: <b>{result['refunded']}</b>\n\n"
         f"<i>I partecipanti sono stati notificati in privato.</i>",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="🔙 Torna alla lista", callback_data="admin_bet:list"),
-            InlineKeyboardButton(text="✖ Chiudi", callback_data="admin_bet:close"),
+            InlineKeyboardButton(
+                text="🔙 Torna alla lista", callback_data=AdminBetCb(action="list").pack()
+            ),
+            InlineKeyboardButton(
+                text="✖ Chiudi", callback_data=AdminBetCb(action="close").pack()
+            ),
         ]]),
     )
     await callback.answer("↩️ Annullato!")
@@ -444,7 +493,7 @@ async def cb_admin_confirm_cancel(
 
 # --- CLOSE ---
 
-@router.callback_query(F.data == "admin_bet:close", IsAdminCallbackFilter())
+@router.callback_query(AdminBetCb.filter(F.action == "close"), IsAdminCallbackFilter())
 async def cb_admin_close(callback: CallbackQuery) -> None:
     try:
         await callback.message.delete()
@@ -455,6 +504,6 @@ async def cb_admin_close(callback: CallbackQuery) -> None:
 
 # --- Deny non-admins ---
 
-@router.callback_query(F.data.startswith("admin_bet:"))
+@router.callback_query(F.data.startswith(f"{AdminBetCb.__prefix__}:"))
 async def cb_admin_deny(callback: CallbackQuery) -> None:
     await callback.answer("⛔ Accesso non autorizzato.", show_alert=True)

@@ -31,6 +31,14 @@ class AdminCb(CallbackData, prefix="adm"):
     item_id: int | None = None
 
 
+class AdminBetCb(CallbackData, prefix="admin_bet"):
+    """Admin management of betting events."""
+
+    action: str
+    event_id: int | None = None
+    option_id: int | None = None
+
+
 class SchedCb(CallbackData, prefix="sched"):
     """The scheduling flow — `handlers/schedule.py`.
 

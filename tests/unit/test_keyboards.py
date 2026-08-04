@@ -20,6 +20,7 @@ from keyboards.shop_kb import (
     get_shop_confirm_kb,
 )
 from services.catalog_loader import ConsumableCategory, ConsumableItem, CosmeticItem
+from handlers.callbacks import AdminBetCb
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +287,9 @@ class TestAdminBettingKeyboards:
         from keyboards.admin_betting_kb import get_admin_confirm_resolve_keyboard
         kb = get_admin_confirm_resolve_keyboard(event_id=5, option_id=3)
         confirm_btn = _flat_buttons(kb)[0]
-        assert confirm_btn.callback_data == "admin_bet:confirm_resolve:5:3"
+        assert confirm_btn.callback_data == AdminBetCb(
+            action="confirm_resolve", event_id=5, option_id=3
+        ).pack()
 
     def test_admin_confirm_cancel_shows_count(self):
         from keyboards.admin_betting_kb import get_admin_confirm_cancel_keyboard
