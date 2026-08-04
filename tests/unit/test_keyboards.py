@@ -28,6 +28,7 @@ from handlers.callbacks import (
     BetCustomCb,
     BetEventCb,
     BetOptionCb,
+    ShopCb,
 )
 
 
@@ -200,17 +201,17 @@ class TestShopCatalogKb:
         kb = get_shop_catalog_kb([_cosmetic()], balance=9999, owned={"tag_pro"})
         btn = _flat_buttons(kb)[0]
         assert "🎁" in btn.text
-        assert btn.callback_data == "shop:owned"
+        assert btn.callback_data == ShopCb(action="owned").pack()
 
     def test_close_button_always_last(self):
         kb = get_shop_catalog_kb([_cosmetic()], balance=9999, owned=set())
         last_btn = _flat_buttons(kb)[-1]
-        assert last_btn.callback_data == "shop:close"
+        assert last_btn.callback_data == ShopCb(action="close").pack()
 
     def test_button_callback_contains_item_key(self):
         kb = get_shop_catalog_kb([_cosmetic(key="tag_vip")], balance=500, owned=set())
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "shop:buy:tag_vip"
+        assert btn.callback_data == ShopCb(action="buy", key="tag_vip").pack()
 
 
 def _consumable(key="cons_pizza_pacman", price=300, category="snack"):
@@ -223,25 +224,25 @@ class TestLocandaKeyboards:
     def test_home_has_both_sections(self):
         kb = get_locanda_home_kb(has_cosmetics=True, has_menu=True)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:list" in cbs and "shop:menu" in cbs
-        assert "shop:pantry" in cbs and "shop:close" in cbs
+        assert ShopCb(action="list").pack() in cbs and ShopCb(action="menu").pack() in cbs
+        assert ShopCb(action="pantry").pack() in cbs and ShopCb(action="close").pack() in cbs
 
     def test_home_hides_empty_sections(self):
         kb = get_locanda_home_kb(has_cosmetics=False, has_menu=False)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:list" not in cbs and "shop:menu" not in cbs
+        assert ShopCb(action="list").pack() not in cbs and ShopCb(action="menu").pack() not in cbs
 
     def test_categories_callbacks(self):
         cats = [ConsumableCategory("snack", "Snack", "📦", 0)]
         kb = get_menu_categories_kb(cats)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:cat:snack" in cbs
+        assert ShopCb(action="cat", key="snack").pack() in cbs
         assert all(len(c.encode()) <= 64 for c in cbs)
 
     def test_menu_item_affordable_and_owned_count(self):
         kb = get_menu_items_kb([_consumable()], balance=500, counts={"cons_pizza_pacman": 2})
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "shop:cbuy:cons_pizza_pacman"
+        assert btn.callback_data == ShopCb(action="cbuy", key="cons_pizza_pacman").pack()
         assert "✅" in btn.text and "·2" in btn.text
 
     def test_menu_item_unaffordable(self):
@@ -251,20 +252,20 @@ class TestLocandaKeyboards:
     def test_consumable_confirm_callbacks(self):
         kb = get_consumable_confirm_kb("cons_pizza_pacman", "snack")
         btns = _flat_buttons(kb)
-        assert btns[0].callback_data == "shop:cexec:cons_pizza_pacman"
-        assert btns[1].callback_data == "shop:cat:snack"
+        assert btns[0].callback_data == ShopCb(action="cexec", key="cons_pizza_pacman").pack()
+        assert btns[1].callback_data == ShopCb(action="cat", key="snack").pack()
 
 
 class TestShopConfirmKb:
     def test_execute_button_callback(self):
         kb = get_shop_confirm_kb("tag_vip")
         execute_btn = _flat_buttons(kb)[0]
-        assert execute_btn.callback_data == "shop:exec:tag_vip"
+        assert execute_btn.callback_data == ShopCb(action="exec", key="tag_vip").pack()
 
     def test_back_button_goes_to_list(self):
         kb = get_shop_confirm_kb("tag_vip")
         back_btn = _flat_buttons(kb)[1]
-        assert back_btn.callback_data == "shop:list"
+        assert back_btn.callback_data == ShopCb(action="list").pack()
 
     def test_three_buttons(self):
         kb = get_shop_confirm_kb("tag_pro")

@@ -34,6 +34,7 @@ from handlers.callbacks import (
     EventCb,
     PollCreateCb,
     SchedCb,
+    ShopCb,
 )
 from handlers.events import _CONFIRM
 
@@ -55,6 +56,20 @@ def _query(data: str) -> CallbackQuery:
 ])
 def test_pack(cb, expected):
     assert cb.pack() == expected
+
+
+@pytest.mark.parametrize(("cb", "packed"), [
+    (ShopCb(action="home"), "shop:home:"),
+    (ShopCb(action="exec", key="tag_dragon"), "shop:exec:tag_dragon"),
+])
+def test_pack_shop_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(("action", "key"), [("bad:action", None), ("exec", "bad:key")])
+def test_shop_callback_values_cannot_contain_the_separator(action, key):
+    with pytest.raises(ValueError, match="Separator symbol"):
+        ShopCb(action=action, key=key).pack()
 
 
 @pytest.mark.parametrize(("cb", "packed"), [
@@ -260,7 +275,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
     for the wrong reason — nothing left to shadow."""
     assert {
         "adm", "admin_bet", "bet", "event", "bet_option", "bet_amount", "bet_custom",
-        "bet_confirm", "sched", "ev", "evpt",
+        "bet_confirm", "sched", "ev", "evpt", "shop",
     } <= _typed_callback_prefixes().keys()
 
 

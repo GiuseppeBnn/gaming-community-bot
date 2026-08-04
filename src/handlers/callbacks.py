@@ -31,6 +31,13 @@ class AdminCb(CallbackData, prefix="adm"):
     item_id: int | None = None
 
 
+class ShopCb(CallbackData, prefix="shop"):
+    """Navigation and purchases in La Locanda del Drago."""
+
+    action: str
+    key: str | None = None
+
+
 class AdminBetCb(CallbackData, prefix="admin_bet"):
     """Admin management of betting events."""
 

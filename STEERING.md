@@ -507,6 +507,12 @@ sezioni. `start_shop_private` (deep-link) chiama `_show_home`.
 
 ### Flow acquisto
 
+Le callback della Locanda sono `ShopCb` (`handlers.callbacks`), con prefisso `shop`,
+campi `action: str` e `key: str | None`. Ogni tastiera le costruisce con
+`ShopCb(...).pack()` e il router le filtra con `ShopCb.filter(F.action == ...)`;
+gli handler che usano una chiave rifiutano il valore assente con `answer()` e
+ritorno immediato.
+
 ```
 /locanda → privato: _show_home (sezioni) · gruppo: redirect deep-link
 shop:home → landing · shop:list → catalogo cosmetici · shop:menu → categorie consumabili · shop:pantry → dispensa
