@@ -4,16 +4,16 @@ Admin-only betting management panel.
 /gestisci_scommesse — entry point (private only; redirects from group)
 
 Callback flow:
-  admin_bet:list                          → refresh event list
-  admin_bet:event:<id>                    → event detail + action menu
-  admin_bet:lock:<id>                     → lock confirmation screen
-  admin_bet:confirm_lock:<id>             → execute lock
-  admin_bet:resolve:<id>                  → pick winning option
+  admin_bet:list::                        → refresh event list
+  admin_bet:event:<id>:                   → event detail + action menu
+  admin_bet:lock:<id>:                    → lock confirmation screen
+  admin_bet:confirm_lock:<id>:            → execute lock
+  admin_bet:resolve:<id>:                 → pick winning option
   admin_bet:pick_winner:<id>:<opt_id>     → payout preview + confirm
   admin_bet:confirm_resolve:<id>:<opt_id> → execute resolve, notify affected users
-  admin_bet:cancel:<id>                   → cancel confirmation screen
-  admin_bet:confirm_cancel:<id>           → execute cancel, notify all bettors
-  admin_bet:close                         → delete the panel message
+  admin_bet:cancel:<id>:                  → cancel confirmation screen
+  admin_bet:confirm_cancel:<id>:          → execute cancel, notify all bettors
+  admin_bet:close::                       → delete the panel message
 
 Non-admin users who somehow reach these buttons get a polite denial.
 """
