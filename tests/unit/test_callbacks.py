@@ -32,6 +32,7 @@ from handlers.callbacks import (
     BetEventCb,
     BetOptionCb,
     EventCb,
+    GuessAliasCb,
     GuessNewCb,
     PollCreateCb,
     QuizAnswerCb,
@@ -102,6 +103,22 @@ def test_pack_quiz_creation_callbacks(cb, packed):
 )
 def test_pack_guess_creation_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (GuessAliasCb(action="add", round_id=7), "guess_alias:add:7"),
+        (GuessAliasCb(action="cancel"), "guess_alias:cancel:"),
+    ],
+)
+def test_pack_guess_alias_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+@pytest.mark.parametrize("data", ["guess_alias:add:not-a-round-id", "guess_alias:add:-"])
+async def test_guess_alias_round_id_is_typed_by_the_filter(data):
+    assert await GuessAliasCb.filter()(_query(data)) is False
 
 
 @pytest.mark.parametrize("data", ["guess_new:hint_at::not-a-number", "guess_new:hint_at::-"])

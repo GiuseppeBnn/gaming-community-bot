@@ -1469,6 +1469,10 @@ domanda: le grafie da accettare, una per riga, dallo stesso parser della creazio
 della colonna (`aliases_json` è `String(1024)`: un write più lungo è un errore su Postgres, non
 un troncamento silenzioso), riportando quante ne ha scartate.
 
+I controlli della correzione passano da `GuessAliasCb`: `add` porta l'id intero del round e
+`cancel` non ne porta uno. Un id non numerico si ferma nel filtro; un payload `add` senza id
+non cancella né modifica il flusso FSM già aperto.
+
 **Vale solo in avanti, ed è la scelta.** Un alias è consultato **prima** della cache dei verdetti
 (§19.b, stadio 2 → stadio 4), quindi dal momento in cui c'è vince chi lo scrive — compreso chi
 era stato scartato, se riprova. I tentativi già giudicati restano come sono: ri-giudicarli

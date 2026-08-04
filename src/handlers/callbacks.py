@@ -175,6 +175,14 @@ class GuessNewCb(CallbackData, prefix="guess_new"):
     value: int | None = None
 
 
+class GuessAliasCb(CallbackData, prefix="guess_alias"):
+    """Accepted-spelling editing controls — `handlers/guess/editing.py`."""
+
+    #: "add" | "cancel"
+    action: str
+    round_id: int | None = None
+
+
 class QuizEditCb(CallbackData, prefix="quiz_edit"):
     """Quiz-question editing controls — `handlers/quiz/editing.py`.
 

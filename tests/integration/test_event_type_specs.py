@@ -36,10 +36,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
 import services.bet_service as bet_svc
+from services import guess_service
 from database.models import BettingEvent, EventStatus, PollTemplate, ScheduledTask
-from handlers.callbacks import EventCb, QuizEditCb, QuizTryCb
+from handlers.callbacks import EventCb, GuessAliasCb, QuizEditCb, QuizTryCb
 from handlers.event_types.base import StartResult, edit_or_send
 from handlers.event_types.bet_type import BetType
+from handlers.event_types.guess_type import GuessType
 from handlers.event_types.poll_type import PollType
 from handlers.event_types.quiz_type import QuizType
 from services import group_registry, poll_service, quiz_service
@@ -734,6 +736,35 @@ class TestQuizTypeActions:
             await QuizType().execute_scheduled(
                 _FakeBot(), session, _task(task_type="quiz", ref_id=quiz.id), GROUP_ID
             )
+
+
+# ---------------------------------------------------------------------------
+# Guess type
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", ["ready", "running"])
+async def test_editable_guess_rounds_offer_the_typed_alias_button(session, status):
+    round_ = await guess_service.create_round(
+        session,
+        kind="guess",
+        creator_tg_id=ADMIN_ID,
+        title="Indovina",
+        media_file_id="F",
+        media_kind="photo",
+        answer="Doom",
+        aliases=[],
+        hints=[],
+        max_attempts=5,
+        time_limit_seconds=0,
+    )
+    round_.status = status
+    await session.commit()
+    message = _FakeMessage()
+
+    await GuessType("guess").render_detail(message, session, round_.id)
+
+    assert GuessAliasCb(action="add", round_id=round_.id).pack() in _callbacks(message.markups[0])
 
 
 # ---------------------------------------------------------------------------
