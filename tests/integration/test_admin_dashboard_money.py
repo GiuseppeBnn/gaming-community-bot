@@ -403,7 +403,7 @@ class TestActionRouting:
         assert cb.alerts and "GROUP_ID" in cb.alerts[0]
 
     async def test_non_admins_are_denied(self):
-        cb = _FakeCallback("adm:home", user_id=999)
+        cb = _FakeCallback(AdminCb(action="home").pack(), user_id=999)
         await ad.cb_deny(cb)
         assert cb.alerts and "non autorizzato" in cb.alerts[0]
 
@@ -417,16 +417,16 @@ class TestNavigation:
     async def test_every_read_only_screen_renders(self, session, user_factory):
         await user_factory(tg_id=TARGET_ID, coins=250, xp=900)
 
-        for handler, data in (
-            (ad.cb_stats, "adm:stats"),
-            (ad.cb_lead, "adm:lead"),
-            (ad.cb_audit, "adm:audit"),
+        for handler, callback_data in (
+            (ad.cb_stats, AdminCb(action="stats")),
+            (ad.cb_lead, AdminCb(action="lead")),
+            (ad.cb_audit, AdminCb(action="audit")),
         ):
-            cb = _FakeCallback(data)
+            cb = _FakeCallback(callback_data.pack())
             await handler(cb, session)
-            assert cb.message.answers, data
+            assert cb.message.answers, callback_data.action
 
-        help_cb = _FakeCallback("adm:help")
+        help_cb = _FakeCallback(AdminCb(action="help").pack())
         await ad.cb_help(help_cb)
         assert help_cb.message.answers
 
@@ -456,7 +456,7 @@ class TestNavigation:
         await ad.cmd_admin(message, session)
         assert message.answers and "Dashboard Admin" in message.answers[0]
 
-        cb = _FakeCallback("adm:home")
+        cb = _FakeCallback(AdminCb(action="home").pack())
         await ad.cb_home(cb, _state(), session)
         assert cb.message.answers and "Dashboard Admin" in cb.message.answers[-1]
 
@@ -469,7 +469,7 @@ class TestNavigation:
         monkeypatch.setattr(ad, "CallbackQuery", _FakeCallback)
         await user_factory(tg_id=TARGET_ID)
 
-        cb = _FakeCallback("adm:home")
+        cb = _FakeCallback(AdminCb(action="home").pack())
 
         async def refuse_edit(text, reply_markup=None, **kw):
             raise RuntimeError("Bad Request: message is not modified")
@@ -508,14 +508,14 @@ class TestNavigation:
         assert message.markups[-1].inline_keyboard[0][0].url.endswith("?start=admin")
 
     async def test_the_menus_that_only_arm_a_state(self, session, user_factory):
-        for handler, expected in (
-            (ad.cb_econ, None),
-            (ad.cb_airdrop, ad.AdminPanelStates.waiting_airdrop),
-            (ad.cb_xpairdrop, ad.AdminPanelStates.waiting_xp_airdrop),
-            (ad.cb_search, ad.AdminPanelStates.waiting_search),
+        for handler, callback_data, expected in (
+            (ad.cb_econ, AdminCb(action="econ"), None),
+            (ad.cb_airdrop, AdminCb(action="airdrop"), ad.AdminPanelStates.waiting_airdrop),
+            (ad.cb_xpairdrop, AdminCb(action="xpairdrop"), ad.AdminPanelStates.waiting_xp_airdrop),
+            (ad.cb_search, AdminCb(action="search"), ad.AdminPanelStates.waiting_search),
         ):
             state = _state()
-            cb = _FakeCallback("adm:x")
+            cb = _FakeCallback(callback_data.pack())
             await handler(cb, state)
             assert cb.message.answers, handler.__name__
             assert await state.get_state() == expected, handler.__name__
@@ -526,7 +526,7 @@ class TestNavigation:
         async def record():
             deleted.append(True)
 
-        cb = _FakeCallback("adm:close")
+        cb = _FakeCallback(AdminCb(action="close").pack())
         cb.message.delete = record
         await ad.cb_close(cb, _state())
         assert deleted
@@ -535,7 +535,7 @@ class TestNavigation:
             raise RuntimeError("message to delete not found")
 
         # Telegram refuses to delete messages older than 48h; the panel must still close.
-        stubborn = _FakeCallback("adm:close")
+        stubborn = _FakeCallback(AdminCb(action="close").pack())
         stubborn.message.delete = refuse
         await ad.cb_close(stubborn, _state())  # must not raise
 
@@ -1003,7 +1003,7 @@ class TestStaleScreens:
     ):
         """Every «⬅️ Dashboard» button lands here; a failed edit must not leave the
         admin looking at the previous screen."""
-        callback = _StaleCallback("adm:home")
+        callback = _StaleCallback(AdminCb(action="home").pack())
 
         await ad.show_dashboard_home(callback, session, edit=True)
 
@@ -1012,7 +1012,7 @@ class TestStaleScreens:
     async def test_the_home_can_also_send_a_fresh_screen_on_purpose(
         self, session, as_callback
     ):
-        callback = _FakeCallback("adm:home")
+        callback = _FakeCallback(AdminCb(action="home").pack())
 
         await ad.show_dashboard_home(callback, session, edit=False)
 
@@ -1035,7 +1035,7 @@ class TestStaleScreens:
         self, session, user_factory
     ):
         await user_factory(tg_id=TARGET_ID, coins=100)
-        callback = _StaleCallback(f"adm:user:{TARGET_ID}")
+        callback = _StaleCallback(AdminCb(action="user", item_id=TARGET_ID).pack())
 
         await ad._show_detail_cb(callback, session, TARGET_ID)
 
@@ -1057,7 +1057,7 @@ class TestBetsShortcut:
         """One tap from the dashboard into the panel that settles bets; the button
         exists so an admin never has to remember the command."""
         await user_factory(tg_id=ADMIN_ID, coins=0)
-        callback = _FakeCallback("adm:bets")
+        callback = _FakeCallback(AdminCb(action="bets").pack())
 
         await ad.cb_bets(callback, session)
 
