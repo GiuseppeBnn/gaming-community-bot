@@ -138,6 +138,47 @@ async def test_an_unknown_confirm_action_never_reaches_the_handler():
 # that has to accept it later.
 # ---------------------------------------------------------------------------
 
+def test_valid_action_probe_fills_required_fields():
+    class RequiredProbeCb(CallbackData, prefix="required_probe"):
+        action: str
+        event_id: int
+        option_id: int
+
+    probe = _valid_action_probe(RequiredProbeCb, "open")
+
+    assert probe == RequiredProbeCb(action="open", event_id=1, option_id=1)
+
+
+_REQUIRED_FIELD_PROBES: dict[object, object] = {
+    str: "probe",
+    int: 1,
+    bool: True,
+}
+
+
+def _central_callback_classes() -> list[type[CallbackData]]:
+    return [
+        cls
+        for cls in CallbackData.__subclasses__()
+        if cls.__module__ == "handlers.callbacks"
+    ]
+
+
+def _valid_action_probe(cls: type[CallbackData], action: str) -> CallbackData:
+    values: dict[str, object] = {"action": action}
+    for name, field in cls.model_fields.items():
+        if name == "action" or not field.is_required():
+            continue
+        try:
+            values[name] = _REQUIRED_FIELD_PROBES[field.annotation]
+        except KeyError as exc:
+            raise AssertionError(
+                f"no deterministic probe for required field "
+                f"{cls.__name__}.{name}: {field.annotation!r}"
+            ) from exc
+    return cls(**values)
+
+
 def _typed_callback_prefixes() -> dict[str, type[CallbackData]]:
     """Direct `CallbackData` subclasses already imported from the central module.
 
@@ -147,7 +188,7 @@ def _typed_callback_prefixes() -> dict[str, type[CallbackData]]:
     with no edit to this test required. This is deliberately neither recursive nor
     a claim about subclasses in modules the test process has not imported.
     """
-    return {cls.__prefix__: cls for cls in CallbackData.__subclasses__()}
+    return {cls.__prefix__: cls for cls in _central_callback_classes()}
 
 
 def test_the_prefix_scan_actually_finds_callback_classes():
@@ -205,7 +246,7 @@ def _constructed_actions() -> dict[type[CallbackData], set[str]]:
     an unclaimed action creates a failing dead-button check rather than another
     hand-maintained action list.
     """
-    classes = {cls.__name__: cls for cls in CallbackData.__subclasses__()}
+    classes = {cls.__name__: cls for cls in _central_callback_classes()}
     src_dir = Path(__file__).resolve().parents[2] / "src"
 
     found: dict[type[CallbackData], set[str]] = {cls: set() for cls in classes.values()}
@@ -257,7 +298,7 @@ def _registered_action_filters() -> dict[type[CallbackData], list[CallbackQueryF
     (`&`, `~`, a set built elsewhere, …) instead of a regex that only understands
     today's two spellings.
     """
-    classes = CallbackData.__subclasses__()
+    classes = _central_callback_classes()
     found: dict[type[CallbackData], list[CallbackQueryFilter]] = {cls: [] for cls in classes}
     for router in handlers.ROUTERS:
         for handler in router.callback_query.handlers:
@@ -291,11 +332,37 @@ async def test_every_constructed_action_reaches_a_registered_filter():
     for cls, actions in constructed.items():
         filters = registered[cls]
         for action in sorted(actions):
-            probe = _query(cls(action=action).pack())
+            probe = _query(_valid_action_probe(cls, action).pack())
             if not any([await f(probe) for f in filters]):
                 dead.append(f"{cls.__name__}(action={action!r})")
 
     assert dead == [], (
         "constructed action(s) with no registered filter that accepts them — "
         "dead button(s):\n" + "\n".join(dead)
+    )
+
+
+def test_callback_declarations_have_no_project_local_imports():
+    src_dir = Path(__file__).resolve().parents[2] / "src"
+    callback_module = src_dir / "handlers" / "callbacks.py"
+    local_roots = {path.stem for path in src_dir.glob("*.py")}
+    local_roots.update(
+        path.name
+        for path in src_dir.iterdir()
+        if path.is_dir() and (path / "__init__.py").exists()
+    )
+    tree = ast.parse(callback_module.read_text(encoding="utf-8"), filename=str(callback_module))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders.extend(
+                alias.name for alias in node.names if alias.name.split(".", 1)[0] in local_roots
+            )
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".", 1)[0]
+            if node.level or root in local_roots:
+                offenders.append("." * node.level + (node.module or ""))
+    assert offenders == [], (
+        "handlers/callbacks.py must remain a project-import-free leaf module; "
+        f"project imports: {offenders}"
     )
