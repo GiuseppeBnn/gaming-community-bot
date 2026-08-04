@@ -656,9 +656,12 @@ nessuna colonna). Gli handler `/daily`, `/dai_xp` annunciano entrambi.
 
 ### Classifiche — `handlers/leaderboard.py`
 
-Comando utente `/classifiche` con switcher inline `lead:coins|xp|trofei` (`render_board`
-riusato anche dalla dashboard `adm:lead:*`). Board: 💰 `admin_service.leaderboard`,
-⚡ `xp_service.leaderboard_xp`, 🏆 `badge_service.leaderboard_trophies`.
+Comando utente `/classifiche` con switcher inline `LeaderboardCb(action: str, board: str | None
+= None)`, prefisso `lead`: `show` trasporta una board `coins|xp|trofei`, `close` non ne
+trasporta una. I wire payload sono `lead:show:<board>` e `lead:close:`; tastiere e filtri usano
+sempre `.pack()` / `LeaderboardCb.filter(F.action == ...)`. `render_board` è riusato anche dalla
+dashboard `adm:lead:*`. Board: 💰 `admin_service.leaderboard`, ⚡ `xp_service.leaderboard`, 🏆
+`badge_service.leaderboard_trophies`.
 
 ---
 

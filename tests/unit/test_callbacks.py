@@ -35,6 +35,7 @@ from handlers.callbacks import (
     GuessAliasCb,
     GuessNewCb,
     GuessPlayCb,
+    LeaderboardCb,
     PollCreateCb,
     QuizAnswerCb,
     QuizEditCb,
@@ -79,6 +80,28 @@ def test_pack(cb, expected):
 )
 def test_pack_shop_callbacks(cb, packed):
     assert cb.pack() == packed
+
+
+@pytest.mark.parametrize(
+    ("cb", "packed"),
+    [
+        (LeaderboardCb(action="show", board="coins"), "lead:show:coins"),
+        (LeaderboardCb(action="close"), "lead:close:"),
+    ],
+)
+def test_pack_leaderboard_callbacks(cb, packed):
+    assert cb.pack() == packed
+
+
+async def test_leaderboard_callback_is_unpacked_by_its_filter():
+    assert await LeaderboardCb.filter()(_query("lead:show:coins")) == {
+        "callback_data": LeaderboardCb(action="show", board="coins")
+    }
+
+
+def test_leaderboard_callback_values_cannot_contain_the_separator():
+    with pytest.raises(ValueError, match="Separator symbol"):
+        LeaderboardCb(action="show", board="coins:xp").pack()
 
 
 @pytest.mark.parametrize(
@@ -479,6 +502,7 @@ def test_the_prefix_scan_actually_finds_callback_classes():
         "quiz_try",
         "guess_new",
         "shop",
+        "lead",
     } <= _typed_callback_prefixes().keys()
 
 

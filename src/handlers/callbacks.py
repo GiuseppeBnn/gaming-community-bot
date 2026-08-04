@@ -39,6 +39,14 @@ class ShopCb(CallbackData, prefix="shop"):
     key: str | None = None
 
 
+class LeaderboardCb(CallbackData, prefix="lead"):
+    """Public leaderboard switcher controls — `handlers/leaderboard.py`."""
+
+    #: "show" | "close"
+    action: str
+    board: str | None = None
+
+
 class AdminBetCb(CallbackData, prefix="admin_bet"):
     """Admin management of betting events."""
 
