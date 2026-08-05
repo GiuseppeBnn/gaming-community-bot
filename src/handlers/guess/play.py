@@ -80,6 +80,32 @@ async def _reply(
         await state.update_data(kb_message_id=sent.message_id)
 
 
+async def _end(message: Message, state: FSMContext, text: str) -> None:
+    """Close the game out: drop the last live keyboard, clear state, then answer.
+
+    The terminal replies (solved, out of attempts, expired, closed) used to
+    `state.clear()` and `message.answer` **without** stripping the previous
+    «🚪 Esci» button — leaving a live control on a game that was already over.
+    Pressing it then matched no handler (the state was gone) and the button spun
+    until Telegram gave up: the "si blocca dopo alcuni tentativi" report. Stripping
+    it here removes the button before the state that answers it disappears.
+
+    Best-effort, like `_reply`: a refused edit (message too old) must never turn a
+    correct answer into an error.
+    """
+    data = await state.get_data()
+    previous = data.get("kb_message_id")
+    if previous:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=previous, reply_markup=None
+            )
+        except Exception as exc:  # noqa: BLE001 — cosmetic, see the docstring
+            log.debug("Tastiera %s non rimovibile: %s", previous, exc)
+    await state.clear()
+    await message.answer(text)
+
+
 def _status_line(round_, sess, left: int) -> str:
     """Where the player stands, on every message that expects an answer.
 
@@ -180,8 +206,7 @@ async def fsm_answer(
         await guess_service.get_round(db_session, round_id) if round_id else None
     )
     if round_ is None or round_.status != "running":
-        await state.clear()
-        await message.answer("🏁 Questo round è chiuso.")
+        await _end(message, state, "🏁 Questo round è chiuso.")
         return
 
     # Cooldown FIRST: a throttled message must not cost an attempt.
@@ -197,19 +222,16 @@ async def fsm_answer(
     user_id = message.from_user.id
     sess = await guess_service.start_or_resume(db_session, round_.id, user_id)
     if sess.solved_at is not None:
-        await state.clear()
-        await message.answer("✅ Hai già indovinato questo round.")
+        await _end(message, state, "✅ Hai già indovinato questo round.")
         return
 
     deadline = guess_service.deadline(round_, sess)
     if deadline is not None and guess_service.now() > deadline:
-        await state.clear()
-        await message.answer("⏱️ <b>Tempo scaduto</b> per questo round.")
+        await _end(message, state, "⏱️ <b>Tempo scaduto</b> per questo round.")
         return
 
     if await guess_service.attempts_left(db_session, round_, user_id) <= 0:
-        await state.clear()
-        await message.answer("❌ Tentativi <b>esauriti</b> per questo round.")
+        await _end(message, state, "❌ Tentativi <b>esauriti</b> per questo round.")
         return
 
     # Last guard before the model, and the one production needed: when the judge
@@ -258,18 +280,18 @@ async def fsm_answer(
         return
 
     if outcome.solved:
-        await state.clear()
         tries = "1 tentativo" if outcome.attempt_no == 1 else f"{outcome.attempt_no} tentativi"
-        await message.answer(
+        await _end(
+            message, state,
             f"🎉 <b>Indovinato!</b> In <b>{tries}</b>.\n"
-            "Aspetta la chiusura per scoprire il podio! 🏆"
+            "Aspetta la chiusura per scoprire il podio! 🏆",
         )
         return
 
     if outcome.attempts_left <= 0:
-        await state.clear()
-        await message.answer(
-            "❌ Tentativi <b>esauriti</b>. Ci vediamo al prossimo round!"
+        await _end(
+            message, state,
+            "❌ Tentativi <b>esauriti</b>. Ci vediamo al prossimo round!",
         )
         return
 
@@ -281,10 +303,15 @@ async def fsm_answer(
     await _reply(message, state, "\n".join(lines), _playing_kb())
 
 
-@router.callback_query(GuessPlayStates.answering, F.data == "guess_play:quit")
+@router.callback_query(F.data == "guess_play:quit")
 async def cb_quit(callback, state: FSMContext) -> None:
     """Leave the answering mode. The session (and its clock) stays: quitting is
     not a way to buy more time.
+
+    **Not state-gated on purpose.** A «🚪 Esci» button can outlive the answering
+    state — a finished game leaves its last one on screen — and a handler filtered
+    on `GuessPlayStates.answering` would let that button match nothing and spin
+    until Telegram gives up. Stateless, the button always answers.
 
     The way back goes on the message. Telling the player to «reopen the group
     link» meant scrolling the group back to an announcement that newer messages
@@ -292,13 +319,22 @@ async def cb_quit(callback, state: FSMContext) -> None:
     """
     round_id = (await state.get_data()).get("round_id")
     await state.clear()
+    # Strip the pressed button so it cannot be tapped a second time.
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as exc:  # noqa: BLE001 — cosmetic, may be too old to edit
+        log.debug("Tastiera del messaggio di uscita non rimovibile: %s", exc)
+    if not round_id:
+        # The game already ended (state was cleared): nothing to resume.
+        await callback.message.answer("🚪 Uscito dal gioco.")
+        await callback.answer()
+        return
     b = InlineKeyboardBuilder()
-    if round_id:
-        b.button(text="🔄 Riprendi", callback_data=f"guess_play:resume:{round_id}")
+    b.button(text="🔄 Riprendi", callback_data=f"guess_play:resume:{round_id}")
     await callback.message.answer(
         "🚪 Uscito dal gioco. Puoi riprendere quando vuoi — "
         "il tempo però continua a scorrere.",
-        reply_markup=b.as_markup() if round_id else None,
+        reply_markup=b.as_markup(),
     )
     await callback.answer()
 

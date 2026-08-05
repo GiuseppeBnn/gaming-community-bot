@@ -688,6 +688,12 @@ class TestPrizeSummary:
         got = gs.format_prize_summary(round_)
         assert "100" in got and "50" in got and "25" in got and "10" in got
 
+    async def test_the_consolation_floor_is_not_labelled(self, session, round_):
+        """The linear consolation still decreases to `prize_min` internally, but the
+        «→ min X» numeric label is dropped from the summary."""
+        assert "min" not in gs.format_prize_summary(round_).lower()
+        assert round_.prize_min > 0, "the floor still exists, only its label is gone"
+
 
 class TestAddAliases:
     """Accepting a spelling the judge got wrong, on a round that is already out.

@@ -80,6 +80,10 @@ _MIGRATIONS: list[str] = [
     # behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS "
     "round_duration_seconds INTEGER NOT NULL DEFAULT 0",
+    # guess_rounds: absolute auto-close instant, the admin-picked-date alternative
+    # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
+    # so rounds created before this column keep behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
 ]
 
 

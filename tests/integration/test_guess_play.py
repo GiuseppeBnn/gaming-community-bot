@@ -857,6 +857,45 @@ class TestQuit:
 
         assert await state.get_state() is None and cb.answered == 1
 
+    async def test_quitting_after_the_game_ended_still_answers(
+        self, session, round_, state
+    ):
+        """The «🚪 Esci» button can outlive the answering state — a finished game
+        leaves its last one on screen. A state-gated handler would let that button
+        match nothing and spin forever ("si blocca dopo alcuni tentativi");
+        stateless, it always answers and clears the spinner."""
+        await _playing(session, round_, state)
+        await pl.fsm_answer(_Msg("Doom"), session, state)  # solve → state cleared
+        assert await state.get_state() is None
+
+        class _Cb:
+            def __init__(self) -> None:
+                self.message = _Msg()
+                self.answered = 0
+
+            async def answer(self, *a, **kw):
+                self.answered += 1
+
+        cb = _Cb()
+        await pl.cb_quit(cb, state)
+
+        assert cb.answered == 1, "the callback must be answered, not left spinning"
+        assert "uscito" in cb.message.said.lower()
+
+    async def test_a_terminal_reply_strips_the_last_live_button(
+        self, session, round_, state
+    ):
+        """Solving used to leave the previous «🚪 Esci» button live on a game that
+        was over. The terminal reply now strips it, so there is no orphan button to
+        press in the first place."""
+        await _playing(session, round_, state)
+        await pl.fsm_answer(_Msg("Quake"), session, state)  # wrong → arms a button
+        win = _Msg("Doom")
+
+        await pl.fsm_answer(win, session, state)  # solve → strips the previous kb
+
+        assert win.bot.markup_cleared, "the last live button must be stripped on a win"
+
     async def test_quitting_does_not_stop_the_clock(self, session, round_, state):
         """Otherwise «esci» is a pause button and the time limit means nothing."""
         round_.time_limit_seconds = 600

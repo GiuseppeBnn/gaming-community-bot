@@ -147,6 +147,31 @@ class TestStartingASession:
         assert "senza limite" in message.said or "Nessun limite" in message.said
         assert "Domanda 1/2" in message.bot.said
 
+    async def test_the_admin_description_is_shown_in_private(
+        self, session, user_factory
+    ):
+        """The description was collected in creation but never shown to the player:
+        it belongs under the title, alongside the rules."""
+        quiz, _ = await _running_quiz(session, user_factory)
+        message = _FakeMessage()
+
+        await qz.start_quiz_session(message, session, quiz.id)
+
+        assert "Geo" in message.said
+
+    async def test_an_empty_description_shows_no_marker(self, session, user_factory):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        await user_factory(tg_id=PLAYER, username=f"u{PLAYER}", coins=0)
+        quiz = await quiz_service.create_quiz(session, ADMIN_ID, "Senza", "")
+        await quiz_service.add_question(session, quiz.id, "Q?", ["a", "b"], 0, None)
+        await quiz_service.set_status(session, quiz.id, "running")
+        await session.commit()
+        message = _FakeMessage()
+
+        await qz.start_quiz_session(message, session, quiz.id)
+
+        assert "📝" not in message.said
+
     async def test_a_timed_quiz_announces_the_limit(self, session, user_factory):
         quiz, _ = await _running_quiz(session, user_factory, time_limit=30)
         message = _FakeMessage()

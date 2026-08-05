@@ -418,6 +418,15 @@ class TestExplicitPrizes:
         assert reloaded.prize_consolation == 100 and reloaded.prize_min == 20
         assert qz.has_explicit_prizes(reloaded) is True
 
+    async def test_the_summary_drops_the_floor_label(self, session):
+        """The «→ min X» label is gone from the summary; the floor itself still
+        drives the payout (see `test_consolation_decreasing_with_floor`)."""
+        quiz, _ = await _quiz_explicit(
+            session, first=1000, second=500, third=250, consolation=100, prize_min=20
+        )
+        summary = qz.format_prize_summary(quiz)
+        assert "100" in summary and "min" not in summary.lower()
+
     async def test_podium_gets_explicit_amounts(self, session, user_factory):
         for uid in (1, 2, 3):
             await user_factory(tg_id=uid, coins=0)

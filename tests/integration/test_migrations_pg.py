@@ -116,6 +116,24 @@ class TestMigrationsRepairAnOldDeploy:
         assert col["nullable"] is False
         assert "0" in col["default"]
 
+    async def test_readds_the_absolute_close_to_an_older_guess_table(
+        self, pg_engine, monkeypatch
+    ):
+        """`guess_rounds.closes_at` is the admin-picked-date alternative to the
+        relative auto-close. Added after the initial deploy, so a table that
+        predates it must get it from `_MIGRATIONS` — nullable, since NULL means
+        "fall back to the duration" and existing rounds keep behaving as before.
+        """
+        async with pg_engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE guess_rounds DROP COLUMN IF EXISTS closes_at")
+            )
+
+        await _run_migrations(pg_engine, monkeypatch)
+
+        col = (await _columns(pg_engine, "guess_rounds"))["closes_at"]
+        assert col["nullable"] is True
+
     async def test_readds_columns_missing_from_an_older_schema(self, pg_engine, monkeypatch):
         async with pg_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE users DROP COLUMN xp_today"))

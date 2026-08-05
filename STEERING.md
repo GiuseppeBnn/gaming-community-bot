@@ -1231,6 +1231,16 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
   giocatore: quell'orologio parte quando *ogni* giocatore apre il link, quindi non esiste un
   istante calcolabile in cui «sono scaduti tutti». La durata la decide l'admin, si vede nella
   scheda e **si annuncia nel gruppo** — una scadenza che nessuno conosce è un agguato.
+- **Due modi di dire quando si chiude, mutuamente esclusivi.** Oltre alla durata relativa
+  (`round_duration_seconds`, armata all'apertura = `now()+durata`), l'admin può fissare una **data
+  assoluta** (`closes_at`, colonna `DateTime` nullable, istante scelto in creazione): la scheda
+  accetta un numero di **secondi** *oppure* un `AAAA-MM-GG HH:MM` (stesso parser di `parse_run_at`;
+  i token relativi `30m/2h/1d` sono **rifiutati** perché ambigui — «da ora» o «dall'avvio»?).
+  `closes_at` **vince** sulla durata e la azzera (`create_round`). `_schedule_auto_close` arma il
+  task su `closes_at` se presente, altrimenti su `now()+durata`, altrimenti niente (chiusura a
+  mano). Poiché la data è fissa e l'avvio può arrivare dopo, **`open_round` rifiuta di avviare** un
+  round il cui `closes_at` è già passato (prima dell'annuncio), invece di schedulare nel passato.
+  Colonna nuova ⇒ voce in `_MIGRATIONS` (regola 9).
 
 ### Creazione: tre domande e una scheda
 
@@ -1403,7 +1413,8 @@ per tornarci, se non eliminare il round e rifarlo.
   chiamanti. `send_media` risolve **solo** il metodo che serve, da whitelist.
 - La chiusura automatica riusa `task_type = kind` con `payload.action = "close"` — lo stesso
   pattern della finestra scommesse (§20). **Nessun task-type nuovo.** Il task lo crea
-  `open_round`; `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
+  `open_round` (armato su `closes_at` assoluto se scelto, altrimenti su `now()+round_duration_seconds`);
+  `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
   tardi trova un round già `finished` e logga un fallimento per una cosa andata bene.
   *(Il ramo esisteva da sempre ma nessuno creava il task: era codice morto documentato come
   funzionante — controllare che un ramo sia raggiungibile, non solo che sia scritto.)*

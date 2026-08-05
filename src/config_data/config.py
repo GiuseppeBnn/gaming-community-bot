@@ -128,10 +128,10 @@ class Settings(BaseSettings):
     # Per-rank prize defaults. The last-place floor is NOT duplicated here: it is
     # derived by `services.prizes.participation_floor` from the shared
     # `quiz_participation_floor_*` — one schedule for every game with a podium.
-    guess_default_first: int = 800
-    guess_default_second: int = 400
-    guess_default_third: int = 200
-    guess_default_consolation: int = 80
+    guess_default_first: int = 1000
+    guess_default_second: int = 500
+    guess_default_third: int = 250
+    guess_default_consolation: int = 100
     # Guess event XP (uncapped, like the quiz: admin-gated, not farmable).
     guess_xp_participation: int = 15   # XP for submitting at least one answer
     guess_xp_solved: int = 25          # extra XP for actually guessing it

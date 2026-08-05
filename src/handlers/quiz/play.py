@@ -129,7 +129,9 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
         if limit > 0 else
         "Nessun limite di tempo, ma chi finisce prima sale sul podio a parità di risposte!"
     )
-    await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n<i>{rules}</i>")
+    # The admin's own description, under the title (skipped in creation ⇒ empty).
+    desc_txt = f"📝 <i>{esc(quiz.description)}</i>\n" if quiz.description else ""
+    await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n{desc_txt}<i>{rules}</i>")
     await _present_question(message.bot, message.chat.id, message.from_user.id, quiz, done)
 
 

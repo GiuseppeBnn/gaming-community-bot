@@ -27,8 +27,10 @@ The round row is created only at publish, so an abandoned flow leaves nothing.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from aiogram import F
 from aiogram.fsm.context import FSMContext
@@ -45,7 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from keyboards.common_kb import confirm_cancel_kb
-from services import group_registry, guess_service
+from services import group_registry, guess_service, schedule_service
 from utils.text import esc, format_seconds_short
 
 from handlers.guess._shared import (
@@ -142,9 +144,42 @@ def _parse_time_limit(raw: str, _data: dict) -> tuple[int | None, str | None]:
                         zero_ok=True, unit="secondi")
 
 
-def _parse_duration(raw: str, _data: dict) -> tuple[int | None, str | None]:
-    return _bounded_int(raw, _MIN_ROUND_DURATION, _MAX_ROUND_DURATION,
-                        zero_ok=True, unit="secondi")
+#: A bare relative token (30m/2h/1d). Refused in the auto-close field on purpose:
+#: "from now" or "from start"? — the two accepted forms (seconds, absolute date)
+#: are unambiguous, so the ambiguous one is turned away rather than guessed.
+_REL_TOKEN_RE = re.compile(r"^\d+\s*[mhd]$", re.IGNORECASE)
+
+
+def _parse_close(raw: str, _data: dict) -> tuple[dict | None, str | None]:
+    """The auto-close, in either of two unambiguous shapes.
+
+    A plain integer keeps the original meaning — seconds after the round *starts*
+    (relative, armed at open-time). Anything else is read as an absolute
+    ``AAAA-MM-GG HH:MM`` instant, parsed by the same helper as ``/programma``. The
+    two are mutually exclusive, so this writes **both** state keys at once (like
+    the four prizes) and its ``apply`` is the identity.
+    """
+    raw = raw.strip()
+    try:
+        int(raw)
+    except ValueError:
+        pass
+    else:
+        value, err = _bounded_int(raw, _MIN_ROUND_DURATION, _MAX_ROUND_DURATION,
+                                  zero_ok=True, unit="secondi")
+        if err:
+            return None, err
+        return {"round_duration_seconds": value, "round_closes_at": None}, None
+
+    if _REL_TOKEN_RE.match(raw):
+        return None, ("⚠️ Per una <b>durata</b> usa i secondi (es. "
+                      "<code>1800</code>); per una <b>data</b> usa "
+                      "<code>AAAA-MM-GG HH:MM</code>.")
+    try:
+        dt = schedule_service.parse_run_at(raw)
+    except ValueError as e:
+        return None, f"⚠️ {e}"
+    return {"round_duration_seconds": 0, "round_closes_at": dt.isoformat()}, None
 
 
 def _parse_prizes(raw: str, _data: dict) -> tuple[list[int] | None, str | None]:
@@ -199,6 +234,16 @@ def prune_unreachable_hints(data: dict) -> list[list]:
 
 def _show_seconds(value: int, zero: str) -> str:
     return f"<b>{format_seconds_short(value)}</b>" if value else f"<i>{zero}</i>"
+
+
+def _show_close(d: dict) -> str:
+    """The auto-close line: an absolute date when one was picked, otherwise the
+    relative duration (or «a mano» when there is none)."""
+    iso = d.get("round_closes_at")
+    if iso:
+        local = schedule_service.to_local(datetime.fromisoformat(iso))
+        return f"<b>{local:%d/%m/%Y %H:%M}</b>"
+    return _show_seconds(d["round_duration_seconds"], "a mano")
 
 
 # ---------------------------------------------------------------------------
@@ -271,12 +316,15 @@ FIELDS: dict[str, Field] = {
     ),
     "round_duration_seconds": Field(
         label="⏳ Chiusura automatica",
-        prompt=(f"Dopo quanto si <b>chiude da solo</b> il round, in secondi (da "
-                f"{_MIN_ROUND_DURATION} a {_MAX_ROUND_DURATION}), oppure <b>0</b> "
-                "per chiuderlo a mano.\n"
+        prompt=(f"Dopo quanti <b>secondi</b> dall'avvio si <b>chiude da solo</b> il "
+                f"round (da {_MIN_ROUND_DURATION} a {_MAX_ROUND_DURATION}), oppure "
+                "una <b>data</b> <code>AAAA-MM-GG HH:MM</code>, oppure <b>0</b> per "
+                "chiuderlo a mano.\n"
                 "<i>Alla chiusura scattano podio, premi e reveal.</i>"),
-        parse=_parse_duration,
-        show=lambda d: _show_seconds(d["round_duration_seconds"], "a mano"),
+        parse=_parse_close,
+        show=_show_close,
+        # `parse` already returns the two state keys; nothing more to map.
+        apply=lambda v: v,
     ),
     # No `parse`: hints are built on their own screen, from buttons. See
     # `_hints_panel`. The entry stays in FIELDS so the card still renders and
@@ -321,6 +369,7 @@ def _defaults() -> dict:
         "max_attempts": settings.guess_default_attempts,
         "time_limit_seconds": settings.guess_default_time_limit_seconds,
         "round_duration_seconds": settings.guess_default_round_duration_seconds,
+        "round_closes_at": None,
         "prize_first": settings.guess_default_first,
         "prize_second": settings.guess_default_second,
         "prize_third": settings.guess_default_third,
@@ -838,6 +887,8 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext,
         max_attempts=data["max_attempts"],
         time_limit_seconds=data["time_limit_seconds"],
         round_duration_seconds=data["round_duration_seconds"],
+        closes_at=(datetime.fromisoformat(data["round_closes_at"])
+                   if data.get("round_closes_at") else None),
         prize_first=data["prize_first"],
         prize_second=data["prize_second"],
         prize_third=data["prize_third"],

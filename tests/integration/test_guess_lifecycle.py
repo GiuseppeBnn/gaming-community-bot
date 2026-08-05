@@ -14,6 +14,7 @@ under the podium, when there is nothing left to spoil.
 from __future__ import annotations
 
 import types
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -165,6 +166,20 @@ class TestOpen:
 
         assert ok is False and "giocato" in msg
 
+    async def test_a_past_absolute_close_refuses_the_open(self, session, round_):
+        """An absolute close is fixed at creation; starting the round after that
+        instant would arm the auto-close in the past. Refuse before announcing —
+        not schedule a task that fires immediately."""
+        round_.closes_at = gs.now() - timedelta(minutes=1)
+        await session.flush()
+        bot = _Bot()
+
+        ok, msg = await lc.open_round(bot, session, round_.id)
+
+        assert ok is False and "passat" in msg.lower()
+        assert bot.messages == [], "must refuse before the announcement is sent"
+        assert await _status(session, round_.id) == "ready"
+
     async def test_a_missing_round_is_reported_not_raised(self, session):
         ok, _ = await lc.open_round(_Bot(), session, 999)
         assert ok is False
@@ -237,6 +252,45 @@ class TestTheAutoClose:
         await lc.open_round(_Bot(), session, round_.id)
 
         assert await self._pending(session, round_.id) == []
+
+    async def test_an_absolute_close_arms_the_task_at_that_instant(
+        self, session, round_
+    ):
+        """A round can auto-close at an admin-picked wall-clock instant instead of
+        N seconds after it starts (the relative duration)."""
+        target = gs.now() + timedelta(hours=3)
+        round_.closes_at = target
+        round_.round_duration_seconds = 0
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        task = (await self._pending(session, round_.id))[0]
+        assert abs((task.run_at - target).total_seconds()) < 1
+        assert schedule_service.task_payload(task) == {"action": "close"}
+
+    async def test_an_absolute_close_wins_over_a_duration(self, session, round_):
+        """When both are set the fixed instant wins — the arming must not fall
+        back to the relative duration."""
+        target = gs.now() + timedelta(hours=5)
+        round_.closes_at = target
+        round_.round_duration_seconds = 600
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        task = (await self._pending(session, round_.id))[0]
+        assert abs((task.run_at - target).total_seconds()) < 1
+
+    async def test_an_absolute_close_is_stated_as_a_date(self, session, round_):
+        """The announcement names the day and time, not a "fra …" duration."""
+        round_.closes_at = gs.now() + timedelta(days=1)
+        await session.flush()
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert "chiude il" in bot.texts.lower()
 
     async def test_closing_by_hand_cancels_the_pending_auto_close(
         self, session, round_

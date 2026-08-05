@@ -53,17 +53,33 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
     if round_.status == "finished":
         return False, "Questo round è già stato giocato."
 
+    # An absolute close is fixed at creation, so a round started after that instant
+    # would arm its auto-close in the past. Refuse here, before the announcement is
+    # sent, rather than schedule a task that fires immediately.
+    if round_.closes_at is not None and round_.closes_at <= guess_service.now():
+        return False, ("La data di chiusura automatica è già passata. "
+                       "Aggiornala prima di avviare.")
+
     spec = kind_of(round_.kind)
     limit = round_.time_limit_seconds
     time_txt = (
         f"⏱️ {format_seconds_short(limit)} a testa" if limit else "⏱️ senza limite"
     )
     # Say when it ends. A round that closes itself at a time nobody was told is a
-    # deadline that ambushes people.
-    closes_txt = (
-        f"\n🏁 Si chiude fra <b>{format_seconds_short(round_.round_duration_seconds)}</b>."
-        if round_.round_duration_seconds > 0 else ""
-    )
+    # deadline that ambushes people. An absolute date is stated as such; a relative
+    # duration as "fra …".
+    if round_.closes_at is not None:
+        closes_txt = (
+            f"\n🏁 Si chiude il "
+            f"<b>{schedule_service.to_local(round_.closes_at):%d/%m %H:%M}</b>."
+        )
+    elif round_.round_duration_seconds > 0:
+        closes_txt = (
+            f"\n🏁 Si chiude fra "
+            f"<b>{format_seconds_short(round_.round_duration_seconds)}</b>."
+        )
+    else:
+        closes_txt = ""
     # Announce FIRST: a failed send leaves a `ready` round instead of a running
     # one nobody knows about. The medium is NOT posted — see the module docstring.
     try:
@@ -94,6 +110,10 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
 async def _schedule_auto_close(db_session: AsyncSession, round_) -> None:
     """Arm the round's own closing time, if it has one.
 
+    Two ways to have one: an admin-picked absolute ``closes_at`` (a fixed instant,
+    used as-is) or a relative ``round_duration_seconds`` (armed now, at open-time).
+    ``closes_at`` wins; neither ⇒ the round is closed by hand.
+
     Reuses ``task_type = kind`` with ``payload.action = "close"`` — the same
     pattern as the betting window's auto-lock, and the branch
     ``guess_type.execute_scheduled`` already carries. **No new task type.**
@@ -102,12 +122,16 @@ async def _schedule_auto_close(db_session: AsyncSession, round_) -> None:
     remembered it: players sat in rounds that were over for them and never closed
     for anyone.
     """
-    if round_.round_duration_seconds <= 0:
+    if round_.closes_at is not None:
+        run_at = round_.closes_at
+    elif round_.round_duration_seconds > 0:
+        run_at = guess_service.now() + timedelta(seconds=round_.round_duration_seconds)
+    else:
         return  # closed by hand, on purpose
     await schedule_service.schedule_task(
         db_session,
         task_type=round_.kind,
-        run_at=guess_service.now() + timedelta(seconds=round_.round_duration_seconds),
+        run_at=run_at,
         created_by_tg_id=round_.creator_tg_id,
         group_id=round_.group_id,
         ref_id=round_.id,

@@ -473,6 +473,13 @@ class GuessRound(Base):
     round_duration_seconds: Mapped[int] = mapped_column(
         Integer, default=0, nullable=False, server_default="0"
     )
+    # The absolute alternative to ``round_duration_seconds``: an admin-picked
+    # wall-clock instant (naive UTC) at which the round auto-closes, chosen at
+    # creation instead of "N seconds after it starts". Mutually exclusive with the
+    # duration — when this is set the duration is 0. NULL = use the duration (or,
+    # if that is 0 too, close by hand). Armed at open-time like the duration, but
+    # not shifted by when the round is started.
+    closes_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     prize_first: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     prize_second: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
