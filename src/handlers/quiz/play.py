@@ -26,6 +26,7 @@ from services import quiz_service
 from utils.text import esc, format_seconds_short
 
 from handlers.quiz._shared import (
+    _MAX_OPTION,
     log,
     router,
 )
@@ -39,7 +40,10 @@ def _question_kb(
     display-order randomization (§19)."""
     b = InlineKeyboardBuilder()
     for real_idx, opt in ordered_options:
-        b.button(text=opt[:40], callback_data=f"quiz_ans:{quiz_id}:{question_id}:{real_idx}")
+        # Slice to the single validated cap (`_MAX_OPTION`), not a separate hard
+        # 40: a divergent display cap is what cut answers the creation flow had
+        # accepted. Defensive for legacy rows stored before the cap dropped.
+        b.button(text=opt[:_MAX_OPTION], callback_data=f"quiz_ans:{quiz_id}:{question_id}:{real_idx}")
     b.adjust(1)
     return b.as_markup()
 

@@ -18,6 +18,7 @@ from services import quiz_service
 from utils.text import esc
 
 from handlers.quiz._shared import (
+    _MAX_OPTION,
     router,
 )
 
@@ -61,7 +62,9 @@ def _try_question_kb(
 ) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for real_idx, opt in ordered_options:
-        b.button(text=opt[:40], callback_data=f"quiz_try:ans:{quiz_id}:{question_id}:{real_idx}")
+        # Same slice as real play (`_MAX_OPTION`): the dry-run must show the admin
+        # exactly what players will see, truncation included.
+        b.button(text=opt[:_MAX_OPTION], callback_data=f"quiz_try:ans:{quiz_id}:{question_id}:{real_idx}")
     b.button(text="⏹ Esci dalla prova", callback_data=f"quiz_try:stop:{quiz_id}")
     b.adjust(1)
     return b.as_markup()

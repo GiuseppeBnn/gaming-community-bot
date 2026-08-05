@@ -28,7 +28,12 @@ _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
 _MAX_TITLE = 256
 _MAX_DESC = 1024
 _MAX_QUESTION = 300
-_MAX_OPTION = 100
+# The options are inline buttons in private play, and a full-width button shows
+# only a short single line before Telegram truncates it. 30 is what fits without
+# the answer being visually cut — and `_question_kb` slices to exactly this, so
+# the validated cap and the displayed cap can no longer diverge (they did: the
+# button hard-cut at 40 while this allowed 100, so answers 31–100 were cut).
+_MAX_OPTION = 30
 _MAX_EXPLANATION = 200
 
 # Quiz management (list/start/close) is admin-only AND private-only: in a group it

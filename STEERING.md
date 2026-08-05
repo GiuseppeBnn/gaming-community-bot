@@ -1019,9 +1019,12 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
-  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (30), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
-  divergere da quello imposto. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  divergere da quello imposto. `_MAX_OPTION` è basso di proposito: le opzioni sono **bottoni inline**
+  in gioco e `play._question_kb` taglia il testo del bottone **allo stesso `_MAX_OPTION`** — un cap di
+  display separato (prima `[:40]`, con validazione a 100) tagliava risposte che la creazione aveva
+  accettato. L'input oltre il limite viene **rifiutato** (`_too_long` →
   `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in

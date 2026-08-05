@@ -134,6 +134,24 @@ async def _answers(session, quiz_id: int, tg_id: int) -> int:
     ).scalar_one()
 
 
+class TestOptionButtons:
+    """The options are inline buttons, and the button used to slice at a hard 40
+    while creation accepted 100 — so answers 41–100 chars were cut in play. The
+    slice is now the single validated cap (`_MAX_OPTION`), and creation enforces
+    it, so a validated option reaches the player intact."""
+
+    def test_an_option_at_the_cap_is_shown_whole(self):
+        opt = "x" * qz._MAX_OPTION
+        kb = qz._question_kb(1, 2, [(0, opt)])
+        assert kb.inline_keyboard[0][0].text == opt, "the answer must not be cut"
+
+    def test_a_legacy_over_cap_option_is_sliced_to_the_cap(self):
+        """Rows stored before the cap dropped still render, clipped to the cap
+        rather than to a separate number that could diverge again."""
+        kb = qz._question_kb(1, 2, [(0, "y" * 100)])
+        assert len(kb.inline_keyboard[0][0].text) == qz._MAX_OPTION
+
+
 class TestStartingASession:
     async def test_starting_sends_the_rules_and_the_first_question(
         self, session, user_factory

@@ -617,6 +617,49 @@ class TestTheAutoCloseAcceptsADate:
         assert r.round_duration_seconds == 0
 
 
+class TestPlayerTimeAcceptsMinutes:
+    """The «⏱️ Tempo per giocatore» field takes seconds or whole minutes
+    ('5m'/'5 min'/'5 minuti'). Minutes are unambiguous here — a plain per-player
+    duration — unlike the auto-close, where they are refused."""
+
+    async def test_minutes_are_converted_to_seconds(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "5m")
+
+        assert (await state.get_data())["time_limit_seconds"] == 300
+
+    async def test_the_word_min_is_accepted(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "5 min")
+
+        assert (await state.get_data())["time_limit_seconds"] == 300
+
+    async def test_plain_seconds_still_work(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "120")
+
+        assert (await state.get_data())["time_limit_seconds"] == 120
+
+    async def test_zero_still_means_no_limit(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "0")
+
+        assert (await state.get_data())["time_limit_seconds"] == 0
+
+    async def test_minutes_over_the_range_are_refused(self, state):
+        """60 min = 3600 s is the cap; 61 min overflows it."""
+        await _to_card(state)
+
+        screen = await _edit(state, "time_limit_seconds", "61m")
+
+        assert await state.get_state() == cr.GuessCreationStates.editing.state
+        assert "⚠️" in screen and "minuti" in screen
+
+
 def _buttons(kb) -> list[str]:
     return [b.callback_data for row in kb.inline_keyboard for b in row
             if b.callback_data]

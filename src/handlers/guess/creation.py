@@ -139,7 +139,25 @@ def _parse_attempts(raw: str, _data: dict) -> tuple[int | None, str | None]:
     return _bounded_int(raw, 1, _MAX_ATTEMPTS_ALLOWED, zero_ok=False, unit="tentativi")
 
 
+#: Whole minutes for the per-player time: '5m', '5 min', '5 minuti'. Unambiguous
+#: here (a plain per-player duration), unlike the auto-close field.
+_MINUTES_RE = re.compile(r"^(\d+)\s*(?:m|min|minuti|minuto)$", re.IGNORECASE)
+
+
 def _parse_time_limit(raw: str, _data: dict) -> tuple[int | None, str | None]:
+    """Player time in seconds, or in whole minutes ('5m'/'5 min'). 0 = no limit."""
+    raw = raw.strip()
+    m = _MINUTES_RE.match(raw)
+    if m:
+        seconds = int(m.group(1)) * 60
+        if seconds == 0:
+            return 0, None
+        if not (_MIN_TIME_LIMIT <= seconds <= _MAX_TIME_LIMIT):
+            lo = -(-_MIN_TIME_LIMIT // 60)  # ceil → smallest whole minute in range
+            hi = _MAX_TIME_LIMIT // 60
+            return None, (f"⚠️ Il tempo in minuti deve stare fra {lo} e {hi} "
+                          "(oppure 0 per nessun limite).")
+        return seconds, None
     return _bounded_int(raw, _MIN_TIME_LIMIT, _MAX_TIME_LIMIT,
                         zero_ok=True, unit="secondi")
 
@@ -307,8 +325,9 @@ FIELDS: dict[str, Field] = {
     ),
     "time_limit_seconds": Field(
         label="⏱️ Tempo per giocatore",
-        prompt=(f"<b>Tempo</b> per ogni giocatore, in secondi (da {_MIN_TIME_LIMIT} "
-                f"a {_MAX_TIME_LIMIT}), oppure <b>0</b> per nessun limite.\n"
+        prompt=(f"<b>Tempo</b> per ogni giocatore: in <b>secondi</b> (da "
+                f"{_MIN_TIME_LIMIT} a {_MAX_TIME_LIMIT}) o in <b>minuti</b> "
+                "(es. <code>5m</code>), oppure <b>0</b> per nessun limite.\n"
                 "<i>Parte quando il giocatore apre il gioco, e non riparte se "
                 "esce e rientra.</i>"),
         parse=_parse_time_limit,
