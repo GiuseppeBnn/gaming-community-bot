@@ -206,16 +206,19 @@ class TestPublicCatalog:
         assert esc(hidden.name) not in message.said
         assert "???" in message.said
 
-    async def test_todays_catalog_fits_in_one_message(self, seeded_session):
-        """Recorded as a fact, not as a requirement: the shipped catalog is ~3.5k
-        characters. If a future trophy pushes it over, this test fails and points at
-        the chunking test below rather than at a mystery API error in production."""
+    async def test_todays_catalog_spans_two_messages(self, seeded_session):
+        """Recorded as a fact, not as a requirement: the shipped catalog crossed the
+        4096-char boundary when the Guess The Game / Sound Quest podium trophies
+        landed, so it now ships as two messages (§12 anticipates exactly this). If a
+        future trophy pushes it to a third, this test fails and points at the chunking
+        test below rather than at a mystery API error in production. Each message must
+        still be within Telegram's cap."""
         message = _FakeMessage()
 
         await badges.cmd_catalogo_trofei(message, seeded_session)
 
-        assert len(message.texts) == 1
-        assert len(message.texts[0]) <= 4096
+        assert len(message.texts) == 2
+        assert all(0 < len(t) <= 4096 for t in message.texts)
 
     async def test_a_catalog_too_big_for_one_message_is_split_into_valid_ones(
         self, seeded_session

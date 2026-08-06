@@ -29,12 +29,27 @@ from database.models import GamePodium, UserProgressEvent
 # ``event_count`` trophies). Kept here so the recorder and the catalog never drift.
 TRIVIA_LAST_PLACE = "trivia_last_place"
 TRIVIA_SUB30 = "trivia_sub30"
+GUESS_LAST_PLACE = "guess_last_place"
+GUESS_SUB30 = "guess_sub30"
+SOUND_LAST_PLACE = "sound_last_place"
+SOUND_SUB30 = "sound_sub30"
 
 # Human-readable phrasing per metric key, with a ``{when}`` slot filled by
 # badge_service.describe_condition (e.g. "per la prima volta" / "10 volte").
 EVENT_LABELS = {
     TRIVIA_LAST_PLACE: "Arriva ultimo {when} nel Trivia Nerd",
     TRIVIA_SUB30: "Completa il Trivia Nerd sotto i 30s {when}",
+    GUESS_LAST_PLACE: "Arriva ultimo {when} nel Guess The Game",
+    GUESS_SUB30: "Completa il Guess The Game sotto i 30s {when}",
+    SOUND_LAST_PLACE: "Arriva ultimo {when} nel Sound Quest",
+    SOUND_SUB30: "Completa il Sound Quest sotto i 30s {when}",
+}
+
+# Per-game (kind → metric keys) so the guess/sound close records the same
+# "finished last" / "under 30s" events the quiz does, without branching on kind.
+GAME_EVENT_METRICS = {
+    "guess": (GUESS_LAST_PLACE, GUESS_SUB30),
+    "sound": (SOUND_LAST_PLACE, SOUND_SUB30),
 }
 
 # Human-readable game names (used by badge_service.describe_condition).

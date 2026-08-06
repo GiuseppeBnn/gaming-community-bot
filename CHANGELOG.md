@@ -3,6 +3,26 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.2] - 2026-08-07
+
+### Aggiunto
+- **Trofei — Guess The Game** — tre nuovi traguardi sul podio: 🥉 *Indovina
+  Chi?* (10 podi), 🥈 *Maestro dei Quiz* (50 podi), 🥇 *Aki-Alduino* (100 podi).
+- **Trofei — Sound Quest** — tre nuovi traguardi sul podio: 🥉 *Buon Orecchio*
+  (10 podi), 🥈 *Orecchio Assoluto* (50 podi), 🥇 *Shazam Umano* (100 podi).
+  Si sbloccano, si annunciano e compaiono nella lista trofei come tutti gli altri.
+- **Trofei — Guess The Game** — 7 traguardi in più: 🥉 *Veni, Vidi, Vici* (primo
+  podio); *sotto i 30 secondi* 🥉 *Occhio di Falco* (×10), 🥈 *Ray Tracing Umano*
+  (×50), 🥇 *Memoria Fotografica* (×100); e tre nascosti *arriva ultimo* 🥉 *Miope*
+  (×10), 🥈 *Texture Incomplete* (×50), 🥇 *Schermo Spento* (×100).
+- **Trofei — Sound Quest** — 7 traguardi in più: 🥉 *A caccia di indizi* (primo
+  podio); *sotto i 30 secondi* 🥉 *Orecchie da mercante* (×10), 🥈 *Radar Sonar*
+  (×50), 🥇 *Direttore d'Orchestra* (×100); e tre nascosti *arriva ultimo* 🥉
+  *Rumore Bianco* (×10), 🥈 *Sordo come una Campana* (×50), 🥇 *Snake? SNAKE?!
+  SNAAAAAKE* (×100).
+- I trofei **nascosti** restano mascherati come «???» nel catalogo finché non li
+  ottieni, poi si rivelano nella tua lista — come i «arriva ultimo» del Trivia Nerd.
+
 ## [1.1] - 2026-08-05
 
 ### Aggiunto

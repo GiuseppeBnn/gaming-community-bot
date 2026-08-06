@@ -543,3 +543,97 @@ class TestTrophies:
         await lc.close_round(bot, session, round_.id)
 
         assert "Occhio Clinico" in bot.texts
+
+
+class TestProgressEvents:
+    """Closing a round records the same "finished last" / "solved under 30s"
+    progress events the quiz does, so guess/sound earn `event_count` trophies too.
+    The metric keys are chosen from `round_.kind`, so a sound round records the
+    sound ones."""
+
+    async def test_the_last_solver_gets_a_last_place_event(
+        self, session, round_, user_factory
+    ):
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)                 # 1 attempt → 1st
+        await _solve(session, round_, 8, user_factory, wrong_before=2)  # 3 attempts → last
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert (await ps.event_counts(session, 8)).get(ps.GUESS_LAST_PLACE) == 1
+        assert ps.GUESS_LAST_PLACE not in await ps.event_counts(session, 7)
+
+    async def test_a_lone_solver_is_never_last(self, session, round_, user_factory):
+        """Last place needs ≥2 solvers — a single winner is first, not last."""
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert ps.GUESS_LAST_PLACE not in await ps.event_counts(session, 7)
+
+    async def test_a_fast_solve_gets_a_sub30_event(
+        self, session, round_, user_factory
+    ):
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)  # solved instantly in tests
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert (await ps.event_counts(session, 7)).get(ps.GUESS_SUB30) == 1
+
+    async def test_a_sound_round_records_the_sound_metric_keys(
+        self, session, user_factory
+    ):
+        from services import progress_service as ps
+
+        r = await gs.create_round(
+            session, kind="sound", creator_tg_id=1, title="Ascolta",
+            media_file_id="A", media_kind="audio", answer="Doom",
+            aliases=[], hints=[], max_attempts=3, time_limit_seconds=0,
+            prize_first=10,
+        )
+        r.status = "running"
+        await session.flush()
+        await _solve(session, r, 7, user_factory)
+        await _solve(session, r, 8, user_factory, wrong_before=1)
+
+        await lc.close_round(_Bot(), session, r.id)
+
+        assert (await ps.event_counts(session, 8)).get(ps.SOUND_LAST_PLACE) == 1
+        assert (await ps.event_counts(session, 7)).get(ps.SOUND_SUB30) == 1
+
+    async def test_a_hidden_last_place_trophy_unlocks_at_its_threshold(
+        self, session, round_, user_factory
+    ):
+        """The full chain: the recorded event feeds the `event_count` engine and
+        awards the (hidden) trophy — exactly like the `last_trivia_*` ones."""
+        from database.models import Badge, UserBadge
+
+        session.add(Badge(
+            slug="ultimo_guess_1", name="Schermo Nero",
+            description="Arriva ultimo nel Guess The Game", icon_emoji="📴",
+            category="guess", rarity="bronze", xp_reward=0, hidden=True,
+            condition_type="event_count", condition_value=1,
+            condition_param="guess_last_place",
+        ))
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        await _solve(session, round_, 8, user_factory, wrong_before=2)  # last
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        owned = (await session.execute(
+            select(UserBadge.user_tg_id).where(UserBadge.user_tg_id == 8)
+        )).scalars().all()
+        assert owned == [8]

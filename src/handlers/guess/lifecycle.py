@@ -178,12 +178,26 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
 
     # `kind` is the trophy game_key, so `podium_count` / `first_place_count`
     # trophies for guess/sound light up with no extra wiring.
+    #   • podium, top 3          → game_podiums (podium_count)
+    #   • last place, ≥2 solvers → "<kind>_last_place" event (hidden trophies)
+    #   • solved under 30 s      → "<kind>_sub30" event (Occhio di Falco / …)
+    # Same shape as the quiz close; record_event is idempotent per (user, metric,
+    # round) so a re-close cannot double-count.
+    last_key, sub30_key = progress_service.GAME_EVENT_METRICS[round_.kind]
     affected: set[int] = set()
     for rank, row in enumerate(ranked[:3], start=1):
         await progress_service.record_podium(
             db_session, row.user_tg_id, round_.kind, rank, round_id
         )
         affected.add(row.user_tg_id)
+    if len(ranked) >= 2:
+        last = ranked[-1]
+        await progress_service.record_event(db_session, last.user_tg_id, last_key, round_id)
+        affected.add(last.user_tg_id)
+    for row in ranked:
+        if row.solve_ms < 30_000:  # solved in under 30 seconds
+            await progress_service.record_event(db_session, row.user_tg_id, sub30_key, round_id)
+            affected.add(row.user_tg_id)
     await db_session.flush()  # make the new rows visible to the count queries
     trophy_notes: dict[int, list] = {}
     for uid in affected:
