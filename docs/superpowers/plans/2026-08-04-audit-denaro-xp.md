@@ -552,6 +552,67 @@ and its test data. If Task 1 selected a suffixed name, use that exact recorded n
 
 ---
 
+### Task 3A (appended on 06 Aug 2026 — confirmed defect): Unify the `/daily` claim and its XP side effects into one transaction
+
+**Origin:** Task 3, CORE-4a. The plan asked to prove the daily claim and its XP/milestone
+side effects share one handler transaction. Inspection showed the claim commits at
+`handlers/economy.py:112` **before** the capped-participation XP grant (`:126`) and milestone check
+(`:130`) which commit at `:133`. Reproduction
+`tests/integration/test_economy_handlers.py::TestDaily::test_a_failed_xp_side_effect_discards_the_claim`
+fails deterministically (2/2 runs): a failure between the two commits leaves the coin reward, the
+`last_daily_claim` marker, the streak and the `daily_reward` ledger entry committed while the XP is
+lost forever (the marker blocks a retry). Violates the atomicity invariant: a protected error must
+not leave reward/claim/XP in disagreement.
+
+**Files:**
+- Fix: `src/handlers/economy.py`
+- Test (permanent reproduction, already RED): `tests/integration/test_economy_handlers.py`
+
+**Root cause:** the reward `claim_daily` credit is committed ahead of the XP/milestone block, so
+they run in two transactions instead of one. The canonical in-repo pattern (transfer, settlement,
+quiz/guess close) keeps every money/XP write in one transaction committed at the end.
+
+**Minimal change:** in `cmd_daily`, remove the commit after `claim_daily`, move the capped XP grant
+and the milestone check inside the same `try`, and commit once at the end:
+
+```python
+try:
+    reward, streak = await economy_service.claim_daily(db_session, message.from_user.id)
+    xp_res = await xp_service.grant_xp(
+        db_session, message.from_user.id, settings.xp_per_daily_claim,
+        XpSource.daily, capped=True,
+    )
+    newly_earned = await badge_service.check_and_award_milestones(
+        db_session, message.from_user.id
+    )
+    await db_session.commit()
+except DailyAlreadyClaimedError as e:
+    ...
+```
+
+The `DailyAlreadyClaimedError` / `WalletNotFoundError` branches are already reached before any DB
+write, so they need no rollback. On any other exception nothing commits and the middleware session
+close discards the whole unit. No user-facing message or reward value changes.
+
+**Focused gates:**
+```bash
+.venv/bin/pytest tests/integration/test_economy_handlers.py -v
+.venv/bin/pytest tests/integration/test_economy_service.py tests/integration/test_economy_locking.py tests/integration/test_admin_dashboard_money.py -v
+.venv/bin/pytest tests/unit/test_xp_service.py -v
+TEST_PG_URL=postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test .venv/bin/pytest tests/integration/test_money_concurrency_pg.py -k 'Daily' -v
+```
+
+**Global gates:** full `--cov=src` (≥99%), `ruff check src/ tests/`, `mypy`,
+`PYTHONPATH=src python -c 'import main'`.
+
+**Commit:**
+```bash
+git add src/handlers/economy.py tests/integration/test_economy_handlers.py
+git commit -m "fix: il premio giornaliero e i suoi side effect XP viaggiano in un'unica transazione"
+```
+
+---
+
 ## Plan Self-Review Record
 
 - Scope is split from A.1: callback conversion completes first; this plan audits money/XP second.
