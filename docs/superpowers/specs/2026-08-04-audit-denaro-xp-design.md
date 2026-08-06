@@ -2,6 +2,11 @@
 
 **Data:** 2026-08-04 · **Branch:** `test_giu` · **Prerequisito:** completamento di A.1 in
 [`2026-08-03-fondamenta-presentazione-design.md`](2026-08-03-fondamenta-presentazione-design.md)
+**Stato:** ☑ **completato il 2026-08-06** — eseguito da
+[`2026-08-04-audit-denaro-xp.md`](../plans/2026-08-04-audit-denaro-xp.md): 32 righe matrice chiuse (0
+`NEEDS_TEST`), 1 difetto confermato e corretto (D1 `/daily`, fix `6e40524`), valori economici
+invariati, gate finali verdi su PostgreSQL (2314 passed, coverage 99.41%). Report:
+[`../audits/2026-08-04-denaro-xp.md`](../audits/2026-08-04-denaro-xp.md).
 
 ---
 
