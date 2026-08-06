@@ -109,6 +109,16 @@ async def cmd_storico(message: Message, db_session: AsyncSession) -> None:
 async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     try:
         reward, streak = await economy_service.claim_daily(db_session, message.from_user.id)
+        # Capped participation XP + milestone check: committed together with the
+        # claim, so a failure anywhere in the unit rolls back all of it (a paid
+        # claim whose XP side effects were lost could never be retried).
+        xp_res = await xp_service.grant_xp(
+            db_session, message.from_user.id, settings.xp_per_daily_claim,
+            XpSource.daily, capped=True,
+        )
+        newly_earned = await badge_service.check_and_award_milestones(
+            db_session, message.from_user.id
+        )
         await db_session.commit()
     except DailyAlreadyClaimedError as e:
         # Neutral wording: the block can be either "already claimed today" or the
@@ -121,16 +131,6 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     except WalletNotFoundError:
         await message.reply("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
-
-    # Capped participation XP + milestone check, committed together.
-    xp_res = await xp_service.grant_xp(
-        db_session, message.from_user.id, settings.xp_per_daily_claim,
-        XpSource.daily, capped=True,
-    )
-    newly_earned = await badge_service.check_and_award_milestones(
-        db_session, message.from_user.id
-    )
-    await db_session.commit()
     # Trophies are announced in the GROUP (tagging the user), not in private.
     await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
