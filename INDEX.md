@@ -6,10 +6,10 @@ né istruzioni di setup (quelle stanno in [README.md](README.md)).
 
 Bot Telegram per una community di gaming: economia in **CoInn**, scommesse stile Twitch,
 quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio cosmetici, suite admin,
-moderazione, backup. Stack: **Python 3.12** · aiogram 3.13.1 · SQLAlchemy 2.0 async ·
+moderazione, backup. Stack: **Python 3.12** · aiogram 3.30.0 · SQLAlchemy 2.0 async ·
 PostgreSQL 16 (prod) / SQLite (dev-test) · Groq LLM (opzionale).
 
-Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), **2092 test**.
+Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), **2121 test**.
 
 ---
 
@@ -43,7 +43,7 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | 10 | Betting payout · 10.a `/daily` | 23 | Test suite |
 | 11 | Locanda: 11.a cosmetici · 11.b consumabili | 24 | **Checklist pre-PR** |
 | 12 | Trofei · 12.1 XP · 12.2 cataloghi CSV | 25 | Backup & export stato |
-| 13 | `group_registry` (id gruppo effettivo) | | |
+| 13 | `group_registry` (id gruppo effettivo) | 26 | Alert al maintainer |
 
 ---
 
@@ -166,7 +166,7 @@ eseguita solo su PostgreSQL. Non c'è Alembic.
 
 ## 4. Test (`tests/`)
 
-- **2092 test** raccolti — 2062 passano, 30 marcati `pg` skippano senza Postgres (~40 s).
+- **2121 test** raccolti — 2091 passano, 30 marcati `pg` skippano senza Postgres (~40 s).
   `pytest` con `asyncio_mode=auto`, SQLite in-memory, un DB nuovo per test.
 - `tests/unit/` — funzioni pure, keyboard, middleware, parser, cooldown, ordine router.
 - `tests/integration/` — service + flussi handler end-to-end con Telegram finto.

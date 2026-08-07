@@ -8,6 +8,7 @@ import pytest
 from aiogram.exceptions import TelegramBadRequest
 
 from handlers import errors
+from handlers.callbacks import BetCb
 
 
 def _message(chat_id: int = -100, text: str | None = "/daily"):
@@ -71,13 +72,14 @@ async def test_callback_error_uses_alert():
 
 
 async def test_logs_user_and_callback_context(caplog):
-    cb = _callback(data="bet:win:999")
+    data = BetCb(action="window", seconds=999).pack()
+    cb = _callback(data=data)
     with caplog.at_level("ERROR"):
         await errors.on_error(_event(RuntimeError("boom"), callback=cb))
     record = "\n".join(r.getMessage() for r in caplog.records)
     # The whole point of the handler: the log line must be actionable on its own.
     assert "user_id=42" in record
-    assert "bet:win:999" in record
+    assert data in record
 
 
 async def test_survives_a_user_that_cannot_be_messaged():

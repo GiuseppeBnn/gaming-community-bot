@@ -12,6 +12,7 @@ import pytest
 from aiogram.enums import ChatType
 
 import filters.admin_filter as af
+from handlers.callbacks import EventCb
 from handlers.quiz import lifecycle as quiz
 from database.models import Quiz
 from services import group_registry
@@ -102,5 +103,6 @@ async def test_admin_gets_management_branch_not_play_view(session, monkeypatch):
     text, kwargs = msg.answers[-1]
     assert "Quiz" in text and "Creane uno" in text  # empty management list
     cbs = [b.callback_data for row in kwargs["reply_markup"].inline_keyboard for b in row]
-    assert "ev:new:quiz" in cbs  # events-hub create button → management branch
+    # events-hub create button → management branch
+    assert EventCb(action="new", task_type="quiz").pack() in cbs
     assert all("Nessun quiz attivo" not in a[0] for a in msg.answers)

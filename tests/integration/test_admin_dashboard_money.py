@@ -27,6 +27,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
 from database.models import AdminAction, User, Wallet
+from handlers.callbacks import AdminCb
 from handlers import admin_dashboard as ad
 
 ADMIN_ID = 1
@@ -326,9 +327,10 @@ class TestActionRouting:
         different handler — or by none."""
         for action in ("credit", "debit", "setbal", "xpgrant", "xpset"):
             state = _state()
-            cb = _FakeCallback(f"adm:act:{action}:{TARGET_ID}")
+            callback_data = AdminCb(action="act", key=action, item_id=TARGET_ID)
+            cb = _FakeCallback(callback_data.pack())
 
-            await ad.cb_act(cb, state)
+            await ad.cb_act(cb, callback_data, state)
 
             data = await state.get_data()
             assert data == {"action": action, "target_tg_id": TARGET_ID}, action
@@ -343,7 +345,8 @@ class TestActionRouting:
             ("warn", ad.AdminPanelStates.waiting_reason),
         ):
             state = _state()
-            await ad.cb_act(_FakeCallback(f"adm:act:{action}:{TARGET_ID}"), state)
+            callback_data = AdminCb(action="act", key=action, item_id=TARGET_ID)
+            await ad.cb_act(_FakeCallback(callback_data.pack()), callback_data, state)
             assert await state.get_state() == expected, action
 
     async def test_a_warn_with_no_reason_still_counts(
@@ -353,11 +356,12 @@ class TestActionRouting:
         It has to produce the same warn — and the same escalation — as a typed one."""
         monkeypatch.setattr(ad.group_registry, "get_group_id", lambda: -100123)
         await user_factory(tg_id=TARGET_ID)
-        cb = _FakeCallback(f"adm:do:warn:{TARGET_ID}")
+        callback_data = AdminCb(action="do", key="warn", item_id=TARGET_ID)
+        cb = _FakeCallback(callback_data.pack())
         cb.message.bot = _ModBot()
         cb.bot = cb.message.bot
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert await ad.admin_service.active_warning_count(session, TARGET_ID) == 1
         [row] = [r for r in await _audit(session) if r.action_type == "warn"]
@@ -369,9 +373,10 @@ class TestActionRouting:
     ):
         monkeypatch.setattr(ad.group_registry, "get_group_id", lambda: -100123)
         state = _state()
-        cb = _FakeCallback(f"adm:act:warn:{ADMIN_ID}")  # target == admin
+        callback_data = AdminCb(action="act", key="warn", item_id=ADMIN_ID)
+        cb = _FakeCallback(callback_data.pack())  # target == admin
 
-        await ad.cb_act(cb, state)
+        await ad.cb_act(cb, callback_data, state)
 
         assert cb.alerts and "te stesso" in cb.alerts[0]
         assert await state.get_state() is None
@@ -379,9 +384,10 @@ class TestActionRouting:
     async def test_moderating_the_bot_is_refused(self, monkeypatch):
         monkeypatch.setattr(ad.group_registry, "get_group_id", lambda: -100123)
         state = _state()
-        cb = _FakeCallback(f"adm:act:mute:{_FakeBot.id}")
+        callback_data = AdminCb(action="act", key="mute", item_id=_FakeBot.id)
+        cb = _FakeCallback(callback_data.pack())
 
-        await ad.cb_act(cb, state)
+        await ad.cb_act(cb, callback_data, state)
 
         assert cb.alerts and "me stesso" in cb.alerts[0]
 
@@ -389,14 +395,15 @@ class TestActionRouting:
         """Every moderation action needs a chat to act on; without `GROUP_ID` the
         call would go to Telegram with a zero chat id."""
         monkeypatch.setattr(ad.group_registry, "get_group_id", lambda: 0)
-        cb = _FakeCallback(f"adm:act:warn:{TARGET_ID}")
+        callback_data = AdminCb(action="act", key="warn", item_id=TARGET_ID)
+        cb = _FakeCallback(callback_data.pack())
 
-        await ad.cb_act(cb, _state())
+        await ad.cb_act(cb, callback_data, _state())
 
         assert cb.alerts and "GROUP_ID" in cb.alerts[0]
 
     async def test_non_admins_are_denied(self):
-        cb = _FakeCallback("adm:home", user_id=999)
+        cb = _FakeCallback(AdminCb(action="home").pack(), user_id=999)
         await ad.cb_deny(cb)
         assert cb.alerts and "non autorizzato" in cb.alerts[0]
 
@@ -410,16 +417,16 @@ class TestNavigation:
     async def test_every_read_only_screen_renders(self, session, user_factory):
         await user_factory(tg_id=TARGET_ID, coins=250, xp=900)
 
-        for handler, data in (
-            (ad.cb_stats, "adm:stats"),
-            (ad.cb_lead, "adm:lead"),
-            (ad.cb_audit, "adm:audit"),
+        for handler, callback_data in (
+            (ad.cb_stats, AdminCb(action="stats")),
+            (ad.cb_lead, AdminCb(action="lead")),
+            (ad.cb_audit, AdminCb(action="audit")),
         ):
-            cb = _FakeCallback(data)
+            cb = _FakeCallback(callback_data.pack())
             await handler(cb, session)
-            assert cb.message.answers, data
+            assert cb.message.answers, callback_data.action
 
-        help_cb = _FakeCallback("adm:help")
+        help_cb = _FakeCallback(AdminCb(action="help").pack())
         await ad.cb_help(help_cb)
         assert help_cb.message.answers
 
@@ -429,12 +436,14 @@ class TestNavigation:
         await user_factory(tg_id=TARGET_ID, coins=250, xp=900)
 
         for board in ("coins", "xp", "trofei"):
-            cb = _FakeCallback(f"adm:lead:{board}")
-            await ad.cb_lead_board(cb, session)
+            callback_data = AdminCb(action="lead_board", key=board)
+            cb = _FakeCallback(callback_data.pack())
+            await ad.cb_lead_board(cb, callback_data, session)
             assert cb.message.answers, board
 
-        junk = _FakeCallback("adm:lead:oroscopo")
-        await ad.cb_lead_board(junk, session)
+        junk_data = AdminCb(action="lead_board", key="oroscopo")
+        junk = _FakeCallback(junk_data.pack())
+        await ad.cb_lead_board(junk, junk_data, session)
         assert junk.message.answers == [], "an unknown board still rendered something"
 
     async def test_home_renders_from_a_command_and_from_a_button(
@@ -447,7 +456,7 @@ class TestNavigation:
         await ad.cmd_admin(message, session)
         assert message.answers and "Dashboard Admin" in message.answers[0]
 
-        cb = _FakeCallback("adm:home")
+        cb = _FakeCallback(AdminCb(action="home").pack())
         await ad.cb_home(cb, _state(), session)
         assert cb.message.answers and "Dashboard Admin" in cb.message.answers[-1]
 
@@ -460,7 +469,7 @@ class TestNavigation:
         monkeypatch.setattr(ad, "CallbackQuery", _FakeCallback)
         await user_factory(tg_id=TARGET_ID)
 
-        cb = _FakeCallback("adm:home")
+        cb = _FakeCallback(AdminCb(action="home").pack())
 
         async def refuse_edit(text, reply_markup=None, **kw):
             raise RuntimeError("Bad Request: message is not modified")
@@ -499,14 +508,14 @@ class TestNavigation:
         assert message.markups[-1].inline_keyboard[0][0].url.endswith("?start=admin")
 
     async def test_the_menus_that_only_arm_a_state(self, session, user_factory):
-        for handler, expected in (
-            (ad.cb_econ, None),
-            (ad.cb_airdrop, ad.AdminPanelStates.waiting_airdrop),
-            (ad.cb_xpairdrop, ad.AdminPanelStates.waiting_xp_airdrop),
-            (ad.cb_search, ad.AdminPanelStates.waiting_search),
+        for handler, callback_data, expected in (
+            (ad.cb_econ, AdminCb(action="econ"), None),
+            (ad.cb_airdrop, AdminCb(action="airdrop"), ad.AdminPanelStates.waiting_airdrop),
+            (ad.cb_xpairdrop, AdminCb(action="xpairdrop"), ad.AdminPanelStates.waiting_xp_airdrop),
+            (ad.cb_search, AdminCb(action="search"), ad.AdminPanelStates.waiting_search),
         ):
             state = _state()
-            cb = _FakeCallback("adm:x")
+            cb = _FakeCallback(callback_data.pack())
             await handler(cb, state)
             assert cb.message.answers, handler.__name__
             assert await state.get_state() == expected, handler.__name__
@@ -517,7 +526,7 @@ class TestNavigation:
         async def record():
             deleted.append(True)
 
-        cb = _FakeCallback("adm:close")
+        cb = _FakeCallback(AdminCb(action="close").pack())
         cb.message.delete = record
         await ad.cb_close(cb, _state())
         assert deleted
@@ -526,7 +535,7 @@ class TestNavigation:
             raise RuntimeError("message to delete not found")
 
         # Telegram refuses to delete messages older than 48h; the panel must still close.
-        stubborn = _FakeCallback("adm:close")
+        stubborn = _FakeCallback(AdminCb(action="close").pack())
         stubborn.message.delete = refuse
         await ad.cb_close(stubborn, _state())  # must not raise
 
@@ -535,19 +544,22 @@ class TestUserPickerAndSearch:
     async def test_the_picker_paginates_and_reports_an_empty_database(
         self, session, user_factory
     ):
-        empty = _FakeCallback("adm:users:0")
-        await ad.cb_users(empty, _state(), session)
+        empty_data = AdminCb(action="users", item_id=0)
+        empty = _FakeCallback(empty_data.pack())
+        await ad.cb_users(empty, empty_data, _state(), session)
         assert "Nessun utente" in empty.message.answers[-1]
 
         for tg_id in range(100, 100 + ad.PAGE_SIZE + 3):
             await user_factory(tg_id=tg_id, username=f"u{tg_id}", coins=1)
 
-        first = _FakeCallback("adm:users:0")
-        await ad.cb_users(first, _state(), session)
+        first_data = AdminCb(action="users", item_id=0)
+        first = _FakeCallback(first_data.pack())
+        await ad.cb_users(first, first_data, _state(), session)
         assert "pagina 1" in first.message.answers[-1]
 
-        second = _FakeCallback("adm:users:1")
-        await ad.cb_users(second, _state(), session)
+        second_data = AdminCb(action="users", item_id=1)
+        second = _FakeCallback(second_data.pack())
+        await ad.cb_users(second, second_data, _state(), session)
         assert "pagina 2" in second.message.answers[-1]
 
     async def test_a_negative_page_is_clamped_instead_of_querying_backwards(
@@ -555,9 +567,10 @@ class TestUserPickerAndSearch:
     ):
         """`page * PAGE_SIZE` becomes a negative OFFSET otherwise, which SQL rejects."""
         await user_factory(tg_id=TARGET_ID, coins=1)
-        cb = _FakeCallback("adm:users:-3")
+        callback_data = AdminCb(action="users", item_id=-3)
+        cb = _FakeCallback(callback_data.pack())
 
-        await ad.cb_users(cb, _state(), session)
+        await ad.cb_users(cb, callback_data, _state(), session)
 
         assert "pagina 1" in cb.message.answers[-1]
 
@@ -586,17 +599,19 @@ class TestUserPickerAndSearch:
 
     async def test_opening_a_user_shows_the_dossier(self, session, user_factory):
         await user_factory(tg_id=TARGET_ID, username="pippo", coins=333)
-        cb = _FakeCallback(f"adm:user:{TARGET_ID}")
+        callback_data = AdminCb(action="user", item_id=TARGET_ID)
+        cb = _FakeCallback(callback_data.pack())
 
-        await ad.cb_user(cb, _state(), session)
+        await ad.cb_user(cb, callback_data, _state(), session)
 
         assert "333" in cb.message.answers[-1]
 
     async def test_opening_an_unknown_user_says_so(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID)
-        cb = _FakeCallback("adm:user:999999")
+        callback_data = AdminCb(action="user", item_id=999_999)
+        cb = _FakeCallback(callback_data.pack())
 
-        await ad.cb_user(cb, _state(), session)
+        await ad.cb_user(cb, callback_data, _state(), session)
 
         assert "non trovato" in cb.message.answers[-1]
 
@@ -640,12 +655,13 @@ class TestModerationActions:
     audit log with the right type — that log is what an admin reads when a member
     asks «why was I banned»."""
 
-    def _cb(self, action: str, bot=None, target: int = TARGET_ID) -> _FakeCallback:
-        cb = _FakeCallback(f"adm:do:{action}:{target}")
+    def _cb(self, action: str, bot=None, target: int = TARGET_ID) -> tuple[_FakeCallback, AdminCb]:
+        callback_data = AdminCb(action="do", key=action, item_id=target)
+        cb = _FakeCallback(callback_data.pack())
         if bot is not None:
             cb.message.bot = bot
             cb.bot = bot
-        return cb
+        return cb, callback_data
 
     async def _group(self, monkeypatch):
         monkeypatch.setattr(ad.group_registry, "get_group_id", lambda: -100123)
@@ -659,9 +675,9 @@ class TestModerationActions:
         await self._group(monkeypatch)
         await user_factory(tg_id=TARGET_ID)
         bot = _ModBot()
-        cb = self._cb("ban", bot)
+        cb, callback_data = self._cb("ban", bot)
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert bot.banned == [TARGET_ID]
         banned = await session.scalar(select(User.is_banned).where(User.tg_id == TARGET_ID))
@@ -676,9 +692,9 @@ class TestModerationActions:
         a silent no-op."""
         await self._group(monkeypatch)
         await user_factory(tg_id=TARGET_ID)
-        cb = self._cb("ban", _RefusingBot())
+        cb, callback_data = self._cb("ban", _RefusingBot())
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         banned = await session.scalar(select(User.is_banned).where(User.tg_id == TARGET_ID))
         assert banned is True
@@ -693,7 +709,8 @@ class TestModerationActions:
         await user_factory(tg_id=TARGET_ID)
         bot = _ModBot()
 
-        await ad.cb_do(self._cb("kick", bot), _state(), session)
+        cb, callback_data = self._cb("kick", bot)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert bot.banned == [TARGET_ID] and bot.unbanned == [TARGET_ID]
         assert [r.action_type for r in await _audit(session)] == ["kick"]
@@ -701,9 +718,11 @@ class TestModerationActions:
     async def test_sban_clears_the_flag(self, session, user_factory, monkeypatch):
         await self._group(monkeypatch)
         await user_factory(tg_id=TARGET_ID)
-        await ad.cb_do(self._cb("ban", _ModBot()), _state(), session)
+        cb, callback_data = self._cb("ban", _ModBot())
+        await ad.cb_do(cb, callback_data, _state(), session)
 
-        await ad.cb_do(self._cb("sban", _ModBot()), _state(), session)
+        cb, callback_data = self._cb("sban", _ModBot())
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         banned = await session.scalar(select(User.is_banned).where(User.tg_id == TARGET_ID))
         assert banned is False
@@ -714,7 +733,8 @@ class TestModerationActions:
         await user_factory(tg_id=TARGET_ID)
         bot = _ModBot()
 
-        await ad.cb_do(self._cb("unmute", bot), _state(), session)
+        cb, callback_data = self._cb("unmute", bot)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert bot.restricted and bot.restricted[0][0] == TARGET_ID
         assert [r.action_type for r in await _audit(session)] == ["unmute"]
@@ -729,8 +749,8 @@ class TestModerationActions:
             await ad.apply_warning(bot, session, ADMIN_ID, TARGET_ID, -100123, None)
         await session.commit()
 
-        cb = self._cb("unwarn", bot)
-        await ad.cb_do(cb, _state(), session)
+        cb, callback_data = self._cb("unwarn", bot)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         remaining = await ad.admin_service.active_warning_count(session, TARGET_ID)
         assert remaining == 1
@@ -742,38 +762,39 @@ class TestModerationActions:
     ):
         await self._group(monkeypatch)
         await user_factory(tg_id=TARGET_ID)
-        cb = self._cb("unwarn", _ModBot())
+        cb, callback_data = self._cb("unwarn", _ModBot())
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert cb.alerts and "Nessun warn" in cb.alerts[0]
 
     async def test_an_unknown_action_does_nothing(self, session, user_factory, monkeypatch):
         await self._group(monkeypatch)
         await user_factory(tg_id=TARGET_ID)
-        cb = self._cb("teleport", _ModBot())
+        cb, callback_data = self._cb("teleport", _ModBot())
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert await _audit(session) == []
 
     async def test_moderating_yourself_is_refused(self, session, user_factory, monkeypatch):
         await self._group(monkeypatch)
         await user_factory(tg_id=ADMIN_ID)
-        cb = self._cb("ban", _ModBot(), target=ADMIN_ID)
+        cb, callback_data = self._cb("ban", _ModBot(), target=ADMIN_ID)
 
-        await ad.cb_do(cb, _state(), session)
+        await ad.cb_do(cb, callback_data, _state(), session)
 
         assert cb.alerts and "te stesso" in cb.alerts[0]
         assert await _audit(session) == []
 
     async def test_the_confirmation_screen_names_the_action(self, monkeypatch):
         await self._group(monkeypatch)
-        cb = _FakeCallback(f"adm:ask:ban:{TARGET_ID}")
+        callback_data = AdminCb(action="ask", key="ban", item_id=TARGET_ID)
+        cb = _FakeCallback(callback_data.pack())
         cb.message.bot = _ModBot()
         cb.bot = cb.message.bot
 
-        await ad.cb_ask(cb)
+        await ad.cb_ask(cb, callback_data)
 
         assert "BAN" in cb.message.answers[-1] and str(TARGET_ID) in cb.message.answers[-1]
 
@@ -924,33 +945,37 @@ class TestModerationGuard:
     ):
         """Banning the bot removes it from the group; banning yourself locks the
         admin out of their own panel. Both are one tap away in the dossier."""
-        callback = _FakeCallback(f"adm:ask:ban:{target}")
+        callback_data = AdminCb(action="ask", key="ban", item_id=target)
+        callback = _FakeCallback(callback_data.pack())
 
-        await ad.cb_ask(callback)
+        await ad.cb_ask(callback, callback_data)
 
         assert callback.alerts and expected in callback.alerts[0]
         assert callback.message.answers == [], "no confirmation screen may open"
 
     async def test_without_a_group_there_is_nothing_to_moderate(self, session, no_group):
-        callback = _FakeCallback(f"adm:ask:ban:{TARGET_ID}")
+        callback_data = AdminCb(action="ask", key="ban", item_id=TARGET_ID)
+        callback = _FakeCallback(callback_data.pack())
 
-        await ad.cb_ask(callback)
+        await ad.cb_ask(callback, callback_data)
 
         assert callback.alerts and "GROUP_ID" in callback.alerts[0]
 
     async def test_the_confirmation_opens_for_a_legitimate_target(self, session, in_group):
-        callback = _FakeCallback(f"adm:ask:ban:{TARGET_ID}")
+        callback_data = AdminCb(action="ask", key="ban", item_id=TARGET_ID)
+        callback = _FakeCallback(callback_data.pack())
 
-        await ad.cb_ask(callback)
+        await ad.cb_ask(callback, callback_data)
 
         assert callback.message.answers and "BAN" in callback.message.answers[0]
 
     async def test_a_warn_without_a_reason_is_guarded_too(self, session, in_group):
         """The «Senza motivo» button skips the reason step, so it needs its own
         check — it is a second entry point into the same action."""
-        callback = _FakeCallback(f"adm:do:warn:{ADMIN_ID}")
+        callback_data = AdminCb(action="do", key="warn", item_id=ADMIN_ID)
+        callback = _FakeCallback(callback_data.pack())
 
-        await ad.cb_do(callback, _state(), session)
+        await ad.cb_do(callback, callback_data, _state(), session)
 
         assert callback.alerts and "te stesso" in callback.alerts[0]
         assert await _audit(session) == []
@@ -972,13 +997,60 @@ class TestModerationGuard:
         assert await state.get_state() is None
 
 
+class TestOptionalCallbackStateGuards:
+    @pytest.mark.parametrize(
+        ("handler", "callback_data"),
+        [
+            (ad.cb_users, AdminCb(action="users")),
+            (ad.cb_user, AdminCb(action="user")),
+            (ad.cb_do, AdminCb(action="do", key="ban")),
+            (ad.cb_do, AdminCb(action="do", item_id=TARGET_ID)),
+        ],
+        ids=("users-missing-page", "user-missing-id", "do-missing-id", "do-missing-key"),
+    )
+    async def test_incomplete_payload_preserves_the_active_flow(
+        self, handler, callback_data, session
+    ):
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_search)
+        await state.update_data(marker="keep")
+        callback = _FakeCallback(callback_data.pack())
+
+        await handler(callback, callback_data, state, session)
+
+        assert await state.get_state() == ad.AdminPanelStates.waiting_search
+        assert await state.get_data() == {"marker": "keep"}
+
+    @pytest.mark.parametrize(
+        ("handler", "callback_data"),
+        [
+            (ad.cb_users, AdminCb(action="users", item_id=0)),
+            (ad.cb_user, AdminCb(action="user", item_id=999_999)),
+            (ad.cb_do, AdminCb(action="do", key="ban", item_id=ADMIN_ID)),
+        ],
+        ids=("users", "user", "do"),
+    )
+    async def test_complete_payload_still_clears_the_previous_flow(
+        self, handler, callback_data, session, in_group
+    ):
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_search)
+        await state.update_data(marker="discard")
+        callback = _FakeCallback(callback_data.pack())
+
+        await handler(callback, callback_data, state, session)
+
+        assert await state.get_state() is None
+        assert await state.get_data() == {}
+
+
 class TestStaleScreens:
     async def test_the_dashboard_home_falls_back_to_a_new_message(
         self, session, as_callback
     ):
         """Every «⬅️ Dashboard» button lands here; a failed edit must not leave the
         admin looking at the previous screen."""
-        callback = _StaleCallback("adm:home")
+        callback = _StaleCallback(AdminCb(action="home").pack())
 
         await ad.show_dashboard_home(callback, session, edit=True)
 
@@ -987,7 +1059,7 @@ class TestStaleScreens:
     async def test_the_home_can_also_send_a_fresh_screen_on_purpose(
         self, session, as_callback
     ):
-        callback = _FakeCallback("adm:home")
+        callback = _FakeCallback(AdminCb(action="home").pack())
 
         await ad.show_dashboard_home(callback, session, edit=False)
 
@@ -999,9 +1071,10 @@ class TestStaleScreens:
         """Telegram rejects an edit that changes nothing; that must not surface as
         a dead button."""
         await user_factory(tg_id=TARGET_ID, coins=100)
-        callback = _StaleCallback("adm:lead:coins")
+        callback_data = AdminCb(action="lead_board", key="coins")
+        callback = _StaleCallback(callback_data.pack())
 
-        await ad.cb_lead_board(callback, session)
+        await ad.cb_lead_board(callback, callback_data, session)
 
         assert callback.answers == [(None, False)]
 
@@ -1009,7 +1082,7 @@ class TestStaleScreens:
         self, session, user_factory
     ):
         await user_factory(tg_id=TARGET_ID, coins=100)
-        callback = _StaleCallback(f"adm:user:{TARGET_ID}")
+        callback = _StaleCallback(AdminCb(action="user", item_id=TARGET_ID).pack())
 
         await ad._show_detail_cb(callback, session, TARGET_ID)
 
@@ -1031,7 +1104,7 @@ class TestBetsShortcut:
         """One tap from the dashboard into the panel that settles bets; the button
         exists so an admin never has to remember the command."""
         await user_factory(tg_id=ADMIN_ID, coins=0)
-        callback = _FakeCallback("adm:bets")
+        callback = _FakeCallback(AdminCb(action="bets").pack())
 
         await ad.cb_bets(callback, session)
 

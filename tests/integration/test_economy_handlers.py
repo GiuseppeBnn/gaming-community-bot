@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from database.models import Badge, LedgerEntry, TransactionType, User, Wallet
@@ -318,6 +319,37 @@ class TestDaily:
         assert "riscosso" in public
         assert "?start=daily" in public
         assert "Streak" not in public
+
+    async def test_a_failed_xp_side_effect_discards_the_claim(
+        self, session, user_factory, monkeypatch
+    ):
+        """The claim reward, its capped XP and the milestone check are one unit:
+        if the XP side effect fails, the coin reward and the claim marker must be
+        rolled back with it, so the user can retry and receive both.
+
+        This is RED on the pre-audit handlers/economy.py, where the claim commits
+        (economy.py:112) before the XP grant runs — a failure in between would pay
+        out the coins, mark the claim and then lose the XP forever."""
+        await user_factory(tg_id=SENDER, coins=0)
+
+        async def xp_step_fails(*args, **kwargs):
+            raise RuntimeError("simulated failure after the claim")
+
+        monkeypatch.setattr(economy.xp_service, "grant_xp", xp_step_fails)
+
+        with pytest.raises(RuntimeError):
+            await economy.cmd_daily(_FakeMessage("/daily"), session)
+
+        # The direct call has no DbSessionMiddleware; model its close-on-exception
+        # (a rollback) to decide which parts of the /daily unit actually landed.
+        await session.rollback()
+
+        assert await _coins(session, SENDER) == 0, "the coin reward survived the failure"
+        user = (
+            await session.execute(select(User).where(User.tg_id == SENDER))
+        ).scalar_one()
+        assert user.last_daily_claim is None, "the claim marker survived the failure"
+        assert await _ledger(session) == [], "the reward ledger entry survived"
 
 
 class TestBalanceAndHistory:

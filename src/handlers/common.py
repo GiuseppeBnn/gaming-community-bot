@@ -17,6 +17,7 @@ deep-link landing must not trust that the caller passed the originating command'
 admin filter (a non-admin could craft the ?start=… link directly).
 """
 
+import logging
 import re
 
 from aiogram import Router
@@ -24,7 +25,7 @@ from aiogram.enums import ChatType
 from aiogram.filters import CommandStart
 from aiogram.filters.command import Command, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,11 +36,18 @@ from filters.admin_filter import is_admin as is_bot_admin
 from handlers._privacy import redirect_to_private
 from handlers.help_content import normalize, render_command_or_hint, render_legend
 from handlers.onboarding import show_rules_prompt
+from services import consumable_service
 from utils import cooldown
+from utils.profile_view import profile_text
 from utils.static_reply import reply_static
 from utils.text import esc
 
 router = Router()
+
+log = logging.getLogger(__name__)
+
+#: Response for a callback that no router claimed. Short enough for a toast.
+_UNHANDLED_CALLBACK = "Questo bottone non è più valido."
 
 
 async def _show_help(message: Message, is_admin: bool) -> None:
@@ -281,42 +289,11 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ Profilo non trovato. Usa /start per registrarti.")
         return
 
-    username_display = f"@{esc(user.username)}" if user.username else "N/D"
-    badge_count = len(user.badges)
-
-    from services import consumable_service, xp_service
-    from services.shop_service import render_active_tags
-    prog = xp_service.level_for_xp(user.xp)
-    rank = xp_service.rank_for_level(prog.level)
-    rank_txt = f" · {rank.emoji} {esc(rank.name)}" if rank else ""
-    level_line = (
-        f"⚡ <b>Livello {prog.level}</b>{rank_txt}\n"
-        f"   {xp_service.progress_bar(prog)} "
-        f"{prog.xp_into_level:,}/{prog.xp_for_next:,} XP\n"
-    )
-    tags = render_active_tags(user)
-    tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""
-    title = esc(user.full_name)
-    if tags:
-        title = f"{esc(tags)} · {title}"
-
     # Pantry preview: the first few consumables, compact (e.g. "🍕 ×3 · 🐉 ×1").
     pantry = await consumable_service.inventory(db_session, user.tg_id)
-    pantry_line = ""
-    if pantry:
-        shown = " · ".join(f"{it.emoji} ×{qty}" for it, qty in pantry[:6])
-        more = " …" if len(pantry) > 6 else ""
-        pantry_line = f"🎒 <b>Dispensa:</b> {shown}{more}\n"
-
     await reply_static(
         message,
-        f"🎮 <b>{title}</b>\n\n"
-        f"🔖 <b>Username:</b> {username_display}\n\n"
-        f"{tag_line}"
-        f"{level_line}"
-        f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
-        f"🏆 <b>Trofei:</b> {badge_count}\n"
-        f"{pantry_line}".rstrip("\n"),
+        profile_text(user, pantry),
         "profilo",
     )
 
@@ -377,3 +354,22 @@ async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
 
     is_admin = await is_bot_admin(message.bot, message.from_user.id)
     await message.answer(render_command_or_hint(arg, is_admin))
+
+
+@router.callback_query()
+async def cb_unhandled(callback: CallbackQuery) -> None:
+    """Answer any callback no router claimed, instead of leaving the spinner up.
+
+    `common.router` is last (`handlers/__init__.py`), so nothing that another
+    router wanted can reach here. Two cases do: a button from a keyboard older
+    than the current deploy — normal, and the user deserves a reply — and a
+    handler that stopped matching by mistake, which would otherwise be silent
+    forever. Hence the WARNING: it reaches the admins through utils.alerts
+    (STEERING §26), so a button that quietly stops working reports itself.
+
+    The `%s` is deliberate, not style: utils.alerts deduplicates on the message
+    *template*, so an f-string would turn every stale click into its own alert
+    and drown the channel meant to protect us.
+    """
+    log.warning("Unhandled callback: %s", callback.data)
+    await callback.answer(_UNHANDLED_CALLBACK)

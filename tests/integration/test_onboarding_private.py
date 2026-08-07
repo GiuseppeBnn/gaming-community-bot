@@ -93,6 +93,7 @@ async def _async_false(*args, **kwargs):
 # Layer 2 — cb_accept_rules
 # ---------------------------------------------------------------------------
 
+
 async def test_accept_in_group_is_rejected(seeded_session, user_factory):
     await user_factory(tg_id=321, onboarding_completed=False)
     cb = _FakeCallback(uid=321, chat_type=ChatType.GROUP)
@@ -102,15 +103,13 @@ async def test_accept_in_group_is_rejected(seeded_session, user_factory):
     # Alerted, and nothing changed: onboarding still pending, no trophy.
     assert cb.answers and cb.answers[0][1] is True  # show_alert
     assert cb.message.edits == []
-    user = (
-        await seeded_session.execute(select(User).where(User.tg_id == 321))
-    ).scalar_one()
+    user = (await seeded_session.execute(select(User).where(User.tg_id == 321))).scalar_one()
     assert user.onboarding_completed is False
     badges = (
-        await seeded_session.execute(
-            select(UserBadge).where(UserBadge.user_tg_id == 321)
-        )
-    ).scalars().all()
+        (await seeded_session.execute(select(UserBadge).where(UserBadge.user_tg_id == 321)))
+        .scalars()
+        .all()
+    )
     assert badges == []
 
 
@@ -120,9 +119,7 @@ async def test_accept_in_private_completes_onboarding(seeded_session, user_facto
 
     await onboarding.cb_accept_rules(cb, seeded_session)
 
-    user = (
-        await seeded_session.execute(select(User).where(User.tg_id == 321))
-    ).scalar_one()
+    user = (await seeded_session.execute(select(User).where(User.tg_id == 321))).scalar_one()
     assert user.onboarding_completed is True
     earned = await badge_service.get_user_badges(seeded_session, 321)
     assert any(ub.badge.slug == badge_service.BADGE_FIRST_STEPS for ub in earned)
@@ -132,6 +129,7 @@ async def test_accept_in_private_completes_onboarding(seeded_session, user_facto
 # ---------------------------------------------------------------------------
 # Layer 1 — cmd_start gate
 # ---------------------------------------------------------------------------
+
 
 async def test_start_in_group_redirects_to_private(session, monkeypatch):
     monkeypatch.setattr(common, "is_bot_admin", _async_false)

@@ -17,6 +17,7 @@ import types
 
 import pytest
 
+from handlers.callbacks import GuessAliasCb
 from handlers.guess import editing as ed
 from services import guess_service as gs
 from services.guess_judge import aliases_of
@@ -66,16 +67,25 @@ def state():
     from aiogram.fsm.storage.base import StorageKey
     from aiogram.fsm.storage.memory import MemoryStorage
 
-    return FSMContext(storage=MemoryStorage(),
-                      key=StorageKey(bot_id=999, chat_id=ADMIN, user_id=ADMIN))
+    return FSMContext(
+        storage=MemoryStorage(), key=StorageKey(bot_id=999, chat_id=ADMIN, user_id=ADMIN)
+    )
 
 
 @pytest.fixture
 async def round_(session):
     r = await gs.create_round(
-        session, kind="guess", creator_tg_id=ADMIN, title="Indovina",
-        media_file_id="F", media_kind="photo", answer="Doom",
-        aliases=[], hints=[], max_attempts=5, time_limit_seconds=0,
+        session,
+        kind="guess",
+        creator_tg_id=ADMIN,
+        title="Indovina",
+        media_file_id="F",
+        media_kind="photo",
+        answer="Doom",
+        aliases=[],
+        hints=[],
+        max_attempts=5,
+        time_limit_seconds=0,
     )
     r.status = "running"
     await session.commit()
@@ -83,8 +93,9 @@ async def round_(session):
 
 
 async def _open(state, session, round_id: int) -> _Cb:
-    cb = _Cb(f"guess_alias:add:{round_id}")
-    await ed.cb_add_aliases(cb, state, session)
+    callback_data = GuessAliasCb(action="add", round_id=round_id)
+    cb = _Cb(callback_data.pack())
+    await ed.cb_add_aliases(cb, state, session, callback_data)
     return cb
 
 
@@ -103,9 +114,7 @@ class TestOpening:
 
         assert "Doom" in cb.said
 
-    async def test_a_round_that_has_not_started_is_editable_too(
-        self, session, state, round_
-    ):
+    async def test_a_round_that_has_not_started_is_editable_too(self, session, state, round_):
         """Once created, this was the one field with no way back to it short of
         deleting the round and rebuilding it."""
         round_.status = "ready"
@@ -130,12 +139,19 @@ class TestOpening:
 
         assert cb.alerts and await state.get_state() is None
 
-    async def test_a_non_numeric_id_is_ignored(self, session, state):
-        cb = _Cb("guess_alias:add:abc")
+    async def test_a_missing_round_id_leaves_an_existing_flow_untouched(
+        self, session, state, round_
+    ):
+        """An incomplete typed payload must not clear a flow that is already open."""
+        await state.update_data(alias_round=round_.id)
+        await state.set_state(ed.GuessAliasStates.waiting_aliases)
+        cb = _Cb(GuessAliasCb(action="add").pack())
 
-        await ed.cb_add_aliases(cb, state, session)
+        await ed.cb_add_aliases(cb, state, session, GuessAliasCb(action="add"))
 
-        assert await state.get_state() is None
+        assert await state.get_state() == ed.GuessAliasStates.waiting_aliases.state
+        assert (await state.get_data())["alias_round"] == round_.id
+        assert cb.said == ""
 
 
 class TestSubmitting:
@@ -161,9 +177,7 @@ class TestSubmitting:
         assert await state.get_state() == ed.GuessAliasStates.waiting_aliases.state
         assert aliases_of(await gs.get_round(session, round_.id)) == []
 
-    async def test_a_skip_word_closes_the_flow_without_writing(
-        self, session, state, round_
-    ):
+    async def test_a_skip_word_closes_the_flow_without_writing(self, session, state, round_):
         await _open(state, session, round_.id)
         msg = _Msg("-")
 
@@ -172,9 +186,7 @@ class TestSubmitting:
         assert await state.get_state() is None
         assert aliases_of(await gs.get_round(session, round_.id)) == []
 
-    async def test_duplicates_are_reported_not_written_twice(
-        self, session, state, round_
-    ):
+    async def test_duplicates_are_reported_not_written_twice(self, session, state, round_):
         await _open(state, session, round_.id)
         await ed.fsm_aliases(_Msg("Doom 1993"), state, session)
         await _open(state, session, round_.id)
@@ -203,7 +215,7 @@ class TestCancel:
     async def test_cancelling_clears_the_flow(self, session, state, round_):
         await _open(state, session, round_.id)
 
-        await ed.cb_cancel(_Cb("guess_alias:cancel"), state)
+        await ed.cb_cancel(_Cb(GuessAliasCb(action="cancel").pack()), state)
 
         assert await state.get_state() is None
         assert aliases_of(await gs.get_round(session, round_.id)) == []

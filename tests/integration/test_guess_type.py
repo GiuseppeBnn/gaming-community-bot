@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from database.models import GuessRound, ScheduledTask
 from handlers import event_types
+from handlers.callbacks import EventCb
 from handlers.event_types.guess_type import GuessType
 from services import group_registry
 from services import guess_service as gs
@@ -290,8 +291,8 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askstart:guess:{r.id}" in data
-        assert f"ev:sched:guess:{r.id}" in data
+        assert EventCb(action="askstart", task_type="guess", item_id=r.id).pack() in data
+        assert EventCb(action="sched", task_type="guess", item_id=r.id).pack() in data
 
     async def test_every_impactful_action_goes_through_a_confirmation(self, session):
         """STEERING §18.2: no one-tap launch, close or delete."""
@@ -303,7 +304,7 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askclose:guess:{r.id}" in data
+        assert EventCb(action="askclose", task_type="guess", item_id=r.id).pack() in data
         assert not any(d.startswith("ev:close:") or d.startswith("ev:del:") for d in data)
 
     async def test_a_finished_round_offers_a_rerun(self, session):
@@ -315,7 +316,7 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askreset:guess:{r.id}" in data
+        assert EventCb(action="askreset", task_type="guess", item_id=r.id).pack() in data
 
 
 class TestStartAndClose:
@@ -494,22 +495,24 @@ class TestTheHubNeededNoEdits:
 
         data = [btn.callback_data for row in _hub_kb().inline_keyboard for btn in row]
 
-        assert "ev:list:guess" in data and "ev:list:sound" in data
+        assert EventCb(action="list", task_type="guess").pack() in data
+        assert EventCb(action="list", task_type="sound").pack() in data
 
     async def test_the_generic_start_callback_starts_a_guess_round(self, session):
         from handlers.events import cb_start_now
 
         r = await _ready(session)
+        cb = EventCb(action="start", task_type="guess", item_id=r.id)
 
         class _Cb:
-            data = f"ev:start:guess:{r.id}"
+            data = cb.pack()
             bot = _Bot()
             message = _Msg()
 
             async def answer(self, *a, **kw):
                 pass
 
-        await cb_start_now(_Cb(), session)
+        await cb_start_now(_Cb(), cb, session)
 
         assert await _status(session, r.id) == "running"
 

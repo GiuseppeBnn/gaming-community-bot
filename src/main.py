@@ -1,9 +1,11 @@
 import asyncio
+import contextlib
 import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.fsm.storage.base import BaseStorage
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     BotCommand,
@@ -12,7 +14,6 @@ from aiogram.types import (
     BotCommandScopeChat,
     BotCommandScopeChatAdministrators,
 )
-
 from config_data.config import settings
 from database.connection import async_session_maker, create_tables, run_migrations
 import handlers
@@ -24,6 +25,7 @@ from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 from services import badge_service, catalog_loader, group_registry
 from services.backup.loop import backup_loop
+from utils import alerts
 from utils.atomic_io import probe_writable
 
 logging.basicConfig(
@@ -98,17 +100,47 @@ _ADMIN_EXTRA_COMMANDS = [
 _ADMIN_COMMANDS = _PRIVATE_COMMANDS + _ADMIN_EXTRA_COMMANDS
 
 
-def _build_storage():
-    if settings.fsm_storage == "redis":
-        try:
-            from aiogram.fsm.storage.redis import RedisStorage
-            return RedisStorage.from_url(settings.redis_url)
-        except ImportError:
-            logger.warning("redis non installato, uso MemoryStorage")
-    return MemoryStorage()
+async def _build_storage() -> BaseStorage:
+    """Scegli lo storage FSM, degradando a memoria se Redis non risponde.
+
+    `RedisStorage.from_url` builds a client without connecting, so a broken or
+    absent Redis used to sail through startup and surface much later, one
+    amnesiac conversation at a time. The ping moves that discovery here and
+    turns it into a degradation instead of a bot that looks alive and cannot
+    remember anything.
+
+    Degrading rather than refusing to start is the trade STEERING §2 asks for:
+    losing the open FSM flows is worth less than losing the bot.
+    """
+    if settings.fsm_storage != "redis":
+        return MemoryStorage()
+
+    try:
+        from aiogram.fsm.storage.redis import RedisStorage
+    except ImportError:
+        logger.warning("redis non installato, uso MemoryStorage")
+        return MemoryStorage()
+
+    storage = RedisStorage.from_url(settings.redis_url)
+    try:
+        await storage.redis.ping()
+    except Exception as exc:  # noqa: BLE001 — any connection failure degrades
+        logger.warning(
+            "Redis non raggiungibile su %s (%s): uso MemoryStorage. "
+            "Le conversazioni FSM aperte non sopravvivranno a un riavvio.",
+            settings.redis_url, exc,
+        )
+        # The half-built client holds a connection pool; closing it must not be
+        # able to replace a degradation with a crash.
+        with contextlib.suppress(Exception):
+            await storage.close()
+        return MemoryStorage()
+
+    return storage
 
 
 async def main() -> None:
+    alerts.install()
     await create_tables()
     await run_migrations()
     logger.info("Tabelle DB pronte.")
@@ -143,8 +175,10 @@ async def main() -> None:
     # only through this registry (no per-type if/elif).
     event_types.register_builtin()
 
-    storage = _build_storage()
-    logger.info("FSM storage: %s", settings.fsm_storage)
+    storage = await _build_storage()
+    # The settings value is what was *requested*; after a degrade it no longer
+    # matches what got built (STEERING §2) — log the class that is actually wired in.
+    logger.info("FSM storage: %s", type(storage).__name__)
 
     bot = Bot(
         token=settings.bot_token,
@@ -196,6 +230,7 @@ async def main() -> None:
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot))
     backup_task = asyncio.create_task(backup_loop())
+    alert_task = asyncio.create_task(alerts.alert_loop(bot))
 
     logger.info("Bot avviato — polling in corso.")
     try:
@@ -203,6 +238,16 @@ async def main() -> None:
     finally:
         scheduler_task.cancel()
         backup_task.cancel()
+        # Cancelled *before* the farewell drain, not after: the loop's own tick
+        # runs every _POLL_INTERVAL_SECONDS, so draining alongside a live task
+        # means two coroutines sharing the dedup state, and a suppressed-repeat
+        # count can go unreported. Cancel first, then drain once, uncontested.
+        alert_task.cancel()
+        # A clean SIGTERM (Watchtower restarts the container every
+        # WATCHTOWER_POLL_INTERVAL) must not throw away up to _MAX_BUFFERED alerts
+        # that never got a poll tick to go out.
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(alerts.drain(bot), 5)
         await bot.session.close()
         logger.info("Bot fermato.")
 

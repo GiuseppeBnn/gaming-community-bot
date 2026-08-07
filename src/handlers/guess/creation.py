@@ -46,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers.callbacks import EventCb, GuessNewCb
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, guess_service, schedule_service
 from utils.text import esc, format_seconds_short
@@ -79,16 +80,17 @@ class GuessCreationStates(StatesGroup):
     waiting_title = State()
     waiting_media = State()
     waiting_answer = State()
-    editing = State()   # one field from the card is open for input
-    card = State()      # the card is on screen, waiting for a tap
-    hints = State()             # the hints screen is open
-    waiting_hint_text = State() # a hint's words, before its threshold
+    editing = State()  # one field from the card is open for input
+    card = State()  # the card is on screen, waiting for a tap
+    hints = State()  # the hints screen is open
+    waiting_hint_text = State()  # a hint's words, before its threshold
 
 
 # ---------------------------------------------------------------------------
 # Parsers — each returns (value, error). `data` is the flow state, so a parser
 # can validate against another field (hints against the attempt limit).
 # ---------------------------------------------------------------------------
+
 
 def _parse_title(raw: str, _data: dict) -> tuple[str | None, str | None]:
     if len(raw) < 3:
@@ -111,8 +113,9 @@ def _parse_aliases(raw: str, _data: dict) -> tuple[list[str] | None, str | None]
         return [], None
     aliases = [a.strip() for a in raw.splitlines() if a.strip()]
     if len(aliases) > _MAX_ALIASES:
-        return None, (f"⚠️ Massimo {_MAX_ALIASES} grafie alternative "
-                      f"(ne hai mandate {len(aliases)}).")
+        return None, (
+            f"⚠️ Massimo {_MAX_ALIASES} grafie alternative (ne hai mandate {len(aliases)})."
+        )
     if any(len(a) > _MAX_ALIAS for a in aliases):
         return None, f"⚠️ Ogni grafia deve stare in {_MAX_ALIAS} caratteri."
     return aliases, None
@@ -205,8 +208,9 @@ def _parse_prizes(raw: str, _data: dict) -> tuple[list[int] | None, str | None]:
     same kind was four chances to mistype and no way back to the first one."""
     parts = raw.replace("/", " ").replace(",", " ").split()
     if len(parts) != 4:
-        return None, ("⚠️ Servono <b>4 numeri</b>: 1°, 2°, 3° e consolazione.\n"
-                      "Es. <code>800 400 200 80</code>")
+        return None, (
+            "⚠️ Servono <b>4 numeri</b>: 1°, 2°, 3° e consolazione.\nEs. <code>800 400 200 80</code>"
+        )
     try:
         values = [int(p) for p in parts]
     except ValueError:
@@ -250,6 +254,7 @@ def prune_unreachable_hints(data: dict) -> list[list]:
 # Renderers
 # ---------------------------------------------------------------------------
 
+
 def _show_seconds(value: int, zero: str) -> str:
     return f"<b>{format_seconds_short(value)}</b>" if value else f"<i>{zero}</i>"
 
@@ -267,6 +272,7 @@ def _show_close(d: dict) -> str:
 # ---------------------------------------------------------------------------
 # The field registry — the only place a field is described.
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class Field:
@@ -290,36 +296,43 @@ class Field:
 FIELDS: dict[str, Field] = {
     "title": Field(
         label="📌 Titolo",
-        prompt=(f"Invia il nuovo <b>titolo</b> (max {_MAX_TITLE} caratteri).\n"
-                "<i>Lo vedono tutti nel gruppo: non metterci la soluzione.</i>"),
+        prompt=(
+            f"Invia il nuovo <b>titolo</b> (max {_MAX_TITLE} caratteri).\n"
+            "<i>Lo vedono tutti nel gruppo: non metterci la soluzione.</i>"
+        ),
         parse=_parse_title,
         show=lambda d: f"<b>{esc(d['title'])}</b>",
     ),
     "answer": Field(
         label="✅ Risposta",
-        prompt=("Qual è la <b>risposta corretta</b>? Titolo completo ed esatto "
-                "(es. <code>Grand Theft Auto: San Andreas</code>).\n"
-                "<i>Il giudice AI valuta tutto su questa: più è precisa, meglio "
-                "giudica.</i>"),
+        prompt=(
+            "Qual è la <b>risposta corretta</b>? Titolo completo ed esatto "
+            "(es. <code>Grand Theft Auto: San Andreas</code>).\n"
+            "<i>Il giudice AI valuta tutto su questa: più è precisa, meglio "
+            "giudica.</i>"
+        ),
         parse=_parse_answer,
         show=lambda d: f"<b>{esc(d['answer'])}</b>",
     ),
     "aliases": Field(
         label="🔤 Grafie accettate",
-        prompt=(f"<b>Grafie alternative</b> da accettare sempre, una per riga "
-                f"(max {_MAX_ALIASES}).\n"
-                "Es. <code>GTA SA</code> · <code>San Andreas</code>\n"
-                "<i>Accettate senza interpellare l'AI: sono la rete di sicurezza "
-                "se il modello non risponde.</i>\nManda «-» per non averne."),
+        prompt=(
+            f"<b>Grafie alternative</b> da accettare sempre, una per riga "
+            f"(max {_MAX_ALIASES}).\n"
+            "Es. <code>GTA SA</code> · <code>San Andreas</code>\n"
+            "<i>Accettate senza interpellare l'AI: sono la rete di sicurezza "
+            "se il modello non risponde.</i>\nManda «-» per non averne."
+        ),
         parse=_parse_aliases,
-        show=lambda d: (esc(", ".join(d["aliases"])) if d["aliases"]
-                        else "<i>nessuna</i>"),
+        show=lambda d: esc(", ".join(d["aliases"])) if d["aliases"] else "<i>nessuna</i>",
     ),
     "max_attempts": Field(
         label="🎯 Tentativi",
-        prompt=(f"Quanti <b>tentativi</b> ha ogni giocatore? Da 1 a "
-                f"{_MAX_ATTEMPTS_ALLOWED}.\n"
-                "<i>Meno tentativi usa un giocatore, più in alto va nel podio.</i>"),
+        prompt=(
+            f"Quanti <b>tentativi</b> ha ogni giocatore? Da 1 a "
+            f"{_MAX_ATTEMPTS_ALLOWED}.\n"
+            "<i>Meno tentativi usa un giocatore, più in alto va nel podio.</i>"
+        ),
         parse=_parse_attempts,
         show=lambda d: f"<b>{d['max_attempts']}</b>",
     ),
@@ -352,21 +365,26 @@ FIELDS: dict[str, Field] = {
         label="💡 Suggerimenti",
         prompt="",
         parse=None,
-        show=lambda d: (f"<b>{len(d['hints'])}</b>" if d["hints"]
-                        else "<i>nessuno</i>"),
+        show=lambda d: f"<b>{len(d['hints'])}</b>" if d["hints"] else "<i>nessuno</i>",
     ),
     "prizes": Field(
         label="🏆 Premi",
-        prompt=("I <b>4 premi</b> in una riga: 1°, 2°, 3° e consolazione per il 4°.\n"
-                "Es. <code>800 400 200 80</code>\n"
-                "<i>Dalla consolazione in giù scende fino a un minimo garantito. "
-                "Metti 0 dove non vuoi premio.</i>"),
+        prompt=(
+            "I <b>4 premi</b> in una riga: 1°, 2°, 3° e consolazione per il 4°.\n"
+            "Es. <code>800 400 200 80</code>\n"
+            "<i>Dalla consolazione in giù scende fino a un minimo garantito. "
+            "Metti 0 dove non vuoi premio.</i>"
+        ),
         parse=_parse_prizes,
-        show=lambda d: (f"<b>{d['prize_first']}</b> / {d['prize_second']} / "
-                        f"{d['prize_third']} · 4°: {d['prize_consolation']}"),
+        show=lambda d: (
+            f"<b>{d['prize_first']}</b> / {d['prize_second']} / "
+            f"{d['prize_third']} · 4°: {d['prize_consolation']}"
+        ),
         apply=lambda v: {
-            "prize_first": v[0], "prize_second": v[1],
-            "prize_third": v[2], "prize_consolation": v[3],
+            "prize_first": v[0],
+            "prize_second": v[1],
+            "prize_third": v[2],
+            "prize_consolation": v[3],
         },
     ),
 }
@@ -400,34 +418,41 @@ def _defaults() -> dict:
 # Keyboards
 # ---------------------------------------------------------------------------
 
+
 def _cancel_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="❌ Annulla", callback_data="guess_new:cancel")
+    b.button(text="❌ Annulla", callback_data=GuessNewCb(action="cancel").pack())
     return b.as_markup()
 
 
 def _card_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for key, field in FIELDS.items():
-        b.button(text=f"✏️ {field.label}", callback_data=f"guess_new:edit:{key}")
-    b.button(text="✏️ 🖼️ Media", callback_data=f"guess_new:edit:{_MEDIA_FIELD}")
-    b.button(text="✅ Pubblica", callback_data="guess_new:publish")
-    b.button(text="❌ Annulla", callback_data="guess_new:cancel")
+        b.button(text=f"✏️ {field.label}", callback_data=GuessNewCb(action="edit", key=key).pack())
+    b.button(text="✏️ 🖼️ Media", callback_data=GuessNewCb(action="edit", key=_MEDIA_FIELD).pack())
+    b.button(text="✅ Pubblica", callback_data=GuessNewCb(action="publish").pack())
+    b.button(text="❌ Annulla", callback_data=GuessNewCb(action="cancel").pack())
     b.adjust(2, 2, 2, 2, 1, 1, 1)
     return b.as_markup()
 
 
 def _editing_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="⬅️ Torna alla scheda", callback_data="guess_new:back")
+    b.button(text="⬅️ Torna alla scheda", callback_data=GuessNewCb(action="back").pack())
     return b.as_markup()
 
 
 def _created_kb(kind: str, round_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:{kind}:{round_id}")
-    b.button(text="🗓️ Programma", callback_data=f"ev:sched:{kind}:{round_id}")
-    b.button(text="⬅️ Lista", callback_data=f"ev:list:{kind}")
+    b.button(
+        text="▶️ Avvia ora",
+        callback_data=EventCb(action="askstart", task_type=kind, item_id=round_id).pack(),
+    )
+    b.button(
+        text="🗓️ Programma",
+        callback_data=EventCb(action="sched", task_type=kind, item_id=round_id).pack(),
+    )
+    b.button(text="⬅️ Lista", callback_data=EventCb(action="list", task_type=kind).pack())
     b.adjust(2, 1)
     return b.as_markup()
 
@@ -541,9 +566,12 @@ async def fsm_media(message: Message, state: FSMContext) -> None:
     # buttons, and replacing the medium from the card looks like a dead end.
     # Everywhere else the panel stays last because the typed message is deleted.
     await forget_message(message.bot, message.chat.id, data.get("card_message_id"))
-    await state.update_data(media_file_id=file_id, media_kind=media_kind,
-                            media_message_id=echo.message_id,
-                            card_message_id=None)
+    await state.update_data(
+        media_file_id=file_id,
+        media_kind=media_kind,
+        media_message_id=echo.message_id,
+        card_message_id=None,
+    )
 
     # Replacing the medium from the card returns to the card; the first time
     # through, the answer is still missing and is the third question.
@@ -563,6 +591,7 @@ async def fsm_answer(message: Message, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 # The card
 # ---------------------------------------------------------------------------
+
 
 async def _panel(
     message: Message, state: FSMContext, text: str, kb: InlineKeyboardMarkup | None
@@ -584,13 +613,14 @@ async def _panel(
     if message_id:
         try:
             await message.bot.edit_message_text(
-                chat_id=message.chat.id, message_id=message_id,
-                text=text, reply_markup=kb,
+                chat_id=message.chat.id,
+                message_id=message_id,
+                text=text,
+                reply_markup=kb,
             )
             return
         except Exception as exc:  # noqa: BLE001 — fall back to a fresh panel
-            log.debug("Scheda %s non modificabile, ne mando una nuova: %s",
-                      message_id, exc)
+            log.debug("Scheda %s non modificabile, ne mando una nuova: %s", message_id, exc)
     sent = await message.answer(text, reply_markup=kb)
     await state.update_data(card_message_id=sent.message_id)
 
@@ -616,22 +646,24 @@ async def _show_card(message: Message, state: FSMContext, *, note: str = "") -> 
     await _panel(message, state, "\n".join(lines) + note, _card_kb())
 
 
-@router.callback_query(F.data.startswith("guess_new:edit:"), IsAdminCallbackFilter())
-async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(GuessNewCb.filter(F.action == "edit"), IsAdminCallbackFilter())
+async def cb_edit(callback: CallbackQuery, state: FSMContext, callback_data: GuessNewCb) -> None:
     """Open one field for input. The single entry point for every field.
 
     Leaving anywhere drops a half-written hint: text typed but never given a
     threshold must not be able to attach itself later, when a stale number button
     from that screen gets tapped.
     """
-    key = callback.data.split(":")[-1]
+    key = callback_data.key
+    if key is None:
+        await callback.answer("Campo sconosciuto.", show_alert=True)
+        return
     await state.update_data(_pending_hint=None)
 
     if key == _MEDIA_FIELD:
         spec = kind_of((await state.get_data())["kind"])
         await state.set_state(GuessCreationStates.waiting_media)
-        await _panel(callback.message, state, f"🖼️ {spec.media_prompt}",
-                     _editing_kb())
+        await _panel(callback.message, state, f"🖼️ {spec.media_prompt}", _editing_kb())
         await callback.answer()
         return
 
@@ -650,8 +682,7 @@ async def cb_edit(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(_editing=key)
     # The prompt REPLACES the card rather than stacking under it, so there is only
     # ever one live panel on screen.
-    await _panel(callback.message, state, f"{field.label}\n\n{field.prompt}",
-                 _editing_kb())
+    await _panel(callback.message, state, f"{field.label}\n\n{field.prompt}", _editing_kb())
     await callback.answer()
 
 
@@ -667,8 +698,7 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
 
     value, err = field.parse((message.text or "").strip(), data)
     if err:
-        await _panel(message, state, f"{field.label}\n\n{field.prompt}\n\n{err}",
-                     _editing_kb())
+        await _panel(message, state, f"{field.label}\n\n{field.prompt}\n\n{err}", _editing_kb())
         return
 
     update = field.apply(value) if field.apply else {data["_editing"]: value}
@@ -687,11 +717,12 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
         dropped = len(hints_of(await state.get_data())) - len(kept)
         if dropped:
             await state.update_data(hints=kept)
-            subject = ("<b>1</b> suggerimento" if dropped == 1
-                       else f"<b>{dropped}</b> suggerimenti")
+            subject = "<b>1</b> suggerimento" if dropped == 1 else f"<b>{dropped}</b> suggerimenti"
             seen = "non lo avrebbe visto" if dropped == 1 else "non li avrebbe visti"
-            note = (f"\n\n⚠️ Ho tolto {subject}: la soglia era oltre i "
-                    f"<b>{value}</b> tentativi, quindi {seen} nessuno.")
+            note = (
+                f"\n\n⚠️ Ho tolto {subject}: la soglia era oltre i "
+                f"<b>{value}</b> tentativi, quindi {seen} nessuno."
+            )
 
     await _show_card(message, state, note=note)
 
@@ -706,21 +737,22 @@ async def fsm_edit_value(message: Message, state: FSMContext) -> None:
 #
 # The threshold is now a button. That is the intuitive half; the safe half is
 # that `free_thresholds` is the *only* source of valid numbers and every callback
-# re-checks against it, so a stale or forged `guess_new:hint:at:99` creates
+# re-checks against it, so a stale or forged `guess_new:hint_at::99` creates
 # nothing. The only free text left is the hint body, which needs a length check
 # and nothing else — a value that never passes through a parser cannot be
 # malformed.
 # ---------------------------------------------------------------------------
 
+
 def _hints_kb(data: dict) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     hints = hints_of(data)
     if len(hints) < _MAX_HINTS and free_thresholds(data):
-        b.button(text="➕ Aggiungi", callback_data="guess_new:hint:add")
+        b.button(text="➕ Aggiungi", callback_data=GuessNewCb(action="hint_add").pack())
     if hints:
-        b.button(text="↩️ Togli l'ultimo", callback_data="guess_new:hint:undo")
-        b.button(text="🧹 Cancella tutti", callback_data="guess_new:hint:clear")
-    b.button(text="⬅️ Fatto", callback_data="guess_new:hint:done")
+        b.button(text="↩️ Togli l'ultimo", callback_data=GuessNewCb(action="hint_undo").pack())
+        b.button(text="🧹 Cancella tutti", callback_data=GuessNewCb(action="hint_clear").pack())
+    b.button(text="⬅️ Fatto", callback_data=GuessNewCb(action="hint_done").pack())
     b.adjust(1, 2, 1)
     return b.as_markup()
 
@@ -728,12 +760,15 @@ def _hints_kb(data: dict) -> InlineKeyboardMarkup:
 def _thresholds_kb(data: dict) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for n in free_thresholds(data):
-        b.button(text=str(n), callback_data=f"guess_new:hint:at:{n}")
+        b.button(text=str(n), callback_data=GuessNewCb(action="hint_at", value=n).pack())
     b.adjust(5)
     # Its own row: packed in with the numbers it reads as one of the choices, and
     # sits where a mistap costs the hint you just typed.
-    b.row(InlineKeyboardButton(text="❌ Lascia perdere",
-                               callback_data="guess_new:hint:done"))
+    b.row(
+        InlineKeyboardButton(
+            text="❌ Lascia perdere", callback_data=GuessNewCb(action="hint_done").pack()
+        )
+    )
     return b.as_markup()
 
 
@@ -741,10 +776,7 @@ def _hints_text(data: dict) -> str:
     hints = hints_of(data)
     lines = [f"💡 <b>Suggerimenti</b> — {len(hints)} su {_MAX_HINTS}\n"]
     if hints:
-        lines += [
-            f"• dopo <b>{after}</b> tentativi: {esc(text)}"
-            for after, text in hints
-        ]
+        lines += [f"• dopo <b>{after}</b> tentativi: {esc(text)}" for after, text in hints]
     else:
         lines.append("<i>Ancora nessuno.</i>")
     lines.append(
@@ -760,40 +792,46 @@ async def _hints_panel(message: Message, state: FSMContext) -> None:
     await _panel(message, state, _hints_text(data), _hints_kb(data))
 
 
-@router.callback_query(F.data == "guess_new:hint:add", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "hint_add"), IsAdminCallbackFilter())
 async def cb_hint_add(callback: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
     if len(hints_of(data)) >= _MAX_HINTS:
-        await _panel(callback.message, state,
-                     f"{_hints_text(data)}\n\n⚠️ Massimo {_MAX_HINTS} suggerimenti.",
-                     _hints_kb(data))
+        await _panel(
+            callback.message,
+            state,
+            f"{_hints_text(data)}\n\n⚠️ Massimo {_MAX_HINTS} suggerimenti.",
+            _hints_kb(data),
+        )
         await callback.answer()
         return
     if not free_thresholds(data):
         await _panel(
-            callback.message, state,
+            callback.message,
+            state,
             f"{_hints_text(data)}\n\n⚠️ Ogni tentativo ha già il suo suggerimento.",
             _hints_kb(data),
         )
         await callback.answer()
         return
     await state.set_state(GuessCreationStates.waiting_hint_text)
-    await _panel(callback.message, state,
-                 "💡 Scrivi il <b>suggerimento</b>.\n"
-                 "<i>Poi ti chiedo dopo quanti tentativi farlo arrivare.</i>",
-                 _editing_kb())
+    await _panel(
+        callback.message,
+        state,
+        "💡 Scrivi il <b>suggerimento</b>.\n"
+        "<i>Poi ti chiedo dopo quanti tentativi farlo arrivare.</i>",
+        _editing_kb(),
+    )
     await callback.answer()
 
 
-@router.message(GuessCreationStates.waiting_hint_text, IsAdminFilter(),
-                ~F.text.startswith("/"))
+@router.message(GuessCreationStates.waiting_hint_text, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_hint_text(message: Message, state: FSMContext) -> None:
     """Take the hint's words, then ask *when* with buttons."""
     text = (message.text or "").strip()
     if not text:
-        await _panel(message, state,
-                     "⚠️ Il suggerimento è vuoto. Scrivilo e te lo salvo.",
-                     _editing_kb())
+        await _panel(
+            message, state, "⚠️ Il suggerimento è vuoto. Scrivilo e te lo salvo.", _editing_kb()
+        )
         return
     if err := too_long(text, _MAX_HINT, "Il suggerimento è troppo lungo"):
         await _panel(message, state, err, _editing_kb())
@@ -803,14 +841,15 @@ async def fsm_hint_text(message: Message, state: FSMContext) -> None:
     await forget_message(message.bot, message.chat.id, message.message_id)
     data = await state.get_data()
     await _panel(
-        message, state,
+        message,
+        state,
         f"💡 «{esc(text)}»\n\n<b>Dopo quanti tentativi</b> sbagliati deve arrivare?",
         _thresholds_kb(data),
     )
 
 
-@router.callback_query(F.data.startswith("guess_new:hint:at:"), IsAdminCallbackFilter())
-async def cb_hint_at(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(GuessNewCb.filter(F.action == "hint_at"), IsAdminCallbackFilter())
+async def cb_hint_at(callback: CallbackQuery, state: FSMContext, callback_data: GuessNewCb) -> None:
     """Attach the pending hint to a threshold.
 
     Everything here is re-checked even though the keyboard only offered valid
@@ -828,10 +867,8 @@ async def cb_hint_at(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(f"Massimo {_MAX_HINTS} suggerimenti.", show_alert=True)
         return
 
-    raw = callback.data.rsplit(":", 1)[-1]
-    try:
-        after = int(raw)
-    except ValueError:
+    after = callback_data.value
+    if after is None:
         await callback.answer("Valore non valido.", show_alert=True)
         return
     if after not in free_thresholds(data):
@@ -840,13 +877,12 @@ async def cb_hint_at(callback: CallbackQuery, state: FSMContext) -> None:
         await _hints_panel(callback.message, state)
         return
 
-    await state.update_data(hints=sorted([*hints_of(data), [after, pending]]),
-                            _pending_hint=None)
+    await state.update_data(hints=sorted([*hints_of(data), [after, pending]]), _pending_hint=None)
     await _hints_panel(callback.message, state)
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:hint:undo", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "hint_undo"), IsAdminCallbackFilter())
 async def cb_hint_undo(callback: CallbackQuery, state: FSMContext) -> None:
     hints = hints_of(await state.get_data())
     await state.update_data(hints=hints[:-1])
@@ -854,21 +890,21 @@ async def cb_hint_undo(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:hint:clear", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "hint_clear"), IsAdminCallbackFilter())
 async def cb_hint_clear(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(hints=[], _pending_hint=None)
     await _hints_panel(callback.message, state)
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:hint:done", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "hint_done"), IsAdminCallbackFilter())
 async def cb_hint_done(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(_pending_hint=None)
     await _show_card(callback.message, state)
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:back", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "back"), IsAdminCallbackFilter())
 async def cb_back(callback: CallbackQuery, state: FSMContext) -> None:
     """Leave a field without changing it."""
     await _show_card(callback.message, state)
@@ -879,9 +915,9 @@ async def cb_back(callback: CallbackQuery, state: FSMContext) -> None:
 # Publish / cancel
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data == "guess_new:publish", IsAdminCallbackFilter())
-async def cb_publish(callback: CallbackQuery, state: FSMContext,
-                     db_session: AsyncSession) -> None:
+
+@router.callback_query(GuessNewCb.filter(F.action == "publish"), IsAdminCallbackFilter())
+async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
     """Create the round and arm it as ``ready``. Commits — this is a handler."""
     data = await state.get_data()
     if not data.get("answer"):  # publish tapped on a stale card
@@ -919,7 +955,8 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext,
     # The card BECOMES the confirmation. Left as it was, its «✏️ campo» buttons
     # would still be tappable over a flow that no longer exists.
     await _panel(
-        callback.message, state,
+        callback.message,
+        state,
         f"✅ <b>{esc(spec.label)} #{round_.id} creato!</b>\n\n"
         f"{spec.emoji} {esc(round_.title)}\n"
         f"🏆 {guess_service.format_prize_summary(round_)}\n\n"
@@ -930,20 +967,23 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext,
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:cancel", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "cancel"), IsAdminCallbackFilter())
 async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     if await state.get_state() is None:
         await callback.answer()
         return
     await _panel(
-        callback.message, state,
+        callback.message,
+        state,
         "⚠️ Sicuro di voler annullare? I dati inseriti andranno persi.",
-        confirm_cancel_kb("guess_new:cancel_yes", "guess_new:cancel_no"),
+        confirm_cancel_kb(
+            GuessNewCb(action="cancel_yes").pack(), GuessNewCb(action="cancel_no").pack()
+        ),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:cancel_yes", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "cancel_yes"), IsAdminCallbackFilter())
 async def cb_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     # Read the medium's id before clearing, then take it off screen with the card:
     # an abandoned flow should leave nothing behind, in the chat or in the DB.
@@ -954,7 +994,7 @@ async def cb_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "guess_new:cancel_no", IsAdminCallbackFilter())
+@router.callback_query(GuessNewCb.filter(F.action == "cancel_no"), IsAdminCallbackFilter())
 async def cb_cancel_no(callback: CallbackQuery, state: FSMContext) -> None:
     """Back to where they were — not a message saying they are back where they were.
 

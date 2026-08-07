@@ -28,7 +28,7 @@ import datetime
 import time
 
 import pytest
-from aiogram.types import CallbackQuery, Chat, Message, User
+from aiogram.types import CallbackQuery, Chat, InlineQuery, Message, User
 
 import middlewares.group_guard as gg
 from services import group_registry
@@ -284,7 +284,58 @@ class TestInvalidateCache:
         assert 1 not in gg._cache and 2 in gg._cache
 
 
+def _inline(bot, chat_type: str = "private") -> InlineQuery:
+    return InlineQuery(
+        id="iq1",
+        from_user=User(id=USER_ID, is_bot=False, first_name="Tizio"),
+        query="giu",
+        offset="",
+        chat_type=chat_type,
+    ).as_(bot)
+
+
+class TestInlineGate:
+    async def test_a_member_querying_inline_gets_through(self):
+        bot = _FakeBot("member")
+        handler = _Handler()
+
+        result = await gg.GroupMemberMiddleware()(handler, _inline(bot), _data(bot))
+
+        assert handler.calls == 1 and result == "handled"
+        assert bot.member_checks == [(GROUP_ID, USER_ID)]
+
+    async def test_a_non_member_inline_query_is_stopped(self):
+        """Il punto è che l'handler non gira mai: la card profilo non parte per un estraneo."""
+        bot = _FakeBot("left")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _inline(bot), _data(bot))
+
+        assert handler.calls == 0
+        # `query.answer(...)` su un InlineQuery `.as_(bot)` produce un request method
+        # con `.results[]`; l'articolo di rifiuto ha l'InputMessageContent con il testo.
+        assert any(
+            "Accesso negato" in getattr(r.input_message_content, "message_text", "")
+            for c in bot.calls
+            for r in getattr(c, "results", [])
+        )
+
+    async def test_inline_is_gated_even_when_typed_inside_a_group_chat(self):
+        """chat_type non è fonte affidabile: chiunque digita @bot da una chat straniera.
+        Il gate membership decide, non il chat_type della query."""
+        bot = _FakeBot("left")
+        handler = _Handler()
+
+        await gg.GroupMemberMiddleware()(handler, _inline(bot, "supergroup"), _data(bot))
+
+        assert handler.calls == 0
+
+
 class TestChatType:
+    def test_an_inline_query_is_treated_as_private(self):
+        """'private' → il gate membership scatta sempre, indipendentemente dal chat_type."""
+        assert gg._chat_type(_inline(_FakeBot(), "supergroup")) == "private"
+
     def test_a_private_message_is_private(self):
         assert gg._chat_type(_message(_FakeBot())) == "private"
 

@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
+from handlers.callbacks import QuizAnswerCb
 from handlers.quiz import play as qz
 from services import quiz_service
 
@@ -54,8 +55,9 @@ class _FakeBot:
 class _FakeMessage:
     def __init__(self, bot=None, user_id: int = PLAYER) -> None:
         self.bot = bot or _FakeBot()
-        self.from_user = SimpleNamespace(id=user_id, username=f"u{user_id}",
-                                         full_name=f"User {user_id}")
+        self.from_user = SimpleNamespace(
+            id=user_id, username=f"u{user_id}", full_name=f"User {user_id}"
+        )
         self.chat = SimpleNamespace(id=user_id, type="private")
         self.texts: list[str] = []
         self.message_id = 55
@@ -77,8 +79,9 @@ class _FakeCallback:
         self.data = data
         self.message = _FakeMessage(bot=bot, user_id=user_id)
         self.bot = self.message.bot
-        self.from_user = SimpleNamespace(id=user_id, username=f"u{user_id}",
-                                         full_name=f"User {user_id}")
+        self.from_user = SimpleNamespace(
+            id=user_id, username=f"u{user_id}", full_name=f"User {user_id}"
+        )
         self.answers: list[tuple[str | None, bool]] = []
 
     async def answer(self, text=None, show_alert=False):
@@ -114,8 +117,12 @@ async def _running_quiz(session, user_factory, *, n_questions: int = 2, time_lim
     for i in range(n_questions):
         questions.append(
             await quiz_service.add_question(
-                session, quiz.id, f"Domanda {i}?", ["Giusta", "Sbagliata"],
-                correct_option_id=0, explanation="Perché sì" if i == 0 else None,
+                session,
+                quiz.id,
+                f"Domanda {i}?",
+                ["Giusta", "Sbagliata"],
+                correct_option_id=0,
+                explanation="Perché sì" if i == 0 else None,
                 time_limit_seconds=time_limit,
             )
         )
@@ -127,9 +134,9 @@ async def _running_quiz(session, user_factory, *, n_questions: int = 2, time_lim
 async def _answers(session, quiz_id: int, tg_id: int) -> int:
     return (
         await session.execute(
-            select(func.count()).select_from(QuizAnswer).where(
-                QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == tg_id
-            )
+            select(func.count())
+            .select_from(QuizAnswer)
+            .where(QuizAnswer.quiz_id == quiz_id, QuizAnswer.user_tg_id == tg_id)
         )
     ).scalar_one()
 
@@ -153,9 +160,7 @@ class TestOptionButtons:
 
 
 class TestStartingASession:
-    async def test_starting_sends_the_rules_and_the_first_question(
-        self, session, user_factory
-    ):
+    async def test_starting_sends_the_rules_and_the_first_question(self, session, user_factory):
         quiz, _ = await _running_quiz(session, user_factory)
         message = _FakeMessage()
 
@@ -199,9 +204,7 @@ class TestStartingASession:
         assert "30 second" in message.said
         qz._forget_play(quiz.id, PLAYER)  # stop the countdown this armed
 
-    async def test_a_quiz_that_is_not_running_cannot_be_played(
-        self, session, user_factory
-    ):
+    async def test_a_quiz_that_is_not_running_cannot_be_played(self, session, user_factory):
         quiz, _ = await _running_quiz(session, user_factory)
 
         await quiz_service.set_status(session, quiz.id, "finished")
@@ -222,9 +225,7 @@ class TestStartingASession:
         await qz.start_quiz_session(message, session, 999999)
         assert "non trovato" in message.said
 
-    async def test_resuming_picks_up_where_the_player_left_off(
-        self, session, user_factory
-    ):
+    async def test_resuming_picks_up_where_the_player_left_off(self, session, user_factory):
         """Deep links are re-openable and the bot restarts; a resume must not replay
         question 1, which the player has already answered."""
         quiz, questions = await _running_quiz(session, user_factory, n_questions=3)
@@ -257,13 +258,14 @@ class TestAnswering:
         await qz.start_quiz_session(_FakeMessage(), session, quiz.id)
         return quiz, questions
 
-    async def test_a_correct_answer_is_recorded_and_confirmed(
-        self, session, user_factory
-    ):
+    async def test_a_correct_answer_is_recorded_and_confirmed(self, session, user_factory):
         quiz, questions = await self._start(session, user_factory)
-        cb = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
+        cb = _FakeCallback(answer.pack())
 
-        await qz.cb_quiz_answer(cb, session)
+        await qz.cb_quiz_answer(cb, answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 1
         assert "Esatto" in cb.message.said
@@ -271,24 +273,27 @@ class TestAnswering:
 
     async def test_a_wrong_answer_names_the_right_one(self, session, user_factory):
         quiz, questions = await self._start(session, user_factory)
-        cb = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:1")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=1
+        )
+        cb = _FakeCallback(answer.pack())
 
-        await qz.cb_quiz_answer(cb, session)
+        await qz.cb_quiz_answer(cb, answer, session)
 
         assert "Sbagliato" in cb.message.said
         assert "Giusta" in cb.message.said
 
-    async def test_answering_the_same_question_twice_is_refused(
-        self, session, user_factory
-    ):
+    async def test_answering_the_same_question_twice_is_refused(self, session, user_factory):
         """The podium ranks by correct answers, so a second answer to the same
         question is a second chance nobody else gets."""
         quiz, questions = await self._start(session, user_factory)
-        data = f"quiz_ans:{quiz.id}:{questions[0].id}:0"
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
 
-        await qz.cb_quiz_answer(_FakeCallback(data), session)
-        second = _FakeCallback(data)
-        await qz.cb_quiz_answer(second, session)
+        await qz.cb_quiz_answer(_FakeCallback(answer.pack()), answer, session)
+        second = _FakeCallback(answer.pack())
+        await qz.cb_quiz_answer(second, answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 1
         assert "già risposto" in second.said
@@ -298,35 +303,32 @@ class TestAnswering:
         the second question's keyboard from an older message and answer out of order,
         which breaks both the sequence and the per-question timing."""
         quiz, questions = await self._start(session, user_factory)
-        cb = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[1].id}:0")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[1].id, option_id=0
+        )
+        cb = _FakeCallback(answer.pack())
 
-        await qz.cb_quiz_answer(cb, session)
+        await qz.cb_quiz_answer(cb, answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 0
         assert "Rispondi prima" in cb.said
 
-    async def test_finishing_sends_the_wrap_up_with_the_score(
-        self, session, user_factory
-    ):
+    async def test_finishing_sends_the_wrap_up_with_the_score(self, session, user_factory):
         quiz, questions = await self._start(session, user_factory)
 
-        await qz.cb_quiz_answer(
-            _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0"), session
+        first_answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
         )
-        last = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[1].id}:1")
-        await qz.cb_quiz_answer(last, session)
+        await qz.cb_quiz_answer(_FakeCallback(first_answer.pack()), first_answer, session)
+        last_answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[1].id, option_id=1
+        )
+        last = _FakeCallback(last_answer.pack())
+        await qz.cb_quiz_answer(last, last_answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 2
         assert "Quiz completato" in last.message.bot.said
         assert "1/2" in last.message.bot.said
-
-    async def test_a_malformed_callback_is_refused(self, session, user_factory):
-        await _running_quiz(session, user_factory)
-
-        for data in ("quiz_ans:", "quiz_ans:a:b:c", "quiz_ans:1:2"):
-            cb = _FakeCallback(data)
-            await qz.cb_quiz_answer(cb, session)
-            assert "non validi" in cb.said, data
 
     async def test_answering_a_closed_quiz_is_refused(self, session, user_factory):
         """The buttons stay in the chat after the admin closes the quiz."""
@@ -334,41 +336,49 @@ class TestAnswering:
         await quiz_service.set_status(session, quiz.id, "finished")
         await session.commit()
 
-        cb = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
-        await qz.cb_quiz_answer(cb, session)
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
+        cb = _FakeCallback(answer.pack())
+        await qz.cb_quiz_answer(cb, answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 0
         assert "non è più disponibile" in cb.said
 
-    async def test_an_unknown_question_or_option_is_refused(
-        self, session, user_factory
-    ):
+    async def test_an_unknown_question_or_option_is_refused(self, session, user_factory):
         quiz, questions = await self._start(session, user_factory)
 
-        ghost = _FakeCallback(f"quiz_ans:{quiz.id}:999999:0")
-        await qz.cb_quiz_answer(ghost, session)
+        ghost_answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=999999, option_id=0
+        )
+        ghost = _FakeCallback(ghost_answer.pack())
+        await qz.cb_quiz_answer(ghost, ghost_answer, session)
         assert "Domanda non valida" in ghost.said
 
-        out_of_range = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:9")
-        await qz.cb_quiz_answer(out_of_range, session)
+        out_of_range_answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=9
+        )
+        out_of_range = _FakeCallback(out_of_range_answer.pack())
+        await qz.cb_quiz_answer(out_of_range, out_of_range_answer, session)
         assert "Opzione non valida" in out_of_range.said
 
         assert await _answers(session, quiz.id, PLAYER) == 0
 
-    async def test_an_uneditable_message_still_gets_the_feedback(
-        self, session, user_factory
-    ):
+    async def test_an_uneditable_message_still_gets_the_feedback(self, session, user_factory):
         """Telegram refuses edits on messages older than 48h. The player must still be
         told whether they were right, as a new message."""
         quiz, questions = await self._start(session, user_factory)
-        cb = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
+        cb = _FakeCallback(answer.pack())
 
         async def refuse_edit(text, reply_markup=None, **kw):
             raise RuntimeError("Bad Request: message can't be edited")
 
         cb.message.edit_text = refuse_edit
 
-        await qz.cb_quiz_answer(cb, session)
+        await qz.cb_quiz_answer(cb, answer, session)
 
         assert await _answers(session, quiz.id, PLAYER) == 1
         assert "Esatto" in cb.message.said
@@ -384,9 +394,10 @@ class TestTimingAndCleanup:
         ctx = qz._PLAY[qz._play_key(quiz.id, PLAYER)]
         assert ctx.timer is not None and not ctx.timer.done()
 
-        await qz.cb_quiz_answer(
-            _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0"), session
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
         )
+        await qz.cb_quiz_answer(_FakeCallback(answer.pack()), answer, session)
         await asyncio.sleep(0)  # let the cancellation land
 
         assert ctx.timer.cancelled() or ctx.timer.done()
@@ -424,9 +435,8 @@ class TestTimingAndCleanup:
         assert qz._play_key(quiz.id, PLAYER) in qz._PLAY
 
         for q in questions:
-            await qz.cb_quiz_answer(
-                _FakeCallback(f"quiz_ans:{quiz.id}:{q.id}:0"), session
-            )
+            answer = QuizAnswerCb(action="answer", quiz_id=quiz.id, question_id=q.id, option_id=0)
+            await qz.cb_quiz_answer(_FakeCallback(answer.pack()), answer, session)
 
         assert qz._play_key(quiz.id, PLAYER) not in qz._PLAY
 
@@ -449,6 +459,7 @@ class TestTheCountdownFiring:
         database from the fixture's — the timer would open an empty schema and find
         no quiz at all, so every assertion below would pass vacuously.
         """
+
         class _Ctx:
             async def __aenter__(self):
                 return session
@@ -496,9 +507,10 @@ class TestTheCountdownFiring:
         record_answer call is the real guard, and it must not overwrite the answer
         the player actually gave."""
         quiz, questions = await _running_quiz(session, user_factory, time_limit=1)
-        await qz.cb_quiz_answer(
-            _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0"), session
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
         )
+        await qz.cb_quiz_answer(_FakeCallback(answer.pack()), answer, session)
         self._own_session(monkeypatch, session)
         bot = _FakeBot()
 
@@ -582,9 +594,11 @@ class TestTheCountdownFiring:
         quiz, questions = await _running_quiz(session, user_factory, time_limit=300)
         self._own_session(monkeypatch, session)
 
-        task = asyncio.create_task(qz._expire_question(
-            _FakeBot(), PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=300
-        ))
+        task = asyncio.create_task(
+            qz._expire_question(
+                _FakeBot(), PLAYER, quiz.id, PLAYER, questions[0].id, message_id=1, limit=300
+            )
+        )
         await asyncio.sleep(0)
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -606,9 +620,12 @@ class TestRacingAnswers:
             return None
 
         monkeypatch.setattr(quiz_service, "record_answer", _gone)
-        callback = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
+        callback = _FakeCallback(answer.pack())
 
-        await qz.cb_quiz_answer(callback, session)
+        await qz.cb_quiz_answer(callback, answer, session)
 
         assert "Domanda non valida" in callback.said
         qz._forget_play(quiz.id, PLAYER)
@@ -625,9 +642,12 @@ class TestRacingAnswers:
             return SimpleNamespace(recorded=False, is_correct=True, correct_option_id=0)
 
         monkeypatch.setattr(quiz_service, "record_answer", _already)
-        callback = _FakeCallback(f"quiz_ans:{quiz.id}:{questions[0].id}:0")
+        answer = QuizAnswerCb(
+            action="answer", quiz_id=quiz.id, question_id=questions[0].id, option_id=0
+        )
+        callback = _FakeCallback(answer.pack())
 
-        await qz.cb_quiz_answer(callback, session)
+        await qz.cb_quiz_answer(callback, answer, session)
 
         assert "già risposto" in callback.said
         qz._forget_play(quiz.id, PLAYER)

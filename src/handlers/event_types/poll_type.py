@@ -14,6 +14,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
+from handlers.callbacks import EventCb
 from services import group_registry, poll_service, schedule_service
 from utils.text import esc
 
@@ -31,11 +32,12 @@ class PollType:
         lines = ["📊 <b>Sondaggi pronti</b>\n"]
         for p in polls:
             lines.append(f"#{p.id} {esc(p.question)}")
-            b.button(text=f"⚙️ #{p.id} {p.question[:22]}", callback_data=f"ev:item:poll:{p.id}")
+            b.button(text=f"⚙️ #{p.id} {p.question[:22]}",
+                     callback_data=EventCb(action="item", task_type="poll", item_id=p.id).pack())
         if not polls:
             lines.append("<i>Nessun sondaggio pronto. Creane uno.</i>")
-        b.button(text="➕ Crea sondaggio", callback_data="ev:new:poll")
-        b.button(text="⬅️ Eventi", callback_data="ev:home")
+        b.button(text="➕ Crea sondaggio", callback_data=EventCb(action="new", task_type="poll").pack())
+        b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 

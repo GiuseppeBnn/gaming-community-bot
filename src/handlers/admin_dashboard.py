@@ -37,6 +37,7 @@ from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers.admin import apply_warning, render_audit, render_panel_help, render_stats
 from handlers.admin_betting import _show_event_list
+from handlers.callbacks import AdminCb
 from handlers.leaderboard import render_board
 from middlewares import ban_guard
 from keyboards.admin_dashboard_kb import (
@@ -123,19 +124,19 @@ async def cmd_admin(message: Message, db_session: AsyncSession) -> None:
     await show_dashboard_home(message, db_session)
 
 
-@router.callback_query(F.data == "adm:home", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "home"), IsAdminCallbackFilter())
 async def cb_home(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
     await state.clear()
     await show_dashboard_home(callback, db_session, edit=True)
 
 
-@router.callback_query(F.data == "adm:stats", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "stats"), IsAdminCallbackFilter())
 async def cb_stats(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await callback.message.edit_text(await render_stats(db_session), reply_markup=back_home_kb())
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:lead", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "lead"), IsAdminCallbackFilter())
 async def cb_lead(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await callback.message.edit_text(
         await render_board(db_session, "coins"), reply_markup=lead_kb("coins")
@@ -143,9 +144,11 @@ async def cb_lead(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("adm:lead:"), IsAdminCallbackFilter())
-async def cb_lead_board(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    board = callback.data.split(":")[2]
+@router.callback_query(AdminCb.filter(F.action == "lead_board"), IsAdminCallbackFilter())
+async def cb_lead_board(
+    callback: CallbackQuery, callback_data: AdminCb, db_session: AsyncSession
+) -> None:
+    board = callback_data.key
     if board not in ("coins", "xp", "trofei"):
         await callback.answer()
         return
@@ -158,19 +161,19 @@ async def cb_lead_board(callback: CallbackQuery, db_session: AsyncSession) -> No
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:audit", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "audit"), IsAdminCallbackFilter())
 async def cb_audit(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await callback.message.edit_text(await render_audit(db_session), reply_markup=back_home_kb())
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:help", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "help"), IsAdminCallbackFilter())
 async def cb_help(callback: CallbackQuery) -> None:
     await callback.message.edit_text(render_panel_help(), reply_markup=back_home_kb())
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:close", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "close"), IsAdminCallbackFilter())
 async def cb_close(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     try:
@@ -184,7 +187,7 @@ async def cb_close(callback: CallbackQuery, state: FSMContext) -> None:
 # Bets (reuse the existing betting management UI)
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data == "adm:bets", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "bets"), IsAdminCallbackFilter())
 async def cb_bets(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await _show_event_list(callback, db_session)
 
@@ -193,7 +196,7 @@ async def cb_bets(callback: CallbackQuery, db_session: AsyncSession) -> None:
 # Economy (airdrop)
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data == "adm:econ", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "econ"), IsAdminCallbackFilter())
 async def cb_econ(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text(
@@ -202,7 +205,7 @@ async def cb_econ(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:airdrop", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "airdrop"), IsAdminCallbackFilter())
 async def cb_airdrop(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminPanelStates.waiting_airdrop)
     await callback.message.edit_text(
@@ -230,7 +233,7 @@ async def fsm_airdrop(message: Message, state: FSMContext, db_session: AsyncSess
     )
 
 
-@router.callback_query(F.data == "adm:xpairdrop", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "xpairdrop"), IsAdminCallbackFilter())
 async def cb_xpairdrop(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminPanelStates.waiting_xp_airdrop)
     await callback.message.edit_text(
@@ -262,10 +265,16 @@ async def fsm_xp_airdrop(message: Message, state: FSMContext, db_session: AsyncS
 # User picker + search
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data.startswith("adm:users:"), IsAdminCallbackFilter())
-async def cb_users(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+@router.callback_query(AdminCb.filter(F.action == "users"), IsAdminCallbackFilter())
+async def cb_users(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    page = callback_data.item_id
+    if page is None:
+        await callback.answer()
+        return
     await state.clear()
-    page = max(0, int(callback.data.split(":")[2]))
+    page = max(0, page)
     rows = await admin_service.list_users(db_session, page * PAGE_SIZE, PAGE_SIZE + 1)
     has_next = len(rows) > PAGE_SIZE
     rows = rows[:PAGE_SIZE]
@@ -280,7 +289,7 @@ async def cb_users(callback: CallbackQuery, state: FSMContext, db_session: Async
     await callback.answer()
 
 
-@router.callback_query(F.data == "adm:search", IsAdminCallbackFilter())
+@router.callback_query(AdminCb.filter(F.action == "search"), IsAdminCallbackFilter())
 async def cb_search(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(AdminPanelStates.waiting_search)
     await callback.message.edit_text(
@@ -311,10 +320,15 @@ async def fsm_search(message: Message, state: FSMContext, db_session: AsyncSessi
     )
 
 
-@router.callback_query(F.data.startswith("adm:user:"), IsAdminCallbackFilter())
-async def cb_user(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+@router.callback_query(AdminCb.filter(F.action == "user"), IsAdminCallbackFilter())
+async def cb_user(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    tg_id = callback_data.item_id
+    if tg_id is None:
+        await callback.answer()
+        return
     await state.clear()
-    tg_id = int(callback.data.split(":")[2])
     await _show_detail_cb(callback, db_session, tg_id)
     await callback.answer()
 
@@ -323,10 +337,13 @@ async def cb_user(callback: CallbackQuery, state: FSMContext, db_session: AsyncS
 # Per-user actions
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data.startswith("adm:act:"), IsAdminCallbackFilter())
-async def cb_act(callback: CallbackQuery, state: FSMContext) -> None:
-    _, _, action, raw = callback.data.split(":")
-    tg_id = int(raw)
+@router.callback_query(AdminCb.filter(F.action == "act"), IsAdminCallbackFilter())
+async def cb_act(callback: CallbackQuery, callback_data: AdminCb, state: FSMContext) -> None:
+    action = callback_data.key
+    tg_id = callback_data.item_id
+    if action is None or tg_id is None:
+        await callback.answer()
+        return
     if action in ("mute", "warn"):
         guard = _mod_guard(callback.from_user.id, tg_id, callback.bot.id)
         if guard:
@@ -365,10 +382,13 @@ async def cb_act(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("adm:ask:"), IsAdminCallbackFilter())
-async def cb_ask(callback: CallbackQuery) -> None:
-    _, _, action, raw = callback.data.split(":")
-    tg_id = int(raw)
+@router.callback_query(AdminCb.filter(F.action == "ask"), IsAdminCallbackFilter())
+async def cb_ask(callback: CallbackQuery, callback_data: AdminCb) -> None:
+    action = callback_data.key
+    tg_id = callback_data.item_id
+    if action is None or tg_id is None:
+        await callback.answer()
+        return
     guard = _mod_guard(callback.from_user.id, tg_id, callback.bot.id)
     if guard:
         await callback.answer(guard, show_alert=True)
@@ -381,11 +401,16 @@ async def cb_ask(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("adm:do:"), IsAdminCallbackFilter())
-async def cb_do(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+@router.callback_query(AdminCb.filter(F.action == "do"), IsAdminCallbackFilter())
+async def cb_do(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    action = callback_data.key
+    tg_id = callback_data.item_id
+    if action is None or tg_id is None:
+        await callback.answer()
+        return
     await state.clear()
-    _, _, action, raw = callback.data.split(":")
-    tg_id = int(raw)
     bot, admin_id, chat_id = callback.bot, callback.from_user.id, group_registry.get_group_id()
 
     if action == "warn":  # warn with no reason (from the «Senza motivo» button)
@@ -670,6 +695,6 @@ async def _show_detail_msg(
 
 
 # Catch-all: anything `adm:*` that reached here failed the admin filter above.
-@router.callback_query(F.data.startswith("adm:"))
+@router.callback_query(F.data.startswith(f"{AdminCb.__prefix__}:"))
 async def cb_deny(callback: CallbackQuery) -> None:
     await callback.answer("⛔ Accesso non autorizzato.", show_alert=True)

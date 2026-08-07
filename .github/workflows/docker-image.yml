@@ -1,9 +1,15 @@
 name: Build & publish bot image
 
-# Two-branch release model (gated by the test suite):
+# Release model a più branch (gated dalla suite):
 #
 #   • push su `test`        → immagini di STAGING, ogni tag col suffisso "-test":
 #                               latest-test (rolling) + sha-<short>-test (pinned)
+#   • push su `test_giu`    → STAGING PARALLELO, suffisso "-test-giu":
+#                               latest-test-giu + sha-<short>-test-giu
+#                             Stesso identico comportamento di `test`, namespace
+#                             diverso: due staging convivono su GHCR senza
+#                             sovrascriversi, e un deploy punta all'uno o all'altro
+#                             cambiando solo BOT_IMAGE in .env.
 #   • push/merge su `main`  → immagini di PRODUZIONE, senza suffisso:
 #                               latest (rolling) + sha-<short> (pinned)
 #   • push di un git tag    → release IMMUTABILE versionata (semver):
@@ -21,6 +27,7 @@ on:
     branches:
       - main
       - test
+      - test_giu
     tags:
       - "v*.*.*"
 
@@ -54,23 +61,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Il suffisso vive QUI, in un solo posto: aggiungere un altro branch di
+      # staging è una riga in `on:` e una riga in questo case. Ficcarlo in una
+      # espressione ternaria annidata dentro `flavor:` era leggibile con due
+      # branch e smette di esserlo al terzo.
+      # `main` e i tag di versione non hanno suffisso: sono la produzione.
+      - name: Derive the tag suffix from the branch
+        id: flavor
+        run: |
+          case "${GITHUB_REF}" in
+            refs/heads/test)     suffix="-test" ;;
+            refs/heads/test_giu) suffix="-test-giu" ;;
+            *)                   suffix="" ;;
+          esac
+          echo "suffix=${suffix}" >> "$GITHUB_OUTPUT"
+
       - name: Derive image metadata (tags + labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
-          # Su `test` ogni tag prende il suffisso "-test" (incl. latest → latest-test).
-          # Su `main` / version-tag i tag restano puliti (suffisso vuoto).
           flavor: |
             latest=false
-            suffix=${{ github.ref == 'refs/heads/test' && '-test' || '' }},onlatest=true
+            suffix=${{ steps.flavor.outputs.suffix }},onlatest=true
+          # Ogni branch nella lista di `on:` pubblica rolling + pinned; a
+          # distinguerli è solo il suffisso qui sopra, quindi la regola è una e
+          # non una coppia per branch. I tag di versione passano dal ramo semver.
           tags: |
-            # --- branch test (staging): rolling + pinned, suffissati -test dal flavor ---
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/test' }}
-            type=sha,format=short,enable=${{ github.ref == 'refs/heads/test' }}
-            # --- branch main (prod): rolling latest + pinned sha ---
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short,enable=${{ github.ref == 'refs/heads/main' }}
+            # --- branch (main = prod, test/test_giu = staging suffissati) ---
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/heads/') }}
+            type=sha,format=short,enable=${{ startsWith(github.ref, 'refs/heads/') }}
             # --- git tag vX.Y.Z (release immutabile): scaletta semver ---
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}

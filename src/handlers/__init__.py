@@ -41,6 +41,7 @@ from handlers import (
     fun_ai,
     group_events,
     guess,
+    inline_mode,
     leaderboard,
     onboarding,
     quiz,
@@ -66,6 +67,7 @@ ROUTERS: tuple[Router, ...] = (
     schedule.router,
     backup.router,
     fun_ai.router,
+    inline_mode.router,
     common.router,          # must stay last (global fallbacks)
 )
 

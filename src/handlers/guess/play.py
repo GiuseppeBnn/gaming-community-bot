@@ -31,6 +31,7 @@ from services import guess_judge, guess_service, schedule_service
 from utils import cooldown
 from utils.text import esc
 
+from handlers.callbacks import GuessPlayCb
 from handlers.guess._shared import kind_of, log, router, send_media
 
 _ANSWER_BUCKET = "guess_answer"
@@ -47,12 +48,14 @@ class GuessPlayStates(StatesGroup):
 
 def _playing_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="🚪 Esci dal gioco", callback_data="guess_play:quit")
+    b.button(text="🚪 Esci dal gioco", callback_data=GuessPlayCb(action="quit").pack())
     return b.as_markup()
 
 
 async def _reply(
-    message: Message, state: FSMContext, text: str,
+    message: Message,
+    state: FSMContext,
+    text: str,
     kb: InlineKeyboardMarkup | None = None,
 ) -> None:
     """Answer the player, leaving only the newest message holding buttons.
@@ -120,15 +123,17 @@ def _status_line(round_, sess, left: int) -> str:
     parts = [f"🎯 <b>{left}</b> tentativi rimasti su {round_.max_attempts}"]
     deadline = guess_service.deadline(round_, sess)
     if deadline is not None:
-        parts.append(
-            f"⏱️ fino alle <b>{schedule_service.to_local(deadline):%H:%M}</b>"
-        )
+        parts.append(f"⏱️ fino alle <b>{schedule_service.to_local(deadline):%H:%M}</b>")
     return " · ".join(parts)
 
 
 async def start_guess_session(
-    message: Message, db_session: AsyncSession, state: FSMContext, round_id: int,
-    *, user_id: int | None = None,
+    message: Message,
+    db_session: AsyncSession,
+    state: FSMContext,
+    round_id: int,
+    *,
+    user_id: int | None = None,
 ) -> None:
     """Deep-link ``<kind>_<id>``: start (or resume) playing this round in private.
 
@@ -171,20 +176,19 @@ async def start_guess_session(
 
     spec = kind_of(round_.kind)
     try:
-        await send_media(message.bot, message.chat.id,
-                         round_.media_file_id, round_.media_kind)
+        await send_media(message.bot, message.chat.id, round_.media_file_id, round_.media_kind)
     except Exception as exc:  # noqa: BLE001 — a dead file_id must not read as a bug
         log.warning("Media del round %s non inviabile: %s", round_id, exc)
         await message.answer(
-            "⚠️ Non riesco a caricare il contenuto di questo round. "
-            "Segnalalo a un admin."
+            "⚠️ Non riesco a caricare il contenuto di questo round. Segnalalo a un admin."
         )
         return
 
     await state.set_state(GuessPlayStates.answering)
     await state.update_data(round_id=round_id)
     await _reply(
-        message, state,
+        message,
+        state,
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
         "Scrivimi il <b>titolo del gioco</b>.\n"
         f"{_status_line(round_, sess, left)}\n"
@@ -194,17 +198,13 @@ async def start_guess_session(
 
 
 @router.message(GuessPlayStates.answering, F.chat.type == ChatType.PRIVATE)
-async def fsm_answer(
-    message: Message, db_session: AsyncSession, state: FSMContext
-) -> None:
+async def fsm_answer(message: Message, db_session: AsyncSession, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if not raw:
         return  # a sticker or a photo is not an attempt
 
     round_id = (await state.get_data()).get("round_id")
-    round_ = (
-        await guess_service.get_round(db_session, round_id) if round_id else None
-    )
+    round_ = await guess_service.get_round(db_session, round_id) if round_id else None
     if round_ is None or round_.status != "running":
         await _end(message, state, "🏁 Questo round è chiuso.")
         return
@@ -213,7 +213,9 @@ async def fsm_answer(
     # exempt_admin=False on purpose — a game is a game, and an admin who can
     # hammer the judge is an admin with a better shot at the podium.
     if not await cooldown.guard(
-        message, _ANSWER_BUCKET, settings.guess_answer_cooldown_seconds,
+        message,
+        _ANSWER_BUCKET,
+        settings.guess_answer_cooldown_seconds,
         exempt_admin=False,
         notice="⏳ Vai più piano! Riprova tra {s}s.",
     ):
@@ -240,7 +242,8 @@ async def fsm_answer(
     # unlimited free channel to Groq for anyone willing to type.
     if await guess_service.unverified_left(db_session, round_, user_id) <= 0:
         await _reply(
-            message, state,
+            message,
+            state,
             "⚠️ Il <b>giudice non risponde</b> in questo momento.\n"
             "I tuoi tentativi sono <b>salvi</b> — riprova fra qualche minuto.",
             _playing_kb(),
@@ -255,12 +258,11 @@ async def fsm_answer(
     # it on its own, so there is nothing to delete, nothing to leak if we raise,
     # and no extra message competing with the verdict that follows. `interval`
     # under Telegram's 5s expiry keeps it alive across a slow call.
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id,
-                                       interval=_TYPING_REFRESH):
+    async with ChatActionSender.typing(
+        bot=message.bot, chat_id=message.chat.id, interval=_TYPING_REFRESH
+    ):
         verdict = await guess_judge.judge(db_session, round_, raw)
-    outcome = await guess_service.record_attempt(
-        db_session, round_, user_id, raw, verdict
-    )
+    outcome = await guess_service.record_attempt(db_session, round_, user_id, raw, verdict)
     await db_session.commit()
 
     if not outcome.recorded:
@@ -271,7 +273,8 @@ async def fsm_answer(
         # The status line matters most here: it is the proof that the outage did
         # not cost the player anything.
         await _reply(
-            message, state,
+            message,
+            state,
             "⚠️ Non sono riuscito a <b>verificare</b> la tua risposta.\n"
             "Riprova: questo tentativo <b>non conta</b>.\n"
             + _status_line(round_, sess, outcome.attempts_left),
@@ -303,7 +306,7 @@ async def fsm_answer(
     await _reply(message, state, "\n".join(lines), _playing_kb())
 
 
-@router.callback_query(F.data == "guess_play:quit")
+@router.callback_query(GuessPlayCb.filter(F.action == "quit"), GuessPlayStates.answering)
 async def cb_quit(callback, state: FSMContext) -> None:
     """Leave the answering mode. The session (and its clock) stays: quitting is
     not a way to buy more time.
@@ -330,24 +333,33 @@ async def cb_quit(callback, state: FSMContext) -> None:
         await callback.answer()
         return
     b = InlineKeyboardBuilder()
-    b.button(text="🔄 Riprendi", callback_data=f"guess_play:resume:{round_id}")
+    if round_id:
+        b.button(
+            text="🔄 Riprendi",
+            callback_data=GuessPlayCb(action="resume", round_id=round_id).pack(),
+        )
     await callback.message.answer(
-        "🚪 Uscito dal gioco. Puoi riprendere quando vuoi — "
-        "il tempo però continua a scorrere.",
-        reply_markup=b.as_markup(),
+        "🚪 Uscito dal gioco. Puoi riprendere quando vuoi — il tempo però continua a scorrere.",
+        reply_markup=b.as_markup() if round_id else None,
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("guess_play:resume:"))
-async def cb_resume(callback, db_session: AsyncSession, state: FSMContext) -> None:
+@router.callback_query(GuessPlayCb.filter(F.action == "resume"))
+async def cb_resume(
+    callback, db_session: AsyncSession, state: FSMContext, callback_data: GuessPlayCb
+) -> None:
     """Back into the round, through the same door the deep-link uses.
 
     No re-check of anything: `start_guess_session` owns every guard (finished,
     not started, already solved, out of attempts), so a second copy here would be
     a second place to forget one.
     """
-    round_id = int(callback.data.rsplit(":", 1)[-1])
-    await start_guess_session(callback.message, db_session, state, round_id,
-                              user_id=callback.from_user.id)
+    round_id = callback_data.round_id
+    if round_id is None:
+        await callback.answer()
+        return
+    await start_guess_session(
+        callback.message, db_session, state, round_id, user_id=callback.from_user.id
+    )
     await callback.answer()

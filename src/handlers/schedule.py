@@ -27,6 +27,7 @@ from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
+from handlers.callbacks import SchedCb
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, schedule_service
 from utils import cooldown
@@ -49,7 +50,7 @@ class ScheduleStates(StatesGroup):
 
 def _cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Annulla", callback_data="sched:cancel")
+        InlineKeyboardButton(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
     ]])
 
 
@@ -81,8 +82,8 @@ async def start_schedule_flow(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     types = event_types.all_types()
     for et in types:
-        b.button(text=et.hub_label, callback_data=f"sched:type:{et.key}")
-    b.button(text="❌ Annulla", callback_data="sched:cancel")
+        b.button(text=et.hub_label, callback_data=SchedCb(action="type", key=et.key).pack())
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
     b.adjust(len(types) or 1, 1)
     await message.answer("🗓️ <b>Programma un evento</b>\n\nCosa vuoi programmare?", reply_markup=b.as_markup())
 
@@ -103,7 +104,7 @@ async def cmd_programma(message: Message, state: FSMContext) -> None:
     await start_schedule_flow(message, state)
 
 
-@router.callback_query(F.data == "sched:cancel")
+@router.callback_query(SchedCb.filter(F.action == "cancel"))
 async def cb_sched_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     # Nothing entered yet (e.g. the type-choice menu / quiz picker) → cancel
     # directly; otherwise confirm before discarding the entered data.
@@ -113,19 +114,21 @@ async def cb_sched_cancel(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await callback.message.answer(
         "⚠️ Sicuro di voler annullare? I dati inseriti andranno persi.",
-        reply_markup=confirm_cancel_kb("sched:cancel_yes", "sched:cancel_no"),
+        reply_markup=confirm_cancel_kb(
+            SchedCb(action="cancel_yes").pack(), SchedCb(action="cancel_no").pack()
+        ),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "sched:cancel_yes")
+@router.callback_query(SchedCb.filter(F.action == "cancel_yes"))
 async def cb_sched_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Operazione annullata.")
     await callback.answer()
 
 
-@router.callback_query(F.data == "sched:cancel_no")
+@router.callback_query(SchedCb.filter(F.action == "cancel_no"))
 async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
     await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
     await callback.answer()
@@ -136,8 +139,11 @@ async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
 def _pick_kb(task_type: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for iid, label in items:
-        b.button(text=f"#{iid} {label[:30]}", callback_data=f"sched:pick:{task_type}:{iid}")
-    b.button(text="❌ Annulla", callback_data="sched:cancel")
+        b.button(
+            text=f"#{iid} {label[:30]}",
+            callback_data=SchedCb(action="pick", key=task_type, item_id=iid).pack(),
+        )
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
     b.adjust(1)
     return b.as_markup()
 
@@ -160,8 +166,8 @@ async def start_schedule_for(
     if action is None and getattr(et, "closable", False):
         b = InlineKeyboardBuilder()
         for key, (button, _word) in _ACTIONS.items():
-            b.button(text=button, callback_data=f"sched:act:{key}")
-        b.button(text="❌ Annulla", callback_data="sched:cancel")
+            b.button(text=button, callback_data=SchedCb(action="act", key=key).pack())
+        b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
         b.adjust(2, 1)
         await message.answer(
             f"🗓️ <b>Programma:</b> {esc(label)}\n\nCosa vuoi programmare?",
@@ -183,11 +189,13 @@ async def _ask_run_at(
     )
 
 
-@router.callback_query(F.data.startswith("sched:act:"))
-async def cb_action(callback: CallbackQuery, state: FSMContext) -> None:
-    action = callback.data.split(":")[2]
+@router.callback_query(SchedCb.filter(F.action == "act"))
+async def cb_action(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext
+) -> None:
+    action = callback_data.key
     data = await state.get_data()
-    if action not in _ACTIONS or "sched_ref" not in data:
+    if action is None or action not in _ACTIONS or "sched_ref" not in data:
         # Unknown action, or a stale button from a flow that has since been
         # cleared: there is nothing left to schedule, so say so instead of
         # arming a run-at step with no target.
@@ -197,9 +205,15 @@ async def cb_action(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("sched:type:"))
-async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    et = event_types.get(callback.data.split(":")[2])
+@router.callback_query(SchedCb.filter(F.action == "type"))
+async def cb_type(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext, db_session
+) -> None:
+    task_type = callback_data.key
+    if task_type is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
     if et is None:
         await callback.answer()
         return
@@ -216,14 +230,22 @@ async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> Non
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("sched:pick:"))
-async def cb_pick_event(callback: CallbackQuery, state: FSMContext) -> None:
-    _, _, task_type, raw_id = callback.data.split(":")
-    et = event_types.get(task_type)
-    if et is None or not raw_id.isdigit():
+@router.callback_query(SchedCb.filter(F.action == "pick"))
+async def cb_pick_event(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext
+) -> None:
+    task_type = callback_data.key
+    # No isdigit() guard: a non-numeric id no longer reaches this handler, the
+    # filter drops it (tests/unit/test_callbacks.py).
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    ref_id = int(raw_id)
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    ref_id = item_id
     await start_schedule_for(
         callback.message, state, task_type, ref_id, f"{et.hub_label} #{ref_id}"
     )
@@ -269,14 +291,20 @@ async def cmd_programmati(message: Message, db_session) -> None:
         action = schedule_service.task_payload(t).get("action", _ACTION_START)
         what = _ACTIONS[action][0] if action in _ACTIONS else ""
         lines.append(f"• #{t.id} {label} {what} — {when}")
-        b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
+        b.button(
+            text=f"❌ Annulla #{t.id}",
+            callback_data=SchedCb(action="del", item_id=t.id).pack(),
+        )
     b.adjust(1)
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
 
 
-@router.callback_query(F.data.startswith("sched:del:"))
-async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
-    task_id = int(callback.data.split(":")[2])
+@router.callback_query(SchedCb.filter(F.action == "del"))
+async def cb_sched_del(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
+    task_id = callback_data.item_id
+    if task_id is None:
+        await callback.answer()
+        return
     ok = await schedule_service.cancel(db_session, task_id)
     await db_session.commit()
     await callback.answer("Annullato." if ok else "Non annullabile.", show_alert=not ok)
