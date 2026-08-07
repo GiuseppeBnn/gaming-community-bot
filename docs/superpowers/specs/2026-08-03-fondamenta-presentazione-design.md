@@ -385,15 +385,21 @@ viste in `admin_dashboard.py` (A.3a) restano lavori non avviati e separati.
 
 ### 9.1 `GroupGuard` non vede le `InlineQuery` — prerequisito del lavoro C
 
-`_chat_type()` (`src/middlewares/group_guard.py:65-71`) riconosce solo `Message` e `CallbackQuery`.
-Per una `InlineQuery` ritorna `None`, e il ramo «gate solo le chat private» la lascia **passare
-senza controlli**. `BanGuard` reggerebbe (usa `event_from_user`), `GroupGuard` no.
+**Chiuso (2026-08-07):** `GroupGuard` ora riconosce anche `InlineQuery` (e non solo `Message` e
+`CallbackQuery` via `_chat_type()` in `src/middlewares/group_guard.py:65-71`): il gate membership
+si applica anche alle inline query, e chi non è membro del gruppo riceve solo l'articolo "accesso
+negato". Il prerequisito del lavoro C è soddisfatto e il picker profilo è costruito su di esso (vedi
+`docs/superpowers/specs/2026-08-07-inline-user-picker-design.md`).
 
-**Conseguenza:** accendere la inline mode oggi significa che chiunque su Telegram, anche fuori dal
-gruppo, può interrogare il bot. Va chiuso **prima** di qualunque handler `inline_query`, non insieme.
+Resta il contesto storico: prima di questo, `_chat_type()` riconosceva solo `Message` e
+`CallbackQuery` — per una `InlineQuery` ritornava `None`, e il ramo «gate solo le chat private» la
+lasciava **passare senza controlli**. `BanGuard` reggeva (usa `event_from_user`), `GroupGuard` no:
+accendere la inline mode avrebbe significato che chiunque su Telegram, anche fuori dal gruppo,
+poteva interrogare il bot. Il gap andava chiuso **prima** di qualunque handler `inline_query`, non
+insieme.
 
-Non è un rischio del lavoro A — nessun passo di A tocca la inline mode — ma è scritto qui perché è
-stato scoperto qui, e perché il lavoro C non deve ripartire senza saperlo.
+Non era un rischio del lavoro A — nessun passo di A tocca la inline mode — ma è scritto qui perché è
+stato scoperto qui, e perché il lavoro C non doveva ripartire senza saperlo.
 
 ### 9.2 La riscrittura dei test è dove la mano libera morde
 
@@ -435,7 +441,7 @@ Una sessione nuova legge questa tabella per sapere dove siamo.
 | A.3d | Viste — `shop.py` | ☐ |
 | A.3e | Viste — hub eventi + `event_types/` (**cambia `render_detail`**) | ☐ |
 | B | Split dei file grossi, guidato dai confini scoperti da A | ☐ lavoro separato |
-| C | Inline search, dove paga (prerequisito: §9.1) | ☐ lavoro separato |
+| C | Inline search, dove paga (prerequisito: §9.1) | ▣ in parte: fatto il picker profilo, restano admin-picker/share/catalogo |
 
 Legenda: ☐ da fare · ▣ in corso · ☑ fatta · ✗ abbandonata (con il perché, in una riga sotto).
 

@@ -362,6 +362,22 @@ PostgreSQL e Redis sono già pronti nel `docker-compose.yml`.
 
 ---
 
+## Inline mode (user picker)
+
+Il bot risponde a `@<bot> <nome>` con la ricerca dei giocatori (match parziale su
+username e nome reale): toccando una card, nella chat viene postato il profilo completo
+(livello, rank, XP, trofei, tag, saldo CoInn) del giocatore scelto — come da
+`docs/superpowers/specs/2026-08-07-inline-user-picker-design.md`.
+
+Attivazione (una volta, con @BotFather):
+1. `/setinline` → testo: `Cerca un giocatore scrivendo il suo nome o @username.`
+2. `/setinlinefeedback` → NON servono in v1 (nessun evento chosen_inline_result).
+
+Sicurezza: il gate membership (`GroupGuard`) si applica anche alle inline query;
+chi non è membro del gruppo riceve solo l'articolo "accesso negato".
+
+---
+
 ## Aggiungere un Nuovo Handler
 
 1. Crea `src/handlers/nuovo.py`:
