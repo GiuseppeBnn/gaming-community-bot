@@ -20,6 +20,7 @@ is how a dead `file_id` gets caught while the admin can still pick another.
 from __future__ import annotations
 
 import types
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -28,6 +29,7 @@ from database.models import GuessRound
 from handlers.callbacks import GuessNewCb
 from handlers.guess import creation as cr
 from services import guess_service as gs
+from services import schedule_service
 
 
 class _StubBot:
@@ -584,6 +586,114 @@ class TestEditingAField:
 
         assert await state.get_data() == before
         assert bot.screen == screen_before
+
+
+class TestTheAutoCloseAcceptsADate:
+    """The «⏳ Chiusura automatica» field takes either seconds after the start
+    (relative, the original behaviour) or an absolute date/time — the latter added
+    so an admin can pin the close to a real-world moment, not only "N seconds from
+    start". The two are mutually exclusive."""
+
+    def _future(self) -> str:
+        return f"{schedule_service.to_local(gs.now()) + timedelta(days=2):%Y-%m-%d %H:%M}"
+
+    async def test_an_absolute_date_sets_closes_at_and_clears_the_duration(self, state):
+        await _to_card(state)
+
+        await _edit(state, "round_duration_seconds", self._future())
+
+        data = await state.get_data()
+        assert data["round_closes_at"] is not None
+        assert data["round_duration_seconds"] == 0
+
+    async def test_seconds_still_work_and_leave_no_absolute_date(self, state):
+        await _to_card(state)
+
+        await _edit(state, "round_duration_seconds", "900")
+
+        data = await state.get_data()
+        assert data["round_duration_seconds"] == 900
+        assert data["round_closes_at"] is None
+
+    async def test_a_relative_token_is_refused_as_ambiguous(self, state):
+        """`30m` could mean "from now" or "from start" — the two accepted forms
+        are unambiguous, so the ambiguous one is turned away, not guessed."""
+        await _to_card(state)
+
+        screen = await _edit(state, "round_duration_seconds", "30m")
+
+        assert await state.get_state() == cr.GuessCreationStates.editing.state
+        assert "⚠️" in screen
+
+    async def test_a_past_date_is_refused(self, state):
+        await _to_card(state)
+        past = schedule_service.to_local(gs.now()) - timedelta(days=1)
+
+        screen = await _edit(state, "round_duration_seconds", f"{past:%Y-%m-%d %H:%M}")
+
+        assert "⚠️" in screen
+
+    async def test_the_card_shows_the_absolute_date(self, state):
+        await _to_card(state)
+        future_local = schedule_service.to_local(gs.now()) + timedelta(days=2)
+
+        screen = await _edit(state, "round_duration_seconds",
+                             f"{future_local:%Y-%m-%d %H:%M}")
+
+        assert f"{future_local:%d/%m/%Y %H:%M}" in screen
+
+    async def test_publishing_persists_the_absolute_close(self, state, session):
+        await _to_card(state)
+        await _edit(state, "round_duration_seconds", self._future())
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        r = (await session.execute(select(GuessRound))).scalar_one()
+        assert r.closes_at is not None
+        assert r.round_duration_seconds == 0
+
+
+class TestPlayerTimeAcceptsMinutes:
+    """The «⏱️ Tempo per giocatore» field takes seconds or whole minutes
+    ('5m'/'5 min'/'5 minuti'). Minutes are unambiguous here — a plain per-player
+    duration — unlike the auto-close, where they are refused."""
+
+    async def test_minutes_are_converted_to_seconds(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "5m")
+
+        assert (await state.get_data())["time_limit_seconds"] == 300
+
+    async def test_the_word_min_is_accepted(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "5 min")
+
+        assert (await state.get_data())["time_limit_seconds"] == 300
+
+    async def test_plain_seconds_still_work(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "120")
+
+        assert (await state.get_data())["time_limit_seconds"] == 120
+
+    async def test_zero_still_means_no_limit(self, state):
+        await _to_card(state)
+
+        await _edit(state, "time_limit_seconds", "0")
+
+        assert (await state.get_data())["time_limit_seconds"] == 0
+
+    async def test_minutes_over_the_range_are_refused(self, state):
+        """60 min = 3600 s is the cap; 61 min overflows it."""
+        await _to_card(state)
+
+        screen = await _edit(state, "time_limit_seconds", "61m")
+
+        assert await state.get_state() == cr.GuessCreationStates.editing.state
+        assert "⚠️" in screen and "minuti" in screen
 
 
 def _buttons(kb) -> list[str]:

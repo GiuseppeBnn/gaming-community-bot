@@ -66,6 +66,7 @@ async def create_round(
     max_attempts: int,
     time_limit_seconds: int,
     round_duration_seconds: int = 0,
+    closes_at: datetime | None = None,
     prize_first: int = 0,
     prize_second: int = 0,
     prize_third: int = 0,
@@ -90,7 +91,10 @@ async def create_round(
         ),
         max_attempts=max(1, max_attempts),
         time_limit_seconds=max(0, time_limit_seconds),
-        round_duration_seconds=max(0, round_duration_seconds),
+        # An absolute close and a relative duration are mutually exclusive: the
+        # duration is meaningless once a fixed instant is set, so drop it.
+        round_duration_seconds=0 if closes_at is not None else max(0, round_duration_seconds),
+        closes_at=closes_at,
         prize_first=max(0, prize_first),
         prize_second=max(0, prize_second),
         prize_third=max(0, prize_third),
@@ -369,7 +373,9 @@ def format_prize_summary(round_: GuessRound) -> str:
     if round_.prize_third:
         parts.append(f"🥉 {round_.prize_third}")
     if round_.prize_consolation:
-        parts.append(f"🎖️ 4°: {round_.prize_consolation} → min {round_.prize_min}")
+        # The floor (`prize_min`) still drives the linear consolation payout —
+        # only its numeric label is dropped from the summary.
+        parts.append(f"🎖️ 4°: {round_.prize_consolation}")
     return " · ".join(parts) if parts else "nessun premio"
 
 

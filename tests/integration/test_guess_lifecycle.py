@@ -14,6 +14,7 @@ under the podium, when there is nothing left to spoil.
 from __future__ import annotations
 
 import types
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -165,6 +166,20 @@ class TestOpen:
 
         assert ok is False and "giocato" in msg
 
+    async def test_a_past_absolute_close_refuses_the_open(self, session, round_):
+        """An absolute close is fixed at creation; starting the round after that
+        instant would arm the auto-close in the past. Refuse before announcing —
+        not schedule a task that fires immediately."""
+        round_.closes_at = gs.now() - timedelta(minutes=1)
+        await session.flush()
+        bot = _Bot()
+
+        ok, msg = await lc.open_round(bot, session, round_.id)
+
+        assert ok is False and "passat" in msg.lower()
+        assert bot.messages == [], "must refuse before the announcement is sent"
+        assert await _status(session, round_.id) == "ready"
+
     async def test_a_missing_round_is_reported_not_raised(self, session):
         ok, _ = await lc.open_round(_Bot(), session, 999)
         assert ok is False
@@ -237,6 +252,45 @@ class TestTheAutoClose:
         await lc.open_round(_Bot(), session, round_.id)
 
         assert await self._pending(session, round_.id) == []
+
+    async def test_an_absolute_close_arms_the_task_at_that_instant(
+        self, session, round_
+    ):
+        """A round can auto-close at an admin-picked wall-clock instant instead of
+        N seconds after it starts (the relative duration)."""
+        target = gs.now() + timedelta(hours=3)
+        round_.closes_at = target
+        round_.round_duration_seconds = 0
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        task = (await self._pending(session, round_.id))[0]
+        assert abs((task.run_at - target).total_seconds()) < 1
+        assert schedule_service.task_payload(task) == {"action": "close"}
+
+    async def test_an_absolute_close_wins_over_a_duration(self, session, round_):
+        """When both are set the fixed instant wins — the arming must not fall
+        back to the relative duration."""
+        target = gs.now() + timedelta(hours=5)
+        round_.closes_at = target
+        round_.round_duration_seconds = 600
+        await session.flush()
+
+        await lc.open_round(_Bot(), session, round_.id)
+
+        task = (await self._pending(session, round_.id))[0]
+        assert abs((task.run_at - target).total_seconds()) < 1
+
+    async def test_an_absolute_close_is_stated_as_a_date(self, session, round_):
+        """The announcement names the day and time, not a "fra …" duration."""
+        round_.closes_at = gs.now() + timedelta(days=1)
+        await session.flush()
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert "chiude il" in bot.texts.lower()
 
     async def test_closing_by_hand_cancels_the_pending_auto_close(
         self, session, round_
@@ -489,3 +543,97 @@ class TestTrophies:
         await lc.close_round(bot, session, round_.id)
 
         assert "Occhio Clinico" in bot.texts
+
+
+class TestProgressEvents:
+    """Closing a round records the same "finished last" / "solved under 30s"
+    progress events the quiz does, so guess/sound earn `event_count` trophies too.
+    The metric keys are chosen from `round_.kind`, so a sound round records the
+    sound ones."""
+
+    async def test_the_last_solver_gets_a_last_place_event(
+        self, session, round_, user_factory
+    ):
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)                 # 1 attempt → 1st
+        await _solve(session, round_, 8, user_factory, wrong_before=2)  # 3 attempts → last
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert (await ps.event_counts(session, 8)).get(ps.GUESS_LAST_PLACE) == 1
+        assert ps.GUESS_LAST_PLACE not in await ps.event_counts(session, 7)
+
+    async def test_a_lone_solver_is_never_last(self, session, round_, user_factory):
+        """Last place needs ≥2 solvers — a single winner is first, not last."""
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert ps.GUESS_LAST_PLACE not in await ps.event_counts(session, 7)
+
+    async def test_a_fast_solve_gets_a_sub30_event(
+        self, session, round_, user_factory
+    ):
+        from services import progress_service as ps
+
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)  # solved instantly in tests
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        assert (await ps.event_counts(session, 7)).get(ps.GUESS_SUB30) == 1
+
+    async def test_a_sound_round_records_the_sound_metric_keys(
+        self, session, user_factory
+    ):
+        from services import progress_service as ps
+
+        r = await gs.create_round(
+            session, kind="sound", creator_tg_id=1, title="Ascolta",
+            media_file_id="A", media_kind="audio", answer="Doom",
+            aliases=[], hints=[], max_attempts=3, time_limit_seconds=0,
+            prize_first=10,
+        )
+        r.status = "running"
+        await session.flush()
+        await _solve(session, r, 7, user_factory)
+        await _solve(session, r, 8, user_factory, wrong_before=1)
+
+        await lc.close_round(_Bot(), session, r.id)
+
+        assert (await ps.event_counts(session, 8)).get(ps.SOUND_LAST_PLACE) == 1
+        assert (await ps.event_counts(session, 7)).get(ps.SOUND_SUB30) == 1
+
+    async def test_a_hidden_last_place_trophy_unlocks_at_its_threshold(
+        self, session, round_, user_factory
+    ):
+        """The full chain: the recorded event feeds the `event_count` engine and
+        awards the (hidden) trophy — exactly like the `last_trivia_*` ones."""
+        from database.models import Badge, UserBadge
+
+        session.add(Badge(
+            slug="ultimo_guess_1", name="Schermo Nero",
+            description="Arriva ultimo nel Guess The Game", icon_emoji="📴",
+            category="guess", rarity="bronze", xp_reward=0, hidden=True,
+            condition_type="event_count", condition_value=1,
+            condition_param="guess_last_place",
+        ))
+        round_.status = "running"
+        await session.flush()
+        await _solve(session, round_, 7, user_factory)
+        await _solve(session, round_, 8, user_factory, wrong_before=2)  # last
+
+        await lc.close_round(_Bot(), session, round_.id)
+
+        owned = (await session.execute(
+            select(UserBadge.user_tg_id).where(UserBadge.user_tg_id == 8)
+        )).scalars().all()
+        assert owned == [8]

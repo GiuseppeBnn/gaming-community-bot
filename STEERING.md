@@ -1152,9 +1152,12 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
-  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (30), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
-  divergere da quello imposto. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  divergere da quello imposto. `_MAX_OPTION` è basso di proposito: le opzioni sono **bottoni inline**
+  in gioco e `play._question_kb` taglia il testo del bottone **allo stesso `_MAX_OPTION`** — un cap di
+  display separato (prima `[:40]`, con validazione a 100) tagliava risposte che la creazione aveva
+  accettato. L'input oltre il limite viene **rifiutato** (`_too_long` →
   `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
@@ -1385,6 +1388,16 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
   giocatore: quell'orologio parte quando *ogni* giocatore apre il link, quindi non esiste un
   istante calcolabile in cui «sono scaduti tutti». La durata la decide l'admin, si vede nella
   scheda e **si annuncia nel gruppo** — una scadenza che nessuno conosce è un agguato.
+- **Due modi di dire quando si chiude, mutuamente esclusivi.** Oltre alla durata relativa
+  (`round_duration_seconds`, armata all'apertura = `now()+durata`), l'admin può fissare una **data
+  assoluta** (`closes_at`, colonna `DateTime` nullable, istante scelto in creazione): la scheda
+  accetta un numero di **secondi** *oppure* un `AAAA-MM-GG HH:MM` (stesso parser di `parse_run_at`;
+  i token relativi `30m/2h/1d` sono **rifiutati** perché ambigui — «da ora» o «dall'avvio»?).
+  `closes_at` **vince** sulla durata e la azzera (`create_round`). `_schedule_auto_close` arma il
+  task su `closes_at` se presente, altrimenti su `now()+durata`, altrimenti niente (chiusura a
+  mano). Poiché la data è fissa e l'avvio può arrivare dopo, **`open_round` rifiuta di avviare** un
+  round il cui `closes_at` è già passato (prima dell'annuncio), invece di schedulare nel passato.
+  Colonna nuova ⇒ voce in `_MIGRATIONS` (regola 9).
 
 ### Creazione: tre domande e una scheda
 
@@ -1573,7 +1586,8 @@ per tornarci, se non eliminare il round e rifarlo.
   chiamanti. `send_media` risolve **solo** il metodo che serve, da whitelist.
 - La chiusura automatica riusa `task_type = kind` con `payload.action = "close"` — lo stesso
   pattern della finestra scommesse (§20). **Nessun task-type nuovo.** Il task lo crea
-  `open_round`; `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
+  `open_round` (armato su `closes_at` assoluto se scelto, altrimenti su `now()+round_duration_seconds`);
+  `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
   tardi trova un round già `finished` e logga un fallimento per una cosa andata bene.
   *(Il ramo esisteva da sempre ma nessuno creava il task: era codice morto documentato come
   funzionante — controllare che un ramo sia raggiungibile, non solo che sia scritto.)*

@@ -116,9 +116,10 @@ class GuessType:
             f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
             f"🎯 {round_.max_attempts} tentativi · "
             + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
-            "⏳ Chiusura: "
-            + (
-                f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
+            "⏳ Chiusura: " + (
+                f"automatica il {schedule_service.to_local(round_.closes_at):%d/%m %H:%M}"
+                if round_.closes_at is not None
+                else f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
                 if round_.round_duration_seconds
                 else "manuale"
             ),

@@ -54,6 +54,9 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
     # leave the quiz as `ready` rather than marking it running with no announcement.
     limit = quiz_service.time_limit_seconds(quiz)
     tl_text = f"⏱️ {limit}s/domanda" if limit else "⏱️ senza limite"
+    # The admin's own description, shown under the generic invite (skipped in
+    # creation ⇒ empty ⇒ no dangling line).
+    desc_txt = f"\n\n📝 <i>{esc(quiz.description)}</i>" if quiz.description else ""
     try:
         bot_info = await bot.get_me()
         await group_registry.send_group_message(
@@ -61,7 +64,8 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
             f"🧠 <b>QUIZ: {esc(quiz.title)}</b>\n"
             f"❓ {len(quiz.questions)} domande · {tl_text} · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ne azzecca di più — "
-            "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁",
+            "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁"
+            f"{desc_txt}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
                     text="▶️ Gioca", url=f"https://t.me/{bot_info.username}?start=quiz_{quiz.id}"

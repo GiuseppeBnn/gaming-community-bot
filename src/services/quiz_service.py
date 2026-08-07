@@ -608,7 +608,9 @@ def format_prize_summary(quiz: Quiz) -> str:
         if quiz.prize_third:
             parts.append(f"🥉 {quiz.prize_third}")
         if quiz.prize_consolation:
-            parts.append(f"🎖️ 4°: {quiz.prize_consolation} → min {quiz.prize_min}")
+            # The floor (`prize_min`) still drives the linear consolation payout —
+            # only its numeric label is dropped from the summary.
+            parts.append(f"🎖️ 4°: {quiz.prize_consolation}")
         return " · ".join(parts) if parts else "nessun premio"
     if quiz.prize_coins > 0:
         return f"🏆 {quiz.prize_coins} 🪙 al podio (50/30/20)"

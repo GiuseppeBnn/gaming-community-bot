@@ -27,6 +27,7 @@ from services import quiz_service
 from utils.text import esc, format_seconds_short
 
 from handlers.quiz._shared import (
+    _MAX_OPTION,
     log,
     router,
 )
@@ -40,8 +41,11 @@ def _question_kb(
     display-order randomization (§19)."""
     b = InlineKeyboardBuilder()
     for real_idx, opt in ordered_options:
+        # Slice to the single validated cap (`_MAX_OPTION`), not a separate hard
+        # 40: a divergent display cap is what cut answers the creation flow had
+        # accepted. Defensive for legacy rows stored before the cap dropped.
         b.button(
-            text=opt[:40],
+            text=opt[:_MAX_OPTION],
             callback_data=QuizAnswerCb(
                 action="answer", quiz_id=quiz_id, question_id=question_id, option_id=real_idx
             ).pack(),
@@ -137,7 +141,9 @@ async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id
         if limit > 0
         else "Nessun limite di tempo, ma chi finisce prima sale sul podio a parità di risposte!"
     )
-    await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n<i>{rules}</i>")
+    # The admin's own description, under the title (skipped in creation ⇒ empty).
+    desc_txt = f"📝 <i>{esc(quiz.description)}</i>\n" if quiz.description else ""
+    await message.answer(f"🧠 <b>{esc(quiz.title)}</b>\n{desc_txt}<i>{rules}</i>")
     await _present_question(message.bot, message.chat.id, message.from_user.id, quiz, done)
 
 

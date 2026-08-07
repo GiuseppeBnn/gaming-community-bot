@@ -150,6 +150,37 @@ class TestOpen:
         assert "Capitali" in group.text
         assert "2 domande" in group.text, "players need to know how long it is"
 
+    async def test_the_announcement_carries_the_admin_description(
+        self, session, user_factory, monkeypatch
+    ):
+        """The admin's own description was collected in creation but never shown to
+        players — neither in the group nor in private. It belongs under the generic
+        invite."""
+        group = _Group(monkeypatch)
+        quiz = await _quiz_with_players(session, user_factory, players=())
+        await quiz_service.set_status(session, quiz.id, "ready")
+        await session.commit()
+
+        await quiz_handlers.open_quiz(_FakeBot(), session, quiz.id)
+
+        assert "Geo" in group.text, "the description must reach the group"
+
+    async def test_an_empty_description_adds_no_dangling_line(
+        self, session, user_factory, monkeypatch
+    ):
+        """The description is optional (skippable with «-» in creation), so an empty
+        one must not leave a stray «📝» marker in the announcement."""
+        group = _Group(monkeypatch)
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        quiz = await quiz_service.create_quiz(session, ADMIN_ID, "Senza descrizione", "")
+        await quiz_service.add_question(session, quiz.id, "Roma?", ["sì", "no"], 0, None)
+        await quiz_service.set_status(session, quiz.id, "ready")
+        await session.commit()
+
+        await quiz_handlers.open_quiz(_FakeBot(), session, quiz.id)
+
+        assert "📝" not in group.text
+
     async def test_a_failed_announcement_leaves_the_quiz_ready(
         self, session, user_factory, monkeypatch
     ):
