@@ -133,6 +133,10 @@ async def search_users(session: AsyncSession, query: str, limit: int = 15) -> li
         .where(User.username.ilike(pattern) | User.full_name.ilike(pattern))
         .order_by(User.created_at.desc())
         .limit(limit)
+        .options(
+            selectinload(User.wallet),
+            selectinload(User.badges),
+        )
     )
     return list(result.scalars().all())
 
