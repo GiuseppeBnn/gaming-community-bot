@@ -74,7 +74,7 @@ async def cmd_gestisci_scommesse(
         )
         return
 
-    await _show_event_list(message, db_session, edit=False)
+    await _show_event_list(message, db_session)
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +84,15 @@ async def cmd_gestisci_scommesse(
 async def _show_event_list(
     target: Message | CallbackQuery,
     db_session: AsyncSession,
-    edit: bool = True,
 ) -> None:
+    """Render the panel: edit it in place when it came from a button, post a new one
+    when it came from a command or a deep link.
+
+    There used to be an `edit` flag here, but it was never free: every caller passed
+    `True` with a callback and `False` with a message, so it only ever restated the
+    type. The callback+`edit=False` combination it made expressible had no caller and
+    could not be reached.
+    """
     events = await bet_service.get_all_active_events(db_session)
 
     text = (
@@ -98,10 +105,7 @@ async def _show_event_list(
     )
 
     if isinstance(target, CallbackQuery):
-        if edit:
-            await target.message.edit_text(text, reply_markup=markup)
-        else:
-            await target.message.answer(text, reply_markup=markup)
+        await target.message.edit_text(text, reply_markup=markup)
         await target.answer()
     else:
         await target.answer(text, reply_markup=markup)
@@ -144,7 +148,7 @@ async def _show_event_menu(
 
 @router.callback_query(F.data == "admin_bet:list", IsAdminCallbackFilter())
 async def cb_admin_list(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    await _show_event_list(callback, db_session, edit=True)
+    await _show_event_list(callback, db_session)
 
 
 @router.callback_query(F.data.startswith("admin_bet:event:"), IsAdminCallbackFilter())

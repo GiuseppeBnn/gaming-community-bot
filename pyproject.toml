@@ -6,6 +6,12 @@ testpaths = ["tests"]
 # (e.g. `from config_data.config import settings`) without installing the package.
 pythonpath = ["src"]
 addopts = "--tb=short -q"
+markers = [
+    # Selection/documentation only (`pytest -m "not pg"`). The actual skip lives in
+    # the pg_engine fixture, so a missing TEST_PG_URL can never let a race test
+    # pass silently — it skips loudly instead.
+    "pg: needs a real PostgreSQL (set TEST_PG_URL); skipped otherwise",
+]
 
 [tool.coverage.run]
 source = ["src"]
@@ -22,3 +28,76 @@ exclude_lines = [
     "raise NotImplementedError",
 ]
 show_missing = true
+# Ratchet, not a target: pinned just under the current coverage so the number can
+# only go up. Raise it when a phase lands, never lower it to make CI pass.
+# 57 → 59 after covering services/backup/loop.py (was 0%, now 100%).
+# 59 → 69 after covering the admin money handlers: admin_betting 21→100%,
+# admin_dashboard 26→96%, shop 30→96%. Then 69 → 71 with economy 23→95%, and
+# 71 → 75 with admin 23→93% + _targeting 31→98%, then 75 → 83 covering quiz.py
+# end to end (37→92%): lifecycle, creation, play session, editor.
+# 83 → 86 with the player-facing betting flow (handlers/betting.py 36→100%).
+# 86 → 88 with the event-type specs (bet 43→100%, poll 36→100%, quiz 78→100%).
+# 88 → 90 with the group-membership guard (39→100%) and /start's deep-link
+# dispatch (handlers/common.py 36→100%).
+# 90 → 93 with the events hub (41→100%) and the scheduling flow (53→100%).
+# 93 → 95 with /backup + /esporta (34→99%), the trophy screens (53→100%) and the
+# leaderboards (61→100%).
+# 95 → 96 with group migration (76→100%), the AI commands (71→100%), the quiz
+# countdown (play 84→100%) and the admin test-run (trying 82→100%).
+# 96 → 97 with the backup/restore layer: chat_archive 64→100% (fake Telethon in
+# sys.modules), state_export 87→100%, atomic_io 88→100%.
+# 97 → 98 closing the quiz package (creation/lifecycle 93/94→100%) and shop
+# (95→100%), including the concurrent-cosmetic rollback branch.
+# 98 → 99 with the admin surface: admin.py 94→100% (the unresolvable-target
+# refusal on every moderation command) and admin_dashboard 96→100%, then the last
+# mile (cache pruning, catalog fallbacks, the session middleware, the migration
+# retry): 99.87% without Postgres, 99.91% with it.
+# Pinned just under the run WITHOUT Postgres, so `pytest --cov` still passes on a
+# machine that has no database — the gate must not force everyone to run Docker.
+#
+# The ten lines still uncovered in the Docker-free run are unreachable there by
+# construction, and are deliberately NOT chased with pragmas:
+#   database/connection.py 87-89  the _MIGRATIONS loop — postgresql-only, and 100%
+#                                 covered in the run WITH Postgres.
+#   handlers/backup.py 46         a return after a loop that always returns; it
+#                                 exists so mypy sees a value on every path.
+#   handlers/event_types/base.py  the `...` bodies of the EventType Protocol.
+fail_under = 99
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+# Deliberately narrow: these rules are at ZERO findings on the current codebase,
+# so the gate installs clean and every future failure is a real regression
+# instead of pre-existing noise everyone learns to ignore.
+#   E9      syntax/indentation errors
+#   F       pyflakes — undefined names, dead imports, broken f-strings
+#   B       bugbear — mutable defaults, bad except/raise, unstrict zip
+#   ASYNC   blocking I/O inside async def (this is an async bot: real stalls)
+# Widening later (I=import order, UP=pyupgrade, SIM, BLE) is ~130 mostly
+# cosmetic autofixes — worth one dedicated commit, not worth blocking CI today.
+select = ["E9", "F", "B", "ASYNC"]
+
+[tool.ruff.lint.per-file-ignores]
+# ASYNC2xx flags blocking I/O inside `async def`. In `src/` that is the point: the
+# bot has one event loop and a blocking read stalls every user. A test coroutine
+# owns its loop and nobody is waiting on it, so `open()` / `Path.mkdir()` in a
+# fixture stalls nothing — flagging them there would only teach people to ignore
+# the rule. Everything else (F, B, E9) applies to tests exactly as to src.
+"tests/**" = ["ASYNC230", "ASYNC240"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+plugins = ["pydantic.mypy"]
+# Non-strict on purpose. The point is not type purity, it's that the checker
+# runs at zero findings so new code can't silently regress. `disallow_untyped_defs`
+# stays OFF until the handler layer is annotated.
+ignore_missing_imports = true
+warn_unused_ignores = true
+# Checked packages: the money/data layer. Handlers are excluded for now — they
+# are the least annotated and the noisiest; add them per-module as they migrate.
+files = ["src/services", "src/database", "src/utils", "src/config_data", "src/filters"]

@@ -250,10 +250,20 @@ _COMMANDS: list[CommandDoc] = [
                usage="/lista_ranghi", admin_only=True,
                details="Mostra la curva dei livelli (XP per salire, crescita %) e come i "
                        "nomi-rango (Novizio→Leggenda) si mappano sulle fasce di livello."),
-    CommandDoc("eventi", "Hub eventi: quiz/sondaggi/scommesse", "🎬 Eventi",
+    CommandDoc("eventi", "Hub eventi: quiz, Guess The Game, Sound Quest, sondaggi, scommesse",
+               "🎬 Eventi",
                usage="/eventi", admin_only=True,
-               details="Crea quiz, sondaggi e scommesse e poi avviali subito nel gruppo "
-                       "o programmali. È lo stesso hub raggiungibile da /admin → 🎬 Eventi."),
+               details="Crea quiz, <b>Guess The Game</b> (indovina il gioco da una foto), "
+                       "<b>Sound Quest</b> (dall'audio), sondaggi e scommesse, poi avviali "
+                       "subito nel gruppo o programmali. È lo stesso hub raggiungibile da "
+                       "/admin → 🎬 Eventi.\n\n"
+                       "Nei due giochi «indovina» si gioca <b>in privato</b>: nel gruppo "
+                       "arriva solo l'invito, mai l'immagine o l'audio (li rivela il podio "
+                       "alla chiusura). Vince chi ci arriva in <b>meno tentativi</b>; a "
+                       "parità conta il tempo. Le risposte libere le giudica l'AI, quindi "
+                       "«GTA SA» vale «Grand Theft Auto: San Andreas» — ma la <b>serie da "
+                       "sola non basta</b>. In creazione puoi aggiungere grafie alternative "
+                       "sempre accettate: sono la rete di sicurezza se l'AI non risponde."),
     CommandDoc("crea_quiz", "Crea un quiz (in privato)", "🎬 Eventi",
                usage="/crea_quiz", admin_only=True),
     CommandDoc("quiz", "Elenca i quiz pronti e avviali", "🎬 Eventi",

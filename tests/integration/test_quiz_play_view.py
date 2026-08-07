@@ -12,7 +12,7 @@ import pytest
 from aiogram.enums import ChatType
 
 import filters.admin_filter as af
-import handlers.quiz as quiz
+from handlers.quiz import lifecycle as quiz
 from database.models import Quiz
 from services import group_registry
 from utils import cooldown, static_reply

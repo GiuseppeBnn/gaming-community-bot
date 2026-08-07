@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from handlers.quiz import _PLAY, _PlayCtx, _cancel_task, _forget_play, _play_key
+from handlers.quiz.play import _PLAY, _PlayCtx, _cancel_task, _forget_play, _play_key
 
 
 async def test_cancel_task_never_cancels_current_task():

@@ -40,7 +40,9 @@ _UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 def looks_like_duration(text: str | None) -> bool:
     """True if `text` is a duration token like '10m'/'1h'/'2d'/'45s'."""
-    return bool(text) and _DURATION_RE.match(text.strip()) is not None
+    if not text:
+        return False
+    return _DURATION_RE.match(text.strip()) is not None
 
 
 def parse_duration(text: str | None, default: int = _DEFAULT_MUTE_SECONDS) -> int:

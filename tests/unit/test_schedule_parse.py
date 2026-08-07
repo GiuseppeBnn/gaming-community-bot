@@ -6,23 +6,23 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.schedule_service import parse_duration, parse_run_at, to_local
+from services.schedule_service import parse_duration, parse_run_at, to_local, utcnow
 
 
 class TestParseRunAt:
     def test_relative_minutes(self):
         result = parse_run_at("30m")
-        delta = result - datetime.utcnow()
+        delta = result - utcnow()
         assert timedelta(minutes=29) < delta < timedelta(minutes=31)
 
     def test_relative_hours_and_days(self):
-        assert parse_run_at("2h") > datetime.utcnow() + timedelta(minutes=110)
-        assert parse_run_at("1d") > datetime.utcnow() + timedelta(hours=23)
+        assert parse_run_at("2h") > utcnow() + timedelta(minutes=110)
+        assert parse_run_at("1d") > utcnow() + timedelta(hours=23)
 
     def test_absolute_future(self):
         future = datetime.now() + timedelta(days=2)
         text = future.strftime("%Y-%m-%d %H:%M")
-        assert parse_run_at(text) > datetime.utcnow()
+        assert parse_run_at(text) > utcnow()
 
     def test_absolute_past_raises(self):
         with pytest.raises(ValueError):
@@ -35,6 +35,13 @@ class TestParseRunAt:
     def test_zero_relative_raises(self):
         with pytest.raises(ValueError):
             parse_run_at("0m")
+
+    def test_absurd_relative_raises_instead_of_overflowing(self):
+        # Public/admin chat input: without the cap this reached
+        # `datetime + timedelta(seconds=8.6e13)` and died with OverflowError,
+        # which no handler catches (ValueError is the one that's handled).
+        with pytest.raises(ValueError):
+            parse_run_at("999999999d")
 
 
 class TestParseDuration:
@@ -58,6 +65,16 @@ class TestParseDuration:
     def test_zero_raises(self):
         with pytest.raises(ValueError):
             parse_duration("0m")
+
+    def test_absurd_duration_raises_instead_of_overflowing_int32(self):
+        # /crea_scommessa feeds this into betting_window_seconds (int32): on
+        # Postgres an uncapped value is "integer out of range" at commit time,
+        # i.e. after the user was already told the bet was created.
+        with pytest.raises(ValueError):
+            parse_duration("999999999d")
+
+    def test_cap_boundary_is_accepted(self):
+        assert parse_duration("365d") == 365 * 86400
 
 
 class TestToLocal:

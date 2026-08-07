@@ -1,5 +1,6 @@
 """
-Scheduling — program the future opening of a quiz, a poll or a bet (admin).
+Scheduling — program the future opening (and, where it means something, the
+closing) of a quiz, a guess round, a poll or a bet (admin).
 
 Telegram cannot schedule polls server-side, so we persist ScheduledTask rows and
 run them from an in-process loop (`scheduler_loop`, started in main.py). The loop
@@ -57,6 +58,18 @@ _RUNAT_HINT = (
     "• assoluto: <code>2026-05-30 18:00</code>\n"
     "• relativo: <code>30m</code> · <code>2h</code> · <code>1d</code>"
 )
+
+# What a scheduled task does to its item. `start` is the historical behaviour and
+# stays payload-free; `close` rides the SAME task_type with an action payload — the
+# pattern the betting auto-lock and the guess auto-close already use, so no new
+# task type and no new column (STEERING §18.2).
+_ACTION_START = "start"
+_ACTION_CLOSE = "close"
+#: action → (button label, the word used in the prompts and the confirmation)
+_ACTIONS: dict[str, tuple[str, str]] = {
+    _ACTION_START: ("▶️ Avvio", "l'avvio"),
+    _ACTION_CLOSE: ("🏁 Chiusura e risultati", "la chiusura"),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -130,16 +143,58 @@ def _pick_kb(task_type: str, items: list[tuple[int, str]]) -> InlineKeyboardMark
 
 
 async def start_schedule_for(
-    message: Message, state: FSMContext, task_type: str, ref_id: int, label: str
+    message: Message, state: FSMContext, task_type: str, ref_id: int, label: str,
+    action: str | None = None,
 ) -> None:
-    """Enter the run-at step for an already-created event (used by /programma and
-    by the Events hub «🗓️ Programma» buttons)."""
+    """Enter the scheduling flow for an already-created event (used by /programma
+    and by the Events hub «🗓️ Programma» buttons).
+
+    With `action` given the run-at step comes straight away. Without it, a type that
+    can also be closed on a timer (`closable`) is asked *what* to schedule first —
+    the other types keep going directly to the time, because a question with one
+    possible answer is not a question.
+    """
     await state.clear()
     await state.update_data(sched_type=task_type, sched_ref=ref_id, sched_label=label)
+    et = event_types.get(task_type)
+    if action is None and getattr(et, "closable", False):
+        b = InlineKeyboardBuilder()
+        for key, (button, _word) in _ACTIONS.items():
+            b.button(text=button, callback_data=f"sched:act:{key}")
+        b.button(text="❌ Annulla", callback_data="sched:cancel")
+        b.adjust(2, 1)
+        await message.answer(
+            f"🗓️ <b>Programma:</b> {esc(label)}\n\nCosa vuoi programmare?",
+            reply_markup=b.as_markup(),
+        )
+        return
+    await _ask_run_at(message, state, label, action or _ACTION_START)
+
+
+async def _ask_run_at(
+    message: Message, state: FSMContext, label: str, action: str
+) -> None:
+    await state.update_data(sched_action=action)
     await state.set_state(ScheduleStates.event_runat)
+    word = _ACTIONS[action][1]
     await message.answer(
-        f"🗓️ <b>Programma:</b> {esc(label)}\n\n{_RUNAT_HINT}", reply_markup=_cancel_kb()
+        f"🗓️ <b>Programma {word}:</b> {esc(label)}\n\n{_RUNAT_HINT}",
+        reply_markup=_cancel_kb(),
     )
+
+
+@router.callback_query(F.data.startswith("sched:act:"))
+async def cb_action(callback: CallbackQuery, state: FSMContext) -> None:
+    action = callback.data.split(":")[2]
+    data = await state.get_data()
+    if action not in _ACTIONS or "sched_ref" not in data:
+        # Unknown action, or a stale button from a flow that has since been
+        # cleared: there is nothing left to schedule, so say so instead of
+        # arming a run-at step with no target.
+        await callback.answer("Ricomincia da /programma.", show_alert=True)
+        return
+    await _ask_run_at(callback.message, state, data["sched_label"], action)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("sched:type:"))
@@ -181,13 +236,16 @@ async def fsm_event_runat(message: Message, state: FSMContext, db_session) -> No
     if run_at is None:
         return
     data = await state.get_data()
+    action = data.get("sched_action", _ACTION_START)
     task = await schedule_service.schedule_task(
         db_session, data["sched_type"], run_at, message.from_user.id,
         group_registry.get_group_id() or None, ref_id=data["sched_ref"],
+        # A start carries no payload, exactly as before: the close is the addition.
+        payload={"action": _ACTION_CLOSE} if action == _ACTION_CLOSE else None,
     )
     await db_session.commit()
     await state.clear()
-    await _confirm(message, task)
+    await _confirm(message, task, action)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +264,11 @@ async def cmd_programmati(message: Message, db_session) -> None:
         when = schedule_service.to_local(t.run_at).strftime("%d/%m %H:%M")
         et = event_types.get(t.task_type)
         label = et.hub_label if et else t.task_type
-        lines.append(f"• #{t.id} {label} — {when}")
+        # An item can have both a start and a close pending: saying which is which
+        # is the difference between cancelling the right one and the wrong one.
+        action = schedule_service.task_payload(t).get("action", _ACTION_START)
+        what = _ACTIONS[action][0] if action in _ACTIONS else ""
+        lines.append(f"• #{t.id} {label} {what} — {when}")
         b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
     b.adjust(1)
     await message.reply("\n".join(lines), reply_markup=b.as_markup())
@@ -268,13 +330,14 @@ async def _parse_or_reprompt(message: Message) -> datetime | None:
         return None
 
 
-async def _confirm(message: Message, task) -> None:
+async def _confirm(message: Message, task, action: str = _ACTION_START) -> None:
     et = event_types.get(task.task_type)
     label = et.hub_label if et else task.task_type
     when = schedule_service.to_local(task.run_at).strftime("%d/%m/%Y %H:%M")
+    what = _ACTIONS.get(action, _ACTIONS[_ACTION_START])[0]
     await message.answer(
         f"✅ <b>Programmato!</b>\n\n"
-        f"{label} · #{task.id}\n"
+        f"{label} · #{task.id} · {what}\n"
         f"🕒 Esecuzione: <b>{when}</b>\n\n"
         f"Vedi/annulla con /programmati."
     )

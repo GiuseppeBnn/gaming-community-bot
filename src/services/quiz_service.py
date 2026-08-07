@@ -30,6 +30,9 @@ from database.models import (
     TransactionType,
 )
 from services import economy_service, xp_service
+# Re-exported so every existing caller keeps saying `quiz_service.consolation_amounts`.
+# The schedule itself lives in `services.prizes` because the guess games share it.
+from services.prizes import consolation_amounts, participation_floor  # noqa: F401
 from services.xp_service import XpSource
 
 # Legacy prize split among the podium (1st, 2nd, 3rd) — used only when no explicit
@@ -39,38 +42,6 @@ _PRIZE_SPLIT = (0.5, 0.3, 0.2)
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
-
-
-def participation_floor(consolation: int) -> int:
-    """Derive the guaranteed minimum (last-place consolation) from the 4th-place prize.
-
-    floor = max(floor_min, round(consolation * floor_ratio)), but never above the
-    consolation itself and never below 0.
-    """
-    if consolation <= 0:
-        return 0
-    floor = max(settings.quiz_participation_floor_min,
-                round(consolation * settings.quiz_participation_floor_ratio))
-    return max(0, min(floor, consolation))
-
-
-def consolation_amounts(n: int, top: int, floor: int) -> list[int]:
-    """Linear, non-increasing consolation schedule for the `n` non-podium finishers.
-
-    Position 0 (4th place) gets `top`; the last gets `floor`; the rest interpolate
-    linearly. Everyone gets at least `floor` (and at least 0). Pure function.
-    """
-    if n <= 0:
-        return []
-    if top <= 0:
-        return [0] * n
-    floor = max(0, min(floor, top))
-    if n == 1:
-        return [top]
-    return [
-        max(floor, round(top - (top - floor) * i / (n - 1)))
-        for i in range(n)
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -255,15 +226,19 @@ def user_option_order(quiz: Quiz, question: QuizQuestion, user_tg_id: int) -> li
     return pairs
 
 
-async def get_quiz(
-    session: AsyncSession, quiz_id: int, *, for_update: bool = False
-) -> Quiz | None:
-    stmt = select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
-    if for_update:
-        # Row-level lock so two concurrent closes can't both pass the status check
-        # and pay prizes twice. No-op on SQLite (dev/tests), real on Postgres (prod).
-        stmt = stmt.with_for_update()
-    result = await session.execute(stmt)
+async def get_quiz(session: AsyncSession, quiz_id: int) -> Quiz | None:
+    """Load a quiz with its questions. **Read-only by contract.**
+
+    There is deliberately no ``for_update`` here any more. Locking an entity select
+    reads as a guarantee it cannot give: the row does get locked on Postgres, but
+    the values come back from the identity map when the caller already holds the
+    quiz, so the check that follows can be decided on stale data (STEERING §5).
+    Both callers that used to do that — ``claim_close`` and ``reset_quiz`` — now
+    decide on a column read instead, which is the only form that cannot be cached.
+    """
+    result = await session.execute(
+        select(Quiz).where(Quiz.id == quiz_id).options(selectinload(Quiz.questions))
+    )
     return result.scalar_one_or_none()
 
 
@@ -295,6 +270,42 @@ async def list_manageable(session: AsyncSession, *, finished_limit: int = 10) ->
     active.sort(key=lambda q: 0 if q.status == "running" else 1)  # running first (stable)
     finished = [q for q in quizzes if q.status == "finished"][:finished_limit]
     return active + finished
+
+
+QUIZ_MISSING = "missing"
+
+
+async def claim_close(session: AsyncSession, quiz_id: int) -> str | None:
+    """Take a running quiz to ``finished``, and report whether *this* call did it.
+
+    Returns ``None`` when this call performed the transition — and at most one
+    caller can ever get ``None`` for a given quiz, which is what makes it safe to
+    pay the prizes right after. Otherwise returns whatever blocked it: the current
+    status (``"finished"``, ``"draft"``, …) or ``QUIZ_MISSING``.
+
+    The transition **is** the guard, deliberately. Reading the status, deciding,
+    and then paying is a read-then-write, and locking the row does not repair it:
+    a caller that already holds the quiz gets its cached status back from the
+    locking read (see STEERING §5), so two closes could both pass the check and
+    pay the pool twice.
+    """
+    changed = (
+        await session.execute(
+            update(Quiz)
+            .where(Quiz.id == quiz_id, Quiz.status == "running")
+            # coalesce, so a re-run keeps the original close time (same rule as
+            # set_status, which only fills finished_at when it is still empty).
+            .values(status="finished", finished_at=func.coalesce(Quiz.finished_at, _now()))
+            .execution_options(synchronize_session=False)
+        )
+    ).rowcount or 0
+    if changed:
+        return None
+
+    status = (
+        await session.execute(select(Quiz.status).where(Quiz.id == quiz_id))
+    ).scalar_one_or_none()
+    return status or QUIZ_MISSING
 
 
 async def set_status(session: AsyncSession, quiz_id: int, status: str) -> None:
@@ -340,9 +351,33 @@ async def reset_quiz(session: AsyncSession, quiz_id: int) -> bool:
     """Re-run a finished quiz ("Riproponi"): wipe answers/timestamps and set it
     back to ``ready`` so it can be launched again. Only allowed on a ``finished``
     quiz. Returns False if the quiz is missing or not finished.
+
+    **Prizes are deliberately not touched.** What the previous run paid stays paid —
+    no clawback, no reversal in the ledger — and the next close pays the full pool
+    again through ``award_prizes``. A re-run is a new event, not a correction of the
+    old one; this is a decided policy, not an oversight, so do not "fix" it into a
+    refund. The confirmation text in ``handlers/events._CONFIRM`` says so out loud.
+
+    A reset deletes every recorded answer, so the status check is the only thing
+    between a mistap and destroying live play. It therefore reads the **column**
+    under the lock rather than the entity: an entity select can be served from the
+    identity map (STEERING §5), which would make this a lookup of whatever the
+    caller already believed instead of what the row says.
+
+    The writes below stay ORM mutations on purpose. Every one of them assigns a
+    constant — never a delta — so they are correct even on a stale instance, and
+    keeping them on the entity is what lets the caller re-render the quiz right
+    after (``cb_reset`` does) without reloading anything.
     """
-    quiz = await get_quiz(session, quiz_id, for_update=True)
-    if quiz is None or quiz.status != "finished":
+    status = (
+        await session.execute(
+            select(Quiz.status).where(Quiz.id == quiz_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if status != "finished":
+        return False
+    quiz = await get_quiz(session, quiz_id)
+    if quiz is None:  # pragma: no cover - the locked row cannot vanish under us
         return False
     await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
     for question in quiz.questions:
@@ -434,7 +469,13 @@ async def record_answer(
     if question is None:
         return None
 
-    is_correct = selected_option_id == question.correct_option_id
+    # Read off the ORM object ONCE, up front. The IntegrityError branch below
+    # rolls back, and a rollback expires every instance in the session: touching
+    # `question.correct_option_id` after it would trigger a lazy reload, which in
+    # async is a MissingGreenlet — the duplicate would raise instead of being
+    # reported as a duplicate.
+    correct_option_id = question.correct_option_id
+    is_correct = selected_option_id == correct_option_id
 
     existing = (
         await session.execute(
@@ -445,7 +486,7 @@ async def record_answer(
     ).scalar_one_or_none()
     if existing is not None:
         return AnswerOutcome(recorded=False, is_correct=is_correct,
-                             correct_option_id=question.correct_option_id)
+                             correct_option_id=correct_option_id)
 
     session.add(
         QuizAnswer(
@@ -464,10 +505,10 @@ async def record_answer(
         # Concurrent double-tap raced past the existence check — treat as duplicate.
         await session.rollback()
         return AnswerOutcome(recorded=False, is_correct=is_correct,
-                             correct_option_id=question.correct_option_id)
+                             correct_option_id=correct_option_id)
 
     return AnswerOutcome(recorded=True, is_correct=is_correct,
-                         correct_option_id=question.correct_option_id)
+                         correct_option_id=correct_option_id)
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +608,9 @@ def format_prize_summary(quiz: Quiz) -> str:
         if quiz.prize_third:
             parts.append(f"🥉 {quiz.prize_third}")
         if quiz.prize_consolation:
-            parts.append(f"🎖️ 4°: {quiz.prize_consolation} → min {quiz.prize_min}")
+            # The floor (`prize_min`) still drives the linear consolation payout —
+            # only its numeric label is dropped from the summary.
+            parts.append(f"🎖️ 4°: {quiz.prize_consolation}")
         return " · ".join(parts) if parts else "nessun premio"
     if quiz.prize_coins > 0:
         return f"🏆 {quiz.prize_coins} 🪙 al podio (50/30/20)"
@@ -648,7 +691,9 @@ async def award_prizes(session: AsyncSession, quiz_id: int) -> list[PrizeAward]:
                 await _pay(row.user_tg_id, coins, i + 1, "podium", f"podio #{i + 1}")
         others = ranked[3:]
         schedule = consolation_amounts(len(others), quiz.prize_consolation, quiz.prize_min)
-        for offset, (row, coins) in enumerate(zip(others, schedule)):
+        # strict=True: `schedule` is built with len(others) entries, so a length
+        # mismatch would mean silently paying a subset of the finishers.
+        for offset, (row, coins) in enumerate(zip(others, schedule, strict=True)):
             if coins > 0:
                 rank = offset + 4
                 await _pay(row.user_tg_id, coins, rank, "consolation", f"consolazione #{rank}")

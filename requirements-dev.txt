@@ -3,3 +3,8 @@ pytest==8.3.4
 pytest-asyncio==0.24.0
 pytest-cov==6.0.0
 aioresponses==0.7.6
+# Static gates (config in pyproject.toml). Both are at zero findings on the
+# current tree, so any failure in CI is a new regression, not legacy noise.
+# The mypy pydantic plugin ships inside pydantic itself — no extra dependency.
+ruff==0.16.0
+mypy==2.3.0

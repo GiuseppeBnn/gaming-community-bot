@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import time
 import types
 
 from handlers import fun_ai
+from utils import cooldown
 from services import ai_service
 
 
@@ -28,32 +28,6 @@ def test_clip_source_handles_none():
 
 def test_clip_source_custom_limit():
     assert fun_ai.clip_source("abcdef", limit=3) == "abc"
-
-
-# ---------------------------------------------------------------------------
-# _prune_cooldowns — bounded in-memory cooldown dict
-# ---------------------------------------------------------------------------
-
-def test_prune_noop_below_threshold():
-    fun_ai._last_used.clear()
-    now = time.monotonic()
-    fun_ai._last_used[1] = now - 10_000  # expired but under threshold → kept
-    fun_ai._prune_cooldowns(now)
-    assert 1 in fun_ai._last_used
-    fun_ai._last_used.clear()
-
-
-def test_prune_drops_expired_keeps_recent():
-    fun_ai._last_used.clear()
-    now = time.monotonic()
-    expired = now - fun_ai.settings.ai_cooldown_seconds - 100
-    for i in range(fun_ai._COOLDOWN_PRUNE_THRESHOLD + 50):
-        fun_ai._last_used[1000 + i] = expired
-    fun_ai._last_used[42] = now  # recent
-    fun_ai._prune_cooldowns(now)
-    assert 42 in fun_ai._last_used
-    assert 1000 not in fun_ai._last_used
-    fun_ai._last_used.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +61,7 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
         return '<b>ignore me</b> <a href="x">y</a>'
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _StubMessage()
     await fun_ai._generate_and_reply(msg, "SYSTEM", "ciao mondo", 100)
@@ -103,7 +77,7 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
     text, kwargs = msg.replies[-1]
     assert kwargs.get("parse_mode") is None
     assert text == '<b>ignore me</b> <a href="x">y</a>'
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
 
 async def test_temperature_is_forwarded(monkeypatch):
@@ -115,7 +89,7 @@ async def test_temperature_is_forwarded(monkeypatch):
         return "ok"
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _StubMessage()
     await fun_ai._generate_and_reply(
@@ -124,7 +98,7 @@ async def test_temperature_is_forwarded(monkeypatch):
 
     assert captured["temperature"] == fun_ai._DIALETTO_TEMPERATURE
     assert fun_ai._DIALETTO_TEMPERATURE < ai_service._TEMPERATURE  # genuinely lower
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
 
 async def test_fallback_message_on_ai_error(monkeypatch):
@@ -132,13 +106,13 @@ async def test_fallback_message_on_ai_error(monkeypatch):
         raise ai_service.AIServiceError("down")
 
     monkeypatch.setattr(ai_service, "generate_completion", boom)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _StubMessage()
     await fun_ai._generate_and_reply(msg, "SYSTEM", "ciao", 100)
     text, _kwargs = msg.replies[-1]
     assert text == ai_service.AI_FALLBACK_MESSAGE
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +155,7 @@ async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _AlduinoMsg()
     await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="consigliami un gioco"))
@@ -189,7 +163,7 @@ async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
     assert captured["system_prompt"] is fun_ai._PROMPT_ALDUINO
     assert fun_ai._CONTENT_OPEN in captured["user_text"]
     assert "consigliami un gioco" in captured["user_text"]
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
 
 async def test_alduino_without_input_hints_without_calling_llm(monkeypatch):
@@ -202,14 +176,14 @@ async def test_alduino_without_input_hints_without_calling_llm(monkeypatch):
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _AlduinoMsg()
     await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args=None))
 
     assert not called  # no LLM call without input
     assert msg.replies and "/alduino" in msg.replies[0][0]
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
 
 async def test_alduino_rejected_outside_group(monkeypatch):
@@ -221,11 +195,11 @@ async def test_alduino_rejected_outside_group(monkeypatch):
         return "x"
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
-    fun_ai._last_used.clear()
+    cooldown.reset()
 
     msg = _AlduinoMsg(chat_type="private")
     await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="ciao"))
 
     assert not called  # group-only guard fires first
     assert msg.replies
-    fun_ai._last_used.clear()
+    cooldown.reset()

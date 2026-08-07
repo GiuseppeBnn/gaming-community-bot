@@ -8,7 +8,6 @@ paginated user picker query.
 
 from __future__ import annotations
 
-import pytest
 from sqlalchemy import select
 
 import config_data.config as cfg

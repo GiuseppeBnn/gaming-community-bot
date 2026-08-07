@@ -25,7 +25,6 @@ from database.models import (
     Wallet,
     Warning,
 )
-from exceptions.economy import WalletNotFoundError
 from services import economy_service
 
 
@@ -42,12 +41,12 @@ async def set_balance(session: AsyncSession, tg_id: int, target: int) -> tuple[i
     if target < 0:
         raise ValueError("Il saldo non può essere negativo.")
 
-    result = await session.execute(select(Wallet).where(Wallet.tg_id == tg_id))
-    wallet = result.scalar_one_or_none()
-    if wallet is None:
-        raise WalletNotFoundError(tg_id)
-
-    old = wallet.coins
+    # Lock the row and read the committed balance: this is the one money operation
+    # that needs the current value (an absolute target is not expressible as SQL
+    # arithmetic), so the lock has to hold it still until the delta lands. Reading
+    # it off a `Wallet` instance instead would silently use the cached number and
+    # land on target ± whatever moved meanwhile.
+    old = await economy_service.lock_balance(session, tg_id)
     delta = target - old
     if delta > 0:
         await economy_service.credit(

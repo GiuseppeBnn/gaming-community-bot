@@ -55,12 +55,35 @@ _MIGRATIONS: list[str] = [
     # ALTER TYPE to the same type is a no-op → idempotent like the entries above.
     "ALTER TABLE wallets ALTER COLUMN coins TYPE BIGINT",
     "ALTER TABLE ledger ALTER COLUMN amount TYPE BIGINT",
+    # Same reasoning for the two counters that accumulate without a bound of their
+    # own: XP grows with airdrops, a wager pot is denominated in (BIGINT) coins.
+    "ALTER TABLE users ALTER COLUMN xp TYPE BIGINT",
+    "ALTER TABLE betting_options ALTER COLUMN total_wagered TYPE BIGINT",
     # betting_events: timed betting window (NULL = illimitata) + armed close deadline.
     "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS betting_window_seconds INTEGER",
     "ALTER TABLE betting_events ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
     # quizzes: per-user display randomization of question/answer order (added after initial deploy)
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_questions BOOLEAN NOT NULL DEFAULT false",
     "ALTER TABLE quizzes ADD COLUMN IF NOT EXISTS randomize_answers BOOLEAN NOT NULL DEFAULT false",
+    # ledger: /storico filtered `from_tg_id OR to_tg_id` + sorted by created_at
+    # against a table with no index but the PK. See LedgerEntry.__table_args__ for
+    # why two composite indexes and not three single-column ones. create_all()
+    # skips existing tables, so an already-deployed DB only gets them from here.
+    # ponytail: plain CREATE INDEX takes a write lock for the duration — fine at
+    # this table's size; switch to CREATE INDEX CONCURRENTLY (which cannot run
+    # inside the transaction below) if the ledger ever gets big enough to notice.
+    "CREATE INDEX IF NOT EXISTS ix_ledger_from_created ON ledger (from_tg_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_ledger_to_created ON ledger (to_tg_id, created_at)",
+    # guess_rounds: the round's own lifetime, which drives the auto-close task
+    # (STEERING §19.b). Distinct from time_limit_seconds, which is per player.
+    # DEFAULT 0 = "close it by hand", so rounds created before this column keep
+    # behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS "
+    "round_duration_seconds INTEGER NOT NULL DEFAULT 0",
+    # guess_rounds: absolute auto-close instant, the admin-picked-date alternative
+    # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
+    # so rounds created before this column keep behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
 ]
 
 

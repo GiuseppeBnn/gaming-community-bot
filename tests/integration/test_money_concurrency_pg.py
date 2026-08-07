@@ -1,0 +1,796 @@
+"""The money path under real concurrency — regression guards, and how they got here.
+
+**These started as a diagnostic instrument, not as tests.** Every one of them was
+born `xfail(strict=True)`: red meant «this site is genuinely broken, here is the
+proof», and an unexpected pass meant «this site was already safe, drop the marker».
+Nine came back red. All nine are fixed now, the markers are gone, and what is left is
+what those measurements turned into: the guards that fail if any of it comes back.
+
+Keep new cases in that shape. Add the race first and watch it fail; a green test
+written after the fix proves only that it was written after the fix.
+
+## The hazard, precisely
+
+`src/database/connection.py` builds sessions with `expire_on_commit=False`. When a
+row is already loaded in a session's identity map and a service then runs
+`select(...).with_for_update()`, Postgres **does** take the row lock, but SQLAlchemy
+returns the cached instance with its stale column values. A check-then-write can
+then pass twice.
+
+## What this file discovered, and it narrows the blast radius a lot
+
+The identity map holds **weak** references. `DbSessionMiddleware._upsert_user()`
+loads `User` and `Wallet` but keeps neither, so both are garbage collected and the
+identity map ends up empty. **The middleware does not poison the session** — the
+opposite of what the roadmap assumed. Measured:
+
+    only _upsert_user (nothing holds the object) → FOR UPDATE reads xp=999 (fresh)
+    a caller holds the loaded User in a variable → FOR UPDATE reads xp=0   (STALE)
+
+So the hazard needs a caller that **holds the entity** across a service call that
+locks the same row. Reading a value off it and discarding the object (as
+`shop._balance` does) is safe. That makes this a per-flow question, not a global one:
+
+  * `handlers/economy.cmd_daily` → calls `claim_daily` with nothing preloaded: safe.
+  * `handlers/admin_betting.cb_admin_confirm_resolve` → calls `resolve_event`
+    directly: safe.
+  * `handlers/event_types/bet_type._auto_lock` → binds
+    `event = await get_event_detail(...)`, checks `event.status`, then calls
+    `lock_event(...)` while still holding `event`: **the reachable one.**
+
+`TestMiddlewareDoesNotPoisonTheSession` below pins the weak-reference property, so
+if anyone ever makes the middleware retain the user (e.g. stashing it in `data`),
+the hazard goes global and that test says so.
+
+## Why a real Postgres
+
+`SELECT ... FOR UPDATE` is a no-op on SQLite, and the in-memory engine uses
+StaticPool, which hands every session the same DBAPI connection — hence the same
+transaction. Two sessions racing is not expressible there at all.
+
+## Interleaving shapes, both deadlock-proof by construction
+
+**Shape S (sequenced)** — for stale decisions: A loads and holds, B does the whole
+operation and commits, then A operates. Nothing blocks (A's plain SELECT takes no
+row lock under READ COMMITTED, and B is already committed). No sleeps, no timing.
+
+**Shape G (gather)** — for lost updates: N tasks, each with its own session,
+serialising on the row lock. The fixture sets `lock_timeout=5s`, so a self-deadlock
+fails fast instead of hanging CI.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import gc
+import types
+from datetime import timedelta
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
+
+from database.models import (
+    BetStatus,
+    BettingEvent,
+    EventStatus,
+    LedgerEntry,
+    Quiz,
+    ShopPurchase,
+    TransactionType,
+    User,
+    UserBet,
+    Wallet,
+)
+from exceptions.economy import (
+    DailyAlreadyClaimedError,
+    EventAlreadySettledError,
+    InsufficientFundsError,
+)
+from handlers import shop
+from middlewares.db_middleware import _upsert_user
+from services import admin_service as admin_svc
+from services import bet_service as bet_svc
+from services import economy_service as eco
+from services import quiz_service as quiz_svc
+from services import shop_service
+from services import xp_service
+from services.xp_service import XpSource
+from utils import daytime
+
+pytestmark = [pytest.mark.pg]
+
+
+# ---------------------------------------------------------------------------
+# Reading DB truth
+# ---------------------------------------------------------------------------
+
+async def truth(sessions, stmt):
+    """Run `stmt` in a fresh session and return the scalar.
+
+    Must not reuse a racing session: `expire_on_commit=False` means a participant
+    hands back its own cached copy, and an *entity* select is served from the
+    identity map. Fresh session + column select is the only way to read what is
+    actually committed.
+    """
+    async with sessions() as s:
+        return (await s.execute(stmt)).scalar_one_or_none()
+
+
+def coins_of(tg_id: int):
+    return select(Wallet.coins).where(Wallet.tg_id == tg_id)
+
+
+def user_col(tg_id: int, column):
+    return select(column).where(User.tg_id == tg_id)
+
+
+async def assert_ledger_balanced(sessions, tg_id: int, initial: int) -> None:
+    """The wallet must equal the starting balance plus every ledger movement.
+
+    Catches any lost update in one assertion: if a concurrent write vanished, the
+    wallet and the ledger disagree — coins were created or destroyed.
+    """
+    balance = await truth(sessions, coins_of(tg_id))
+    moved = await truth(
+        sessions,
+        select(func.coalesce(func.sum(LedgerEntry.amount), 0)).where(
+            (LedgerEntry.from_tg_id == tg_id) | (LedgerEntry.to_tg_id == tg_id)
+        ),
+    )
+    assert balance == initial + moved, (
+        f"wallet={balance} but initial={initial} + ledger={moved} = {initial + moved} "
+        "— coins were created or destroyed"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Creating the hazard the way a handler does
+# ---------------------------------------------------------------------------
+
+def _tg_user(tg_id: int, username: str = "testuser"):
+    """The minimal aiogram User shape `_upsert_user` touches."""
+    return types.SimpleNamespace(
+        id=tg_id,
+        is_bot=False,
+        username=username,
+        full_name=f"Test {username}",
+        first_name=f"Test {username}",
+    )
+
+
+async def load_and_hold(session, tg_id: int) -> tuple[User, Wallet]:
+    """Load User + Wallet and RETURN them, so the caller keeps them alive.
+
+    Returning is the whole point: the identity map is weak-referencing, so a helper
+    that loaded and discarded them would leave the session clean and the test would
+    measure nothing. The caller must bind the result for the duration of the race.
+    """
+    user = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one()
+    wallet = (
+        await session.execute(select(Wallet).where(Wallet.tg_id == tg_id))
+    ).scalar_one()
+    return user, wallet
+
+
+# ===========================================================================
+# The property that keeps the blast radius small
+# ===========================================================================
+
+class TestMiddlewareDoesNotPoisonTheSession:
+    async def test_upsert_user_leaves_no_entities_in_the_identity_map(
+        self, pg_sessions, pg_user_factory
+    ):
+        """`_upsert_user` must not retain the User/Wallet it loads.
+
+        This is what keeps the staleness hazard confined to a few handler flows
+        instead of applying to all ~190 handlers. If someone later caches the user
+        (e.g. `data["db_user"] = user`), every locking read in every service becomes
+        vulnerable — and this test is the tripwire.
+        """
+        await pg_user_factory(tg_id=1, coins=100)
+
+        async with pg_sessions() as s:
+            await _upsert_user(s, _tg_user(1))
+            gc.collect()
+            live = [st.class_.__name__ for st in s.identity_map.all_states()]
+
+        assert live == [], (
+            f"the middleware now retains {live} — the identity-map staleness hazard "
+            "just became global; see this module's docstring"
+        )
+
+    async def test_a_held_entity_does_go_stale(self, pg_sessions, pg_user_factory):
+        """The other half of the finding: when a caller *does* hold the row, the
+        lock does not protect it. This is the mechanism every xfail below relies on,
+        so it is asserted directly rather than inferred."""
+        await pg_user_factory(tg_id=1, coins=100)
+
+        async with pg_sessions() as sa:
+            held_user, _held_wallet = await load_and_hold(sa, 1)
+
+            async with pg_sessions() as sb:
+                other = (
+                    await sb.execute(select(User).where(User.tg_id == 1))
+                ).scalar_one()
+                other.xp = 999
+                await sb.commit()
+
+            relocked = (
+                await sa.execute(
+                    select(User).where(User.tg_id == 1).with_for_update()
+                )
+            ).scalar_one()
+            assert relocked is held_user
+            assert relocked.xp == 0, "unexpectedly fresh — re-read this module's docstring"
+
+
+# ===========================================================================
+# /daily
+# ===========================================================================
+
+class TestDailyClaim:
+    """Regression guards. Both were red until `claim_daily` became a single
+    conditional UPDATE: a locking read plus a Python-side check let the second claim
+    through, because the lock protected a row whose values came from the cache."""
+
+    async def test_double_claim_is_refused(self, pg_sessions, pg_user_factory):
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)  # cache: last_daily_claim=None
+
+            async with pg_sessions() as sb:
+                await eco.claim_daily(sb, 1)
+                await sb.commit()
+
+            with pytest.raises(DailyAlreadyClaimedError):
+                await eco.claim_daily(sa, 1)
+                await sa.commit()
+
+        await assert_ledger_balanced(pg_sessions, 1, initial=0)
+
+    async def test_streak_is_not_double_counted(self, pg_sessions, pg_user_factory):
+        yesterday = daytime.utc_now() - timedelta(days=1)
+        await pg_user_factory(tg_id=1, coins=0, last_daily_claim=yesterday, daily_streak=5)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)
+
+            async with pg_sessions() as sb:
+                await eco.claim_daily(sb, 1)
+                await sb.commit()
+
+            try:
+                await eco.claim_daily(sa, 1)
+                await sa.commit()
+            except DailyAlreadyClaimedError:
+                pass
+
+        assert await truth(pg_sessions, user_col(1, User.daily_streak)) == 6
+        await assert_ledger_balanced(pg_sessions, 1, initial=0)
+
+
+# ===========================================================================
+# debit
+# ===========================================================================
+
+class TestDebit:
+    """Regression guards. Both were red while `debit` read the balance off a
+    `Wallet` instance: the row lock was real, but the number it protected came
+    from the identity map."""
+
+    async def test_cannot_overdraw_from_a_stale_balance(self, pg_sessions, pg_user_factory):
+        await pg_user_factory(tg_id=1, coins=100)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)  # cache: coins=100
+
+            async with pg_sessions() as sb:
+                await eco.debit(sb, 1, 100, TransactionType.shop_purchase, "B spends it all")
+                await sb.commit()
+
+            with pytest.raises(InsufficientFundsError):
+                await eco.debit(sa, 1, 100, TransactionType.shop_purchase, "A spends it again")
+                await sa.commit()
+
+        assert await truth(pg_sessions, coins_of(1)) == 0
+        await assert_ledger_balanced(pg_sessions, 1, initial=100)
+
+    async def test_concurrent_debits_do_not_lose_updates(self, pg_sessions, pg_user_factory):
+        """Shape G, each task holding its own loaded Wallet: 20 × debit(10) on a
+        100-coin wallet, exactly 10 may succeed.
+
+        The measurement that named the real mechanism. Loading inside each task did
+        *not* make the cache safe: `gather` starts all 20 before any commits, so
+        every task read 100 and the row lock faithfully serialised 20 writes of
+        `100 - 10`. The lock was working the whole time — the arithmetic base was
+        stale. That is why the fix moved the arithmetic into SQL instead of adding
+        more locking.
+        """
+        await pg_user_factory(tg_id=1, coins=100)
+        ok = 0
+
+        async def spend():
+            nonlocal ok
+            async with pg_sessions() as s:
+                _held = await load_and_hold(s, 1)
+                try:
+                    await eco.debit(s, 1, 10, TransactionType.shop_purchase, "concurrent")
+                    await s.commit()
+                    ok += 1
+                except InsufficientFundsError:
+                    await s.rollback()
+
+        await asyncio.gather(*(spend() for _ in range(20)))
+
+        assert ok == 10, f"{ok} debits of 10 succeeded on a 100-coin wallet"
+        assert await truth(pg_sessions, coins_of(1)) == 0
+        await assert_ledger_balanced(pg_sessions, 1, initial=100)
+
+
+# ===========================================================================
+# transfer
+# ===========================================================================
+
+class TestTransfer:
+    async def test_cannot_overdraw_from_a_stale_balance(self, pg_sessions, pg_user_factory):
+        """Was red while `transfer` pre-checked the balance on a held `Wallet`; the
+        check now lives inside `debit`'s own conditional UPDATE."""
+        await pg_user_factory(tg_id=1, coins=100, username="alice")
+        await pg_user_factory(tg_id=2, coins=0, username="bob")
+        await pg_user_factory(tg_id=3, coins=0, username="carol")
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)
+
+            async with pg_sessions() as sb:
+                await eco.transfer(sb, 1, 3, 100, from_name="alice", to_name="carol")
+                await sb.commit()
+
+            with pytest.raises(InsufficientFundsError):
+                await eco.transfer(sa, 1, 2, 100, from_name="alice", to_name="bob")
+                await sa.commit()
+
+        assert await truth(pg_sessions, coins_of(1)) == 0
+        await assert_ledger_balanced(pg_sessions, 1, initial=100)
+
+    async def test_concurrent_transfers_conserve_coins(self, pg_sessions, pg_user_factory):
+        """Shape G: 10 × transfer(1→2, 10). Expected green — kept as a guard."""
+        await pg_user_factory(tg_id=1, coins=1000, username="alice")
+        await pg_user_factory(tg_id=2, coins=1000, username="bob")
+
+        async def send():
+            async with pg_sessions() as s:
+                await eco.transfer(s, 1, 2, 10, from_name="alice", to_name="bob")
+                await s.commit()
+
+        await asyncio.gather(*(send() for _ in range(10)))
+
+        assert await truth(pg_sessions, coins_of(1)) == 900
+        assert await truth(pg_sessions, coins_of(2)) == 1100
+        assert await truth(pg_sessions, user_col(1, User.transfers_made)) == 10
+
+    async def test_opposite_transfers_do_not_deadlock(self, pg_sessions, pg_user_factory):
+        """Regression guard, expected green.
+
+        `transfer` pre-locks both wallets in ascending tg_id order precisely so two
+        opposite transfers cannot deadlock. A future rewrite that drops that ordering
+        fails here (deadlock or 5s lock_timeout) instead of in production.
+        """
+        await pg_user_factory(tg_id=1, coins=1000, username="alice")
+        await pg_user_factory(tg_id=2, coins=1000, username="bob")
+
+        async def move(src: int, dst: int):
+            async with pg_sessions() as s:
+                await eco.transfer(s, src, dst, 10)
+                await s.commit()
+
+        await asyncio.gather(move(1, 2), move(2, 1))
+
+        assert await truth(pg_sessions, coins_of(1)) == 1000
+        assert await truth(pg_sessions, coins_of(2)) == 1000
+
+
+# ===========================================================================
+# admin: set an exact balance
+# ===========================================================================
+
+class TestAdminSetBalance:
+    async def test_lands_on_the_requested_target(self, pg_sessions, pg_user_factory):
+        """`/setsaldo 200` must leave exactly 200, whatever happened meanwhile.
+
+        The odd one out, and worth keeping for that reason. Its delta was derived
+        from a cached balance, so the *absolute* write it produced landed on the
+        target by construction — and silently swallowed the concurrent movement
+        instead (ledger 250, wallet 200). It also reported success either way,
+        because it returns the `target` it was asked for rather than what it wrote.
+        Setting an absolute balance is the one money operation that genuinely needs
+        the current value, so this is the one that still takes a row lock.
+        """
+        await pg_user_factory(tg_id=1, coins=100)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)  # cache: coins=100
+
+            async with pg_sessions() as sb:
+                await eco.credit(sb, 1, 50, TransactionType.admin_credit, "gift")
+                await sb.commit()
+
+            reported_old, reported_new = await admin_svc.set_balance(sa, 1, 200)
+            await sa.commit()
+
+        actual = await truth(pg_sessions, coins_of(1))
+        assert actual == 200, f"admin asked for 200, the wallet landed on {actual}"
+        assert reported_new == actual, "reported a new balance it did not write"
+        assert reported_old == 150, f"reported the old balance as {reported_old}, was 150"
+
+
+# ===========================================================================
+# daily XP cap
+# ===========================================================================
+
+class TestDailyXpCap:
+    async def test_cap_is_not_bypassed(self, pg_sessions, pg_user_factory, monkeypatch):
+        """Was red while the capped path read `xp_today` off the held User: the row
+        lock was taken, but the counter it protected came from the cache, so the cap
+        could be exceeded *and* one of the two grants was lost."""
+        monkeypatch.setattr(xp_service.settings, "xp_daily_participation_cap", 50)
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async with pg_sessions() as sa:
+            _held = await load_and_hold(sa, 1)  # cache: xp_today=0
+
+            async with pg_sessions() as sb:
+                await xp_service.grant_xp(sb, 1, 40, XpSource.daily, capped=True)
+                await sb.commit()
+
+            result = await xp_service.grant_xp(sa, 1, 40, XpSource.daily, capped=True)
+            await sa.commit()
+
+        assert result.granted == 10, f"granted {result.granted}: the 50 XP cap was bypassed"
+        assert await truth(pg_sessions, user_col(1, User.xp)) == 50
+        assert await truth(pg_sessions, user_col(1, User.xp_today)) == 50
+
+
+class TestUncappedXp:
+    """The uncapped path has no row lock *by design* — taking one would invert the
+    canonical Wallet → User order that `bet_service.resolve_event` relies on. So its
+    arithmetic has to be safe on its own, without any locking to fall back on.
+    """
+
+    async def test_concurrent_grants_do_not_lose_updates(self, pg_sessions, pg_user_factory):
+        """10 × grant_xp(5) must total 50.
+
+        Nothing is preloaded here: this one does not need the identity map at all.
+        `gather` starts all ten before any of them commits, so each reads xp=0 and
+        writes 5 — the plain lost update.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async def grant():
+            async with pg_sessions() as s:
+                await xp_service.grant_xp(s, 1, 5, XpSource.quiz, capped=False)
+                await s.commit()
+
+        await asyncio.gather(*(grant() for _ in range(10)))
+
+        total = await truth(pg_sessions, user_col(1, User.xp))
+        assert total == 50, f"10 grants of 5 XP left {total}"
+
+    async def test_two_grants_in_one_transaction_both_land(
+        self, pg_sessions, pg_user_factory
+    ):
+        """A quiz podium finisher is granted twice in a single transaction —
+        participation XP, then the podium bonus (`quiz_service._grant_xp`). Both
+        must accumulate, so whatever makes the concurrent case safe must not make
+        the sequential one lose a grant.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async with pg_sessions() as s:
+            await xp_service.grant_xp(s, 1, 30, XpSource.quiz, capped=False)
+            await xp_service.grant_xp(s, 1, 12, XpSource.quiz, capped=False)
+            await s.commit()
+
+        assert await truth(pg_sessions, user_col(1, User.xp)) == 42
+
+
+class TestAirdropXp:
+    """`airdrop_xp` is the widest write in the bot: one statement over every user.
+
+    It used to read the whole table into Python and write absolute totals back, so
+    anything granted between the read and the write was overwritten. The unit test
+    in `tests/unit/test_xp_service.py` pins the cache half of that (a stale instance
+    in one session); this pins the other half, which only a real database can show:
+    two transactions actually racing for the same rows.
+    """
+
+    async def test_an_airdrop_does_not_swallow_concurrent_grants(
+        self, pg_sessions, pg_user_factory
+    ):
+        """One airdrop of 100 to everyone, ten grants of 5 to user 1, all at once.
+
+        Shape G, like `TestUncappedXp` above: `gather` starts every transaction
+        before any of them commits. Each one is a relative `xp = xp + n`, so the
+        total is exact **whatever order Postgres serialises them in** — which is the
+        entire claim being made. Order-independence is also why this test cannot
+        fail spuriously: there is no interleaving that produces a different number.
+        """
+        await pg_user_factory(tg_id=1, coins=0)
+        await pg_user_factory(tg_id=2, coins=0)
+
+        async def airdrop():
+            async with pg_sessions() as s:
+                await xp_service.airdrop_xp(s, 100)
+                await s.commit()
+
+        async def grant():
+            async with pg_sessions() as s:
+                await xp_service.grant_xp(s, 1, 5, XpSource.quiz, capped=False)
+                await s.commit()
+
+        await asyncio.gather(airdrop(), *(grant() for _ in range(10)))
+
+        got = await truth(pg_sessions, user_col(1, User.xp))
+        assert got == 150, f"airdrop 100 + 10×5 granted, user 1 ended at {got}"
+        assert await truth(pg_sessions, user_col(2, User.xp)) == 100
+
+    async def test_two_airdrops_at_once_both_land(self, pg_sessions, pg_user_factory):
+        """Two admins tapping Airdrop at the same moment must add up, not collapse
+        into one. Same reason as above — and a good check that the tier rewrite,
+        which runs as a second batch of statements after the XP update, does not
+        somehow undo the first airdrop's work."""
+        await pg_user_factory(tg_id=1, coins=0)
+
+        async def airdrop(amount: int):
+            async with pg_sessions() as s:
+                await xp_service.airdrop_xp(s, amount)
+                await s.commit()
+
+        await asyncio.gather(airdrop(70), airdrop(30))
+
+        assert await truth(pg_sessions, user_col(1, User.xp)) == 100
+
+
+class TestShopDoublePurchase:
+    """`handlers/shop.cb_shop_execute` debits first — that takes the wallet lock — and
+    only then re-checks ownership, undoing its own debit if it lost the race.
+
+    That re-check is unreachable on SQLite: `StaticPool` hands every session the same
+    connection, so two buyers cannot exist. Here they can, and the guarantee is the
+    one a user would notice immediately: a double-tap on «Confermi» costs the price
+    once, not twice.
+    """
+
+    async def test_a_double_tap_pays_for_the_cosmetic_once(
+        self, pg_sessions, pg_user_factory
+    ):
+        item = shop_service.get_item("tag_memelord")
+        await pg_user_factory(tg_id=1, coins=item.price * 2)
+
+        async def buy():
+            async with pg_sessions() as s:
+                await shop.cb_shop_execute(_ShopCallback(item.key), s)
+
+        await asyncio.gather(buy(), buy())
+
+        spent = item.price * 2 - await truth(pg_sessions, coins_of(1))
+        assert spent == item.price, f"charged {spent} for one tag worth {item.price}"
+
+        bought = await truth(
+            pg_sessions,
+            select(func.count()).select_from(ShopPurchase).where(
+                ShopPurchase.user_tg_id == 1, ShopPurchase.item_key == item.key
+            ),
+        )
+        assert bought == 1
+
+
+class _ShopMessage:
+    def __init__(self) -> None:
+        self.bot = types.SimpleNamespace(id=999_999)
+        self.from_user = types.SimpleNamespace(id=999_999)  # the panel's author is the bot
+        self.chat = types.SimpleNamespace(id=1, type="private")
+
+    async def edit_text(self, text, reply_markup=None, **kw):
+        return None
+
+    async def answer(self, text, reply_markup=None):
+        return None
+
+
+class _ShopCallback:
+    def __init__(self, item_key: str) -> None:
+        self.data = f"shop:exec:{item_key}"
+        self.message = _ShopMessage()
+        self.bot = self.message.bot
+        self.from_user = types.SimpleNamespace(id=1)
+
+    async def answer(self, text=None, show_alert=False):
+        return None
+
+
+# ===========================================================================
+# betting lifecycle
+# ===========================================================================
+
+async def _open_event(session, creator: int = 1) -> tuple[int, int]:
+    """Create an open event; return (event_id, first_option_id).
+
+    Returns ids rather than the instance, and re-selects with `selectinload` the way
+    tests/integration/test_bet_locking.py does — accessing `event.options` after the
+    commit would lazy-load and raise MissingGreenlet.
+    """
+    event = await bet_svc.create_event(
+        session,
+        creator_tg_id=creator,
+        title="Race",
+        description="d",
+        options=[{"label": "A"}, {"label": "B"}],
+    )
+    await session.commit()
+    loaded = (
+        await session.execute(
+            select(BettingEvent)
+            .where(BettingEvent.id == event.id)
+            .options(selectinload(BettingEvent.options))
+        )
+    ).scalar_one()
+    return loaded.id, loaded.options[0].id
+
+
+class TestBettingLifecycle:
+    async def test_second_lock_does_not_move_the_close_time(
+        self, pg_sessions, pg_user_factory
+    ):
+        """Mirrors `handlers/event_types/bet_type._auto_lock`, the one flow that holds
+        an entity across a locking service call.
+
+        Note what is *not* asserted here: locking an already-locked event is defined
+        as idempotent, so the second call must not raise. The defect is that it used
+        to re-run the transition — the held event still said `open`, so the check
+        passed again and `locked_at` was overwritten with a later timestamp. That
+        field is when betting actually closed, and `place_bet` rejects against it.
+        """
+        await pg_user_factory(tg_id=1, coins=1000, username="admin")
+        async with pg_sessions() as setup:
+            event_id, _ = await _open_event(setup, 1)
+
+        async with pg_sessions() as sa:
+            held = await bet_svc.get_event_detail(sa, event_id)  # bound, as _auto_lock does
+            assert held is not None and held.status == EventStatus.open.value
+
+            async with pg_sessions() as sb:
+                first = await bet_svc.lock_event(sb, event_id)
+                closed_at = first.locked_at
+                await sb.commit()
+
+            again = await bet_svc.lock_event(sa, event_id)
+            await sa.commit()
+            assert again.status == EventStatus.locked.value
+
+        assert (
+            await truth(
+                pg_sessions,
+                select(BettingEvent.locked_at).where(BettingEvent.id == event_id),
+            )
+            == closed_at
+        ), "the second lock re-ran the transition and moved the close time"
+
+    async def test_bet_placed_before_resolution_is_settled(self, pg_sessions, pg_user_factory):
+        """Was red while `resolve_event` walked `event.user_bets`: a caller holding
+        the event holds its loaded collection too, so a bet placed after that
+        snapshot was debited and then never settled — the stake simply vanished."""
+        await pg_user_factory(tg_id=1, coins=1000, username="admin")
+        await pg_user_factory(tg_id=2, coins=1000, username="punter")
+        async with pg_sessions() as setup:
+            event_id, opt_id = await _open_event(setup, 1)
+
+        async with pg_sessions() as sa:
+            held = await bet_svc.get_event_detail(sa, event_id)  # user_bets loaded: empty
+            assert held is not None
+
+            async with pg_sessions() as sb:
+                await bet_svc.place_bet(sb, 2, event_id, opt_id, 100)
+                await sb.commit()
+
+            await bet_svc.resolve_event(sa, event_id, opt_id)
+            await sa.commit()
+
+        status = await truth(
+            pg_sessions, select(UserBet.status).where(UserBet.user_tg_id == 2)
+        )
+        assert status != BetStatus.pending.value, "stake debited but never settled"
+
+    async def test_double_resolution_pays_once_from_a_clean_session(
+        self, pg_sessions, pg_user_factory
+    ):
+        """Mirrors `cb_admin_confirm_resolve`, which calls resolve_event with nothing
+        preloaded. Expected green — this is the evidence that the admin resolve path
+        is already safe, so the fix does not need to touch it.
+        """
+        await pg_user_factory(tg_id=1, coins=1000, username="admin")
+        await pg_user_factory(tg_id=2, coins=1000, username="punter")
+        async with pg_sessions() as setup:
+            event_id, opt_id = await _open_event(setup, 1)
+            await bet_svc.place_bet(setup, 2, event_id, opt_id, 100)
+            await setup.commit()
+
+        async with pg_sessions() as sa:
+            async with pg_sessions() as sb:
+                await bet_svc.resolve_event(sb, event_id, opt_id)
+                await sb.commit()
+
+            with pytest.raises(EventAlreadySettledError):
+                await bet_svc.resolve_event(sa, event_id, opt_id)
+                await sa.commit()
+
+        assert await truth(pg_sessions, coins_of(2)) == 1000  # stake back, paid once
+        assert await truth(pg_sessions, user_col(2, User.bets_won)) == 1
+
+
+# ===========================================================================
+# quiz close
+# ===========================================================================
+
+class TestQuizClose:
+    async def test_prizes_are_paid_once_when_the_caller_holds_the_quiz(
+        self, pg_sessions, pg_user_factory
+    ):
+        """Two overlapping closes must pay the prize pool once.
+
+        `handlers.quiz.close_quiz` binds the quiz and then pays, so the status check
+        cannot be a separate read — the held instance would answer it from the cache.
+        Claiming the close *is* the transition, and only one caller can win it.
+        Tested at service level: the handler needs a bot to announce the podium.
+        """
+        await pg_user_factory(tg_id=1, coins=0, username="admin")
+        await pg_user_factory(tg_id=2, coins=0, username="player")
+
+        async with pg_sessions() as setup:
+            quiz = await quiz_svc.create_quiz(
+                setup, creator_tg_id=1, title="Q", description="d", prize_first=500
+            )
+            question = await quiz_svc.add_question(setup, quiz.id, "1+1?", ["2", "3"], 0, None)
+            quiz_id, question_id = quiz.id, question.id
+            await quiz_svc.set_status(setup, quiz_id, "running")
+            await setup.commit()
+            await quiz_svc.record_answer(setup, quiz_id, question_id, 2, 0)
+            await setup.commit()
+
+        async with pg_sessions() as sa:
+            held = await quiz_svc.get_quiz(sa, quiz_id)  # bound: status=running
+            assert held is not None and held.status == "running"
+
+            async with pg_sessions() as sb:
+                assert await quiz_svc.claim_close(sb, quiz_id) is None, "B should win"
+                await quiz_svc.award_prizes(sb, quiz_id)
+                await sb.commit()
+
+            assert await quiz_svc.claim_close(sa, quiz_id) == "finished", (
+                "A claimed a close that B had already committed — the prizes would "
+                "be paid a second time"
+            )
+            await sa.commit()
+
+        assert await truth(pg_sessions, coins_of(2)) == 500
+        assert await truth(pg_sessions, select(Quiz.status).where(Quiz.id == quiz_id)) == "finished"
+
+    async def test_claim_reports_what_blocked_it(self, pg_sessions, pg_user_factory):
+        """The three refusals the close handler has to tell apart."""
+        await pg_user_factory(tg_id=1, coins=0, username="admin")
+
+        async with pg_sessions() as s:
+            assert await quiz_svc.claim_close(s, 9999) == quiz_svc.QUIZ_MISSING
+
+            quiz = await quiz_svc.create_quiz(
+                s, creator_tg_id=1, title="Q", description="d"
+            )
+            await s.commit()
+            assert await quiz_svc.claim_close(s, quiz.id) == "draft"
+
+            await quiz_svc.set_status(s, quiz.id, "running")
+            await s.commit()
+            assert await quiz_svc.claim_close(s, quiz.id) is None
+            assert await quiz_svc.claim_close(s, quiz.id) == "finished"

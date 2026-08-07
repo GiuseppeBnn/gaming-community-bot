@@ -208,7 +208,9 @@ async def place_bet(
         await session.flush()
     except IntegrityError:
         await session.rollback()
-        raise AlreadyBetError(user_tg_id, event_id)
+        # `from None`: the IntegrityError is the *expected* signal of the unique
+        # constraint firing, not an error while handling one — don't chain it.
+        raise AlreadyBetError(user_tg_id, event_id) from None
 
     # Event XP for participating (placing a bet), uncapped — once per event, since a
     # second bet on the same event raises AlreadyBetError above. The (larger) win
@@ -224,19 +226,40 @@ async def place_bet(
 
 
 async def lock_event(session: AsyncSession, event_id: int) -> BettingEvent:
-    result = await session.execute(
-        select(BettingEvent).where(BettingEvent.id == event_id).with_for_update()
-    )
-    event = result.scalar_one_or_none()
+    """Close betting on an event. Idempotent: locking an already-locked event is a
+    no-op, settling one is an error.
+
+    The transition is a conditional UPDATE rather than a read-check-write, because
+    the caller usually *is* holding the event: the scheduler's auto-lock binds it
+    via `get_event_detail` and then calls this (`handlers/event_types/bet_type`).
+    A locking read would hand back that same held instance with its old status and
+    both overlapping locks would proceed.
+    """
+    changed = (
+        await session.execute(
+            update(BettingEvent)
+            .where(
+                BettingEvent.id == event_id,
+                BettingEvent.status == EventStatus.open.value,
+            )
+            .values(
+                status=EventStatus.locked.value,
+                locked_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            )
+            .execution_options(synchronize_session=False)
+        )
+    ).rowcount or 0
+
+    event = (
+        await session.execute(select(BettingEvent).where(BettingEvent.id == event_id))
+    ).scalar_one_or_none()
     if event is None:
         raise EventNotFoundError(event_id)
-    if event.status in (EventStatus.resolved.value, EventStatus.cancelled.value):
-        raise EventAlreadySettledError(event_id, event.status)
-    if event.status == EventStatus.locked.value:
-        return event  # idempotent
+    # The instance may predate the UPDATE — the caller's, or ours from a moment ago.
+    await session.refresh(event, ["status", "locked_at"])
 
-    event.status = EventStatus.locked.value
-    event.locked_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if not changed and event.status != EventStatus.locked.value:
+        raise EventAlreadySettledError(event_id, event.status)
     return event
 
 
@@ -253,31 +276,66 @@ async def resolve_event(
       winning_option   — label of the winning option
       winners_data     — list of {tg_id, bet_amount, payout} for notifications
     """
-    result = await session.execute(
-        select(BettingEvent)
-        .where(BettingEvent.id == event_id)
-        .options(
-            selectinload(BettingEvent.options),
-            selectinload(BettingEvent.user_bets),
+    event = (
+        await session.execute(
+            select(BettingEvent).where(BettingEvent.id == event_id).with_for_update()
         )
-        .with_for_update()
-    )
-    event = result.scalar_one_or_none()
+    ).scalar_one_or_none()
     if event is None:
         raise EventNotFoundError(event_id)
-    if event.status in (EventStatus.resolved.value, EventStatus.cancelled.value):
+    await session.refresh(event, ["status"])
+
+    settled = (EventStatus.resolved.value, EventStatus.cancelled.value)
+    if event.status in settled:
         raise EventAlreadySettledError(event_id, event.status)
 
-    winning_option = next((o for o in event.options if o.id == winning_option_id), None)
+    winning_option = (
+        await session.execute(
+            select(BettingOption).where(
+                BettingOption.id == winning_option_id,
+                BettingOption.event_id == event_id,
+            )
+        )
+    ).scalar_one_or_none()
     if winning_option is None:
         raise EventNotFoundError(event_id)
 
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    event.status = EventStatus.resolved.value
-    event.resolution_option_id = winning_option_id
-    event.resolved_at = now
+    # The status check above is friendly-error handling; *this* is the guard. A
+    # concurrent resolution that got there first leaves this matching no row, so
+    # the pot cannot be paid out twice.
+    resolved = (
+        await session.execute(
+            update(BettingEvent)
+            .where(BettingEvent.id == event_id, BettingEvent.status.not_in(settled))
+            .values(
+                status=EventStatus.resolved.value,
+                resolution_option_id=winning_option_id,
+                resolved_at=now,
+            )
+            .execution_options(synchronize_session=False)
+        )
+    ).rowcount or 0
+    if not resolved:
+        await session.refresh(event, ["status"])
+        raise EventAlreadySettledError(event_id, event.status)
+    await session.refresh(event, ["status", "resolution_option_id", "resolved_at"])
 
-    pending_bets = [b for b in event.user_bets if b.status == BetStatus.pending.value]
+    # Queried, not read off `event.user_bets`: a caller holding the event holds its
+    # loaded collection too, and a bet placed after that snapshot would be debited
+    # and then never settled.
+    pending_bets = list(
+        (
+            await session.execute(
+                select(UserBet).where(
+                    UserBet.event_id == event_id,
+                    UserBet.status == BetStatus.pending.value,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     total_pot = sum(b.amount for b in pending_bets)
 
     winning_bets = [b for b in pending_bets if b.option_id == winning_option_id]

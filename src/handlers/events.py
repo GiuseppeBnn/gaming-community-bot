@@ -12,7 +12,9 @@ Callback grammar (namespace ``ev:*``, well within Telegram's 64-byte limit):
   ev:list:<type>               → list pre-created items of a type
   ev:item:<type>:<id>          → manage one item (avvia ora / programma)
   ev:start:<type>:<id>         → start it now in the group
-  ev:sched:<type>:<id>         → schedule it (hands off to handlers.schedule)
+  ev:sched:<type>:<id>[:close] → schedule it (hands off to handlers.schedule); the
+                                 optional last segment pins the action instead of
+                                 asking «avvio o chiusura?»
   ev:close:<type>:<id>         → close a running item (e.g. publish a quiz podium)
   ev:new:<type>                → create a new item of a type
   ev:pt:cancel[_yes|_no]       → cancel the poll-template creation (with confirm)
@@ -155,7 +157,11 @@ _CONFIRM: dict[str, tuple[str, str, str]] = {
     "askstart": ("ev:start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
     "askclose": ("ev:close", "chiudere ora (pubblica il podio)", "🏁 Sì, chiudi"),
     "askdel": ("ev:del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
-    "askreset": ("ev:reset", "riproporre (azzera risposte e premi)", "🔁 Sì, riproponi"),
+    # «e premi» diceva il falso: i premi già pagati restano pagati, e alla chiusura
+    # successiva il montepremi viene erogato di nuovo per intero. È voluto — una
+    # riproposizione è un evento nuovo — quindi è il testo che va detto com'è.
+    "askreset": ("ev:reset", "riproporre (azzera le risposte e ripaga il montepremi intero)",
+                 "🔁 Sì, riproponi"),
 }
 
 
@@ -260,14 +266,18 @@ async def cb_reset(callback: CallbackQuery, db_session: AsyncSession) -> None:
 
 @router.callback_query(F.data.startswith("ev:sched:"), IsAdminCallbackFilter())
 async def cb_schedule(callback: CallbackQuery, state: FSMContext) -> None:
-    _, _, task_type, raw = callback.data.split(":")
+    # Optional 5th segment pins what to schedule ("close"), used by the buttons on
+    # an item that is already running — there, «avvio» is not one of the answers.
+    parts = callback.data.split(":")
+    task_type, raw = parts[2], parts[3]
+    action = parts[4] if len(parts) > 4 else None
     et = event_types.get(task_type)
     if et is None or not raw.isdigit():
         await callback.answer()
         return
     from handlers.schedule import start_schedule_for
     await start_schedule_for(
-        callback.message, state, task_type, int(raw), f"{et.hub_label} #{raw}"
+        callback.message, state, task_type, int(raw), f"{et.hub_label} #{raw}", action
     )
     await callback.answer()
 

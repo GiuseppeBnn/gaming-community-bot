@@ -12,7 +12,7 @@ senza toccare il codice.
 
 ## Requisiti
 
-- Python 3.11+
+- Python 3.12
 - Docker & Docker Compose (per il deploy)
 - Un bot Telegram (crealo con [@BotFather](https://t.me/BotFather))
 
@@ -54,7 +54,7 @@ FSM_STORAGE=memory
 Il codice applicativo vive sotto `src/` (src-layout): si avvia con `python src/main.py`.
 
 ```bash
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 mkdir -p data
@@ -89,15 +89,45 @@ Per usare l'immagine pubblicata da CI invece di buildare in locale, imposta
 ```bash
 pip install -r requirements-dev.txt
 
-pytest                                   # tutta la suite (330 test, ~5s)
+pytest                                   # tutta la suite (~776 test, ~25s)
 pytest --cov=src --cov-report=term-missing
 pytest tests/unit/                       # solo unit (senza DB)
 pytest tests/integration/                # solo integration (SQLite in-memory)
+
+ruff check src/                          # lint (gate CI)
+mypy                                     # type check (gate CI)
 ```
 
 I test non richiedono token Telegram reali né un server in esecuzione: le env vars
 necessarie sono impostate da `tests/conftest.py`, e `pyproject.toml` espone `src/`
 al path di import (`pythonpath = ["src"]`).
+
+La coverage ha un **ratchet**: `fail_under = 59` in `pyproject.toml`. Si alza, non si abbassa.
+
+### Test su PostgreSQL reale (opzionali, marker `pg`)
+
+Una ventina di test richiede un Postgres vero, perché due cose non sono esprimibili su SQLite:
+`SELECT ... FOR UPDATE` è un no-op, e l'engine in-memory dà a ogni sessione la stessa connessione
+(quindi la stessa transazione), rendendo impossibile scrivere una gara a due sessioni. Coprono le
+migrazioni DDL — che girano in produzione a ogni deploy — e la concorrenza sul path denaro.
+
+**Senza `TEST_PG_URL` questi test si skippano**, quindi il run normale non richiede Docker.
+
+```bash
+docker run -d --name gcb-pg-test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=gamingbot_test -p 5433:5432 postgres:16-alpine
+export TEST_PG_URL="postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test"
+pytest -m pg -rxX
+```
+
+> ⚠️ Il fixture ricrea lo schema da zero (`drop_all`): punta `TEST_PG_URL` **solo** a un database
+> usa-e-getta. Rifiuta qualsiasi nome che non finisca in `_test`, perché quello del compose si
+> chiama `gamingbot` — a un carattere di distanza.
+
+Queste gare sono nate come `xfail(strict=True)`, una per ogni difetto di concorrenza misurato sul
+path denaro. Sono state corrette una alla volta e **oggi sono tutte verdi**: ognuna è la guardia di
+regressione del proprio sito. Se una torna rossa, una decisione sul denaro è tornata in Python
+invece che in SQL — vedi la regola 22 di `STEERING.md`.
 
 ---
 
@@ -107,7 +137,7 @@ Tre workflow in `.github/workflows/`:
 
 | Workflow | Trigger | Cosa fa |
 | --- | --- | --- |
-| **`tests.yml`** | ogni `push` e `pull_request` (tutti i branch) | esegue l'intera suite con coverage. È anche `workflow_call` (riusabile). |
+| **`tests.yml`** | ogni `push` e `pull_request` (tutti i branch) | suite completa con coverage (+ un service **`postgres:16-alpine`** per i test `pg`), poi **`ruff`** e **`mypy`** come gate. È anche `workflow_call` (riusabile). |
 | **`docker-image.yml`** | `push` che tocca `src/**`, `requirements.txt`, `Dockerfile` | **prima** esegue i test (gate), **poi** builda e pubblica l'immagine su **GHCR**. |
 | **`compose-artifact.yml`** | `push` che tocca `docker-compose.yml` | valida il compose e lo pubblica come **artifact** (con `.env.example`) — nessuna immagine. |
 
@@ -151,7 +181,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | --- | --- |
 | `/start` | Onboarding (primo accesso) o menu principale; gestisce i deep-link |
 | `/profilo` · `/saldo` · `/storico` | Profilo, saldo, cronologia movimenti |
-| `/daily` | Premio giornaliero (ogni 20h) |
+| `/daily` | Premio giornaliero: si azzera a **mezzanotte locale**, con un gap minimo di 6h dall'ultima riscossione |
 | `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
@@ -186,6 +216,33 @@ I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la *
 (non si avviano con un tap) e da lì si sceglie **Avvia · Programma · Chiudi · Riproponi · Elimina**,
 sempre **con conferma**. Un quiz concluso resta come archivio finché non lo elimini, e «Riproponi»
 lo azzera per rigiocarlo.
+
+### Guess The Game & Sound Quest
+
+Due giochi «indovina», creati e gestiti solo dagli admin dall'hub **🎬 Eventi**. La creazione
+chiede **tre cose** — titolo, media (**foto** per Guess The Game, **audio** per Sound Quest) e
+risposta corretta — poi mostra una **scheda** con tutto il resto già compilato: tentativi,
+tempo, chiusura automatica, suggerimenti e premi. Tocchi un campo, lo cambi, torni alla scheda.
+Il round si avvia subito o si programma, come i quiz.
+
+I **suggerimenti** si aggiungono senza scrivere niente di tecnico: `➕ Aggiungi`, scrivi il
+testo, e scegli con un tocco dopo quanti tentativi deve arrivare. I numeri già usati non
+vengono nemmeno proposti. Se poi abbassi i tentativi, i suggerimenti che nessuno vedrebbe più
+vengono tolti e il bot te lo dice.
+
+Nel gruppo arriva **solo l'invito**: l'immagine e l'audio non si postano lì, altrimenti la
+soluzione si discute in chat e giocare in privato non vuol più dire niente. Si rivelano col
+**podio** alla chiusura, insieme alla risposta. Vince chi ci arriva in **meno tentativi**; a
+parità conta il tempo.
+
+Le risposte sono **libere** e le giudica l'AI, quindi «GTA SA» vale «Grand Theft Auto: San
+Andreas» — ma la **serie da sola non basta**: «GTA» per «GTA San Andreas» è sbagliato. In
+creazione puoi aggiungere grafie sempre accettate: sono la rete di sicurezza se l'AI non
+risponde, perché quelle vengono riconosciute **senza** interpellarla.
+
+Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
+tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
+ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto.
 
 ### Scommesse (stile Twitch)
 
@@ -259,7 +316,9 @@ gaming-community-bot/
 │   │                                 #   catalog_loader (CSV → trofei/ranghi/cosmetici)
 │   ├── handlers/                     # common, onboarding, economy, betting, badges,
 │   │                                 #   leaderboard, shop, quiz, schedule, fun_ai, admin,
-│   │                                 #   admin_betting, admin_dashboard
+│   │                                 #   admin_betting, admin_dashboard, backup, events,
+│   │                                 #   event_types/ (registro tipi-evento)
+│   │   └── errors.py                 # handler globale dp.errors (log con contesto + risposta utente)
 │   ├── keyboards/                    # InlineKeyboard builders (incl. admin_dashboard_kb)
 │   ├── filters/admin_filter.py       # IsAdminFilter / IsAdminCallbackFilter / is_admin
 │   ├── exceptions/economy.py
@@ -286,12 +345,12 @@ gaming-community-bot/
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
 | `GROQ_API_KEY` | — | modulo AI (opzionale) |
+| `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
 | `XP_PER_BET_PLACED` | `10` | XP (evento) per aver piazzato una scommessa |
 | `XP_PER_BET_WON` | `25` | XP (evento) extra se la scommessa vince |
-| `BET_DEFAULT_WINDOW_MINUTES` | `60` | preset suggerito + fallback della finestra puntate |
 | `QUIZ_XP_PARTICIPATION` | `20` | XP (evento) per aver giocato il quiz (≥1 risposta) |
 | `QUIZ_XP_PER_CORRECT` | `10` | XP (evento) per ogni risposta corretta |
 | `QUIZ_XP_PODIUM_FIRST` / `_SECOND` / `_THIRD` | `50` / `30` / `20` | bonus podio quiz |
@@ -319,14 +378,22 @@ async def cmd_nuovo(message: Message) -> None:
     await message.answer("Ciao dal nuovo handler!")
 ```
 
-1. Registralo in `src/main.py` (prima di `common.router`):
+1. Registralo in `src/handlers/__init__.py`, **prima di `common.router`** (che è il
+   catch-all e deve restare ultimo):
 
 ```python
-from handlers import nuovo
-...
-dp.include_router(nuovo.router)
-dp.include_router(common.router)
+from handlers import ..., nuovo
+
+ROUTERS: tuple[Router, ...] = (
+    ...
+    nuovo.router,
+    common.router,      # ← resta ultimo
+)
 ```
+
+Se te ne dimentichi, `tests/unit/test_router_order.py` fallisce: cammina il package e
+pretende che ogni modulo con un `router` sia registrato. Senza quel test un handler
+non registrato è semplicemente morto, senza nessun errore.
 
 Vedi **STEERING.md** per regole vincolanti (DI negli handler, no-commit nei service,
 ordine middleware/router, filtri admin, ecc.).

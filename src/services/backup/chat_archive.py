@@ -136,7 +136,7 @@ def build_record(message: Any, max_chars: int) -> dict[str, Any]:
     date_val = getattr(message, "date", None)
     edit_val = getattr(message, "edit_date", None)
     return {
-        "id": int(getattr(message, "id")),
+        "id": int(message.id),
         "date": date_val.isoformat() if date_val is not None else None,
         "sender_id": getattr(message, "sender_id", None),
         "reply_to": getattr(message, "reply_to_msg_id", None),
@@ -261,7 +261,7 @@ async def _resolve_entity(client: Any, group_id: int) -> Any:
                 return dialog.entity
         raise ChatArchiveError(
             "Gruppo non trovato dall'account Telethon: l'account deve essere membro del gruppo."
-        )
+        ) from None
 
 
 async def run_chat_backup(*, group_id: int, max_chars: int | None = None) -> BackupResult:

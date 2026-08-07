@@ -118,7 +118,9 @@ async def export_state(
     ``state-latest.jsonl.gz`` and prunes old snapshots beyond `keep`.
     """
     dest = Path(dest_dir)
-    dest.mkdir(parents=True, exist_ok=True)
+    # to_thread: mkdir hits the disk, and on a slow/NFS backup volume a blocking
+    # call here stalls the whole bot's event loop (polling included).
+    await asyncio.to_thread(dest.mkdir, parents=True, exist_ok=True)
     keep = settings.backup_state_keep if keep is None else keep
 
     tables = list(Base.metadata.sorted_tables)  # FK-safe (parents first)

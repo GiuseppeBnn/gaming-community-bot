@@ -15,25 +15,8 @@ from aiogram.types import (
 
 from config_data.config import settings
 from database.connection import async_session_maker, create_tables, run_migrations
-from handlers import (
-    admin,
-    admin_betting,
-    admin_dashboard,
-    backup,
-    badges,
-    betting,
-    common,
-    economy,
-    event_types,
-    events,
-    fun_ai,
-    group_events,
-    leaderboard,
-    onboarding,
-    quiz,
-    schedule,
-    shop,
-)
+import handlers
+from handlers import errors, event_types
 from handlers.schedule import scheduler_loop
 from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
@@ -177,25 +160,15 @@ async def main() -> None:
     dp.update.middleware(BannedUserMiddleware())
     dp.update.middleware(GroupMemberMiddleware())
 
-    # Router order matters: admin_betting MUST precede betting so that
-    # admin_bet:* callbacks are matched before the catch-all deny at the
-    # bottom of admin_betting.router.
-    dp.include_router(group_events.router)
-    dp.include_router(onboarding.router)
-    dp.include_router(economy.router)
-    dp.include_router(admin_betting.router)
-    dp.include_router(betting.router)
-    dp.include_router(badges.router)
-    dp.include_router(leaderboard.router)
-    dp.include_router(shop.router)
-    dp.include_router(admin.router)
-    dp.include_router(admin_dashboard.router)
-    dp.include_router(events.router)
-    dp.include_router(quiz.router)
-    dp.include_router(schedule.router)
-    dp.include_router(backup.router)
-    dp.include_router(fun_ai.router)
-    dp.include_router(common.router)
+    # Order is behaviour, not bookkeeping (aiogram stops at the first match), so it
+    # is declared once in handlers/__init__.py and asserted by
+    # tests/unit/test_router_order.py — including that nothing is left unregistered.
+    handlers.register(dp)
+
+    # Global fallback for anything that escapes a handler: logs with context and
+    # replies to the user instead of leaving the bot silent. On the dispatcher
+    # (not a router) so it covers every handler registered above.
+    dp.errors.register(errors.on_error)
 
     await bot.set_my_commands(_PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
     await bot.set_my_commands(_GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())

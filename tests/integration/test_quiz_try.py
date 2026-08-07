@@ -23,7 +23,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from database.models import QuizAnswer
-from handlers import quiz as quiz_handlers
+from handlers.quiz import trying as quiz_handlers
 from services import quiz_service
 
 ADMIN_ID = 42
@@ -258,3 +258,153 @@ class TestRunGuards:
 
         assert any("scaduta" in (a or "") for a in cb.answers)
         assert await _answer_count(session, quiz.id) == 0
+
+
+class _UneditableMessage(_FakeMessage):
+    """Telegram refuses to edit messages older than 48h. The test run must degrade
+    to a fresh message rather than swallow the feedback."""
+
+    async def edit_text(self, text, **kw):
+        raise RuntimeError("message can't be edited")
+
+
+class TestRunRefusals:
+    """Everything the test run says no to. All of it is reachable from a real tap:
+    the buttons stay on screen after the run ends, the quiz can be started or
+    edited from another device while the run is open, and callback data is just
+    text an old keyboard carries."""
+
+    def teardown_method(self):
+        quiz_handlers._TRY.clear()
+
+    async def test_a_quiz_that_no_longer_exists(self, session):
+        message = _FakeMessage()
+
+        await _start(message, session, 999_999)
+
+        assert "non trovato" in message.replies[-1][0]
+
+    async def test_a_quiz_with_no_questions_cannot_be_tried(self, session):
+        """There is nothing to show, and an empty run would report «0/0 corrette»
+        as if the quiz were fine."""
+        quiz = await quiz_service.create_quiz(session, 9, "Vuoto", "d")
+        await quiz_service.set_status(session, quiz.id, "ready")
+        await session.commit()
+        message = _FakeMessage()
+
+        await _start(message, session, quiz.id)
+
+        assert "non trovato" in message.replies[-1][0]
+        assert _try_state(quiz.id) is None
+
+    async def test_malformed_answer_data_is_refused(self, session):
+        message = _FakeMessage()
+        cb = _FakeCallback("quiz_try:ans:1:2", message)
+
+        await quiz_handlers.cb_try_answer(cb, session)
+
+        assert any("non validi" in (a or "") for a in cb.answers)
+
+    async def test_answering_a_question_already_passed_is_refused(self, session):
+        """The previous question's message keeps its buttons; tapping one must not
+        rewind the run or count a second time."""
+        quiz = await _make_quiz(session)
+        message = _FakeMessage()
+        await _start(message, session, quiz.id)
+        stale = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")][0]
+        await _answer_current(message, session)
+
+        cb = _FakeCallback(stale, message)
+        await quiz_handlers.cb_try_answer(cb, session)
+
+        assert any("già risposto" in (a or "") for a in cb.answers)
+        assert _try_state(quiz.id).index == 1
+
+    async def test_a_quiz_started_mid_run_ends_the_run(self, session):
+        """The admin launched it for real from another screen: continuing the test
+        run would show a «nothing was saved» banner over a live quiz."""
+        quiz = await _make_quiz(session)
+        message = _FakeMessage()
+        await _start(message, session, quiz.id)
+        cbs = [c for c in _cbs(message.replies[-1][1]) if c.startswith("quiz_try:ans:")]
+        await quiz_service.set_status(session, quiz.id, "running")
+        await session.commit()
+
+        cb = _FakeCallback(cbs[0], message)
+        await quiz_handlers.cb_try_answer(cb, session)
+
+        assert any("non è più in prova" in (a or "") for a in cb.answers)
+        assert _try_state(quiz.id) is None
+
+    async def test_an_option_index_out_of_range_is_refused(self, session):
+        quiz = await _make_quiz(session)
+        message = _FakeMessage()
+        await _start(message, session, quiz.id)
+        question_id = _try_state(quiz.id).order[0]
+
+        cb = _FakeCallback(f"quiz_try:ans:{quiz.id}:{question_id}:99", message)
+        await quiz_handlers.cb_try_answer(cb, session)
+
+        assert any("Opzione non valida" in (a or "") for a in cb.answers)
+
+    async def test_a_question_deleted_mid_run_is_refused(self, session):
+        quiz = await _make_quiz(session)
+        message = _FakeMessage()
+        await _start(message, session, quiz.id)
+        ctx = _try_state(quiz.id)
+        ctx.order[ctx.index] = 999_999
+
+        cb = _FakeCallback(f"quiz_try:ans:{quiz.id}:999999:0", message)
+        await quiz_handlers.cb_try_answer(cb, session)
+
+        assert any("Domanda non valida" in (a or "") for a in cb.answers)
+
+    async def test_a_question_deleted_between_two_answers_ends_the_run(self, session):
+        """`_present_try_question` can find the next id gone (the editor deleted it
+        while the run was open); finishing beats showing a blank screen."""
+        quiz = await _make_quiz(session)
+        message = _FakeMessage()
+        await _start(message, session, quiz.id)
+        _try_state(quiz.id).order[1] = 999_999
+
+        await _answer_current(message, session)
+
+        assert "Prova completata" in message.replies[-1][0]
+        assert _try_state(quiz.id) is None
+
+    async def test_presenting_without_a_run_does_nothing(self, session):
+        """Defensive: `_present_try_question` is also reached after a stop."""
+        quiz = await _make_quiz(session)
+        loaded = await quiz_service.get_quiz(session, quiz.id)
+        message = _FakeMessage()
+
+        await quiz_handlers._present_try_question(message, session, loaded, ADMIN_ID)
+
+        assert message.replies == []
+
+
+class TestOldMessages:
+    def teardown_method(self):
+        quiz_handlers._TRY.clear()
+
+    async def test_stopping_on_an_uneditable_message_still_confirms(self, session):
+        quiz = await _make_quiz(session)
+        message = _UneditableMessage()
+        await _start(message, session, quiz.id)
+
+        await quiz_handlers.cb_try_stop(_FakeCallback(f"quiz_try:stop:{quiz.id}", message))
+
+        assert "interrotta" in message.replies[-1][0]
+        assert _try_state(quiz.id) is None
+
+    async def test_answering_on_an_uneditable_message_still_shows_the_feedback(
+        self, session
+    ):
+        """Without the fallback the admin taps, sees nothing change, and taps again."""
+        quiz = await _make_quiz(session)
+        message = _UneditableMessage()
+        await _start(message, session, quiz.id)
+
+        await _answer_current(message, session)
+
+        assert any("Esatto" in t or "Sbagliato" in t for t, _ in message.replies)

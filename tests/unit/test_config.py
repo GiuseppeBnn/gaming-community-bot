@@ -81,3 +81,88 @@ class TestDefaults:
 
         s = Settings(bot_token="x", fsm_storage="redis")  # type: ignore[call-arg]
         assert s.fsm_storage == "redis"
+
+
+class TestBoundsThatPreventRealDamage:
+    """Constraints only where an out-of-range value does something worse than being
+    a silly setting. Deliberately **not** on all 50 settings for symmetry — the
+    ones here each have a failure mode worth a test.
+    """
+
+    def test_a_level_growth_below_one_is_refused(self):
+        """`XP_LEVEL_GROWTH=0.15` instead of `1.15` is a one-character typo that
+        **freezes the whole bot**: see the decay test below for the mechanism.
+        """
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(bot_token="x", xp_level_growth=0.15)  # type: ignore[call-arg]
+
+    def test_a_zero_level_base_is_refused(self):
+        """Same hazard from the other side: base 0 makes every level cost 0."""
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(bot_token="x", xp_level_base=0)  # type: ignore[call-arg]
+
+    def test_a_growth_below_one_decays_the_level_cost_to_zero(self, monkeypatch):
+        """Why the two constraints above exist, proved without hanging the suite.
+
+        `level_for_xp` walks levels with `while floor + cost <= xp`, so it only
+        terminates because `cost` keeps growing. Let the cost reach 0 and the loop
+        never ends — and it is a *synchronous* call inside async handlers, so it
+        takes the event loop with it: the bot stops answering entirely, on the first
+        XP grant or profile view.
+
+        Monkeypatching bypasses the validator on purpose: this asserts the hazard
+        the validator now prevents.
+        """
+        from config_data.config import settings
+        from services import xp_service
+
+        monkeypatch.setattr(settings, "xp_level_base", 100)
+        monkeypatch.setattr(settings, "xp_level_growth", 0.5)
+
+        costs = [xp_service._level_cost(n) for n in range(1, 15)]
+        assert 0 in costs, f"expected the cost to decay to 0, got {costs}"
+
+    def test_daily_min_hours_must_stay_under_a_day(self):
+        """A gap of 24h+ can push the next claim past a whole calendar day, so the
+        user loses the streak through no fault of their own. The invariant was
+        written in a comment; now it is enforced.
+        """
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(bot_token="x", daily_min_hours=24)  # type: ignore[call-arg]
+
+    def test_daily_min_hours_accepts_the_documented_range(self):
+        from config_data.config import Settings
+
+        assert Settings(bot_token="x", daily_min_hours=23).daily_min_hours == 23  # type: ignore[call-arg]
+
+    def test_a_zero_scheduler_interval_is_refused(self):
+        """`asyncio.sleep(0)` in the scheduler loop is a hot loop: it pegs a core
+        and starves every other task on the event loop."""
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(bot_token="x", scheduler_poll_interval=0)  # type: ignore[call-arg]
+
+    def test_a_zero_backup_keep_is_refused(self):
+        """`backup_state_keep=0` would let rotation prune every snapshot, including
+        the one just written — a backup setting that deletes backups."""
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(bot_token="x", backup_state_keep=0)  # type: ignore[call-arg]

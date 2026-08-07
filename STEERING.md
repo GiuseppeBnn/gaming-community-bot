@@ -23,7 +23,8 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 
 | Dipendenza | Versione | Note |
 |---|---|---|
-| Python | 3.11+ | `from __future__ import annotations` richiesto per compat 3.9+ |
+| Python | **3.12** | Una versione sola, ovunque: Dockerfile, CI, `ruff target-version`, `mypy python_version`, venv locale. Prima la CI girava 3.11 e il venv 3.12, quindi «verde in locale» non era la stessa affermazione di «verde in produzione». Se la cambi, cambiala in tutti e cinque i posti — **e gira `pytest -W error::DeprecationWarning`**, che è ciò che ha fatto emergere le `datetime.utcnow()` (deprecate dalla 3.12, in rimozione) quando siamo saliti. Oggi la suite passa anche con quel flag; non è un gate in CI apposta, perché una dipendenza che inizia a deprecare bloccherebbe la build per una cosa non nostra |
+| `from __future__ import annotations` | in ogni modulo | Annotazioni pigre: i modelli SQLAlchemy e le firme dei service si auto-referenziano senza virgolette, e i tipi non vengono valutati all'import |
 | aiogram | 3.13.1 | **Non** usare aiogram 2.x — API completamente diversa |
 | SQLAlchemy | 2.0 (async) | `mapped_column`, `Mapped[T]`, `AsyncSession` |
 | pydantic-settings | 2.x | `BaseSettings`, `SettingsConfigDict` |
@@ -31,7 +32,24 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per le chiamate LLM Groq — **mai** librerie HTTP bloccanti |
-| LLM | Groq API (OpenAI-compatible) | modello via `GROQ_MODEL` (default `llama-3.3-70b-versatile`) |
+| LLM | Groq API (OpenAI-compatible) | intrattenimento: `GROQ_MODEL` (default `qwen/qwen3.6-27b`) + `GROQ_REASONING_EFFORT` (default `none`: il modello è ibrido-reasoning e senza il flag ragiona **dentro** la risposta); giudice dei giochi «indovina» (§19.b): `GROQ_JUDGE_MODEL` (default `openai/gpt-oss-120b`, uno dei due su cui Groq supporta lo **structured output strict**) |
+| ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
+| mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
+
+### Gate statici (CI, config in `pyproject.toml`)
+
+Entrambi girano **dopo** pytest in `tests.yml` (un nit di lint non deve nascondere un test rosso)
+ed erano **a zero findings** quando sono stati introdotti: ogni fallimento è una regressione nuova,
+non rumore preesistente da imparare a ignorare.
+
+- **ruff**, ruleset ristretto di proposito: `E9` (sintassi), `F` (pyflakes: nomi non definiti,
+  import morti, f-string rotte), `B` (bugbear), `ASYNC` (**I/O bloccante dentro `async def`** — su
+  un bot async è uno stallo dell'intero event loop, non un dettaglio di stile). Allargare a
+  `I`/`UP`/`SIM`/`RUF100` sono ~130 autofix quasi tutti cosmetici: vale un commit dedicato, non
+  un gate rosso. Il gate copre **`src/`**; `tests/` ha ancora ~21 findings preesistenti.
+- **mypy**, non-strict, su `services`/`database`/`utils`/`config_data`/`filters`. `handlers/` è
+  escluso per ora (è il layer meno annotato): aggiungerlo per-modulo quando viene migrato.
+  `disallow_untyped_defs` resta **off**.
 
 ---
 
@@ -53,16 +71,16 @@ Campi importanti:
 - `admin_ids: list[int]` — parse da stringa CSV via `@field_validator`
 - `daily_reward_coins: int` — **NON `daily_reward`** — matcha la `.env`
 - `daily_min_hours: int` (default 6) — gap minimo dall'ultima riscossione, **in AND** con il reset di mezzanotte del `/daily` (§10.a). Tenere **< 24**
-- `fsm_storage: str` — `"memory"` | `"redis"`
+- `fsm_storage: str` — `"memory"` | `"redis"`. **Resta `memory`, ed è una scelta, non una svista.** Il costo è noto e accettato: Watchtower ricrea il container a ogni immagine nuova (`WATCHTOWER_POLL_INTERVAL: 600`), e con `MemoryStorage` ogni conversazione FSM aperta in quel momento sparisce — chi stava creando un quiz ricomincia. Il baratto rifiutato è l'altro: `_build_storage` intercetta solo l'`ImportError` del pacchetto, **non** una connessione fallita, quindi con `redis` il bot non degrada, non parte. Perdere un flusso di creazione vale meno di perdere il bot. Non riproporre il passaggio senza prima aggiungere un fallback su errore di connessione
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
-- `groq_model: str` — default `"llama-3.3-70b-versatile"` (il vecchio `llama3-70b-8192` è **dismesso**)
+- `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
+- `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
-- `quiz_default_prize: int` (default 1000, **legacy** pool) — modalità quiz
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
-- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); `bet_default_window_minutes` (60, preset suggerito + fallback finestra puntate); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
+- **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -164,7 +182,8 @@ I service **non committano mai** — il commit è responsabilità del handler.
 ```python
 # Nel service
 async def credit(...) -> None:
-    wallet.coins += amount
+    await _add_coins(session, tg_id, amount)   # UPDATE ... SET coins = coins + :n
+    await session.refresh(wallet, ["coins"])   # l'istanza in sessione dice la verità (§22)
     session.add(LedgerEntry(...))
     # NO commit qui
 
@@ -195,23 +214,67 @@ dp.update.middleware(GroupMemberMiddleware())  # 4. blocca non-membri in privato
 
 ## 7. Ordine router (critico)
 
+Dichiarato **in un posto solo**: `handlers/__init__.py`, come tupla `ROUTERS` + `register(dp)`.
+`main.py` chiama `handlers.register(dp)` e non sa più nulla dell'ordine.
+
 ```python
-dp.include_router(group_events.router)   # migrazione/chat_member: ordine indifferente
-dp.include_router(onboarding.router)
-dp.include_router(economy.router)
-dp.include_router(admin_betting.router)  # ← DEVE stare prima di betting
-dp.include_router(betting.router)
-dp.include_router(badges.router)
-dp.include_router(shop.router)
-dp.include_router(common.router)         # ← DEVE stare per ultimo (catch-all /start)
+# handlers/__init__.py
+ROUTERS: tuple[Router, ...] = (
+    group_events.router,    # migrazione/chat_member: ordine indifferente
+    onboarding.router,
+    economy.router,
+    admin_betting.router,   # ← DEVE stare prima di betting
+    betting.router,
+    ...
+    common.router,          # ← DEVE stare per ultimo (catch-all /start)
+)
 ```
 
 `admin_betting` prima di `betting` perché in fondo ad `admin_betting.router` c'è un catch-all deny per tutti i callback `admin_bet:*`. Se `betting.router` fosse registrato prima, i callback `admin_bet:*` non verrebbero mai visti dall'admin.
+
+> **`tests/unit/test_router_order.py` lo verifica**, e la cosa che vale più delle due
+> asserzioni sull'ordine è la terza: **cammina il package** e pretende che ogni modulo che
+> definisce un `router` sia in `ROUTERS`. Un `handlers/foo.py` nuovo che nessuno registra è
+> semplicemente morto — nessun errore, nessun log, i comandi non partono. Nessuna lista di
+> esclusioni: chi non va registrato (`_privacy`, `_trophy_announce`, `errors`) non definisce
+> un `router`. È scrivendo quel test che è venuto fuori il `Router` inutilizzato che
+> `errors.py` si portava dietro.
+>
+> Confronti per **identità**, non per `Router.name`: solo `Router(name=...)` dà un nome
+> leggibile, e questi sono costruiti nudi (`.name` è un id esadecimale).
+>
+> `ROUTERS` contiene **singleton di modulo** e aiogram rifiuta di attaccare un router a un
+> secondo parent: un test che chiama `register()` con quelli veri li lega per sempre a un
+> Dispatcher buttato via e rompe la registrazione dell'app in qualunque test successivo. Per
+> questo il test di `register` usa router usa-e-getta.
 
 `group_events.router` (gestione migrazioni chat + `chat_member`/`my_chat_member`) ha filtri su tipi
 di update disgiunti dagli altri router → ordine indifferente; registrato per primo per chiarezza.
 `allowed_updates=dp.resolve_used_update_types()` auto-iscrive `chat_member`/`my_chat_member` perché
 esistono gli handler.
+
+### 7.a Handler globale errori (`dp.errors`)
+
+`dp.errors.register(errors.on_error)` in `main.py`, **dopo** `handlers.register(dp)`.
+Implementato in **`handlers/errors.py`** (non in `main.py`, che è escluso dalla coverage —
+così è testabile: `tests/unit/test_error_handler.py`). Sul **Dispatcher**, non su un router,
+per coprire tutti i ~190 handler.
+
+Cosa fa: logga con `exc_info` più `user_id`/`username`/`chat_id`/`callback_data`/testo — l'obiettivo
+è che la riga di log basti da sola ad agire — poi risponde all'utente (alert sulle callback).
+Senza di esso un'eccezione non gestita lasciava il bot **muto** e, sulle callback, il bottone con lo
+spinner appeso fino al timeout di Telegram.
+
+Due scelte deliberate:
+- **Nessun rollback della sessione.** `DbSessionMiddleware` apre con
+  `async with async_session_maker()`: uscire dal blocco chiude la sessione e **scarta** la
+  transazione non committata. Un rollback qui sarebbe codice morto, e opererebbe su una
+  sessione che questa funzione non può nemmeno raggiungere.
+- **Rumore benigno silenziato**: `message is not modified`, `query is too old`,
+  `message to edit not found` sono normali in un bot a callback (ri-render di una tastiera
+  identica, tap su un messaggio vecchio) e non dicono niente sul nostro codice → log a `debug`
+  e nessun messaggio d'allarme all'utente, ma la callback viene comunque chiusa per fermare
+  lo spinner. Aggiungere frammenti a `_BENIGN_FRAGMENTS`, mai un `except` a tappeto.
 
 ---
 
@@ -233,7 +296,16 @@ Entrambi delegano a **`is_admin(bot, user_id)`**: `True` se `user_id in settings
 effettivo, §13) — **non** `settings.group_id` diretto, così dopo una migrazione pubblico↔privato
 gli admin Telegram non perdono i poteri. Quindi **tutti gli admin del gruppo** hanno i poteri
 bot-admin senza doverli elencare in `ADMIN_IDS`. Usare sempre `is_admin` per i check inline (non
-`user.id in settings.admin_ids` diretto). L'invalidazione cache è **automatica**: gli handler in
+`user.id in settings.admin_ids` diretto).
+
+La firma è **`is_admin(bot: Bot | None, user_id: int)`**: ogni chiamante passa `message.bot` /
+`callback.bot`, che aiogram tipizza opzionale. Il ramo `bot is None` è **esplicito** e ritorna
+`False`. Prima funzionava comunque, ma solo perché l'`except Exception` di `_telegram_admin_ids`
+inghiottiva l'`AttributeError` — cioè l'esito di un'**autorizzazione** dipendeva da un catch
+incidentale: chi avesse restretto quell'except avrebbe cambiato le regole di accesso senza
+accorgersene. Il fail-closed ora è dichiarato, non ereditato.
+
+L'invalidazione cache è **automatica**: gli handler in
 `handlers/group_events.py` chiamano `invalidate_admin_cache()` su promozioni/retrocessioni
 (`chat_member`/`my_chat_member`) e migrazioni.
 
@@ -277,6 +349,8 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
+| `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
+| `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
 | `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo Locanda (cosmetici + menù) |
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
@@ -344,8 +418,15 @@ La (2) esiste **solo** per impedire il doppio claim 23:59 → 00:01: **non** è 
 > ⚠️ **Regola di implementazione.** Le due condizioni sono espresse come **una sola soglia**
 > `next_allowed = max(next_local_midnight(last), last + daily_min_hours)` e mai come due booleani:
 > un `or` al posto dell'`and` trasformerebbe il gap minimo in "riscuoti ogni 6 ore". Con il `max()`
-> l'AND è **strutturale** e non si può sbagliare. La stessa soglia dà anche i secondi residui
+> l'AND è **strutturale** e non si può sbagliare. La stessa soglia dà i secondi residui
 > dell'errore `DailyAlreadyClaimedError` (mai `24h - elapsed`).
+>
+> Nella `WHERE` le stesse due regole sono riscritte come **istanti fissi**, che è ciò che le fa
+> stare in una sola `UPDATE` condizionale (una soglia derivata da `last` non ci starebbe, §22):
+> `now >= next_local_midnight(last)` ⟺ `last < daytime.local_midnight(oggi)`, e
+> `now >= last + daily_min_hours` ⟺ `last <= now - daily_min_hours`. Lo streak si decide con un
+> `CASE` nella `SET`, che vede i valori **precedenti** della riga. Equivalenze verificate una per
+> una, giorni di cambio ora inclusi (`tests/unit/test_daytime.py`).
 
 **Invariante:** `daily_min_hours < 24` ⇒ il gap non può mai costare un giorno. Il claim più tardi
 possibile (23:59) sblocca alle 05:59 del giorno dopo, sempre dentro quel giorno.
@@ -356,6 +437,12 @@ giorno intero la azzera a 1. (Un secondo claim nello stesso giorno non arriva ma
 Il "giorno" viene da **`utils/daytime`**, unica fonte di verità condivisa con il tetto XP
 giornaliero (§12.1): timestamp salvati naive-UTC, confronti fatti sul giorno **locale**, DST
 gestito da `zoneinfo`. Calcolare il giorno in UTC farebbe scattare il reset all'01:00/02:00 italiane.
+
+Due funzioni, complementari: **`next_local_midnight(stamp)`** = quando finisce il giorno di
+`stamp` (soglia derivata da una riga), **`local_midnight(day)`** = quando *apre* un giorno di
+calendario (istante fisso, confrontabile con una colonna in SQL). La seconda è quella che permette
+di scrivere il reset giornaliero come una `WHERE`; la prima è espressa in termini della seconda,
+così la logica DST sta in un posto solo.
 
 ---
 
@@ -639,12 +726,12 @@ aggiungere altro rumore (la risposta fresca è già lì).
 | `BetCreationStates.waiting_for_window` | `handlers/betting.py` | finestra puntate: preset (`bet:win:<sec>`)/♾️ (`bet:win:0`)/✏️ custom → crea l'evento |
 | `BetCreationStates.waiting_for_window_custom` | `handlers/betting.py` | durata custom (`schedule_service.parse_duration`, 30m/2h/1d) |
 | `BetCustomAmountState.waiting_for_amount` | `handlers/betting.py` | |
-| `QuizCreationStates.*` | `handlers/quiz.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
-| `QuizEditStates.*` | `handlers/quiz.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `quiz_edit:nav:<quiz_id>:0`). Namespace callback `quiz_edit:*`: scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
+| `QuizCreationStates.*` | `handlers/quiz/creation.py` | creazione quiz: title→desc→**prize_mode**→{prize_first/second/third/consolation}→loop domande {text→options→correct→explanation}→**reviewing**. Tasti «⬅️ Indietro» (`quiz_new:back`, mappa `_BACK_PROMPTERS`) e schermata di riepilogo prima di pubblicare. |
+| `QuizEditStates.*` | `handlers/quiz/editing.py` | modifica domande di un quiz **solo `ready`** dal dettaglio eventi (bottone «✏️ Modifica domande» → `quiz_edit:nav:<quiz_id>:0`). Namespace callback `quiz_edit:*`: scorrimento domanda per domanda (⬅️/➡️) + edit singolo di `editing_text`/`editing_options`(→`editing_correct`)/`editing_explanation`, o «🔄 Rifai domanda» (redo dell'intero flusso, flag `edit_redo`). Persiste via `quiz_service.update_question` (guardia di stato `ready`, no-commit §5); handler admin-gated singolarmente (router misto §8). |
 | `AdminPanelStates.*` | `handlers/admin_dashboard.py` | input della dashboard a bottoni: `waiting_amount` (credit/debit/setbal/**xpgrant/xpset**) · `waiting_duration` · `waiting_reason` · `waiting_search` · `waiting_airdrop` · `waiting_xp_airdrop` |
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
-| `ScheduleStates.*` | `handlers/schedule.py` | programmazione quiz/poll/bet (scelta orario run-at) |
+| `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`sched:act:start\|close`, senza stato: sono bottoni), poi l'orario run-at |
 | `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
 
 ---
@@ -710,7 +797,7 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - `settings.groq_api_key` vuota → `AIServiceError` (niente chiamata di rete).
   - Timeout `aiohttp.ClientTimeout(total=20)`; `try/except` su `asyncio.TimeoutError` / `aiohttp.ClientError` / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**.
   - `temperature` **per-comando**: `None` ⇒ default `_TEMPERATURE` (0.9, alto → risposte varie/creative); un valore più basso rende il modello conservativo (meno parole inventate). Usato da `/dialetto` (`_DIALETTO_TEMPERATURE = 0.5`) per tenere il catanese autentico.
-  - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens`. **Nessun campo di moderazione** (requisito di design).
+  - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens` + `reasoning_effort` (se valorizzato). **Nessun campo di moderazione** (requisito di design).
 - Costante `AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."` — usata dagli handler su `AIServiceError`.
 
 ### fun_ai — handler
@@ -718,9 +805,10 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 - **Solo gruppo** (`ChatType.GROUP/SUPERGROUP`): in privato il bot invita a usarli nel gruppo.
 - Comandi **reply-based** (`/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto`): operano sul testo del `reply_to_message`; helper `_run_ai_command` (accetta `temperature` per-comando opzionale). `/insulta` invece prende un target taggato (`@user`/reply).
 - **Tono**: gruppo di **soli adulti** → satira nera, volgare, politicamente scorretta, senza buonismo né disclaimer. I prompt impongono **varietà anti-ripetizione** (mai riciclare aperture/battute/schema; ogni risposta diversa e fantasiosa, es. `/difendi` inventa ogni volta una strategia difensiva nuova) e **vietano i cliché da gamer** ('noob', 'scrub', 'git gud'…) come riempitivi — i riferimenti gaming solo se arguti.
-- `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — su Groq llama non c'è "ragionamento", l'autenticità si forza così.
+- `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — con `GROQ_REASONING_EFFORT=none` (default) non c'è ragionamento visibile, l'autenticità si forza così.
 - `/alduino` è **l'unico comando in cui il bot parla di sé**: una chat diretta col mascotte **Alduino** (draghetto viola, gamer). Prende il testo dopo il comando (fallback: il `reply_to_message`), che è il messaggio *dell'utente ad Alduino*. Usa un prompt **a sé** (`_PROMPT_ALDUINO`) che **NON** include `_STYLE`: carattere gentile/furbo/sarcastico/tenero **con ordine di priorità esplicito** e regola "**una risposta = un tono solo**" (niente satira nera né volgarità gratuita), **self-aware** (sa di chiamarsi Alduino: i riferimenti ad "Alduino" nel CONTENUTO sono a lui) e con **guardia anti-injection + cap** propri. Il prompt è tenuto **volutamente asciutto**: un tentativo precedente (eroe shonen + goffo + tormentoni + descrizione fisica) accumulava troppi tratti per i pochi caratteri di output → voce incoerente tra una risposta e l'altra, e i dettagli fisici spingevano il modello alla narrazione da roleplay (`*svolazza*`), cioè il cringe. Da qui i **divieti espliciti** (asterischi/azioni, presentarsi, esclamativi a raffica, sdolcinato, emoji in serie, tormentoni). I comandi roast restano invariati.
-- **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente, in-memory; **admin esenti** (via `is_admin`). Controllato in `_run_ai_command` e `cmd_insulta` prima del typing; timestamp aggiornato solo su comando eseguito. Il dict `_last_used` è **prunato** (`_prune_cooldowns`, soglia 512) per non crescere illimitato.
+- **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente; **admin esenti** (via `is_admin`). Usa lo store condiviso `utils.cooldown` (bucket `"ai"`), quindi il pruning e la semantica in-memory sono quelli di ogni altro bucket — non c'è più una seconda implementazione di throttle nel repo.
+  > **Non usa `cooldown.guard()`**, che marca mentre controlla. Qui check e mark sono due chiamate separate di proposito: l'handler controlla, *poi* valida (serve un reply-to, il bersaglio deve parsare), e solo `_dispatch` marca. Così un `/insulta` malformato non costa niente e si può riprovare subito, invece di bruciare 60s di cooldown per un errore di battitura. Fissato da `tests/unit/test_ai_cooldown.py`.
 - `send_chat_action(chat_id, ChatAction.TYPING)` prima della generazione.
 - **Anti prompt-injection & anti-HTML** (sicurezza):
   - L'input utente è **troncato** prima della chiamata (`clip_source`, 1500 char; target `/insulta` 64 char) e resta sempre nel ruolo `user`, **mai** concatenato al system prompt.
@@ -735,7 +823,9 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 ### Regole
 
-- Per cambiare modello: `GROQ_MODEL` in `.env` (zero codice). Modelli uncensored "veri" non esistono sul tier hosted Groq — il tono si pilota col *system prompt*.
+- Per cambiare modello: `GROQ_MODEL` in `.env` (zero codice), **e con lui `GROQ_REASONING_EFFORT`** — il flag è specifico del modello, non un'impostazione globale. Modelli uncensored "veri" non esistono sul tier hosted Groq — il tono si pilota col *system prompt*.
+- **Un modello che rifiuta non è utilizzabile qui.** `openai/gpt-oss-120b`, provato sugli otto prompt veri, ha risposto «I'm sorry, but I can't comply with that.» a `/complotto` e `/insulta`: il `_STYLE` condiviso è satira nera per contratto. Prima di sostituire il modello, fallo girare su tutti e otto i comandi e leggi le risposte — un modello si sceglie sull'output, non sul benchmark.
+- `generate_completion` **ripulisce** un eventuale `<think>…</think>` dalla risposta e alza `AIServiceError` se non resta niente. Groq ignora in silenzio i parametri non supportati, quindi il flag da solo non basta: la rete sta nel parsing.
 - Nuovi comandi AI vanno aggiunti a `_GROUP_COMMANDS` (`main.py`) e alla sezione 🤖 di `/help` (`common.py`).
 
 ---
@@ -752,6 +842,11 @@ Strumenti admin per gestire un gruppo numeroso. **UX doppia:** comandi testuali 
 ### admin_service (DB-side, no-commit — §5)
 
 - **Valuta**: `set_balance` (delta → riusa `economy_service.credit/debit` con `admin_credit`/`admin_debit`), `mass_credit` (airdrop: bulk `UPDATE wallets` + 1 ledger per utente).
+  > `set_balance` è **l'unica** operazione che prende ancora un lock esplicito, via
+  > `economy_service.lock_balance`: un target assoluto ha bisogno del valore corrente, quindi
+  > non è esprimibile come aritmetica relativa e il lock è ciò che tiene fermo quel valore
+  > finché il delta non atterra (§22). Prima leggeva `wallet.coins` dall'entità e poteva
+  > atterrare su `target ± quello che si era mosso nel frattempo`.
 - **Dossier/stats**: `get_dossier`, `search_users` (ILIKE), `leaderboard`, `economy_stats`.
 - **Warn**: `add_warning` (→ count attivi), `active_warnings`, `active_warning_count`, `clear_warnings` (soft-delete).
 - **Ban bot-level**: `set_user_banned(session, tg_id, banned) -> bool` (no-commit) setta/azzera `User.is_banned`.
@@ -839,7 +934,9 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
 - **Grammatica** `ev:*` (≤64B): `ev:home`, `ev:list:<type>`, `ev:item:<type>:<id>` (**schermata info**,
   vedi sotto), `ev:start:<type>:<id>`, `ev:close:<type>:<id>`, `ev:del:<type>:<id>`, `ev:reset:<type>:<id>`,
-  `ev:sched:<type>:<id>`, `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
+  `ev:sched:<type>:<id>[:close]` (l'ultimo segmento **opzionale** fissa l'azione invece di chiederla:
+  lo usano i bottoni su un item già in corso, dove «avvio» non è una delle risposte — §20),
+  `ev:new:<type>`, gli step di conferma `ev:ask{start|close|del|reset}:<type>:<id>`,
   e `ev:pt:cancel[_yes|_no]`. Tutti gli handler sono **generici** (un `<type>` qualsiasi presente nel
   registro), tranne la FSM di creazione sondaggio (`ev:pt:*`) che resta in `events.py` con il suo gate
   admin di router (§8).
@@ -848,7 +945,10 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   da uno step di conferma `ev:ask*` (Sì→esecutore, No→`ev:item`). La scheda è fornita dal tipo con i
   metodi **opzionali** `render_detail`/`delete`/`reset` (l'hub li rileva via `getattr` e per i tipi che
   non li implementano ricade sulla vecchia schermata «Avvia ora / Programma» + `ev:start`). Restano fuori
-  dal contratto `EventType` per non rompere `isinstance(et, EventType)`.
+  dal contratto `EventType` per non rompere `isinstance(et, EventType)`. Stessa logica per l'attributo
+  opzionale **`closable`** (§20): dichiara che la chiusura del tipo vale la pena di essere messa su un
+  orario, e `handlers/schedule.py` lo legge con `getattr` — un tipo che non lo dichiara si comporta
+  esattamente come prima.
 - **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
   (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
   community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
@@ -895,7 +995,14 @@ Quiz a risposta multipla creati dall'admin e giocati da ogni utente nella **prop
 tempo per domanda **opzionale** (scelto in creazione); vince chi ne azzecca di più, **a parità
 conta il tempo minore** (poi l'ordine di arrivo).
 
-**File:** `services/quiz_service.py` (DB), `handlers/quiz.py` (FSM + comandi + play privato).
+**File:** `services/quiz_service.py` (DB) e il pacchetto **`handlers/quiz/`**, diviso per fase
+attorno a un unico `router` condiviso in `_shared.py`: `creation.py` (FSM di creazione),
+`editing.py` (modifica domande), `lifecycle.py` (avvio/lista/chiusura/podio), `play.py`
+(sessione privata, timer, risposte), `trying.py` (prova admin). `__init__.py` è la superficie
+pubblica — `open_quiz`, `close_quiz`, `start_quiz_creation`, `start_quiz_session`,
+`start_quiz_try`, `router` — quindi chi importa continua a scrivere `from handlers.quiz import …`.
+**L'ordine degli import in `__init__.py` è l'ordine di registrazione degli handler** su quel
+router, identico a quello che le sezioni avevano nel file unico (47 handler, verificato).
 
 ### Creazione
 
@@ -911,10 +1018,13 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 - **Navigazione**: ogni step ha «⬅️ Indietro» (`quiz_new:back`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
-- **Limiti di lunghezza**: costanti in cima a `handlers/quiz.py` — `_MAX_TITLE` (256), `_MAX_DESC`
-  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
+- **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (30), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
-  divergere da quello imposto. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  divergere da quello imposto. `_MAX_OPTION` è basso di proposito: le opzioni sono **bottoni inline**
+  in gioco e `play._question_kb` taglia il testo del bottone **allo stesso `_MAX_OPTION`** — un cap di
+  display separato (prima `[:40]`, con validazione a 100) tagliava risposte che la creazione aveva
+  accettato. L'input oltre il limite viene **rifiutato** (`_too_long` →
   `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
@@ -975,8 +1085,13 @@ esplicitamente che nulla è stato salvato.
     comportamento **invariato** per i quiz vecchi.
   - XP (`_grant_xp`, evento uncapped): `quiz_xp_participation` a chiunque abbia ≥1 risposta,
     `+quiz_xp_per_correct` per corretta, `+quiz_xp_podium_first/second/third` ai primi 3.
+- `claim_close(quiz_id) -> str | None`: porta un quiz da `running` a `finished` in **una `UPDATE`
+  condizionale** e dice se è stata *questa* chiamata a farlo (`None`) o cosa l'ha bloccata (lo stato
+  corrente, oppure `QUIZ_MISSING`). Al massimo un chiamante può ricevere `None`: è quello che rende
+  sicuro pagare i premi subito dopo. **La transizione è la guardia** — controllare lo stato e
+  ribaltarlo dopo sarebbe un read-then-write, e il quiz è spesso già in cache (§22).
 - `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
-  (`ev:close:quiz`, con conferma `ev:askclose`) → `award_prizes` → `finished` → annuncio podio (🎖️ per le
+  (`ev:close:quiz`, con conferma `ev:askclose`) → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le
   consolazioni). Un quiz `finished` resta gestibile nell'hub: `ev:reset:quiz` («Riproponi») lo riporta a
   `ready`, `ev:del:quiz` lo elimina.
 - `format_prize_summary(quiz)` riassume i premi nelle schede/annunci.
@@ -989,6 +1104,335 @@ esplicitamente che nulla è stato salvato.
 
 ---
 
+## 19.b Guess The Game & Sound Quest (privato, giudizio AI)
+
+Indovinare un videogioco da un'**immagine** (`guess`) o da un **audio** (`sound`). Creati e
+gestiti solo da admin, giocati **in privato**. Vince chi ci arriva in **meno tentativi**; a
+parità conta il **tempo**.
+
+**File:** `services/guess_service.py` (motore), `services/guess_judge.py` (giudizio),
+`handlers/guess/` (`_shared` · `creation` · `lifecycle` · `play` attorno a un unico router),
+`handlers/event_types/guess_type.py`. Tabelle: `guess_rounds` · `guess_sessions` ·
+`guess_attempts`.
+
+### Un motore, due giochi
+
+I due giochi differiscono **solo** per il media salvato, il metodo Bot API che lo rimanda e le
+etichette. Tutto il resto — tentativi, tempo, suggerimenti, giudizio, classifica, premi, XP,
+trofei — è identico, quindi c'è **una sola spec parametrizzata su `kind`**, registrata due
+volte in `register_builtin()`. Duplicarla significherebbe duplicare due volte un percorso che
+paga monete. La differenza vive tutta in `_shared.KINDS`.
+
+`kind` fa **triplo lavoro apposta**: chiave del tipo-evento, `ScheduledTask.task_type` e
+`game_key` dei trofei (`guess`/`sound` erano già in `progress_service.GAME_LABELS`). Tre
+stringhe che oggi coincidono, prima o poi divergono.
+
+### Il giudice — quattro stadi, dal più economico al più costoso
+
+1. **normalizzazione**: minuscolo, accenti, punteggiatura, romani→arabi, rumore di edizione
+   (`Remastered`, `GOTY`, …), clip a 80 caratteri. **`x` non è nella tabella dei romani**:
+   nei titoli una X isolata è quasi sempre un nome e non un dieci (Mega Man X, X-COM), e
+   foldarla rendeva `Mega Man X` e `Mega Man 10` — due giochi diversi — identici. Il match
+   locale è autoritativo e precede l'AI, quindi era un falso positivo **su un percorso che
+   paga monete**. `Final Fantasy X` ↔ `Final Fantasy 10` passa dal giudice o da un alias: una
+   chiamata API in più vale un pagamento sbagliato in meno;
+2. **accettazione locale**: match esatto contro la risposta canonica **o** contro un alias
+   scritto dall'admin ⇒ CORRETTA, **senza chiamare l'AI**;
+3. **rifiuto per forma**: un titolo è corto (2–60 caratteri, ≤8 parole). Fuori da lì ⇒
+   sbagliata, senza AI;
+4. **il modello**, solo per il centro ambiguo, con il verdetto **in cache per
+   `(round, risposta normalizzata)`**.
+
+> **L'ordine non è un'ottimizzazione, è la garanzia.** L'accettazione locale viene prima ed è
+> autorevole: il modello può solo *promuovere* un match mancato, mai ribaltarne uno riuscito.
+> È questo che tiene il gioco giocabile con Groq irraggiungibile — la risposta giusta scritta
+> bene vince sempre. Gli alias dell'admin sono la rete di sicurezza, non una comodità.
+
+Il **gate di forma** è una regola onesta («una risposta deve avere la forma di un titolo») che
+si dà il caso coincida con il filtro anti-injection: i payload sono lunghi e prolissi, i titoli
+no. Provato per mutazione: togliendolo, il payload arriva al modello.
+
+La **cache dei verdetti** è prima di tutto **equità** — due giocatori che scrivono la stessa
+cosa devono ricevere la stessa risposta. Che al secondo costi zero è il secondo motivo. Le
+righe `unverified` **non** si mettono in cache: non sono un verdetto, sono l'assenza di uno, e
+riusarle renderebbe permanente un singolo outage.
+
+**Regola di sicurezza non negoziabile: l'output testuale del modello non raggiunge mai un
+giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`, constrained
+decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
+che possa riportare indietro la soluzione a chi provi a farsela dire.
+
+`GROQ_JUDGE_MODEL` è separato da `GROQ_MODEL`, e i due non convergeranno: un verdetto ha bisogno
+dello structured output **strict**, che Groq offre solo su `openai/gpt-oss-*`; i comandi di
+intrattenimento (§17) hanno bisogno dell'opposto — un modello che stia al gioco della satira
+nera — e `gpt-oss` quei prompt li rifiuta. Due mestieri, due modelli. `judge_equivalence` è
+una funzione **nuova** in `ai_service`, non una modifica a `generate_completion`.
+
+> **Cambiando `GROQ_JUDGE_MODEL` si ricontrolla `_JUDGE_MAX_TOKENS`.** I due sono legati: un
+> modello di reasoning paga il ragionamento dallo stesso budget della risposta (vedi sotto).
+
+### Il budget di token del giudice — la regressione da non rifare
+
+`GROQ_JUDGE_MODEL` è un modello di **reasoning**, e su `openai/gpt-oss-*` i token di
+ragionamento escono dallo **stesso** `max_tokens` della risposta. Dimensionarlo sulla sola
+risposta (`{"corretta": true}` sono ~10 token) lascia il canale `content` vuoto, Groq valida
+la generazione vuota contro lo schema strict e risponde **400 `json_validate_failed`** — che
+correttamente *non* viene ritentato, perché una 4xx significa «la richiesta è sbagliata».
+
+Con `_JUDGE_MAX_TOKENS = 20` questo succedeva **a ogni chiamata**: ogni risposta che
+raggiungeva il modello tornava `unverified`, e il gioco era vincibile solo scrivendo la
+risposta carattere per carattere. Oggi il budget è **512** con `reasoning_effort: "low"`, e
+un test lo àncora — perché nessuno dei test esistenti poteva prenderlo: costruivano tutti un
+corpo di risposta ben formato, quindi verificavano cosa facciamo di un verdetto, mai se la
+richiesta potesse produrne uno.
+
+Un `failed_generation` **vuoto** viene loggato nominando il budget, non come «giudice
+irraggiungibile». Quella diagnosi è costata tempo una volta e non deve costarlo due.
+
+### Quando il giudice non risponde
+
+Un retry su 429/5xx (il rate limit è il fallimento *atteso* del free tier), poi verdetto
+`unverified`. Il tentativo **viene registrato ma non costa mai un tentativo vero** — non «fino
+a un cap»: mai.
+
+Il cap `guess_max_unverified` (default 3) esiste ancora ma fa un altro mestiere: limita
+**quante risposte non giudicate accettiamo** prima di fermare il giocatore, non quante gliene
+addebitiamo. Superato, si rifiuta **prima del giudice** («il giudice non risponde, i tuoi
+tentativi sono salvi»).
+
+> Le due alternative sono state valutate e scartate, e questo va letto prima di
+> «semplificare»: **non registrare** il tentativo apre un canale di invio illimitato proprio
+> quando il match locale è tutto ciò che resta fra un giocatore e la forza bruta;
+> **contarlo comunque** addebita al giocatore un nostro 429. Registrare senza contare, con il
+> cap sull'accettazione, chiude entrambe — la versione precedente (cap sul *rimborso*) chiudeva
+> solo la prima, e oltre il cap addebitava al giocatore proprio il nostro guasto.
+
+`attempts_used` e `unverified_count` restano **due contatori distinti** e non se ne può fondere
+uno: il primo conta le righe e deve restare monotono perché guida `attempt_no`, che è parte
+della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
+
+### Tentativi, tempo, suggerimenti
+
+- Il tentativo si **spende all'invio**, prima che il verdetto sia noto: è l'unica contabilità
+  con cui un brute-forcer non può discutere.
+- **L'ordine delle guardie è portante**: cooldown → già risolto → scadenza → tentativi →
+  **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non deve costare
+  quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la mutazione che
+  sposta il controllo tentativi dopo il giudice era passata verde prima che ci fossero.
+- **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
+  Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
+  azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
+  orologio è per domanda; qui è per sessione. Al giocatore la scadenza si comunica come orario
+  assoluto, così nessuno aspetta un «tempo scaduto!» che nessun timer manderebbe.
+- I suggerimenti stanno in JSON (`hints_json`), come `QuizQuestion.options_json`: piccoli,
+  sempre letti insieme, mai interrogati da soli. Una soglia sopra il limite tentativi viene
+  **rifiutata in creazione**: sarebbe un suggerimento che nessuno vede.
+- La soglia si conta sui tentativi **giudicati** (`attempts_used - unverified_count`), non sul
+  numero di riga. Agganciata ad `attempt_no`, un `unverified` che cadeva sulla soglia si
+  mangiava il suggerimento e nessuno lo vedeva più: un suggerimento perso per un guasto nostro.
+- **La durata del round è un campo suo** (`round_duration_seconds`), non si deriva dal tempo per
+  giocatore: quell'orologio parte quando *ogni* giocatore apre il link, quindi non esiste un
+  istante calcolabile in cui «sono scaduti tutti». La durata la decide l'admin, si vede nella
+  scheda e **si annuncia nel gruppo** — una scadenza che nessuno conosce è un agguato.
+- **Due modi di dire quando si chiude, mutuamente esclusivi.** Oltre alla durata relativa
+  (`round_duration_seconds`, armata all'apertura = `now()+durata`), l'admin può fissare una **data
+  assoluta** (`closes_at`, colonna `DateTime` nullable, istante scelto in creazione): la scheda
+  accetta un numero di **secondi** *oppure* un `AAAA-MM-GG HH:MM` (stesso parser di `parse_run_at`;
+  i token relativi `30m/2h/1d` sono **rifiutati** perché ambigui — «da ora» o «dall'avvio»?).
+  `closes_at` **vince** sulla durata e la azzera (`create_round`). `_schedule_auto_close` arma il
+  task su `closes_at` se presente, altrimenti su `now()+durata`, altrimenti niente (chiusura a
+  mano). Poiché la data è fissa e l'avvio può arrivare dopo, **`open_round` rifiuta di avviare** un
+  round il cui `closes_at` è già passato (prima dell'annuncio), invece di schedulare nel passato.
+  Colonna nuova ⇒ voce in `_MIGRATIONS` (regola 9).
+
+### Creazione: tre domande e una scheda
+
+Si chiedono **solo titolo, media e risposta** — le uniche tre senza un default sensato. Tutto
+il resto parte compilato da `settings` e si cambia con un tap.
+
+Prima erano undici domande in fila **senza ritorno**: chi sbagliava la risposta alla terza
+poteva solo percorrere gli otto step restanti o annullare e ribattere tutto. Su un form da
+undici domande *quello* è il difetto — non la lunghezza — e la scheda è ciò che lo toglie: non
+esiste più uno stato in cui qualcosa è sbagliato e non si può correggere.
+
+Ogni campo opzionale vive in `creation.FIELDS` con la sua etichetta, il suo prompt, il suo
+parser e il suo renderer. **Un solo handler di edit li serve tutti**: aggiungere un campo è una
+voce di dizionario, mai uno stato nuovo e mai un handler nuovo. I quattro premi sono **un campo
+solo** — quattro step per quattro numeri dello stesso tipo erano quattro occasioni di sbagliare
+senza poter tornare al primo.
+
+Costo strutturale: 12 stati FSM → **5**, 17 handler → **10**, 453 → **424** righe di codice
+effettivo. La scheda doveva togliere codice, non aggiungerne.
+
+La chiave del dizionario **è** la chiave in `state.get_data()`: niente mappatura da tenere
+allineata. `apply` esiste per l'unica eccezione (i premi, che scrivono quattro chiavi).
+
+**Dove sia arrivato il flusso lo decide `_step_prompt`, e solo lui.** La scheda si può
+renderizzare **soltanto** quando le tre risposte obbligatorie ci sono: i suoi `show` leggono
+`title`/`answer` dritti dai dati di stato. Chi manda l'admin «avanti» passa da `_ask_next`, che
+o fa la domanda che manca o mostra la scheda. Il difetto che questo toglie: «Annulla» alla prima
+domanda e poi «No, continua» renderizzava comunque la scheda — e avendo già messo lo stato a
+`card`, lasciava il flusso dove **nessun handler di messaggi ascolta**. Si poteva solo annullare
+davvero.
+
+### La scheda è **un** messaggio, non un flusso
+
+`_panel()` modifica **sempre lo stesso messaggio** (`card_message_id` in stato). Il prompt di
+un campo sostituisce la scheda, il valore accettato la riporta, la pubblicazione la trasforma
+nella conferma. Sullo schermo c'è **un solo pannello vivo**, sempre.
+
+Non è cosmetica: la prima versione rimandava la scheda **e il media** a ogni render. Misurato
+su 6 campi modificati:
+
+| | prima | ora |
+|---|---|---|
+| messaggi nuovi | 12 | **0** |
+| re-invii del media | 6 | **0** |
+
+Sei upload di media in una chat sono un burst che Telegram rate-limita, ed è per questo che
+«a volte il bot si impallava» modificando un evento. Il media si posta **una volta sola**,
+quando viene scelto o sostituito (quell'eco resta la verifica del `file_id`, §19.b/Media), e
+il vecchio si cancella: due media in chat e l'admin non sa più quale sia quello del round.
+
+**L'unica eccezione è il media**, e per la stessa ragione: sostituirlo mette in chat due
+messaggi nuovi (l'upload dell'admin e l'eco del bot), quindi una scheda modificata *sul posto*
+resterebbe **sopra** di loro, fuori schermo. L'ultima cosa visibile sarebbe una foto senza
+bottoni — «cambio l'immagine e poi non mi fa proseguire». Perciò `fsm_media` cancella il
+pannello e lo **ripubblica sotto** il media (`card_message_id=None`). Resta un solo pannello
+vivo: cambia solo dove sta. Negli altri campi il pannello resta ultimo perché il messaggio
+digitato viene cancellato (`forget_message`), quindi lì non c'è niente da spostare.
+
+Regola generale, valida anche in gioco: **un messaggio che non comanda più niente non resta
+sullo schermo con i bottoni vivi.** In `play` ogni nuova risposta toglie la tastiera alla
+precedente (`_reply`), così esiste un solo «🚪 Esci» premibile invece di uno per tentativo.
+La pulizia è **best-effort e non può fallire rumorosamente**: è cosmetica, mentre il testo che
+accompagna è il verdetto — un `edit` rifiutato perché il messaggio è vecchio non deve
+trasformare una risposta corretta in un errore.
+
+### I suggerimenti: nessuna sintassi, quindi niente da sbagliare
+
+Prima si scriveva `3 | È uno sparatutto` a mano. Un separatore, un ordine degli argomenti e
+un numero magico: **tre cose che un admin che non programma non ha motivo di indovinare**, e
+tre modi di ricevere un errore invece di un suggerimento.
+
+Ora i suggerimenti hanno una **schermata propria**: `➕ Aggiungi` → scrivi il testo → **scegli
+il numero da una tastiera**. La soglia non viene più digitata, quindi non può essere
+malformata: l'unico testo libero rimasto è il suggerimento, che vuole solo un controllo di
+lunghezza.
+
+`free_thresholds()` è la **sola** fonte dei numeri validi: la tastiera la renderizza **e** il
+callback la ri-controlla. Non possono divergere, ed è questo che rende innocuo un
+`guess_new:hint:at:99` costruito a mano o premuto su una schermata vecchia. Una soglia già
+presa **non viene offerta** — e viene comunque rifiutata se arriva lo stesso.
+
+> Le difese sul percorso della soglia sono tre e volutamente ridondanti, perché è un percorso
+> che finisce in un round che paga monete: la tastiera offre solo numeri liberi; il callback
+> li ri-valida (range, duplicati, tetto, testo pendente); la pubblicazione ripota un'ultima
+> volta. La terza oggi non cambia niente — c'è perché un domani qualcuno tocchi
+> `max_attempts` da un percorso nuovo senza sapere di questa regola.
+
+**Il tetto dei tentativi è modificabile, quindi va ricontrollato quando cambia.** La soglia era
+validata solo mentre la si scriveva: 10 tentativi, un suggerimento all'8°, poi «facciamo 3» e
+restava un suggerimento che nessuno avrebbe mai visto — esattamente ciò che quel controllo
+esiste per impedire. Ora abbassando i tentativi i suggerimenti irraggiungibili si tolgono, e
+**lo si dice** sulla scheda: un effetto collaterale silenzioso su dati che pagano non è
+accettabile.
+
+Un testo scritto ma mai confermato con un numero viene **buttato uscendo dalla schermata**,
+altrimenti un bottone-soglia rimasto in cronologia se lo attaccherebbe più tardi.
+
+### L'attesa del giudice
+
+Il giudice è una chiamata di rete che può durare secondi, e il silenzio si legge come «bot
+rotto». Si usa `ChatActionSender.typing` di aiogram attorno alla sola chiamata al giudice:
+parte subito, si spegne da sé quando il verdetto arriva.
+
+Una **chat action** e non un messaggio «⏳ attendi» apposta: la cancella Telegram, quindi non
+c'è niente da eliminare, niente che resti appeso se solleviamo, e nessun messaggio in più che
+compete col verdetto subito sotto. `interval=4.0` e non il default 5.0 perché Telegram scade
+l'azione a ~5s: i due valori uguali si rincorrono e l'indicatore lampeggia.
+
+`media` è nella scheda ma **non** in `FIELDS`: il suo input è una foto o un audio, non testo,
+quindi rientra da `waiting_media` invece che dall'editor condiviso.
+
+### Media
+
+Si salva il **`file_id` Telegram**, mai il file: il bot non tiene media su disco. In creazione
+il bot **rimanda indietro il media**: quell'eco *è* la verifica che il `file_id` sia
+ri-inviabile, fatta nell'unico momento in cui l'admin può ancora scegliere un altro file. Si
+posta **una volta sola** — quando viene scelto o sostituito — e resta sopra la scheda: vederlo
+accanto alla risposta è come ci si accorge di aver allegato il file sbagliato. Rimandarlo a
+ogni render era il burst di upload che impallava il bot (§19.b/«La scheda è un messaggio»).
+
+**Nel gruppo il media non si posta prima della chiusura.** Lo sposterebbe lì, dove la soluzione
+si discute e giocare in privato smette di voler dire qualcosa. L'annuncio è un invito con
+deep-link; il reveal (media + risposta) è sotto il podio. Un round che finisce senza vincitori
+la risposta la rivela lo stesso.
+
+### Stati, premi, chiusura
+
+`draft → ready → running → finished`. Le due transizioni sono **UPDATE condizionali** e
+`rowcount == 0` significa «gara persa» (§22): `claim_close` (`WHERE status='running'`) e il
+claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
+
+> Dopo un UPDATE con `synchronize_session=False` va fatto il **refresh delle sole colonne
+> toccate** (`_sync_round_state`) — è la seconda metà della regola 3 di §22. Non è cosmetico:
+> l'hub ri-renderizza il round subito dopo averlo chiuso, e un select per entità è servito
+> dalla identity map, quindi senza refresh l'admin chiude e la schermata continua a dire «in
+> corso».
+
+Classifica: **solo i risolutori**, ordinati per `(tentativi, tempo, arrivo)`. Qui «finisher»
+vuol dire «ha indovinato» — è ciò che dà senso a «meno tentativi, meglio è» — quindi chi
+esaurisce i tentativi prende **XP ma non monete**. Premi: 1°/2°/3° più consolazione lineare
+fino a `prize_min`, dalla scala condivisa `services/prizes.py` (la stessa del quiz). Ledger:
+`TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco della community».
+
+La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico modo per
+accorgersi che il giudice ha rifiutato qualcosa che doveva accettare, perché un giocatore che
+perde ingiustamente non lo dice a nessuno.
+
+### Correggere il giudice a round aperto (`handlers/guess/editing.py`)
+
+Leggere le risposte scartate serve a poco se poi non si può fare niente. Dalla scheda,
+**«🔤 Aggiungi grafie»** (`guess_alias:add:<id>`, stati `ready` e `running`) apre un'unica
+domanda: le grafie da accettare, una per riga, dallo stesso parser della creazione
+(`creation._parse_aliases`, stesso cap). `guess_service.add_aliases` le appende deduplicate
+**per forma normalizzata** (quindi «DOOM 1993!» non entra due volte) e si ferma alla larghezza
+della colonna (`aliases_json` è `String(1024)`: un write più lungo è un errore su Postgres, non
+un troncamento silenzioso), riportando quante ne ha scartate.
+
+**Vale solo in avanti, ed è la scelta.** Un alias è consultato **prima** della cache dei verdetti
+(§19.b, stadio 2 → stadio 4), quindi dal momento in cui c'è vince chi lo scrive — compreso chi
+era stato scartato, se riprova. I tentativi già giudicati restano come sono: ri-giudicarli
+sposterebbe un podio eventualmente già annunciato e pagato. Non è una lacuna da colmare più
+avanti: è il confine fra correggere il futuro e riscrivere il passato.
+
+Disponibile anche su un round `ready`: dopo la creazione era l'unico campo senza più una strada
+per tornarci, se non eliminare il round e rifarlo.
+
+### Regole
+
+- Nuovi media: una voce in `_shared.KINDS` e una in `_SENDER_BY_KIND`, **mai** un `if` nei
+  chiamanti. `send_media` risolve **solo** il metodo che serve, da whitelist.
+- La chiusura automatica riusa `task_type = kind` con `payload.action = "close"` — lo stesso
+  pattern della finestra scommesse (§20). **Nessun task-type nuovo.** Il task lo crea
+  `open_round` (armato su `closes_at` assoluto se scelto, altrimenti su `now()+round_duration_seconds`);
+  `close_round` e `delete_round` lo **cancellano**, altrimenti lo scheduler più
+  tardi trova un round già `finished` e logga un fallimento per una cosa andata bene.
+  *(Il ramo esisteva da sempre ma nessuno creava il task: era codice morto documentato come
+  funzionante — controllare che un ramo sia raggiungibile, non solo che sia scritto.)*
+- Deep-link `guess_<id>` / `sound_<id>` **pubblici** (§9): li gioca chiunque nel gruppo, quindi
+  non c'è nessun re-check `is_admin` da dimenticare. Il bottone «🔄 Riprendi» dopo l'uscita
+  rientra dalla **stessa porta** (`start_guess_session`), che possiede tutte le guardie: una
+  seconda copia sarebbe un secondo posto dove dimenticarne una.
+- Service no-commit (§5). `open_round` annuncia **prima** di flippare lo stato; `close_round`
+  rivendica la chiusura **prima** di pagare e committa i premi **prima** di annunciare.
+- Alla chiusura **media e podio stanno in due `try` separati**: il reveal è un di più, il podio
+  è l'annuncio che la gente aspetta. Insieme, un `file_id` morto si portava via anche il podio —
+  premi pagati e gruppo mai informato di chi avesse vinto.
+
+---
+
 ## 20. Scheduling (quiz / sondaggio / scommessa)
 
 Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB-backed.
@@ -998,6 +1442,26 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
 
 - `scheduler_loop(bot)` avviato in `main()` con `asyncio.create_task` prima di `start_polling`; ogni
   `scheduler_poll_interval`s esegue i `due_tasks` (try/except per task → `mark_done`/`mark_failed`).
+  > **Sta in `handlers/` di proposito, non per sbaglio.** Sembra un daemon collocato male, ma
+  > `execute_task` dispatcha sul registro `handlers/event_types`, e quegli spec **importano
+  > funzioni degli handler** (`handlers.quiz.open_quiz`, `handlers.betting.start_bet_creation`, …)
+  > e costruiscono tastiere inline: sono presentazione. Spostare il loop in `services/` farebbe
+  > importare `handlers` da `services`, cioè un'inversione di layering vera in cambio di uno
+  > smell estetico. Non farlo senza prima spostare `event_types`.
+  >
+  > **L'isolamento per-task sta tutto in `_run_due_task` che non solleva mai**, non nel loop: il
+  > `for` è dentro il `try` del tick, quindi un raise lì dentro abbandona i task ancora dovuti
+  > fino al giro successivo. Coperto da `tests/unit/test_scheduler_loop.py` +
+  > `tests/integration/test_scheduler_failure_path.py` (14 test, garanzie verificate per
+  > mutazione).
+  >
+  > ⚠️ **Rischio latente, misurato.** Dopo un `rollback` che ha lavoro da annullare, leggere
+  > *qualsiasi* attributo dell'istanza ORM dà `MissingGreenlet` — e `_run_due_task` passa quella
+  > stessa istanza a `_notify_creator`, che ne legge due. Oggi funziona **solo** perché fra il
+  > rollback e la notifica ci sono `mark_failed` (che assegna soltanto: un'assegnazione non
+  > carica) e `await session.commit()`, il cui flush ricarica la riga in contesto greenlet.
+  > Quindi: **non spostare la notifica prima del commit** e non togliere quel commit dal path di
+  > errore. Provato per mutazione — il test integration lo prende.
 - `parse_run_at(text)`: assoluto `AAAA-MM-GG HH:MM` o relativo `30m`/`2h`/`1d` → **UTC naive**
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
@@ -1007,9 +1471,25 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   `open_quiz` (annuncia + apre); `poll` → `bot.send_poll` nel gruppo. Le spec **non committano** (il
   `scheduler_loop` committa dopo `mark_done`/`mark_failed`).
 - `parse_duration(text)` (30m/2h/1d → secondi): **durata** relativa (non un istante), usata dallo step
-  finestra puntate. La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
+  finestra puntate. **Cappata a 365 giorni** insieme a `parse_run_at`, tramite l'unico helper
+  condiviso `_rel_seconds` — entrambe alimentano aritmetica che va in overflow su input assurdo
+  (`parse_run_at` → `datetime + timedelta` = `OverflowError`, che nessun handler intercetta;
+  `parse_duration` → `betting_window_seconds`, colonna int32 = «integer out of range» su Postgres,
+  **dopo** che l'utente si è già sentito dire che la scommessa era creata). Il cap sta nell'helper
+  e non nelle due funzioni proprio perché nessuna delle due possa dimenticarlo.
+  La chiusura automatica di una scommessa è un `ScheduledTask` `bet` con
   `payload.action="lock"` armato all'apertura (§18.2) — stesso registry, nessun task-type nuovo.
-- Comandi: `/programma` (scegli un evento già creato → orario run-at), `/programmati` (lista + annulla),
+- **Programmare la chiusura, non solo l'avvio.** Un tipo che dichiara `closable = True` (oggi `quiz`,
+  `guess`, `sound` — poll e bet no: il loro `close_now` è `None`) fa chiedere **cosa** programmare prima
+  dell'orario: `sched:act:start` | `sched:act:close`. Gli altri tipi vanno dritti al run-at, perché una
+  domanda con una sola risposta possibile non è una domanda. La chiusura è lo **stesso `task_type`** con
+  `payload.action="close"` — identico al `lock` delle scommesse e all'auto-close del guess: **nessun
+  task-type nuovo**, nessuna colonna nuova. L'avvio resta senza payload. Ogni spec `closable` gestisce
+  quel payload nel proprio `execute_scheduled` (`close_quiz`/`close_round` → `TaskSkip` se non era in
+  corso: chiuso a mano o mai avviato è comunque lo stato voluto, non un errore). `/programmati` etichetta
+  ogni task «▶️ Avvio» o «🏁 Chiusura» — su un item con entrambi pendenti è la differenza fra annullare
+  quello giusto e quello sbagliato.
+- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
   riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
@@ -1050,6 +1530,15 @@ DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
+# GROQ_MODEL=qwen/qwen3.6-27b           # comandi di intrattenimento (§17)
+# GROQ_REASONING_EFFORT=none            # qwen3.6 è ibrido-reasoning: senza questo scrive il
+#                                       # ragionamento dentro la risposta. Vuoto = campo omesso.
+# GROQ_JUDGE_MODEL=openai/gpt-oss-120b  # giudice dei giochi «indovina» (§19.b). Separato da
+#                                       # GROQ_MODEL apposta: serve structured output strict,
+#                                       # che gpt-oss ha e qwen no — e gpt-oss in cambio rifiuta
+#                                       # i prompt di §17.
+#                                       # Senza chiave i giochi restano giocabili: vince chi
+#                                       # scrive la risposta esatta o un alias (§19.b, stadio 2).
 # Backup & export (§25) — tutto opzionale. Senza i 3 TELEGRAM_* l'archivio chat
 # è disattivato (lo state export funziona comunque, non serve Telegram).
 # TELEGRAM_API_ID=1234567               # da my.telegram.org
@@ -1085,11 +1574,31 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 19. **Cataloghi CSV** (`catalog_loader`) letti solo all'avvio, con **fallback ai default**: non assumere mai che un file esista; valida e salta le righe malformate
 20. **Escaping HTML obbligatorio**: ogni stringa **user-controlled** interpolata in un messaggio `ParseMode.HTML` passa da **`utils.text.esc`** (full_name, username, cosmetic_tag, titoli/descrizioni/opzioni scommesse, testi/risposte quiz, motivi warn, audit detail, query di ricerca, ecc.). I service e il DB restano **raw** — l'escaping è solo presentation layer. Testi dei **bottoni inline** e domande/opzioni dei **poll** non sono HTML-parsed → niente `esc`.
 21. **Mai `settings.group_id` a runtime**: usare **`group_registry.get_group_id()`** (id effettivo, §13). Solo `config.py`, lo startup in `main()` e `group_registry` stesso toccano il setting.
-22. **Mutazioni denaro/XP/bet lockano le righe** con `with_for_update` (no-op su SQLite, reale su Postgres). Ordine di lock canonico **Event → User → Wallet**; tra due wallet, `tg_id` crescente (anti-deadlock). `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
+22. **Le mutazioni di denaro/XP/stato non si decidono in Python: si decidono in SQL.** Il check va nella `WHERE`, l'aritmetica nella `SET`, e `rowcount == 0` significa "gara persa". `economy_service.credit/debit` richiedono **`amount > 0`** (eccezione `ValueError`).
+    > ⚠️ **Un lock NON basta, ed è misurato.** `with_for_update` prende un lock vero su Postgres, ma se la riga è già nella identity map SQLAlchemy restituisce **l'istanza in cache con i valori vecchi** (`expire_on_commit=False`): il lock protegge una riga, non il numero su cui stai decidendo. Il check-then-write passa due volte. Erano 9 gare rosse in `tests/integration/test_money_concurrency_pg.py`; oggi sono **verdi e sono le guardie di regressione** — girano solo con `TEST_PG_URL`, e su SQLite una gara a due sessioni non è nemmeno esprimibile.
+    >
+    > Cosa rende una riga "già in cache": **un chiamante che tiene l'entità in una variabile** attraverso la chiamata al servizio. La identity map usa riferimenti **deboli**, quindi `DbSessionMiddleware._upsert_user` **non** avvelena la sessione (carica e scarta → garbage collected), e leggere un valore scartando l'oggetto è sicuro. Il pattern pericoloso è quello di `bet_type._auto_lock`: `event = await get_event_detail(...)` → controlla `event.status` → `lock_event(...)` col riferimento ancora vivo.
+    >
+    > **Le tre regole operative:**
+    > 1. **Leggi le colonne, non le entità.** `select(Wallet.coins)` non può essere servita dalla cache, `select(Wallet)` sì. Vedi `economy_service._balance`.
+    > 2. **Scrivi in SQL, relativo dove puoi.** `coins = coins + :delta` somma; `wallet.coins += x` sovrascrive con un valore calcolato da una base che potrebbe essere vecchia. Per le transizioni di stato, mettile nella `WHERE`: `claim_close` (quiz), `lock_event`/`resolve_event` (bet), `claim_daily`.
+    > 3. **`.execution_options(synchronize_session=False)` sempre**, poi `await session.refresh(obj, [colonne])`. Il default riscrive in cache un valore derivato dalla copia stale (misurato: cache=100, DB=500, `coins - 10` lascia DB=490 e cache=90). Il refresh mantiene il contratto per cui, dopo la chiamata, l'entità in sessione riflette la scrittura — **è usato davvero**, non è cosmetico.
+    >
+    > **Non aggiungere `populate_existing=True`**: invalida le relazioni già caricate sull'istanza e in async diventa `MissingGreenlet` (provato e ritirato). Mai `session.expire` (stesso motivo).
+    >
+    > **Attenzione al `refresh` su un attributo con una modifica pendente**: la butta via (`autoflush=False`, quindi la modifica non è ancora andata al DB). Preso da un test unitario esistente su `grant_xp`. Se scrivi in SQL invece di mutare l'istanza il problema non esiste — non resta mai niente di pendente.
+    >
+    > **I lock restano dove servono davvero**, cioè dove SQL da solo non basta: (a) `transfer` locka i due wallet in ordine di **`tg_id` crescente**, perché due righe toccate insieme possono andare in deadlock; (b) `lock_balance` per l'unica operazione che ha bisogno del valore corrente (`admin_service.set_balance`: un target assoluto non è aritmetica relativa); (c) il ramo `capped` di `grant_xp`, perché un cap è un min/max contro un valore memorizzato e non ha una scrittura portabile fra Postgres e SQLite. Ordine di lock canonico **Event → User → Wallet**; il ramo *uncapped* di `grant_xp` non prende lock **apposta** (invertirebbe l'ordine su cui si appoggia `resolve_event`), per questo la sua aritmetica deve essere sicura da sola.
+    >
+    > **Ultimi due siti della stessa forma, chiusi.** `xp_service.airdrop_xp` era il read-modify-write più largo del bot — leggeva tutti gli utenti e riscriveva totali assoluti, quindi ogni XP concesso nel frattempo (un quiz che chiude, una scommessa che si risolve) spariva senza traccia; ora è **un solo `UPDATE` relativo**, col tier ricalcolato da una select **per colonna** e raggruppato per tier di destinazione (una manciata di statement, non uno per utente). `quiz_service.reset_quiz` leggeva lo stato da una **entità** sotto `FOR UPDATE` e ora lo legge come **colonna** sotto lock; le sue scritture restano mutazioni ORM **apposta**, perché assegnano solo costanti (mai delta) e sono quindi corrette anche su un'istanza stale — è ciò che permette a `cb_reset` di ri-renderizzare il dettaglio senza ricaricare. Di conseguenza **`get_quiz` non ha più `for_update`**: era senza chiamanti, e lasciarlo disponibile invitava a rifare esattamente questo errore.
+    >
+    > **Queste due si misurano senza Postgres.** Una scrittura SQL emessa nella stessa sessione è invisibile alla identity map **esattamente quanto** il commit di un'altra transazione: `update(...).values(xp=User.xp + 500).execution_options(synchronize_session=False)` rende l'istanza in memoria bugiarda, e la gara si riproduce con una sessione sola. Vale per ogni difetto la cui causa è la **cache stale** (non per i lost update veri, che restano appannaggio di `TEST_PG_URL`). Utile quando Docker non c'è.
 23. **Moderazione**: ogni azione (comando o dashboard) passa dal guard **self/bot-target** (`admin._guard_mod_target` / `admin_dashboard._mod_guard`, basato su `message.bot.id`, niente `get_me()`).
 24. **Backup/export** (§25): tutto in **streaming** (mai un dataset intero in RAM — il bot è cappato a 300 MB), scritture **atomiche** (`utils.atomic_io`: tmp+fsync+replace; archivio chat = membri gzip concatenati con manifest + recovery-truncate). Il `backup_loop` e i comandi non devono **mai** bloccare l'event loop né far crashare il bot (loop in `try/except` totale). L'archivio chat è **opt-in** (creds Telethon assenti ⇒ disattivo); la cronologia si legge **solo** via MTProto/Telethon (la Bot API non può). La `TELEGRAM_SESSION` è una credenziale sensibile: solo `.env`, mai committata.
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
+    > Verificato sul campo: Guess The Game e Sound Quest sono entrati **senza toccare né `events.py` né `schedule.py`** — una spec parametrizzata (`GuessType(kind=…)`) e due righe in `register_builtin`. Quando due tipi differiscono solo per etichette e per un media, si **parametrizza la spec** invece di scriverne due: sono percorsi che pagano monete, e due copie sono due posti dove correggere lo stesso bug.
 26. **Trofei & Locanda** (§11/§12): nuove **condizioni trofeo** si aggiungono al **dispatch** di `check_and_award_milestones` + a `TROPHY_CONDITIONS` + a `describe_condition` (mai catene `if/elif` fuori dagli helper). Le condizioni scoped usano **`Badge.condition_param`** (key item/categoria/gioco o slug `;`-separati per `collection`); colonna nuova ⇒ voce in `_MIGRATIONS`. Le **`collection`** si risolvono a **punto fisso** (sblocco a catena nello stesso commit). **Chiavi disgiunte**: consumabili `cons_*`, cosmetici `tag_*` (namespace `shop_purchases.item_key` condiviso). Acquisto consumabile: **flush prima** del milestone check (autoflush off). Cataloghi (consumabili/categorie/trofei) **solo via CSV + default Python**, mai hardcode negli handler. Nuovi giochi col podio chiamano `progress_service.record_podium(game_key, rank)` — i loro trofei `podium_count`/`first_place_count` si attivano da soli.
+27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **rifiuta tutto ciò che non è esattamente un booleano**. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
 
 ---
 
@@ -1113,13 +1622,17 @@ tests/
 │   ├── test_ai_service.py    # Groq client (aioresponses): success/timeout/http/malformed/no-key
 │   ├── test_moderation_service.py # parse_duration + mappatura errori (Bot fake)
 │   ├── test_admin_filter.py  # is_admin (admin_ids, cache TG mockata, fail-closed)
-│   ├── test_ai_cooldown.py   # _check_cooldown (esenzione admin, finestra)
-│   ├── test_schedule_parse.py # parse_run_at (assoluto/relativo/passato/invalid)
+│   ├── test_ai_cooldown.py   # _check_cooldown (esenzione admin, finestra, check non consuma)
+│   ├── test_schedule_parse.py # parse_run_at + parse_duration (assoluto/relativo/passato/invalid/cap 365gg)
+│   ├── test_error_handler.py  # dp.errors: log con contesto, alert callback, rumore benigno silenziato
 │   ├── test_quiz_prizes.py   # consolation_amounts / participation_floor (funzioni pure)
 │   ├── test_keyboards.py     # keyboard builder (incl. shop cosmetici: affordable/owned/callback)
 │   ├── test_text_utils.py    # utils.text.esc (escaping HTML, None, troncatura) + chunk_blocks (split ≤4096)
-│   ├── test_fun_ai_hardening.py # clip_source / _prune_cooldowns / output parse_mode=None + wrapper CONTENUTO
+│   ├── test_fun_ai_hardening.py # clip_source / output parse_mode=None + wrapper CONTENUTO
 │   ├── test_atomic_io.py       # scrittura atomica, sha256, troncatura, append membri gzip + rollback
+│   ├── test_backup_loop.py     # due-ness, pre-flight non scrivibile, il loop sopravvive a un tick rotto
+│   ├── test_scheduler_loop.py  # _run_due_task (rollback prima di mark_failed, skip≠errore), il loop non muore
+│   ├── test_router_order.py    # ROUTERS: ogni modulo con un router è registrato, admin_betting<betting, common ultimo
 │   ├── test_chat_archive.py    # build_record/classify_media, _archive_range (dedup/append/no-op), _recover
 │   └── test_admin_dashboard_kb.py # tastiere dashboard (grammatica callback, paginazione)
 └── integration/
@@ -1139,8 +1652,42 @@ tests/
     ├── test_quiz_service.py     # create/add_question / record_answer / podium / award_prizes (legacy + per-rango + consolazione)
     ├── test_admin_dashboard.py  # apply_warning (audit + escalation) / render_user_detail / user picker
     ├── test_schedule_service.py # schedule / due_tasks / mark_done|failed / cancel
-    └── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
+    ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
+    ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
+    │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
+    ├── test_scheduler_failure_path.py # path di errore su sessione reale: istanza ORM leggibile dopo il rollback
+    └── test_money_concurrency_pg.py # [pg] gare su denaro/XP/bet/quiz — 16 guardie di regressione
 ```
+
+### I test marcati `pg` (PostgreSQL reale)
+
+Servono perché due cose sono **strutturalmente invisibili** alla suite SQLite, ed entrambe stanno sul
+path denaro: `SELECT ... FOR UPDATE` è un no-op su SQLite, e il suo engine in-memory usa `StaticPool`,
+che dà a ogni sessione la **stessa connessione** — quindi la stessa transazione: una gara a due
+sessioni non è scrivibile lì. In più `run_migrations()` esce subito se il dialetto non è postgresql,
+quindi `_MIGRATIONS` (che gira in **produzione a ogni deploy**) non era mai stato eseguito da un test.
+
+Fixture in `conftest.py`: `pg_engine` (schema fresco per test) → `pg_sessions` (la **factory**, perché
+questi test aprono due sessioni indipendenti) → `pg_session`, `pg_user_factory`. Le fixture SQLite
+esistenti sono intatte: senza `TEST_PG_URL` i test `pg` **skippano**, quindi il run locale di default
+non richiede Docker.
+
+⚠️ **`pg_engine` fa `drop_all`** e rifiuta ogni URL il cui nome DB non finisce in `_test`: quello del
+compose si chiama `gamingbot`, a un carattere di distanza. La guardia non è decorativa.
+
+```bash
+docker run -d --name gcb-pg-test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=gamingbot_test -p 5433:5432 postgres:16-alpine
+export TEST_PG_URL="postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test"
+pytest -m pg -rxX          # -rxX elenca xfail E xpass
+pytest -m "not pg"         # esplicitamente senza
+```
+
+Questi test sono nati `xfail(strict=True)` come strumento diagnostico: ognuno provava che un sito era
+rotto, e `strict` faceva fallire la build su un xpass — cioè "questo sito è già sicuro". Sono stati
+tolti uno per commit man mano che i siti venivano corretti. **Oggi sono tutti guardie di regressione
+e non c'è più nessun xfail**: se uno torna rosso, qualcuno ha rimesso una decisione sul denaro in
+Python. Vedi regola 22 per il meccanismo e il pattern corretto.
 
 ### Eseguire i test
 
@@ -1174,26 +1721,48 @@ DB_URL=sqlite+aiosqlite:///:memory:
 
 ### Coverage attuale
 
-| Modulo | Coverage |
-| --- | --- |
-| `services/*` | 96–100% |
-| `keyboards/*` | 100% |
-| `exceptions/*` | 100% |
-| `config_data/*` | 100% |
-| `middlewares/*` | 40–92% |
-| `handlers/*` | 0% — richiedono mock framework aiogram, testati E2E con Docker |
+Misurati, non stimati (`pytest --cov=src`, con Postgres). Il range è per-file, l'aggregato
+è per package — un package può avere un aggregato alto e un file molto peggio, che è
+esattamente com'era nascosto `services/backup/loop.py` a 0% sotto un «`services/*` 96-100%».
+
+| Package | Range per-file | Aggregato |
+| --- | --- | --- |
+| `config_data/*` | 100% | 100% |
+| `exceptions/*` | 100% | 100% |
+| `database/*` | 88–100% | 99% |
+| `filters/*` | 98–100% | 97% |
+| `services/*` | 64–100% | 91% |
+| `utils/*` | 88–100% | 91% |
+| `keyboards/*` | 44–100% | 77% |
+| `middlewares/*` | 39–100% | 73% |
+| `handlers/*` | 21–100% | 38% — richiedono mock del framework aiogram, testati E2E con Docker |
+
+I due peggiori sono `middlewares/db_middleware.py` e `handlers/_targeting.py`: entrambi
+stanno su ogni update o su ogni comando che prende un bersaglio, quindi sono i prossimi
+candidati sensati, non i file grandi con l'aggregato basso.
 
 ### Note implementative
 
-- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota), impedendo a `resolve_event` di rileggere i bet dal DB.
+- **identity map SQLAlchemy**: non pre-caricare `user_bets` con `selectinload` nel fixture `_create_event` — segnerebbe la collezione come "loaded" (vuota). **La stessa trappola era un bug di produzione**: `resolve_event` leggeva i bet da `event.user_bets`, e chi teneva l'evento teneva anche quella collection — una scommessa piazzata dopo lo snapshot veniva addebitata e mai liquidata. Ora li rilegge con una query. Vedi regola 22.
+- **un `refresh` butta via una modifica pendente sullo stesso attributo** (`autoflush=False` ⇒ la modifica non è ancora nel DB). Motivo in più per scrivere in SQL invece di mutare l'istanza: così non resta mai niente di pendente. Fissato dalla guardia «due grant nella stessa transazione» in `TestUncappedXp`.
+- **la identity map usa riferimenti deboli** — un oggetto caricato e non conservato viene garbage-collected e sparisce dalla mappa. È il motivo per cui `_upsert_user` non avvelena la sessione, e va tenuto presente prima di "ottimizzare" mettendo lo `User` in `data`: lo renderebbe **forte**, e ogni lock di ogni servizio diventerebbe vulnerabile su tutti i ~190 handler. Il tripwire è `TestMiddlewareDoesNotPoisonTheSession`.
+- **due sessioni sullo stesso DB non sono esprimibili su SQLite in-memory**: `StaticPool` dà a ogni sessione la **stessa** connessione, quindi la stessa transazione. Ogni test di concorrenza reale richiede il fixture `pg_engine` (marker `pg`).
 - **timestamp SQLite**: `func.now()` ha precisione al secondo → ordinamento `get_history` usa `(created_at DESC, id DESC)` come secondary sort.
+- **`create_all` e `_MIGRATIONS` producono DDL diverse**: le colonne con `default=…` nei modelli non hanno default *server-side* su uno schema nuovo (SQLAlchemy lo applica in Python), mentre `_MIGRATIONS` le ricrea come `NOT NULL DEFAULT …`. Irrilevante via ORM, rilevante per un `INSERT` SQL grezzo. Fissato in `tests/integration/test_migrations_pg.py`.
 
 ### GitHub Actions (CI/CD)
 
 Tre workflow in `.github/workflows/`:
 
-- **`tests.yml`** — push + PR su qualsiasi branch; `pytest --cov=src`; opzionale Codecov
-  (`CODECOV_TOKEN` nei secrets). È anche `workflow_call` (riusabile come gate).
+- **`tests.yml`** — push + PR su qualsiasi branch; `pytest --cov=src -rxX` → `ruff check src/` →
+  `mypy` (§1); opzionale Codecov (`CODECOV_TOKEN` nei secrets). È anche `workflow_call`
+  (riusabile come gate). Include un **service `postgres:16-alpine`** (DB `gamingbot_test`) e
+  passa `TEST_PG_URL`, che abilita i test marcati `pg`; `DB_URL` **resta SQLite**, perché
+  `database.connection` costruisce il suo engine all'import e non deve puntare al DB di test.
+  `-rxX` elenca xfail e **xpass**: serviva quando le gare sul denaro erano `xfail(strict=True)`
+  (un PASS inatteso faceva fallire la build). Oggi non ci sono più xfail; il flag resta perché
+  è così che si vede subito se qualcuno ne reintroduce uno.
+  Coverage con ratchet **`fail_under = 59`** in `pyproject.toml`: si alza, non si abbassa.
 - **`docker-image.yml`** — push su `main`/`test` o di un git tag `v*.*.*`: job `test`
   (chiama `tests.yml`) → `build-and-push` su **GHCR** (`ghcr.io/${{ github.repository }}`). L'immagine
   si pubblica **solo se i test passano**. Build **multi-arch** `linux/amd64,linux/arm64` (via
@@ -1215,6 +1784,22 @@ Tre workflow in `.github/workflows/`:
 Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, suffisso/versione per ref) ·
 **compose cambia ⇒ solo artifact** · **ogni push ⇒ i test girano**.
 
+### Watchtower: rischio noto e accettato
+
+`containrrr/watchtower` è **senza tag** (quindi `:latest`), l'immagine upstream non è più
+manutenuta (da lì la env var che forza la versione dell'API Docker: quella immagine manda
+la 1.25, rifiutata dai daemon moderni) e monta `/var/run/docker.sock` in **lettura e
+scrittura**, che sull'host equivale a root. Cioè: la cosa che aggiorna il bot da sola non è
+fissata a un digest e ha le chiavi di casa. Con quel socket, `docker inspect` espone anche
+`BOT_TOKEN`, `GROQ_API_KEY`, la password Postgres e `TELEGRAM_SESSION` — quest'ultima è una
+credenziale di account **completo**, non del bot.
+
+**Consapevole, e si tiene così.** Le alternative sono state guardate e scartate: fissare un
+digest, passare a un fork mantenuto, mettere davanti un socket-proxy, o togliere Watchtower
+e fare il pull da GitHub Actions via SSH. Ognuna costa setup e la più pulita costa
+l'auto-update. Non riaprire la discussione senza un fatto nuovo (una CVE su quell'immagine,
+o il registry che smette di servirla).
+
 ---
 
 ## 24. Checklist prima di ogni PR
@@ -1227,7 +1812,7 @@ Regola: **push su `main`/`test` o tag `v*` ⇒ immagine GHCR** (gated dai test, 
 - [ ] Nuovi comandi **utente** aggiunti a `_PRIVATE_COMMANDS` / `_GROUP_COMMANDS`; comandi **admin** solo in `/help`
 - [ ] **Stringhe user-controlled** in messaggi HTML passate da `utils.text.esc` (regola 20)
 - [ ] **Nessun `settings.group_id` a runtime** — `group_registry.get_group_id()` (regola 21)
-- [ ] Mutazioni denaro/XP/bet con `with_for_update` (ordine Event→User→Wallet); `credit/debit` con `amount>0` (regola 22)
+- [ ] Mutazioni denaro/XP/bet decise **in SQL**: check nella `WHERE`, aritmetica nella `SET`, `synchronize_session=False` + `refresh`. Letture per colonna, non per entità. Lock solo dove SQL non basta (ordine Event→User→Wallet, wallet per `tg_id` crescente); `credit/debit` con `amount>0` (regola 22)
 - [ ] Trofei conditions aggiornate se aggiunte nuove metriche su `User`; nuove colonne `User` ⇒ voce in `_MIGRATIONS` (anche cambi di **tipo** colonna)
 - [ ] `User.xp` mutato solo via `xp_service`; nuove sorgenti XP classificate capped/uncapped
 - [ ] Nuovi cosmetici/consumabili/categorie/trofei/ranghi: aggiungere al CSV (`catalogs/*.example.csv` + default Python), non hardcodare nel codice; nuove condizioni trofeo via dispatch + `TROPHY_CONDITIONS` + `describe_condition` (mai `if/elif` sparsi); `collection` a punto fisso
@@ -1279,6 +1864,17 @@ artefatti su disco (mtime snapshot / `updated_at` manifest), esegue `export_stat
 dovuti. `/backup` (archivio chat) e `/esporta` (stato) — admin, redirect-to-private, DM del file se ≤ 50 MB,
 audit `log_action`; deep-link `backup`/`esporta` in `common.cmd_start`. Restore = **solo CLI**
 (`scripts/import_state.py`), mai bottone Telegram distruttivo.
+
+> `tests/unit/test_backup_loop.py` (il modulo era a **0%**, ora 100%). Le garanzie coperte sono
+> quelle che tengono in piedi il bot, non i dettagli: la soglia di due-ness è `>=` e non `>` (con
+> `>` una cadenza giornaliera slitta sempre più tardi); il pre-flight salta il giro con **un**
+> warning invece di un traceback EACCES a ogni scrittura; entrambi i backup sono avvolti in un
+> `except` largo, quindi uno rotto non ferma l'altro; il loop sopravvive a un tick che solleva.
+>
+> Verificate **per mutazione**, non per coverage: 5 modifiche introdotte a mano nel modulo, una
+> per garanzia, e ognuna fa fallire il test corrispondente. È così che ho scoperto che la mia
+> prima asserzione sul confine `>=` non pinnava niente — `now - 24h` è già 24.000001 ore quando
+> il confronto gira, quindi passava in entrambi i casi.
 
 ### 25.4 Permessi di scrittura (Docker)
 

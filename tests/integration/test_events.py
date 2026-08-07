@@ -11,7 +11,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup
 
 from database.models import EventStatus
-from exceptions.economy import EventAlreadySettledError, EventNotFoundError
+from exceptions.economy import EventNotFoundError
 from services import bet_service, poll_service
 
 

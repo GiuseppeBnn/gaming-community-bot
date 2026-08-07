@@ -48,7 +48,7 @@ async def reply_static(message: Message, text: str, bucket: str, **send_kwargs) 
 
     key = (chat.id, message.from_user.id, bucket)
     prev = _last.pop(key, None)
-    if prev is not None:
+    if prev is not None and message.bot is not None:
         try:
             await message.bot.delete_message(chat.id, prev)
         except Exception:  # noqa: BLE001 — message may be gone / too old to delete

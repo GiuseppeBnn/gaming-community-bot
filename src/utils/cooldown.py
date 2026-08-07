@@ -30,7 +30,7 @@ _PRUNE_MAX_AGE = 3600.0  # entries older than this are dropped on prune
 def _prune(now: float) -> None:
     if len(_store) <= _PRUNE_THRESHOLD:
         return
-    for key, ts in [(k, t) for k, t in _store.items() if now - t >= _PRUNE_MAX_AGE]:
+    for key, _ts in [(k, t) for k, t in _store.items() if now - t >= _PRUNE_MAX_AGE]:
         _store.pop(key, None)
 
 

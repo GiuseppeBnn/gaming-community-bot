@@ -186,7 +186,7 @@ async def cb_close(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "adm:bets", IsAdminCallbackFilter())
 async def cb_bets(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    await _show_event_list(callback, db_session, edit=True)
+    await _show_event_list(callback, db_session)
 
 
 # ---------------------------------------------------------------------------

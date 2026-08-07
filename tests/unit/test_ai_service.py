@@ -82,3 +82,62 @@ async def test_generate_completion_missing_key(monkeypatch):
     # differently; AIServiceError here proves we bail out before any request.
     with pytest.raises(AIServiceError):
         await generate_completion("sys", "user")
+
+
+async def test_a_closed_think_block_never_reaches_the_caller(with_api_key):
+    """qwen3.6 scrive il ragionamento dentro `content`: va tolto, non mostrato."""
+    payload = {"choices": [{"message": {
+        "content": "<think>Valuto il tono richiesto.</think>La risposta vera."
+    }}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        assert await generate_completion("sys", "user") == "La risposta vera."
+
+
+async def test_an_unterminated_think_block_is_stripped_too(with_api_key):
+    """La forma pericolosa: `max_tokens` tronca il ragionamento PRIMA di `</think>`,
+    quindi non c'è nessun tag di chiusura a cui appoggiarsi."""
+    payload = {"choices": [{"message": {
+        "content": "Ecco.\n<think>sto ancora ragionando e non ho finito"
+    }}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        assert await generate_completion("sys", "user") == "Ecco."
+
+
+async def test_a_reply_that_is_only_reasoning_is_an_error_not_an_empty_message(
+    with_api_key,
+):
+    """Meglio il messaggio di fallback che una risposta vuota in chat."""
+    payload = {"choices": [{"message": {"content": "<think>solo pensieri</think>"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+
+        with pytest.raises(AIServiceError):
+            await generate_completion("sys", "user")
+
+
+async def test_the_reasoning_switch_is_sent_with_the_model(with_api_key):
+    """qwen3.6 è ibrido: senza questo campo ragiona in chiaro (vedi _THINK_BLOCK)."""
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user")
+
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert sent["reasoning_effort"] == ai_service.settings.groq_reasoning_effort
+
+
+async def test_an_empty_reasoning_setting_omits_the_field(with_api_key, monkeypatch):
+    """La via d'uscita per un modello che il campo non lo accetta: si svuota la
+    variabile in .env, senza toccare il codice."""
+    monkeypatch.setattr(ai_service.settings, "groq_reasoning_effort", "")
+    payload = {"choices": [{"message": {"content": "ok"}}]}
+    with aioresponses() as m:
+        m.post(GROQ_URL, status=200, payload=payload)
+        await generate_completion("sys", "user")
+
+        sent = next(iter(m.requests.values()))[0].kwargs["json"]
+        assert "reasoning_effort" not in sent
