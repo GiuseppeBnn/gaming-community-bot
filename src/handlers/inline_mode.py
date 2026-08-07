@@ -130,7 +130,7 @@ async def user_picker(query: InlineQuery, db_session: AsyncSession) -> None:
     if not users:
         await query.answer(
             results=[_hint_article(
-                key,
+                None,
                 f"Nessun giocatore trovato per «{raw}».",
                 message_text=f"Nessun giocatore trovato per «{esc(raw)}».",
             )],

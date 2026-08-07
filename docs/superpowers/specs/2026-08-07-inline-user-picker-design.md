@@ -21,7 +21,7 @@ L'inline mode risolve entrambi con <b>discovery in chat → tap</b>:
 ```
 @bot giu        →  [👤 Giu (🏆 Livello 7)  —  @giu · 🏆 12 trofei]   (a ogni battuta)
                         tap →
-     nella chat spunta la card profilo completa di @giu (rank, XP, trofei, tag, saldo, dispensa)
+     nella chat spunta la card profilo completa di @giu (rank, XP, trofei, tag, saldo)
 ```
 
 Per il momento la card è **l'unica azione** del picker: niente admin-picker, niente
@@ -81,7 +81,7 @@ tap sull'articolo
 **B. Renderer profilo condiviso** (`src/utils/profile_view.py`, nuovo)
 
 - `render_profile_card(user: User) -> str`: la card HTML completa (nome+tag+@handle,
-  livello+rank+barra XP, trofei, CoInn, dispensa). Contiene l'escaping (`utils.text.esc`)
+  livello+rank+barra XP, trofei, CoInn). Contiene l'escaping (`utils.text.esc`)
   di ogni stringa user-controlled — presentation layer, come da regola 20.
 - `common.show_profilo` viene rifattorizzato per chiamarla: elimina la duplicazione
   col path inline (requisito "poche ripetizioni"). I test di `/profilo` esistenti fanno
@@ -100,7 +100,7 @@ tap sull'articolo
   - `input_message_content`: `InputTextMessageContent(render_profile_card(user), parse_mode=HTML)`.
   - `thumb_url`/`emoji` niente (niente media esterni).
 - Query vuota → anche `switch_pm_text`/`switch_pm_parameter` per spingere la scoperta
-  ("🔎 Cerca nel bot…" → `/profilo` privato, già esistente).
+  ("🔎 Cerca nel bot…" → `/profilo` privato, già esistente) — non implementato in v1.
 - Registrato in `ROUTERS` (`handlers/__init__.py`) prima di `common` (invariante "common
   ultimo" salvo). Update types registrati da `dp.resolve_used_update_types()` da soli.
 
