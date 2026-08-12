@@ -22,8 +22,9 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | [CLAUDE.md](CLAUDE.md) | Regole operative condensate + ricette per agenti/nuovi contributor | Prima di scrivere codice, come riassunto di STEERING |
 | [INDEX.md](INDEX.md) | Questo file: mappa dei file | Non sai **dove** sta una cosa |
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
+| [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina» (2026-07-27, 2026-07-28) | Serve il *perché* dietro `handlers/guess/` |
+| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina» e di 20 Domande (2026-08-12) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task degli stessi giochi | Ricostruire la sequenza di lavoro |
 
 ### Sezioni di STEERING.md

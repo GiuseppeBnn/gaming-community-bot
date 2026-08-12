@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import ScheduledTask
 from handlers.callbacks import EventCb
 from services import group_registry, poll_service, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc
 
 from .base import StartResult, edit_or_send
@@ -25,6 +26,17 @@ class PollType:
     key = "poll"
     hub_label = "📊 Sondaggio"
     create_label = "➕ Crea sondaggio"
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        poll = await poll_service.get(db_session, item_id)
+        if poll is None or poll.status != "ready":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=poll.id, title=poll.question,
+            summary=f"{len(poll_service.options_of(poll))} opzioni", emoji="📊",
+        )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         polls = await poll_service.list_ready(db_session)

@@ -346,6 +346,9 @@ gaming-community-bot/
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
 | `GROQ_API_KEY` | — | modulo AI (opzionale) |
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
+| `GEMINI_API_KEY` | — | provider strutturato dei giochi AI persistenti |
+| `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
+| `GEMINI_THINKING_LEVEL` | `medium` | ragionamento Gemini (`minimal`/`low`/`medium`/`high`) |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
@@ -362,19 +365,20 @@ PostgreSQL e Redis sono già pronti nel `docker-compose.yml`.
 
 ---
 
-## Inline mode (user picker)
+## Inline mode (eventi)
 
-Il bot risponde a `@<bot> <nome>` con la ricerca dei giocatori (match parziale su
-username e nome reale): toccando una card, nella chat viene postato il profilo completo
-(livello, rank, XP, trofei, tag, saldo CoInn) del giocatore scelto — come da
-`docs/superpowers/specs/2026-08-07-inline-user-picker-design.md`.
+Il bot risponde a `@<bot>` con gli eventi utilizzabili adesso e quelli in
+programma, con data e ora locale. Le query `aperti`/`live` e
+`prossimi`/`coming soon` filtrano le due viste. Le card sono read-only: l'azione
+apre un vero deep-link quando l'evento si gioca in privato; i sondaggi e i giochi
+collaborativi non mostrano pulsanti finti.
 
 Attivazione (una volta, con @BotFather):
-1. `/setinline` → testo: `Cerca un giocatore scrivendo il suo nome o @username.`
-2. `/setinlinefeedback` → NON servono in v1 (nessun evento chosen_inline_result).
+1. `/setinline` → testo: `Eventi aperti e in arrivo`
+2. `/setinlinefeedback` → non serve (nessuna mutazione su `chosen_inline_result`).
 
 Sicurezza: il gate membership (`GroupGuard`) si applica anche alle inline query;
-chi non è membro del gruppo riceve solo l'articolo "accesso negato".
+chi non è membro del gruppo non può usare la superficie inline.
 
 ---
 

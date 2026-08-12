@@ -47,6 +47,7 @@ from handlers import (
     quiz,
     schedule,
     shop,
+    twenty_questions,
 )
 
 #: Every router, in the order the dispatcher must try them. See the module docstring.
@@ -64,6 +65,7 @@ ROUTERS: tuple[Router, ...] = (
     events.router,
     quiz.router,
     guess.router,          # next to its twin; the callback prefixes are disjoint
+    twenty_questions.router,
     schedule.router,
     backup.router,
     fun_ai.router,

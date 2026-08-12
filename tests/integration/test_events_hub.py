@@ -229,6 +229,7 @@ class TestHub:
             EventCb(action="list", task_type="sound").pack(),
             EventCb(action="list", task_type="poll").pack(),
             EventCb(action="list", task_type="bet").pack(),
+            EventCb(action="list", task_type="twentyq").pack(),
             AdminCb(action="home").pack(),
         }
 

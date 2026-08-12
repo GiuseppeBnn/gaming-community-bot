@@ -96,6 +96,13 @@ class EventType(Protocol):
     #   async def reset(self, db_session, item_id) -> StartResult | None
     #       Re-arm a finished item so it can run again ("Riproponi"); ``None`` when
     #       the type is not re-runnable.
+    #
+    #   async def discover_open(self, db_session) -> list[PublicEvent]
+    #       Public, currently playable cards for inline mode.
+    #
+    #   async def describe_scheduled(self, db_session, item_id) -> PublicEvent | None
+    #       Resolve a future ScheduledTask without teaching inline mode about the
+    #       concrete event model. Return None when the item is no longer startable.
     # ------------------------------------------------------------------
 
 

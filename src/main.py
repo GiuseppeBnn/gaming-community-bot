@@ -23,7 +23,7 @@ from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
-from services import badge_service, catalog_loader, group_registry
+from services import badge_service, catalog_loader, group_registry, twenty_questions_catalog
 from services.backup.loop import backup_loop
 from utils import alerts
 from utils.atomic_io import probe_writable
@@ -163,11 +163,12 @@ async def main() -> None:
         # a chat migration) before any handler runs.
         effective_group = await group_registry.load(session)
     counts = catalog_loader.init_registries()
+    counts["twenty_questions"] = twenty_questions_catalog.init_catalog()
     logger.info(
         "Cataloghi caricati: %d trofei, %d ranghi, %d cosmetici, %d consumabili "
-        "(%d categorie). Group id effettivo: %s",
+        "(%d categorie), %d giochi per 20 Domande. Group id effettivo: %s",
         n_trophies, counts["ranks"], counts["cosmetics"], counts["consumables"],
-        counts["consumable_categories"], effective_group,
+        counts["consumable_categories"], counts["twenty_questions"], effective_group,
     )
 
     # Populate the event-type registry before any event handler / the scheduler

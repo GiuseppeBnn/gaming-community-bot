@@ -26,6 +26,7 @@ from database.models import ScheduledTask
 from handlers.callbacks import EventCb, GuessAliasCb
 from handlers.guess._shared import kind_of
 from services import guess_service, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc, format_seconds_short
 
 from .base import StartResult, edit_or_send
@@ -63,6 +64,30 @@ class GuessType:
         self.key = spec.key
         self.hub_label = f"{spec.emoji} {spec.label}"
         self.create_label = spec.create_label
+
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        rounds = await guess_service.list_manageable(db_session, self.kind)
+        return [
+            PublicEvent(
+                key=self.key, item_id=round_.id, title=round_.title,
+                summary=f"{round_.max_attempts} tentativi · gioca in privato",
+                emoji=kind_of(self.kind).emoji,
+                deep_link_payload=f"{self.kind}_{round_.id}",
+            )
+            for round_ in rounds if round_.status == "running"
+        ]
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        round_ = await guess_service.get_round(db_session, item_id)
+        if round_ is None or round_.kind != self.kind or round_.status != "ready":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=round_.id, title=round_.title,
+            summary=f"{round_.max_attempts} tentativi", emoji=kind_of(self.kind).emoji,
+            deep_link_payload=f"{self.kind}_{round_.id}",
+        )
 
     # ------------------------------------------------------------------
     # Hub screens

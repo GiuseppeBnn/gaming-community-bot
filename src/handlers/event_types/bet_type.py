@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import BettingEvent, ScheduledTask
 from handlers.callbacks import AdminCb, EventCb
 from services import bet_service, group_registry, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc
 
 from .base import StartResult, edit_or_send
@@ -29,6 +30,28 @@ class BetType:
     key = "bet"
     hub_label = "🎲 Scommessa"
     create_label = "➕ Crea scommessa"
+
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        return [
+            PublicEvent(
+                key=self.key, item_id=event.id, title=event.title,
+                summary=f"{len(event.options)} opzioni · puntate aperte",
+                emoji="🎲", deep_link_payload=f"bet_{event.id}",
+            )
+            for event in await bet_service.get_open_events(db_session)
+        ]
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        event = await bet_service.get_event_detail(db_session, item_id)
+        if event is None or event.status != "draft":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=event.id, title=event.title,
+            summary=f"{len(event.options)} opzioni", emoji="🎲",
+            deep_link_payload=f"bet_{event.id}",
+        )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         drafts = await bet_service.list_drafts(db_session)

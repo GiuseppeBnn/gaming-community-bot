@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -569,3 +570,64 @@ class ScheduledTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
+
+class AIGameSession(Base):
+    """Aggregate root shared by persistent AI-assisted community games."""
+
+    __tablename__ = "ai_game_sessions"
+    __table_args__ = (
+        Index("ix_ai_game_status_type", "status", "game_type"),
+        Index("ix_ai_game_anchor", "group_id", "anchor_message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    anchor_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    next_turn_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    pending_token: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    pending_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AIGameTurn(Base):
+    """Append-only, numbered audit ledger shared by every AI game strategy."""
+
+    __tablename__ = "ai_game_turns"
+    __table_args__ = (UniqueConstraint("session_id", "turn_no"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), nullable=False,
+    )
+    turn_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_text: Mapped[str] = mapped_column(String(512), nullable=False)
+    output_json: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TwentyQuestionsGame(Base):
+    """Strategy state for «Alduino ha scelto un gioco»."""
+
+    __tablename__ = "twenty_questions_games"
+
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    answer: Mapped[str] = mapped_column(String(200), nullable=False)
+    aliases_json: Mapped[str] = mapped_column(String(2048), nullable=False)
+    dossier_json: Mapped[str] = mapped_column(Text, nullable=False)
+    question_limit: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
+    guess_limit: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    guesses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

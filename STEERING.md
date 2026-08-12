@@ -2106,3 +2106,26 @@ drenare il buffer.
 
 **Formato `parse_mode=None`**: un traceback non è HTML, e un `esc` dimenticato
 trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).
+
+---
+
+## 27. Inline eventi & giochi AI persistenti
+
+L'inline mode è esclusivamente una proiezione **read-only** di eventi aperti e
+avvii futuri. `services.event_discovery` interroga soltanto le capability
+opzionali `discover_open` / `describe_scheduled` dei tipi registrati: vietati
+rami per tipo dentro l'handler inline. Le task con payload `close`/`lock` non sono
+"coming soon". Il vecchio picker di utenti è storico e non va ripristinato.
+
+I giochi AI persistenti condividono `AIGameSession` (aggregate e lifecycle) e
+`AIGameTurn` (ledger append-only), mentre ogni strategia possiede una tabella di
+stato (`TwentyQuestionsGame`; in futuro misteri/raid). Una chiamata AI non deve
+mai tenere aperta una transazione: claim atomico con token → commit → rete →
+complete/release condizionale. Un errore del provider non consuma la risorsa.
+
+Le decisioni AI usano `StructuredAIProvider`, JSON Schema e validazione di
+dominio successiva. Il prompt riceve input utente delimitato/non attendibile;
+nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
+restano locali e deterministici. Il catalogo `twenty_questions_games.csv` viene
+caricato una volta all'avvio con fallback integrato e copiato dentro la sessione,
+così una partita già creata non cambia dopo restart o modifica del CSV.

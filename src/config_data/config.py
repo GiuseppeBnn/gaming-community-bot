@@ -1,4 +1,4 @@
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -55,6 +55,14 @@ class Settings(BaseSettings):
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
     guess_judge_timeout_seconds: int = Field(default=12, ge=1)
+    # Structured provider for persistent AI games. Gemini 3.5 Flash supports
+    # JSON Schema and level-based thinking; a separate key keeps the existing
+    # Groq entertainment commands independently deployable.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.5-flash"
+    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
+    gemini_timeout_seconds: int = Field(default=20, ge=1)
+    ai_game_claim_timeout_seconds: int = Field(default=45, ge=5)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin

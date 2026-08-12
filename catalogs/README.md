@@ -10,6 +10,7 @@ cp catalogs/ranks.example.csv                  data/ranks.csv
 cp catalogs/shop_cosmetics.example.csv         data/shop_cosmetics.csv
 cp catalogs/consumable_categories.example.csv  data/consumable_categories.csv
 cp catalogs/consumables.example.csv            data/consumables.csv
+cp catalogs/twenty_questions_games.example.csv data/twenty_questions_games.csv
 # poi edita data/*.csv e riavvia il bot
 ```
 
@@ -87,3 +88,13 @@ Cibi e bevande acquistabili **più volte** nella Locanda: ogni acquisto spende C
 🎒 Dispensa del membro (mostrata sul profilo) e conta per i trofei del menù. Nessun effetto di gioco,
 nessun permesso. `category` deve essere una `key` di `consumable_categories.csv`. Usa chiavi `cons_*`
 per non collidere con i tag cosmetici. `price` in monete (intero ≥ 0).
+
+## `twenty_questions_games.csv`
+
+`key,title,aliases,dossier`
+
+Catalogo dei giochi che Alduino può estrarre per 20 Domande. `aliases` usa `|`
+come separatore; `dossier` deve contenere almeno 80 caratteri di fatti verificati
+su genere, struttura, ambientazione, protagonista e meccaniche. Gemini risponde
+esclusivamente da questo dossier: più è concreto, meno risposte finiscono
+correttamente in «irrilevante». Le `key` devono essere uniche.

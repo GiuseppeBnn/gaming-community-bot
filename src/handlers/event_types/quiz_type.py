@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import ScheduledTask
 from handlers.callbacks import EventCb, QuizEditCb, QuizTryCb
 from services import quiz_service, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc
 
 from .base import StartResult, edit_or_send
@@ -39,6 +40,29 @@ class QuizType:
     #: Its close publishes the podium, so it is worth scheduling on its own clock —
     #: `handlers.schedule` offers «avvio o chiusura?» only for types that say this.
     closable = True
+
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        return [
+            PublicEvent(
+                key=self.key, item_id=q.id, title=q.title,
+                summary=f"{len(q.questions)} domande · gioca in privato",
+                emoji="🧠", deep_link_payload=f"quiz_{q.id}",
+            )
+            for q in await quiz_service.list_ready(db_session)
+            if q.status == "running"
+        ]
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        quiz = await quiz_service.get_quiz(db_session, item_id)
+        if quiz is None or quiz.status != "ready":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=quiz.id, title=quiz.title,
+            summary=f"{len(quiz.questions)} domande", emoji="🧠",
+            deep_link_payload=f"quiz_{quiz.id}",
+        )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         # Quizzes are persistent objects: show ready/running AND the recent

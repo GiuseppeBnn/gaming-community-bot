@@ -180,6 +180,7 @@ class TestEntry:
             SchedCb(action="type", key="sound").pack(),
             SchedCb(action="type", key="poll").pack(),
             SchedCb(action="type", key="bet").pack(),
+            SchedCb(action="type", key="twentyq").pack(),
             SchedCb(action="cancel").pack(),
         }
 
