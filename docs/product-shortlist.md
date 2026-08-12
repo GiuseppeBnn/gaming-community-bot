@@ -26,7 +26,9 @@ tecnico, non come direzione di prodotto corrente.
 Gioco collaborativo nel gruppo: Alduino estrae un videogioco da un catalogo
 verificato; la community dispone di 20 domande sì/no e 3 tentativi per
 indovinarlo. Gemini risponde con output strutturato e non decide localmente una
-vittoria.
+vittoria. Le risposte pubbliche sono soltanto **SÌ**, **NO** o **FORSE**, senza
+spiegazioni. L'estrazione usa una rotazione persistente e bilanciata del catalogo,
+non una scelta casuale che favorisca o ripeta pochi titoli famosi.
 
 La base tecnica deve essere riutilizzata, in quest'ordine, anche per:
 

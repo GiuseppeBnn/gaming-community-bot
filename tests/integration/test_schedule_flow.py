@@ -183,6 +183,7 @@ class TestEntry:
             SchedCb(action="type", key="twentyq").pack(),
             SchedCb(action="cancel").pack(),
         }
+        assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_new_type_is_schedulable_without_touching_this_file(self, session):
         event_types.register(_FakeType())

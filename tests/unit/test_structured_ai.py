@@ -29,6 +29,7 @@ async def test_gemini_sends_schema_thinking_and_parses_only_non_thought_text(gem
         mocked.post(_url(), status=200, payload=response)
         result = await gemini.generate_json(
             system_prompt="system", user_prompt="user", schema=schema,
+            thinking_level="minimal",
         )
 
         assert result == {"verdetto": "si"}
@@ -36,7 +37,7 @@ async def test_gemini_sends_schema_thinking_and_parses_only_non_thought_text(gem
         sent = request.kwargs["json"]
         assert sent["generationConfig"]["responseJsonSchema"] == schema
         assert sent["generationConfig"]["responseMimeType"] == "application/json"
-        assert sent["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "medium"
+        assert sent["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "minimal"
         assert request.kwargs["headers"]["x-goog-api-key"] == "test-key"
 
 
@@ -47,6 +48,29 @@ async def test_gemini_rejects_malformed_json(gemini):
         })
         with pytest.raises(StructuredAIError, match="malformed"):
             await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
+
+
+async def test_max_tokens_has_safe_diagnostics_without_model_material(gemini, caplog):
+    signature = "secret-thought-signature-that-must-never-be-logged"
+    with aioresponses() as mocked:
+        mocked.post(_url(), status=200, payload={
+            "modelVersion": "gemini-test",
+            "candidates": [{
+                "finishReason": "MAX_TOKENS",
+                "content": {"parts": [{"thoughtSignature": signature, "text": "partial"}]},
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 12,
+                "candidatesTokenCount": 3,
+                "thoughtsTokenCount": 241,
+            },
+        })
+        with pytest.raises(StructuredAIError, match="max tokens"):
+            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
+
+    assert signature not in caplog.text
+    assert "partial" not in caplog.text
+    assert "241" in caplog.text
 
 
 async def test_gemini_missing_key_fails_before_network(monkeypatch):

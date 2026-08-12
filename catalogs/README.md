@@ -97,4 +97,6 @@ Catalogo dei giochi che Alduino può estrarre per 20 Domande. `aliases` usa `|`
 come separatore; `dossier` deve contenere almeno 80 caratteri di fatti verificati
 su genere, struttura, ambientazione, protagonista e meccaniche. Gemini risponde
 esclusivamente da questo dossier: più è concreto, meno risposte finiscono
-correttamente in «irrilevante». Le `key` devono essere uniche.
+correttamente in «forse». Le `key` devono essere uniche. Senza CSV il fallback
+integrato contiene 24 giochi; l'estrazione privilegia sempre quelli meno usati e
+completa un giro del catalogo prima di ripeterli.

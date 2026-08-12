@@ -76,7 +76,9 @@ def _hub_kb() -> InlineKeyboardMarkup:
     for et in types:
         b.button(text=et.hub_label, callback_data=EventCb(action="list", task_type=et.key).pack())
     b.button(text="⬅️ Dashboard", callback_data=AdminCb(action="home").pack())
-    b.adjust(len(types) or 1, 1)
+    # Event labels are descriptive (and one is deliberately long): one button
+    # per row preserves their full text instead of squeezing six tiny columns.
+    b.adjust(1)
     return b.as_markup()
 
 

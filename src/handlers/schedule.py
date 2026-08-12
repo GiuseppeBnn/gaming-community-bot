@@ -84,7 +84,7 @@ async def start_schedule_flow(message: Message, state: FSMContext) -> None:
     for et in types:
         b.button(text=et.hub_label, callback_data=SchedCb(action="type", key=et.key).pack())
     b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
-    b.adjust(len(types) or 1, 1)
+    b.adjust(1)
     await message.answer("🗓️ <b>Programma un evento</b>\n\nCosa vuoi programmare?", reply_markup=b.as_markup())
 
 

@@ -96,7 +96,9 @@ def render_card(
         for turn in recent:
             output = json.loads(turn.output_json)
             if turn.kind == "question":
-                icon = {"si": "✅", "no": "❌", "irrilevante": "➖"}.get(
+                # ``irrilevante`` is kept for cards from games started before
+                # the terse sì/no/forse contract was introduced.
+                icon = {"si": "✅", "no": "❌", "forse": "🤔", "irrilevante": "➖"}.get(
                     output.get("verdetto"), "➖"
                 )
                 lines.append(f"{icon} {esc(turn.input_text)}")
@@ -203,8 +205,8 @@ async def play_turn(message: Message, db_session: AsyncSession) -> None:
             await message.reply("🐲 Le domande disponibili sono finite.")
             return
         await db_session.commit()
-        label = {"si": "SÌ", "no": "NO", "irrilevante": "IRRILEVANTE"}[verdict.verdict]
-        await message.reply(f"🐲 <b>{label}</b> — {esc(verdict.reply)}")
+        label = {"si": "SÌ", "no": "NO", "forse": "FORSE"}[verdict.verdict]
+        await message.reply(f"🐲 <b>{label}</b>")
 
     fresh = await ai_game_service.get_snapshot(db_session, snapshot.session.id)
     if fresh is not None:

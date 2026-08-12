@@ -10,7 +10,7 @@ def _reset_catalog(tmp_path):
 
 
 def test_missing_file_uses_builtins(tmp_path):
-    assert catalog.init_catalog(str(tmp_path)) >= 8
+    assert catalog.init_catalog(str(tmp_path)) == 24
     assert any(game.title == "Minecraft" for game in catalog.all_games())
 
 
@@ -35,7 +35,7 @@ def test_invalid_or_duplicate_catalog_degrades_to_builtins(tmp_path):
         "same,Due,," + "g" * 90 + "\n",
         encoding="utf-8",
     )
-    assert catalog.init_catalog(str(tmp_path)) >= 8
+    assert catalog.init_catalog(str(tmp_path)) == 24
 
     path.write_text("key,title,aliases,dossier\nbad,,,corto\n", encoding="utf-8")
-    assert catalog.init_catalog(str(tmp_path)) >= 8
+    assert catalog.init_catalog(str(tmp_path)) == 24

@@ -348,7 +348,7 @@ gaming-community-bot/
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
 | `GEMINI_API_KEY` | — | provider strutturato dei giochi AI persistenti |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
-| `GEMINI_THINKING_LEVEL` | `medium` | ragionamento Gemini (`minimal`/`low`/`medium`/`high`) |
+| `GEMINI_THINKING_LEVEL` | `medium` | default Gemini; 20 Domande forza `minimal` per il verdetto ternario |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |

@@ -631,3 +631,21 @@ class TwentyQuestionsGame(Base):
     questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     guesses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+
+class AIGameCatalogDraw(Base):
+    """Append-only draw history used to keep catalog selection balanced.
+
+    Deliberately independent from a session FK: deleting an old game must not
+    make its target look unused and therefore immediately more likely again.
+    """
+
+    __tablename__ = "ai_game_catalog_draws"
+    __table_args__ = (
+        Index("ix_ai_game_draw_type_key", "game_type", "catalog_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    drawn_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

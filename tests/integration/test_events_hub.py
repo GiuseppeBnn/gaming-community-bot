@@ -232,6 +232,7 @@ class TestHub:
             EventCb(action="list", task_type="twentyq").pack(),
             AdminCb(action="home").pack(),
         }
+        assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_newly_registered_type_appears_without_touching_the_hub(self, session):
         """This is the whole point of the registry: the hub has no per-type code."""

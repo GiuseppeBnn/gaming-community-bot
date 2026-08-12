@@ -223,7 +223,7 @@ class TestEventLifecycle:
 
 class _Provider:
     async def generate_json(self, **kwargs):
-        return {"verdetto": "si", "risposta": "Sì, proprio così."}
+        return {"verdetto": "si"}
 
 
 class _BrokenProvider:
@@ -248,7 +248,7 @@ class TestPlayHandler:
         monkeypatch.setattr(handler, "GeminiStructuredProvider", _Provider)
         message = _Message("È in prima persona?")
         await handler.play_turn(message, session)
-        assert "SÌ" in message.said[-1]
+        assert message.said[-1] == "🐲 <b>SÌ</b>"
         assert message.bot.edits
 
         second_id = await _running(session, "Seconda", anchor=78)

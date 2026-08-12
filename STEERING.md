@@ -2128,4 +2128,12 @@ dominio successiva. Il prompt riceve input utente delimitato/non attendibile;
 nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
 restano locali e deterministici. Il catalogo `twenty_questions_games.csv` viene
 caricato una volta all'avvio con fallback integrato e copiato dentro la sessione,
-così una partita già creata non cambia dopo restart o modifica del CSV.
+così una partita già creata non cambia dopo restart o modifica del CSV. Il fallback
+contiene 24 giochi. `AIGameCatalogDraw` conserva le estrazioni anche quando una
+sessione viene eliminata: si sceglie tra i titoli meno usati, senza ripetizione
+immediata, completando un giro prima di iniziarne un altro; un table lock
+PostgreSQL serializza le creazioni concorrenti per non estrarre dallo stesso
+stato del ledger. Le risposte di 20
+Domande sono solo `si`/`no`/`forse`, renderizzate localmente e senza frase libera;
+la strategia forza thinking `minimal`. I log del provider non devono mai includere
+content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.

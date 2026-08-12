@@ -63,7 +63,10 @@ numero di turno.
 
 `StructuredAIProvider` è una porta asincrona indipendente dal gioco.
 `GeminiStructuredProvider` usa `aiohttp`, timeout esplicito, JSON Schema e una
-risposta con enum chiuso (`si`, `no`, `irrilevante`) più una frase breve.
+risposta con il solo enum chiuso (`si`, `no`, `forse`). Il testo pubblicato è
+costruito localmente: Gemini non può allungarlo né far trapelare il segreto. La
+strategia usa thinking `minimal`, indipendentemente dal default del provider,
+per non spendere il budget di output in ragionamento su una classificazione ternaria.
 
 La strategia di 20 Domande passa soltanto:
 
@@ -79,10 +82,14 @@ normalizzati.
 ### Catalogo
 
 I giochi selezionabili provengono da `twenty_questions_games.csv` in
-`CATALOG_DIR`, con fallback integrato e caricamento una volta all'avvio. Ogni
+`CATALOG_DIR`, con fallback integrato di 24 titoli e caricamento una volta all'avvio. Ogni
 record contiene titolo, alias e un dossier di fatti verificati. Il target viene
 copiato nella sessione: cambiare il catalogo o riavviare il bot non cambia una
-partita già creata.
+partita già creata. Un ledger append-only separato conta le estrazioni e resta
+anche se una partita viene eliminata: si pesca tra i giochi meno usati, evitando
+la ripetizione immediata, così ogni titolo appare una volta prima del giro successivo.
+La breve transazione di estrazione è serializzata in PostgreSQL, quindi due
+creazioni concorrenti non osservano lo stesso stato del ledger.
 
 ## Esperienza utente
 
