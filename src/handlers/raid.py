@@ -302,4 +302,7 @@ async def vote(
     # No card edit per click: on a large group it would create a Bot API storm and
     # reveal a live bandwagon. The personal toast is immediate; totals are shown
     # together with the phase result.
-    await callback.answer(f"🎲 {result.roll} · scelta registrata: {result.label}")
+    await callback.answer(
+        f"✅ Scelta salvata: {result.label}\n"
+        f"🎲 d20 della fase: {result.roll} (resta fisso se cambi tattica)"
+    )

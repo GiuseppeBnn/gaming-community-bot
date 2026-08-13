@@ -276,7 +276,10 @@ async def test_vote_accepts_changes_and_rejects_wrong_group_or_stale_phase(sessi
 
     monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
     await handler.vote(callback, data, session)
-    assert callback.answers[-1][0].startswith("🎲 10 · scelta registrata:")
+    confirmation = callback.answers[-1][0]
+    assert confirmation.startswith("✅ Scelta salvata:")
+    assert "d20 della fase: 10" in confirmation
+    assert "resta fisso se cambi tattica" in confirmation
 
     stale = RaidCb(action="vote", session_id=session_id, phase_no=2, tactic="a")
     await handler.vote(callback, stale, session)
