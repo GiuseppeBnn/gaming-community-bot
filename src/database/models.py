@@ -633,6 +633,54 @@ class TwentyQuestionsGame(Base):
     winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
 
+class RaidGame(Base):
+    """Deterministic state for an asynchronous three-phase narrative raid.
+
+    The AI-authored material is an immutable blueprint. Live mechanics never
+    call an external provider: a raid can always be voted and resolved even if
+    Gemini is unavailable after creation.
+    """
+
+    __tablename__ = "raid_games"
+
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    blueprint_json: Mapped[str] = mapped_column(Text, nullable=False)
+    current_phase: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    boss_hp: Mapped[int] = mapped_column(Integer, default=90, nullable=False)
+    phase_deadline: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    empty_extensions: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # victory | defeat | abandoned; NULL until the raid ends.
+    result: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+
+class RaidAction(Base):
+    """One participant's mutable choice for one raid phase.
+
+    There is deliberately no membership snapshot: late arrivals can play the
+    current phase and absent members do not make the challenge harder.
+    """
+
+    __tablename__ = "raid_actions"
+    __table_args__ = (
+        UniqueConstraint("session_id", "phase_no", "user_tg_id"),
+        Index("ix_raid_actions_phase", "session_id", "phase_no"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("raid_games.session_id", ondelete="CASCADE"), nullable=False,
+    )
+    phase_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tactic: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
 class AIGameCatalogDraw(Base):
     """Append-only draw history used to keep catalog selection balanced.
 

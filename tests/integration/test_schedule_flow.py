@@ -181,6 +181,7 @@ class TestEntry:
             SchedCb(action="type", key="poll").pack(),
             SchedCb(action="type", key="bet").pack(),
             SchedCb(action="type", key="twentyq").pack(),
+            SchedCb(action="type", key="raid").pack(),
             SchedCb(action="cancel").pack(),
         }
         assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)

@@ -32,6 +32,7 @@ def register_builtin() -> None:
     from .guess_type import GuessType
     from .poll_type import PollType
     from .quiz_type import QuizType
+    from .raid_type import RaidType
     from .twenty_questions_type import TwentyQuestionsType
 
     register(QuizType())
@@ -40,6 +41,7 @@ def register_builtin() -> None:
     register(PollType())
     register(BetType())
     register(TwentyQuestionsType())
+    register(RaidType())
 
 
 __all__ = [

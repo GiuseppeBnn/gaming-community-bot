@@ -172,7 +172,8 @@ async def cb_item(callback: CallbackQuery, callback_data: EventCb, db_session: A
 # action → (the action to run, prompt verb, yes-button label)
 _CONFIRM: dict[str, tuple[str, str, str]] = {
     "askstart": ("start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
-    "askclose": ("close", "chiudere ora (pubblica il podio)", "🏁 Sì, chiudi"),
+    "askclose": ("close", "chiudere ora", "🏁 Sì, chiudi"),
+    "askadvance": ("advance", "risolvere subito la fase corrente", "⚡ Sì, risolvi"),
     "askdel": ("del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
     # «e premi» diceva il falso: i premi già pagati restano pagati, e alla chiusura
     # successiva il montepremi viene erogato di nuovo per intero. È voluto — una
@@ -252,6 +253,28 @@ async def cb_close(
         await db_session.commit()
     await callback.answer(res.message, show_alert=res.alert)
     await et.render_list(callback.message, db_session)
+
+
+@router.callback_query(EventCb.filter(F.action == "advance"), IsAdminCallbackFilter())
+async def cb_advance(
+    callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession,
+) -> None:
+    """Generic optional phase-advance capability (currently narrative raids)."""
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
+    advance = getattr(et, "advance_now", None) if et is not None else None
+    if advance is None:
+        await callback.answer()
+        return
+    res = await advance(callback.bot, db_session, item_id)
+    if res.ok:
+        await db_session.commit()
+    await callback.answer(res.message, show_alert=res.alert)
+    await et.render_detail(callback.message, db_session, item_id)
 
 
 @router.callback_query(EventCb.filter(F.action == "del"), IsAdminCallbackFilter())

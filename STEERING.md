@@ -2119,7 +2119,7 @@ rami per tipo dentro l'handler inline. Le task con payload `close`/`lock` non so
 
 I giochi AI persistenti condividono `AIGameSession` (aggregate e lifecycle) e
 `AIGameTurn` (ledger append-only), mentre ogni strategia possiede una tabella di
-stato (`TwentyQuestionsGame`; in futuro misteri/raid). Una chiamata AI non deve
+stato (`TwentyQuestionsGame`, `RaidGame`; in futuro misteri). Una chiamata AI non deve
 mai tenere aperta una transazione: claim atomico con token → commit → rete →
 complete/release condizionale. Un errore del provider non consuma la risorsa.
 
@@ -2148,3 +2148,56 @@ stato del ledger. Le risposte di 20
 Domande sono solo `si`/`no`/`forse`, renderizzate localmente e senza frase libera;
 la strategia forza thinking `minimal`. I log del provider non devono mai includere
 content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.
+
+### 27.1 Raid narrativo asincrono
+
+Il raid è progettato per una membership ampia, intermittente e variabile. Non
+esiste quorum né roster iniziale: `RaidAction` identifica esclusivamente
+`(session_id, phase_no, user_tg_id)` e usa upsert, così ogni utente può cambiare
+tattica finché la fase è corrente. Chi entra tardi gioca subito e l'assenza non
+genera debiti o malus.
+
+Può esistere un solo raid `running` alla volta: `start` serializza i rari avvii
+su PostgreSQL con un table lock breve prima di verificare l'assenza di un altro
+raid attivo. Più card concorrenti frammenterebbero discussione e partecipazione.
+
+Ogni blueprint ha esattamente tre fasi e le tre contromosse locali sono una
+permutazione di `a` (assalto), `d` (difesa), `i` (astuzia): nessuna tattica è
+globalmente favorita e una maggioranza che ripete sempre la stessa scelta non
+può dominare ogni fase. Il danno dipende soltanto dalla frazione efficace:
+`>=3/5 → 40`, `>=1/3 → 34`, altrimenti `22`; boss da 90 HP. Due fasi riuscite
+su tre bastano anche con un contrattempo: il raid premia la coordinazione senza
+richiedere perfezione. Non aggiungere soglie assolute di partecipanti:
+renderebbero il raid più difficile proprio quando molti membri sono inattivi.
+
+Le scelte individuali sono confermate con un callback toast, ma la card non viene
+editata per voto e non espone i conteggi delle tattiche prima della risoluzione:
+questo evita sia il bandwagon sia una tempesta di Bot API in gruppi grandi. I tre
+pulsanti restano uno per riga. `RaidCb` include id sessione, fase e tattica e deve
+restare sotto il limite Telegram di 64 byte.
+
+L'avvio arma un `ScheduledTask(task_type="raid", action="phase")` con durata
+`RAID_PHASE_DURATION_MINUTES` (default 360). Con zero scelte la scadenza concede
+una sola estensione (`RAID_EMPTY_EXTENSION_MINUTES`, default 120), poi conclude
+`abandoned`, mai `defeat`. L'admin può avviare e risolvere manualmente da
+`/eventi`; la risoluzione manuale vuota viene rifiutata, così un test non consuma
+una fase senza aver verificato almeno un voto. Task di una fase già avanzata
+sollevano `TaskSkip` e non sono errori operativi. I timer portano
+`payload.internal=true`: `due_tasks` li esegue, mentre `list_pending` li nasconde
+da `/programmati`, dove annullarli lascerebbe il raid bloccato.
+
+La risoluzione del gioco non viene annullata se Telegram fallisce sia l'edit sia
+il recupero con un nuovo messaggio: il risultato e la fase successiva vengono
+committati, e un task interno `action=refresh` ritenta dopo 1/2 minuti (massimo
+tre consegne complessive). Il terzo fallimento rende il task `failed` e attiva la
+notifica all'admin del scheduler. Un guasto di consegna non può quindi trasformare
+la vecchia fase in una seconda risoluzione o lasciare il raid senza retry.
+
+Gemini viene chiamato soltanto prima della scrittura di creazione e genera la
+veste narrativa con schema stretto e limiti di lunghezza. Le contromosse vengono
+decise dal codice e passate alla regia come vincolo tecnico fidato, affinché ogni
+indizio sia coerente, ma non vengono mai decise o restituite dal modello. Qualunque errore provider/schema
+seleziona un blueprint integrato. Dopo la creazione voti, scadenze, danno,
+vittoria e testi di esito sono interamente locali: vietate chiamate AI nel path
+di voto o risoluzione. Nessun premio/XP nella prima versione, per non introdurre
+farming prima di aver misurato il coinvolgimento reale.

@@ -26,6 +26,7 @@ class StructuredAIProvider(Protocol):
         self, *, system_prompt: str, user_prompt: str,
         schema: dict[str, Any], max_output_tokens: int = 256,
         thinking_level: ThinkingLevel | None = None,
+        temperature: float = 0.1,
     ) -> dict[str, Any]: ...
 
 
@@ -36,6 +37,7 @@ class GeminiStructuredProvider:
         self, *, system_prompt: str, user_prompt: str,
         schema: dict[str, Any], max_output_tokens: int = 256,
         thinking_level: ThinkingLevel | None = None,
+        temperature: float = 0.1,
     ) -> dict[str, Any]:
         if not settings.gemini_api_key:
             raise StructuredAIError("missing api key")
@@ -43,7 +45,7 @@ class GeminiStructuredProvider:
             "systemInstruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
             "generationConfig": {
-                "temperature": 0.1,
+                "temperature": temperature,
                 "maxOutputTokens": max_output_tokens,
                 "responseMimeType": "application/json",
                 "responseJsonSchema": schema,

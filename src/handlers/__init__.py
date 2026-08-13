@@ -45,6 +45,7 @@ from handlers import (
     leaderboard,
     onboarding,
     quiz,
+    raid,
     schedule,
     shop,
     twenty_questions,
@@ -66,6 +67,7 @@ ROUTERS: tuple[Router, ...] = (
     quiz.router,
     guess.router,          # next to its twin; the callback prefixes are disjoint
     twenty_questions.router,
+    raid.router,
     schedule.router,
     backup.router,
     fun_ai.router,

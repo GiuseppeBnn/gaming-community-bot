@@ -85,9 +85,11 @@ src/                                  # src-layout: i package restano top-level 
 | `admin.py` | Valuta, moderazione, dossier, `/stats`, `/audit`, warn/strike |
 | `admin_dashboard.py` | Dashboard a bottoni (`adm:*`) |
 | `events.py` | Hub eventi (`ev:*`): crea → avvia ora / programma. **Zero `if/elif` per tipo** |
-| `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type` |
+| `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type`, `twenty_questions_type`, `raid_type` |
 | `quiz/` | Quiz: creazione FSM, editor, lifecycle, gioco in privato, dry-run admin |
 | `guess/` | Guess The Game (immagine) e Sound Quest (audio): un motore, due giochi |
+| `twenty_questions.py` | UI collaborativa a reply di “Alduino ha scelto un gioco” |
+| `raid.py` | Creazione, card e voti del raid narrativo asincrono; niente edit per ogni voto |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
@@ -124,6 +126,7 @@ src/                                  # src-layout: i package restano top-level 
 | `structured_ai.py` | Porta JSON Schema + adapter Gemini per i giochi AI persistenti |
 | `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
 | `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback di 20 Domande |
+| `raid_service.py` | Blueprint AI/fallback, voti upsert, HP e risoluzione deterministica delle 3 fasi |
 | `backup/state_export.py` | Export/import logico dell'intero DB (streaming, atomico) |
 | `backup/chat_archive.py` | Archivio incrementale della chat via MTProto/Telethon (opt-in) |
 | `backup/loop.py` | Driver in background dei due precedenti — non blocca mai l'event loop |

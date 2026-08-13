@@ -29,7 +29,7 @@ async def test_gemini_sends_schema_thinking_and_parses_only_non_thought_text(gem
         mocked.post(_url(), status=200, payload=response)
         result = await gemini.generate_json(
             system_prompt="system", user_prompt="user", schema=schema,
-            thinking_level="minimal",
+            thinking_level="minimal", temperature=0.7,
         )
 
         assert result == {"verdetto": "si"}
@@ -38,6 +38,7 @@ async def test_gemini_sends_schema_thinking_and_parses_only_non_thought_text(gem
         assert sent["generationConfig"]["responseJsonSchema"] == schema
         assert sent["generationConfig"]["responseMimeType"] == "application/json"
         assert sent["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "minimal"
+        assert sent["generationConfig"]["temperature"] == 0.7
         assert request.kwargs["headers"]["x-goog-api-key"] == "test-key"
 
 

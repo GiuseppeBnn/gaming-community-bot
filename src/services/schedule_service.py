@@ -157,7 +157,13 @@ async def list_pending(session: AsyncSession) -> list[ScheduledTask]:
         .where(ScheduledTask.status == "pending")
         .order_by(ScheduledTask.run_at.asc())
     )
-    return list(result.scalars().all())
+    # Internal lifecycle timers (e.g. a narrative-raid phase) must remain durable
+    # but must not appear in /programmati: cancelling one there would strand the
+    # owning game with no future transition.
+    return [
+        task for task in result.scalars().all()
+        if not task_payload(task).get("internal")
+    ]
 
 
 async def mark_done(session: AsyncSession, task: ScheduledTask) -> None:
