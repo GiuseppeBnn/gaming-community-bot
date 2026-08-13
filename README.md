@@ -188,6 +188,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
+| `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 
 ### Admin (`ADMIN_IDS` **o** creator/admin del gruppo `GROUP_ID`)
@@ -258,6 +259,15 @@ mostra i conteggi delle singole tattiche durante il voto, così la discussione n
 diventa una semplice corsa dietro alla maggioranza; li pubblica nel resoconto.
 La riuscita dipende dalla **frazione** di scelte efficaci, non dal numero di
 persone, e le tre contromosse sono bilanciate tra assalto, difesa e astuzia.
+
+Al primo voto di ogni fase Alduino assegna a ciascun partecipante un **d20
+immutabile**: cambiare tattica non permette di ritirarlo. Ogni tiro da 11 in su
+supera la prova; una maggioranza di successi aggiunge 3 danni, una parità ne
+aggiunge 1 e un fallimento non causa malus. Il dado dà quindi colore e può
+salvare una spedizione quasi riuscita, ma resta subordinato alla strategia:
+anche tre prove perfette non fanno vincere tre fasi giocate male. I 20 e gli 1
+naturali vengono raccontati, senza bonus cumulativi che favorirebbero i gruppi
+più numerosi.
 
 Le fasi durano 6 ore per default e si risolvono con task persistenti. Se nessuno
 risponde, la fase riceve una sola proroga di 2 ore e poi il raid termina senza

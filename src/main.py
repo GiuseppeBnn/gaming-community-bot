@@ -48,6 +48,7 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
     BotCommand(command="locanda", description="🍺 Locanda: tag e consumabili"),
+    BotCommand(command="d20", description="Tira un d20"),
     BotCommand(command="comandi", description="Guida ai comandi"),
     BotCommand(command="spiega_comando", description="Spiegazione di un comando"),
 ]
@@ -64,6 +65,7 @@ _GROUP_COMMANDS = [
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche della community"),
     BotCommand(command="locanda", description="🍺 Locanda: tag e consumabili"),
+    BotCommand(command="d20", description="Tira un d20"),
     BotCommand(command="maestro", description="Trasforma uno sfogo in filosofia"),
     BotCommand(command="complotto", description="Teoria del complotto sul messaggio"),
     BotCommand(command="difendi", description="Avvocato difensore del messaggio"),

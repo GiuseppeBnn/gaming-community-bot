@@ -1,8 +1,9 @@
 """Persistent mechanics and AI-authored blueprint for narrative community raids.
 
 The live game is intentionally provider-free. Gemini may author the immutable
-three-phase narrative during creation; every vote, deadline and resolution is
-then local and deterministic, with a built-in blueprint as outage fallback.
+three-phase narrative during creation; every die, vote, deadline and resolution
+is then local (and reproducible from persisted rolls), with a built-in blueprint
+as outage fallback.
 
 No function commits (STEERING §5).
 """
@@ -14,7 +15,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Literal, NamedTuple
 
 from sqlalchemy import delete, distinct, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -25,11 +26,15 @@ from config_data.config import settings
 from database.models import AIGameSession, AIGameTurn, RaidAction, RaidGame, ScheduledTask
 from services import schedule_service
 from services.structured_ai import StructuredAIError, StructuredAIProvider
+from utils import dice
 
 GAME_TYPE = "raid"
 TACTICS = ("a", "d", "i")
 MAX_HP = 90
 MAX_PHASES = 3
+D20_DC = 11
+D20_FULL_BONUS = 3
+D20_SPLIT_BONUS = 1
 log = logging.getLogger(__name__)
 
 
@@ -70,6 +75,26 @@ class AdvanceResult:
     snapshot: RaidSnapshot | None = None
     extended: bool = False
     finished: bool = False
+
+
+class ActionResult(NamedTuple):
+    """Result of a vote, including the user's immutable roll for the phase."""
+
+    ok: bool
+    label: str | None
+    roll: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class PartyCheck:
+    """Bounded d20 contribution, independent of absolute group size."""
+
+    participants: int
+    successes: int
+    roll_sum: int
+    natural_20s: int
+    natural_1s: int
+    bonus: int
 
 
 _BLUEPRINT_SCHEMA: dict[str, Any] = {
@@ -475,9 +500,9 @@ async def start(
 async def record_action(
     session: AsyncSession, *, session_id: int, phase_no: int,
     user_tg_id: int, tactic: str,
-) -> tuple[bool, str | None]:
+) -> ActionResult:
     if tactic not in TACTICS or not 1 <= phase_no <= MAX_PHASES:
-        return False, None
+        return ActionResult(False, None, None)
     # FOR SHARE allows many voters concurrently but makes a phase transition
     # wait for accepted votes. It avoids a global exclusive hot-row lock while
     # preventing a click from being acknowledged after its phase was resolved.
@@ -488,13 +513,14 @@ async def record_action(
         .with_for_update(read=True)
     )).one_or_none()
     if pair is None or pair.status != "running" or pair.current_phase != phase_no:
-        return False, None
+        return ActionResult(False, None, None)
     label = parse_blueprint(pair.blueprint_json).phases[phase_no - 1].choices[tactic]
     values = {
         "session_id": session_id,
         "phase_no": phase_no,
         "user_tg_id": user_tg_id,
         "tactic": tactic,
+        "roll": dice.d20(),
         "updated_at": _now(),
     }
     dialect = session.get_bind().dialect.name
@@ -502,17 +528,18 @@ async def record_action(
     if dialect == "postgresql":
         statement = pg_insert(RaidAction).values(**values).on_conflict_do_update(
             index_elements=["session_id", "phase_no", "user_tg_id"],
+            # Deliberately omit roll: changing tactic must never be a reroll.
             set_={"tactic": tactic, "updated_at": _now()},
-        )
+        ).returning(RaidAction.roll)
     elif dialect == "sqlite":
         statement = sqlite_insert(RaidAction).values(**values).on_conflict_do_update(
             index_elements=["session_id", "phase_no", "user_tg_id"],
             set_={"tactic": tactic, "updated_at": _now()},
-        )
+        ).returning(RaidAction.roll)
     else:  # pragma: no cover - supported deployments are PostgreSQL/SQLite
         raise RuntimeError(f"unsupported raid database: {dialect}")
-    await session.execute(statement)
-    return True, label
+    roll = int((await session.execute(statement)).scalar_one())
+    return ActionResult(True, label, roll)
 
 
 def _damage(correct: int, total: int) -> tuple[int, Literal["decisive", "success", "setback"]]:
@@ -523,6 +550,35 @@ def _damage(correct: int, total: int) -> tuple[int, Literal["decisive", "success
     if correct * 3 >= total:
         return 34, "success"
     return 22, "setback"
+
+
+def _party_check(rolls: list[int]) -> PartyCheck:
+    """Resolve the raid's D&D-inspired group check.
+
+    A raw d20 has a symmetric 50% chance to meet DC 11. A strict majority earns
+    the full +3, an exact split earns +1 and a failed check has no penalty. The
+    split result avoids the large two-player advantage produced by treating a
+    1/1 tie as a full group success, while keeping expected bonus damage nearly
+    constant as attendance changes. Natural 20/1 are presentation-only: absolute
+    critical counts must not scale damage with the size of the group.
+    """
+    if not rolls or any(not 1 <= roll <= 20 for roll in rolls):
+        raise ValueError("party check needs valid d20 rolls")
+    successes = sum(roll >= D20_DC for roll in rolls)
+    if successes * 2 > len(rolls):
+        bonus = D20_FULL_BONUS
+    elif successes * 2 == len(rolls):
+        bonus = D20_SPLIT_BONUS
+    else:
+        bonus = 0
+    return PartyCheck(
+        participants=len(rolls),
+        successes=successes,
+        roll_sum=sum(rolls),
+        natural_20s=rolls.count(20),
+        natural_1s=rolls.count(1),
+        bonus=bonus,
+    )
 
 
 async def advance_phase(
@@ -588,7 +644,9 @@ async def advance_phase(
         if action.tactic in counts:
             counts[action.tactic] += 1
     correct = counts[phase.counter]
-    damage, outcome = _damage(correct, len(actions))
+    base_damage, outcome = _damage(correct, len(actions))
+    party_check = _party_check([action.roll for action in actions])
+    damage = base_damage + party_check.bonus
     game.boss_hp = max(0, game.boss_hp - damage)
     game.empty_extensions = 0
     root.next_turn_no += 1
@@ -599,10 +657,19 @@ async def advance_phase(
             "phase": phase_no,
             "outcome": outcome,
             "damage": damage,
+            "base_damage": base_damage,
             "participants": len(actions),
             "correct": correct,
             "counts": counts,
             "counter": phase.counter,
+            "d20": {
+                "dc": D20_DC,
+                "successes": party_check.successes,
+                "roll_sum": party_check.roll_sum,
+                "natural_20s": party_check.natural_20s,
+                "natural_1s": party_check.natural_1s,
+                "bonus": party_check.bonus,
+            },
         }, ensure_ascii=False),
     ))
     await _cancel_phase_tasks(session, session_id)

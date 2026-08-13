@@ -34,12 +34,26 @@ aspettare il timer reale.
 - Il codice sceglie una permutazione: ciascuna categoria è efficace esattamente
   una volta nelle tre fasi.
 - Un utente ha una scelta per fase, modificabile fino alla risoluzione.
+- Il primo voto fissa anche un d20 personale `1..20`; cambiare scelta non lo ritira.
 - `>= 3/5` efficaci: colpo decisivo, 40 danni.
 - `>= 1/3` efficaci: successo, 34 danni.
 - sotto `1/3`: contrattempo, ma avanzamento, 22 danni.
+- Prova di compagnia su CD 11: maggioranza di tiri riusciti `+3`, parità
+  `+1`, minoranza `+0`; non esistono malus da dado.
 - Dopo la terza fase: vittoria con HP a zero, altrimenti finale di sconfitta
   narrativa. Due fasi riuscite e un contrattempo bastano (34+34+22=90), quindi
-  serve coordinazione ma non perfezione.
+  serve coordinazione ma non perfezione. Il bonus d20 è limitato a 3 per fase:
+  tre tattiche errate causano al massimo 75 danni, mentre una spedizione con un
+  colpo decisivo e due contrattempi può essere salvata solo da tre prove eccellenti
+  (93 danni). La fortuna ha quindi un momento memorabile senza prendere il posto
+  della strategia.
+
+La soglia 11 rende ogni dado senza modificatori un evento 50/50. Una maggioranza
+stretta vale il bonus pieno; una divisione esatta vale soltanto +1. In questo modo
+il valore atteso resta vicino a 1,5 danni con gruppi dispari e tra 1,25 e 1,5 con
+gruppi pari, invece di regalare a due partecipanti il 75% di probabilità del bonus
+pieno. I naturali 20 e 1 compaiono nella cronaca ma non cambiano il danno: bonus
+per conteggio assoluto crescerebbero automaticamente con la dimensione del gruppo.
 
 ## Tempo e partecipazione
 
@@ -75,7 +89,7 @@ una modalità degradata.
 
 - `AIGameSession`: lifecycle, gruppo, anchor e turn number.
 - `RaidGame`: blueprint, fase, HP, deadline, proroga e risultato.
-- `RaidAction`: voto corrente/storico con unique per utente e fase.
+- `RaidAction`: voto corrente/storico e d20 immutabile, con unique per utente e fase.
 - `AIGameTurn(kind="phase")`: audit append-only del risultato, inclusi conteggi,
   danno e partecipanti.
 - `ScheduledTask(task_type="raid", action="phase", internal=true)`: risoluzione
@@ -98,3 +112,7 @@ quindi parte della transazione che decide danno e fase.
   non rimborsabili diventano più problematiche con l'aumento del gruppo, ragione
   per cui qui non esiste quorum assoluto:
   <https://www.sciencedirect.com/science/article/pii/S0304406820300288>.
+- D&D Basic Rules, «Group Checks»: ogni membro tira e il risultato viene deciso
+  dalla frazione di successi. Il raid ne usa una variante più prudente sulla
+  parità e senza malus, adatta a presenze variabili:
+  <https://www.dndbeyond.com/sources/dnd/basic-rules-2014/using-ability-scores#GroupChecks>.

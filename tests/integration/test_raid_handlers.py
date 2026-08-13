@@ -12,6 +12,11 @@ from handlers.event_types.raid_type import RaidType
 from services import group_registry, raid_service, schedule_service
 
 
+@pytest.fixture(autouse=True)
+def _neutral_d20(monkeypatch):
+    monkeypatch.setattr(raid_service.dice, "d20", lambda: 10)
+
+
 class _State:
     def __init__(self):
         self.value = None
@@ -271,7 +276,7 @@ async def test_vote_accepts_changes_and_rejects_wrong_group_or_stale_phase(sessi
 
     monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
     await handler.vote(callback, data, session)
-    assert "registrata" in callback.answers[-1][0]
+    assert callback.answers[-1][0].startswith("🎲 10 · scelta registrata:")
 
     stale = RaidCb(action="vote", session_id=session_id, phase_no=2, tactic="a")
     await handler.vote(callback, stale, session)

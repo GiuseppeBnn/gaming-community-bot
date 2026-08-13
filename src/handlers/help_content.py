@@ -37,6 +37,7 @@ USER_CATEGORIES = (
     "🎲 Scommesse",
     "🏆 Progressione",
     "🍺 Locanda",
+    "🎲 Giochi rapidi",
     "🤖 Intrattenimento AI",
     "❓ Aiuto",
 )
@@ -135,6 +136,12 @@ _COMMANDS: list[CommandDoc] = [
                 "<b>Personalizzazioni</b> (tag cosmetici da mostrare sul profilo, attivabili "
                 "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
                 "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei).",
+    ),
+    # --- 🎲 Giochi rapidi ---
+    CommandDoc(
+        "d20", "Tira un dado da 1 a 20", "🎲 Giochi rapidi",
+        usage="/d20",
+        details="Alduino risponde con un solo numero casuale da <b>1</b> a <b>20</b>, inclusi.",
     ),
     # --- 🤖 Intrattenimento AI (in gruppo, in risposta a un messaggio) ---
     CommandDoc(

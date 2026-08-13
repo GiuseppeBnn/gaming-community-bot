@@ -55,6 +55,30 @@ def test_damage_uses_fractions_not_group_size():
     assert raid_service._damage(33, 100) == (22, "setback")
 
 
+@pytest.mark.parametrize(("rolls", "successes", "bonus", "twenties", "ones"), [
+    ([11], 1, 3, 0, 0),
+    ([10], 0, 0, 0, 0),
+    ([11, 10], 1, 1, 0, 0),
+    ([20, 11, 10], 2, 3, 1, 0),
+    ([20, 1, 19, 2], 2, 1, 1, 1),
+])
+def test_party_check_is_proportional_and_bounded(
+    rolls, successes, bonus, twenties, ones,
+):
+    result = raid_service._party_check(rolls)
+    assert result.successes == successes
+    assert result.bonus == bonus
+    assert result.natural_20s == twenties
+    assert result.natural_1s == ones
+    assert result.bonus <= 3
+
+
+@pytest.mark.parametrize("rolls", [[], [0], [21]])
+def test_party_check_rejects_invalid_dice(rolls):
+    with pytest.raises(ValueError, match="valid d20"):
+        raid_service._party_check(rolls)
+
+
 def test_blueprint_round_trip_and_corruption():
     source = raid_service.fallback_blueprint("tema", ("a", "d", "i"))
     assert raid_service.parse_blueprint(raid_service.blueprint_json(source)) == source

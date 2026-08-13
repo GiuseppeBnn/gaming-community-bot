@@ -40,7 +40,7 @@ async def test_many_simultaneous_voters_are_all_kept(pg_sessions):
             return result
 
     results = await asyncio.gather(*(vote(user_id) for user_id in range(1, 9)))
-    assert all(ok for ok, _ in results)
+    assert all(result.ok for result in results)
 
     async with pg_sessions() as check:
         count = (await check.execute(select(func.count(RaidAction.id)).where(
@@ -62,14 +62,17 @@ async def test_postgres_upsert_changes_choice_without_duplicate(pg_sessions):
             session, root.id, group_id=-1001, anchor_message_id=77,
         )
         await session.commit()
+        results = []
         for tactic in ("a", "i"):
-            assert (await raid_service.record_action(
+            result = await raid_service.record_action(
                 session,
                 session_id=root.id,
                 phase_no=1,
                 user_tg_id=42,
                 tactic=tactic,
-            ))[0]
+            )
+            assert result.ok
+            results.append(result)
             await session.commit()
 
         actions = list((await session.execute(select(RaidAction).where(
@@ -77,3 +80,4 @@ async def test_postgres_upsert_changes_choice_without_duplicate(pg_sessions):
         ))).scalars().all())
         assert len(actions) == 1
         assert actions[0].tactic == "i"
+        assert results[0].roll == results[1].roll == actions[0].roll

@@ -656,10 +656,12 @@ class RaidGame(Base):
 
 
 class RaidAction(Base):
-    """One participant's mutable choice for one raid phase.
+    """One participant's choice and immutable d20 for one raid phase.
 
     There is deliberately no membership snapshot: late arrivals can play the
-    current phase and absent members do not make the challenge harder.
+    current phase and absent members do not make the challenge harder. The
+    tactic can change while the phase is open; the roll cannot, which prevents
+    reroll farming.
     """
 
     __tablename__ = "raid_actions"
@@ -675,6 +677,9 @@ class RaidAction(Base):
     phase_no: Mapped[int] = mapped_column(Integer, nullable=False)
     user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tactic: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 10 is only the neutral migration value for votes created by an older
+    # release. New votes always provide a cryptographically strong 1..20 roll.
+    roll: Mapped[int] = mapped_column(Integer, server_default="10", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,

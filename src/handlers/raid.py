@@ -145,13 +145,37 @@ def _phase_result(snapshot: RaidSnapshot, turn) -> list[str]:
         for key in raid_service.TACTICS
     )
     narrative = phase.success_text if outcome in {"decisive", "success"} else phase.setback_text
-    return [
+    lines = [
         f"{icon} <b>Fase {phase_no}</b> · -{int(value.get('damage', 0))} HP "
         f"· {int(value.get('participants', 0))} partecipanti",
         f"<i>{esc(narrative)}</i>",
         f"🎯 Tattica efficace: {esc(phase.choices[phase.counter])}",
         f"Scelte: {chosen}",
     ]
+    d20 = value.get("d20")
+    if isinstance(d20, dict):
+        participants = max(1, int(value.get("participants", 0)))
+        successes = int(d20.get("successes", 0))
+        bonus = int(d20.get("bonus", 0))
+        verdict = (
+            "riuscita" if bonus == raid_service.D20_FULL_BONUS
+            else "equilibrata" if bonus == raid_service.D20_SPLIT_BONUS
+            else "fallita"
+        )
+        lines.append(
+            f"🎲 Prova di compagnia {verdict}: {successes}/{participants} "
+            f"superano CD {int(d20.get('dc', raid_service.D20_DC))} · +{bonus} danni"
+        )
+        naturals = []
+        natural_20s = int(d20.get("natural_20s", 0))
+        natural_1s = int(d20.get("natural_1s", 0))
+        if natural_20s:
+            naturals.append(f"{natural_20s}×20 naturale")
+        if natural_1s:
+            naturals.append(f"{natural_1s}×1 naturale")
+        if naturals:
+            lines.append("✨ " + " · ".join(naturals))
+    return lines
 
 
 def render_card(
@@ -186,6 +210,8 @@ def render_card(
             "",
             "Scegli una tattica. Puoi cambiarla finché la fase è aperta; "
             "chi arriva tardi può entrare senza penalità.",
+            "🎲 Il primo voto fissa il tuo d20 (CD 11): cambiare tattica non lo ritira. "
+            "Maggioranza riuscita +3 danni, parità +1, nessun malus.",
         ])
         b = InlineKeyboardBuilder()
         for tactic in raid_service.TACTICS:
@@ -261,14 +287,14 @@ async def vote(
     if callback.message.chat.id != group_registry.get_group_id():
         await callback.answer("Questo raid appartiene a un altro gruppo.", show_alert=True)
         return
-    ok, label = await raid_service.record_action(
+    result = await raid_service.record_action(
         db_session,
         session_id=callback_data.session_id,
         phase_no=callback_data.phase_no,
         user_tg_id=callback.from_user.id,
         tactic=callback_data.tactic,
     )
-    if not ok:
+    if not result.ok:
         await db_session.rollback()
         await callback.answer("Questa fase è già conclusa.", show_alert=True)
         return
@@ -276,4 +302,4 @@ async def vote(
     # No card edit per click: on a large group it would create a Bot API storm and
     # reveal a live bandwagon. The personal toast is immediate; totals are shown
     # together with the phase result.
-    await callback.answer(f"✅ Scelta registrata: {label}")
+    await callback.answer(f"🎲 {result.roll} · scelta registrata: {result.label}")

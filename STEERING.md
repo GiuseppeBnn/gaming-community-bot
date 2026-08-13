@@ -2170,6 +2170,18 @@ su tre bastano anche con un contrattempo: il raid premia la coordinazione senza
 richiedere perfezione. Non aggiungere soglie assolute di partecipanti:
 renderebbero il raid più difficile proprio quando molti membri sono inattivi.
 
+Il primo voto di ciascun utente in una fase genera e persiste un d20 uniforme
+`1..20`; l'upsert può modificare esclusivamente la tattica e non `roll`, quindi
+cambiare pulsante non consente reroll farming. La prova di compagnia usa `CD 11`
+(successo individuale esattamente 50% su un dado senza modificatori): maggioranza
+stretta di successi `+3` danni, parità esatta `+1`, minoranza `+0`, mai malus.
+Questa variante della prova di gruppo mantiene il valore atteso quasi costante
+al variare dei presenti e limita il dado a tre danni per fase. Tre contrattacchi
+sbagliati fanno al massimo `22*3 + 3*3 = 75`, perciò la fortuna non sostituisce
+la lettura degli indizi; può soltanto salvare il caso quasi riuscito con un colpo
+decisivo (`40+22+22+9 = 93`). I naturali 20/1 sono registrati e mostrati, ma non
+producono modificatori per conteggio assoluto, che favorirebbero i gruppi grandi.
+
 Le scelte individuali sono confermate con un callback toast, ma la card non viene
 editata per voto e non espone i conteggi delle tattiche prima della risoluzione:
 questo evita sia il bandwagon sia una tempesta di Bot API in gruppi grandi. I tre
@@ -2197,7 +2209,7 @@ Gemini viene chiamato soltanto prima della scrittura di creazione e genera la
 veste narrativa con schema stretto e limiti di lunghezza. Le contromosse vengono
 decise dal codice e passate alla regia come vincolo tecnico fidato, affinché ogni
 indizio sia coerente, ma non vengono mai decise o restituite dal modello. Qualunque errore provider/schema
-seleziona un blueprint integrato. Dopo la creazione voti, scadenze, danno,
+seleziona un blueprint integrato. Dopo la creazione voti, tiri, scadenze, danno,
 vittoria e testi di esito sono interamente locali: vietate chiamate AI nel path
 di voto o risoluzione. Nessun premio/XP nella prima versione, per non introdurre
 farming prima di aver misurato il coinvolgimento reale.

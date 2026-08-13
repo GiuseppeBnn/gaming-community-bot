@@ -134,6 +134,18 @@ class TestMigrationsRepairAnOldDeploy:
         col = (await _columns(pg_engine, "guess_rounds"))["closes_at"]
         assert col["nullable"] is True
 
+    async def test_readds_a_safe_roll_to_older_raid_votes(
+        self, pg_engine, monkeypatch,
+    ):
+        async with pg_engine.begin() as conn:
+            await conn.execute(text("ALTER TABLE raid_actions DROP COLUMN roll"))
+
+        await _run_migrations(pg_engine, monkeypatch)
+
+        col = (await _columns(pg_engine, "raid_actions"))["roll"]
+        assert col["nullable"] is False
+        assert "10" in col["default"]
+
     async def test_readds_columns_missing_from_an_older_schema(self, pg_engine, monkeypatch):
         async with pg_engine.begin() as conn:
             await conn.execute(text("ALTER TABLE users DROP COLUMN xp_today"))

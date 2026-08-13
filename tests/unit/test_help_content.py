@@ -87,5 +87,11 @@ class TestTheGuessGamesAreDiscoverable:
         assert render_command("eventi", is_admin=False) is None
 
 
+def test_d20_is_a_public_bare_roll_command():
+    page = render_command("d20", is_admin=False)
+    assert page is not None
+    assert "/d20" in page and "1" in page and "20" in page
+
+
 def esc_token(usage: str) -> str:
     return help_content.esc(usage)

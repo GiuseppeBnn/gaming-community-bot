@@ -84,6 +84,11 @@ _MIGRATIONS: list[str] = [
     # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
     # so rounds created before this column keep behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    # raid_actions: the first vote in each phase now fixes one immutable d20.
+    # Existing open votes receive 10: a valid roll which cannot create a bonus,
+    # so deploying the mechanic never gifts damage to a half-played old phase.
+    "ALTER TABLE raid_actions ADD COLUMN IF NOT EXISTS "
+    "roll INTEGER NOT NULL DEFAULT 10",
 ]
 
 

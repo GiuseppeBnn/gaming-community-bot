@@ -9,6 +9,12 @@ from database.models import AIGameTurn, RaidAction, ScheduledTask
 from services import raid_service, schedule_service
 
 
+@pytest.fixture(autouse=True)
+def _neutral_d20(monkeypatch):
+    """Keep legacy lifecycle assertions deterministic; focused tests opt in."""
+    monkeypatch.setattr(raid_service.dice, "d20", lambda: 10)
+
+
 async def _ready(session):
     root = await raid_service.create_raid(
         session,
@@ -97,6 +103,44 @@ async def test_full_raid_supports_changed_votes_and_late_joiners(session):
     assert not (await raid_service.record_action(
         session, session_id=session_id, phase_no=3, user_tg_id=5, tactic="i",
     ))[0]
+
+
+async def test_first_vote_fixes_roll_and_resolution_audits_group_check(
+    session, monkeypatch,
+):
+    values = iter((20, 1, 11, 7))
+    monkeypatch.setattr(raid_service.dice, "d20", lambda: next(values))
+    session_id = await _running(session)
+
+    first = await raid_service.record_action(
+        session, session_id=session_id, phase_no=1, user_tg_id=1, tactic="d",
+    )
+    changed = await raid_service.record_action(
+        session, session_id=session_id, phase_no=1, user_tg_id=1, tactic="a",
+    )
+    second = await raid_service.record_action(
+        session, session_id=session_id, phase_no=1, user_tg_id=2, tactic="a",
+    )
+    third = await raid_service.record_action(
+        session, session_id=session_id, phase_no=1, user_tg_id=3, tactic="a",
+    )
+    assert (first.roll, changed.roll, second.roll, third.roll) == (20, 20, 11, 7)
+    await session.commit()
+
+    result = await raid_service.advance_phase(session, session_id, manual=True)
+    await session.commit()
+    turn = json.loads(result.snapshot.turns[-1].output_json)
+    assert result.snapshot.game.boss_hp == 47  # 40 strategy + 3 bounded d20 bonus
+    assert turn["base_damage"] == 40
+    assert turn["damage"] == 43
+    assert turn["d20"] == {
+        "dc": 11,
+        "successes": 2,
+        "roll_sum": 38,
+        "natural_20s": 1,
+        "natural_1s": 0,
+        "bonus": 3,
+    }
 
 
 async def test_manual_empty_phase_refuses_but_automatic_extends_once_then_abandons(
