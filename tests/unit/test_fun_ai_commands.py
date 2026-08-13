@@ -45,12 +45,16 @@ class _StubBot:
 
 class _StubMessage:
     def __init__(self, *, chat_type: str = "supergroup", reply_to=None,
-                 user_id: int = USER_ID) -> None:
+                 user_id: int = USER_ID, text: str | None = None,
+                 caption: str | None = None, user_is_bot: bool = False) -> None:
         self.bot = _StubBot()
         self.chat = types.SimpleNamespace(id=-100_123, type=chat_type)
         self.from_user = types.SimpleNamespace(id=user_id, username="tizio",
-                                               full_name="Tizio Test")
+                                               full_name="Tizio Test",
+                                               is_bot=user_is_bot)
         self.reply_to_message = reply_to
+        self.text = text
+        self.caption = caption
         self.replies: list[str] = []
 
     async def reply(self, text, **kwargs):
@@ -63,11 +67,11 @@ class _StubMessage:
 
 def _replied(text: str | None = "ciao", *, caption: str | None = None,
              author_username: str | None = "vittima",
-             author_name: str = "La Vittima"):
+             author_name: str = "La Vittima", author_id: int = 99):
     return types.SimpleNamespace(
         text=text,
         caption=caption,
-        from_user=types.SimpleNamespace(id=99, username=author_username,
+        from_user=types.SimpleNamespace(id=author_id, username=author_username,
                                         full_name=author_name),
     )
 
@@ -296,5 +300,60 @@ class TestAlduino:
         second = _StubMessage()
 
         await fun_ai.cmd_alduino(second, types.SimpleNamespace(args="ciao"))
+
+        assert len(llm) == 1 and "Aspetta" in second.said
+
+
+class TestNaturalAlduinoReplies:
+    async def test_reply_to_bot_continues_without_command_and_includes_context(self, llm):
+        message = _StubMessage(
+            text="perché?",
+            reply_to=_replied("Ti consiglio Hades.", author_id=_StubBot.id),
+        )
+
+        await fun_ai.reply_to_alduino(message)
+
+        assert len(llm) == 1
+        assert "Ti consiglio Hades." in llm[0]["text"]
+        assert "perché?" in llm[0]["text"]
+        assert "MESSAGGIO PRECEDENTE DI ALDUINO" in llm[0]["text"]
+
+    async def test_caption_is_valid_user_text(self, llm):
+        message = _StubMessage(
+            caption="che ne pensi?",
+            reply_to=_replied("Mandami pure la foto.", author_id=_StubBot.id),
+        )
+
+        await fun_ai.reply_to_alduino(message)
+
+        assert len(llm) == 1 and "che ne pensi?" in llm[0]["text"]
+
+    @pytest.mark.parametrize("shape", ["other_user", "command", "media_only", "bot"])
+    async def test_irrelevant_replies_are_skipped(self, llm, shape):
+        kwargs = {
+            "text": "ciao",
+            "reply_to": _replied("test", author_id=_StubBot.id),
+        }
+        if shape == "other_user":
+            kwargs["reply_to"] = _replied("test", author_id=123)
+        elif shape == "command":
+            kwargs["text"] = "/daily"
+        elif shape == "media_only":
+            kwargs["text"] = None
+        elif shape == "bot":
+            kwargs["user_is_bot"] = True
+        message = _StubMessage(**kwargs)
+
+        with pytest.raises(fun_ai.SkipHandler):
+            await fun_ai.reply_to_alduino(message)
+
+        assert llm == []
+
+    async def test_natural_replies_share_the_ai_cooldown(self, llm):
+        target = _replied("Ciao.", author_id=_StubBot.id)
+        await fun_ai.reply_to_alduino(_StubMessage(text="uno", reply_to=target))
+        second = _StubMessage(text="due", reply_to=target)
+
+        await fun_ai.reply_to_alduino(second)
 
         assert len(llm) == 1 and "Aspetta" in second.said

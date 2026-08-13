@@ -30,6 +30,16 @@ def test_clip_source_custom_limit():
     assert fun_ai.clip_source("abcdef", limit=3) == "abc"
 
 
+def test_alduino_reply_context_is_labelled_and_bounded():
+    source = fun_ai.alduino_reply_source("u" * 2000, "a" * 2000)
+
+    assert "MESSAGGIO PRECEDENTE DI ALDUINO" in source
+    assert "RISPOSTA ATTUALE DELL'UTENTE" in source
+    assert source.count("u") == fun_ai._ALDUINO_CURRENT_CHARS
+    assert source.count("a") == fun_ai._ALDUINO_PREVIOUS_CHARS
+    assert len(source) <= fun_ai._MAX_INPUT_CHARS
+
+
 # ---------------------------------------------------------------------------
 # _generate_and_reply — output is plain text, input is wrapped as content
 # ---------------------------------------------------------------------------

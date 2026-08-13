@@ -187,7 +187,9 @@ _COMMANDS: list[CommandDoc] = [
         details="Scrivi a <b>Alduino</b>, il draghetto viola gamer della community: gli parli "
                 "direttamente e lui ti risponde a tono — gentile e premuroso, ma furbo e "
                 "sarcastico quando ci sta. Es. <code>/alduino consigliami un gioco</code> "
-                "(o rispondi a un messaggio).",
+                "(o usa il comando in risposta a un messaggio). Dopo che Alduino ti ha "
+                "risposto, continua rispondendo direttamente ai suoi messaggi: non serve "
+                "ripetere il comando.",
     ),
     # --- ❓ Aiuto ---
     CommandDoc(

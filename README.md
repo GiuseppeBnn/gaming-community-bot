@@ -190,6 +190,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
+| `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
 
 ### Admin (`ADMIN_IDS` **o** creator/admin del gruppo `GROUP_ID`)
 
