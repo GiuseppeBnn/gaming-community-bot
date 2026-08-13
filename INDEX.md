@@ -120,6 +120,10 @@ src/                                  # src-layout: i package restano top-level 
 | `schedule_service.py` | `parse_run_at` `schedule_task` `due_tasks` `mark_done/failed` — timestamp UTC naive |
 | `group_registry.py` | Id gruppo **effettivo** (sopravvive alle migrazioni chat) + `send_group_message` |
 | `ai_service.py` | Client Groq async: `generate_completion` (intrattenimento) e il giudizio structured-output |
+| `ai_game_service.py` | Aggregate persistente di 20 Domande, claim dei turni e rotazione catalogo |
+| `structured_ai.py` | Porta JSON Schema + adapter Gemini per i giochi AI persistenti |
+| `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
+| `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback di 20 Domande |
 | `backup/state_export.py` | Export/import logico dell'intero DB (streaming, atomico) |
 | `backup/chat_archive.py` | Archivio incrementale della chat via MTProto/Telethon (opt-in) |
 | `backup/loop.py` | Driver in background dei due precedenti — non blocca mai l'event loop |

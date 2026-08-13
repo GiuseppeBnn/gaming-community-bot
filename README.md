@@ -313,7 +313,7 @@ gaming-community-bot/
 │   ├── database/{connection,models}.py
 │   ├── services/                     # logica DB-side (no commit): economy, xp, badge, bet,
 │   │                                 #   shop, quiz, admin, moderation, schedule, ai,
-│   │                                 #   catalog_loader (CSV → trofei/ranghi/cosmetici)
+│   │                                 #   catalog_loader, giochi AI, cache/sync IGDB
 │   ├── handlers/                     # common, onboarding, economy, betting, badges,
 │   │                                 #   leaderboard, shop, quiz, schedule, fun_ai, admin,
 │   │                                 #   admin_betting, admin_dashboard, backup, events,
@@ -349,6 +349,10 @@ gaming-community-bot/
 | `GEMINI_API_KEY` | — | provider strutturato dei giochi AI persistenti |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
 | `GEMINI_THINKING_LEVEL` | `medium` | default Gemini; 20 Domande forza `minimal` per il verdetto ternario |
+| `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | — | abilita il catalogo IGDB in cache; app Twitch confidential |
+| `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache di 20 Domande |
+| `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |
+| `IGDB_SYNC_INTERVAL_HOURS` | `24` | frequenza massima di aggiornamento del catalogo IGDB |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |

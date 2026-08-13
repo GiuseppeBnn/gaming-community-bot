@@ -100,3 +100,8 @@ esclusivamente da questo dossier: più è concreto, meno risposte finiscono
 correttamente in «forse». Le `key` devono essere uniche. Senza CSV il fallback
 integrato contiene 24 giochi; l'estrazione privilegia sempre quelli meno usati e
 completa un giro del catalogo prima di ripeterli.
+
+Con `IGDB_CLIENT_ID` e `IGDB_CLIENT_SECRET` configurati, questo CSV e i built-in
+diventano esclusivamente un fallback. Un sync giornaliero conserva nel DB i 300
+giochi principali più valutati che superano la soglia di notorietà e qualità;
+creazione e gioco non chiamano mai IGDB direttamente.

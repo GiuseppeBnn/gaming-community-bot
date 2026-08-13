@@ -13,11 +13,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
-from database.models import AIGameCatalogDraw, AIGameSession, AIGameTurn, TwentyQuestionsGame
+from database.models import (
+    AIGameCatalogDraw,
+    AIGameCatalogEntry,
+    AIGameSession,
+    AIGameTurn,
+    TwentyQuestionsGame,
+)
 from services.guess_judge import normalize
 from services.structured_ai import StructuredAIError, StructuredAIProvider
 from services.twenty_questions_catalog import GameDossier, all_games
@@ -61,7 +67,7 @@ async def create_twenty_questions(
             "LOCK TABLE ai_game_catalog_draws IN SHARE ROW EXCLUSIVE MODE",
         ))
     await _bootstrap_draw_history(session)
-    target = target or await _balanced_target(session, all_games())
+    target = target or await _select_target(session)
     session.add(AIGameCatalogDraw(
         game_type=GAME_TYPE, catalog_key=target.key,
     ))
@@ -130,6 +136,54 @@ async def _balanced_target(
     if len(candidates) > 1:
         candidates = [game for game in candidates if game.key != last_key]
     return secrets.choice(candidates)
+
+
+async def _select_target(session: AsyncSession) -> GameDossier:
+    """Pick from the qualified external cache, or from the built-in fallback."""
+    draw_count = func.count(AIGameCatalogDraw.id)
+    rows = (await session.execute(
+        select(AIGameCatalogEntry.catalog_key, draw_count)
+        .outerjoin(AIGameCatalogDraw, and_(
+            AIGameCatalogDraw.game_type == GAME_TYPE,
+            AIGameCatalogDraw.catalog_key == AIGameCatalogEntry.catalog_key,
+        ))
+        .where(
+            AIGameCatalogEntry.game_type == GAME_TYPE,
+            AIGameCatalogEntry.active.is_(True),
+        )
+        .group_by(AIGameCatalogEntry.catalog_key)
+    )).all()
+    if not rows:
+        return await _balanced_target(session, all_games())
+
+    counts = {key: count for key, count in rows}
+    minimum = min(counts.values())
+    candidates = [key for key, count in counts.items() if count == minimum]
+    last_key = (await session.execute(
+        select(AIGameCatalogDraw.catalog_key)
+        .where(AIGameCatalogDraw.game_type == GAME_TYPE)
+        .order_by(AIGameCatalogDraw.id.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    if len(candidates) > 1:
+        candidates = [key for key in candidates if key != last_key]
+    selected_key = secrets.choice(candidates)
+    entry = (await session.execute(select(AIGameCatalogEntry).where(
+        AIGameCatalogEntry.game_type == GAME_TYPE,
+        AIGameCatalogEntry.catalog_key == selected_key,
+        AIGameCatalogEntry.active.is_(True),
+    ))).scalar_one()
+    try:
+        aliases = json.loads(entry.aliases_json)
+        dossier = json.loads(entry.dossier_json)["facts"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"corrupt cached catalog entry {selected_key}") from exc
+    if not isinstance(aliases, list) or not isinstance(dossier, str):
+        raise RuntimeError(f"corrupt cached catalog entry {selected_key}")
+    return GameDossier(
+        key=entry.catalog_key, title=entry.title,
+        aliases=tuple(str(alias) for alias in aliases), dossier=dossier,
+    )
 
 
 async def get_snapshot(session: AsyncSession, session_id: int) -> GameSnapshot | None:

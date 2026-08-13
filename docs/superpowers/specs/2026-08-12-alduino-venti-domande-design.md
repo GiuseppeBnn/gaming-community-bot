@@ -81,11 +81,19 @@ normalizzati.
 
 ### Catalogo
 
-I giochi selezionabili provengono da `twenty_questions_games.csv` in
-`CATALOG_DIR`, con fallback integrato di 24 titoli e caricamento una volta all'avvio. Ogni
-record contiene titolo, alias e un dossier di fatti verificati. Il target viene
-copiato nella sessione: cambiare il catalogo o riavviare il bot non cambia una
-partita già creata. Un ledger append-only separato conta le estrazioni e resta
+La sorgente primaria è IGDB, normalizzata in `AIGameCatalogEntry` da un loop
+giornaliero. La sincronizzazione seleziona i 300 main game pubblicati con più
+valutazioni, richiede almeno 100 valutazioni e una descrizione di almeno 160
+caratteri, ed esclude parent, versioni, DLC, bundle, mod, port ed edizioni. Titolo,
+nomi alternativi, descrizione, trama, anno, generi, temi, modalità, prospettiva e
+sviluppatori formano il dossier persistito.
+
+La rete non entra mai nella creazione della partita. Il fetch finisce prima di
+aprire la transazione che pubblica il nuovo snapshot; un errore o meno di 50
+record validi lascia intatta la cache precedente. Senza credenziali o senza cache,
+`twenty_questions_games.csv` in `CATALOG_DIR` e i 24 titoli integrati fanno da
+fallback. Il target viene copiato nella sessione: un sync successivo non cambia
+una partita già creata. Un ledger append-only separato conta le estrazioni e resta
 anche se una partita viene eliminata: si pesca tra i giochi meno usati, evitando
 la ripetizione immediata, così ogni titolo appare una volta prima del giro successivo.
 La breve transazione di estrazione è serializzata in PostgreSQL, quindi due

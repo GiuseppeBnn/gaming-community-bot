@@ -649,3 +649,28 @@ class AIGameCatalogDraw(Base):
     game_type: Mapped[str] = mapped_column(String(32), nullable=False)
     catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
     drawn_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIGameCatalogEntry(Base):
+    """Normalized, locally cached entry from an external game catalog."""
+
+    __tablename__ = "ai_game_catalog_entries"
+    __table_args__ = (
+        UniqueConstraint("game_type", "catalog_key"),
+        UniqueConstraint("game_type", "source", "external_id"),
+        Index("ix_ai_game_catalog_active", "game_type", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    aliases_json: Mapped[str] = mapped_column(String(2048), nullable=False)
+    dossier_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    notoriety_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

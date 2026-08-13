@@ -2126,10 +2126,21 @@ complete/release condizionale. Un errore del provider non consuma la risorsa.
 Le decisioni AI usano `StructuredAIProvider`, JSON Schema e validazione di
 dominio successiva. Il prompt riceve input utente delimitato/non attendibile;
 nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
-restano locali e deterministici. Il catalogo `twenty_questions_games.csv` viene
-caricato una volta all'avvio con fallback integrato e copiato dentro la sessione,
-così una partita già creata non cambia dopo restart o modifica del CSV. Il fallback
-contiene 24 giochi. `AIGameCatalogDraw` conserva le estrazioni anche quando una
+restano locali e deterministici. La sorgente primaria di 20 Domande è IGDB, ma
+**mai nel path di creazione/gioco**: `services.igdb_catalog` sincronizza al massimo
+ogni 24 ore un set qualificato dentro `AIGameCatalogEntry`, poi gli handler leggono
+solo PostgreSQL. OAuth e fetch avvengono prima della transazione; la pubblicazione
+del nuovo snapshot è atomica. Un errore di rete/rate limit/schema o un risultato
+sotto `IGDB_MIN_CATALOG_ENTRIES` conserva integralmente la cache precedente.
+
+Il quality gate importa, ordinati per `total_rating_count`, soltanto i primi
+`IGDB_CATALOG_SIZE` (default 300) che siano main game già pubblicati, senza parent
+o versione, con descrizione ≥160 caratteri e almeno `IGDB_MIN_RATING_COUNT`
+valutazioni. Non filtrare per nazionalità o anno: notorietà e dossier decidono se
+un titolo è giocabile. Il CSV e il fallback integrato da 24 giochi restano attivi
+quando IGDB non è configurato o la cache è vuota. Qualunque sorgente viene copiata
+dentro la sessione, così una partita già creata non cambia dopo restart o sync.
+`AIGameCatalogDraw` conserva le estrazioni anche quando una
 sessione viene eliminata: si sceglie tra i titoli meno usati, senza ripetizione
 immediata, completando un giro prima di iniziarne un altro; un table lock
 PostgreSQL serializza le creazioni concorrenti per non estrarre dallo stesso

@@ -166,3 +166,13 @@ class TestBoundsThatPreventRealDamage:
 
         with pytest.raises(ValidationError):
             Settings(bot_token="x", backup_state_keep=0)  # type: ignore[call-arg]
+
+    def test_igdb_quality_floor_cannot_exceed_requested_catalog(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", igdb_catalog_size=50, igdb_min_catalog_entries=51,
+            )

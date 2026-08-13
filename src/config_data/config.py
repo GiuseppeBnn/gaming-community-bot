@@ -1,6 +1,6 @@
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
     gemini_timeout_seconds: int = Field(default=20, ge=1)
     ai_game_claim_timeout_seconds: int = Field(default=45, ge=5)
+    # IGDB is the primary catalog for 20 Domande. Empty credentials keep the
+    # built-in catalog as a fully functional fallback. The popularity gate uses
+    # IGDB's total_rating_count (users + external critics), not rating score:
+    # famous divisive games are playable; obscure well-rated games are not.
+    igdb_client_id: str = ""
+    igdb_client_secret: str = ""
+    igdb_catalog_size: int = Field(default=300, ge=50, le=2000)
+    igdb_min_rating_count: int = Field(default=100, ge=1)
+    igdb_min_catalog_entries: int = Field(default=50, ge=10, le=2000)
+    igdb_sync_interval_hours: int = Field(default=24, ge=1)
+    igdb_timeout_seconds: int = Field(default=20, ge=1)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
@@ -185,6 +196,12 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [int(i) for i in v]
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
+
+    @model_validator(mode="after")
+    def validate_igdb_catalog_bounds(self) -> Self:
+        if self.igdb_min_catalog_entries > self.igdb_catalog_size:
+            raise ValueError("igdb_min_catalog_entries cannot exceed igdb_catalog_size")
+        return self
 
 
 settings = Settings()

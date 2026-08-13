@@ -23,7 +23,7 @@ from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
-from services import badge_service, catalog_loader, group_registry, twenty_questions_catalog
+from services import badge_service, catalog_loader, group_registry, igdb_catalog, twenty_questions_catalog
 from services.backup.loop import backup_loop
 from utils import alerts
 from utils.atomic_io import probe_writable
@@ -231,6 +231,7 @@ async def main() -> None:
 
     scheduler_task = asyncio.create_task(scheduler_loop(bot))
     backup_task = asyncio.create_task(backup_loop())
+    catalog_task = asyncio.create_task(igdb_catalog.catalog_sync_loop())
     alert_task = asyncio.create_task(alerts.alert_loop(bot))
 
     logger.info("Bot avviato — polling in corso.")
@@ -239,6 +240,7 @@ async def main() -> None:
     finally:
         scheduler_task.cancel()
         backup_task.cancel()
+        catalog_task.cancel()
         # Cancelled *before* the farewell drain, not after: the loop's own tick
         # runs every _POLL_INTERVAL_SECONDS, so draining alongside a live task
         # means two coroutines sharing the dedup state, and a suppressed-repeat
