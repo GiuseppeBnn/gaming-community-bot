@@ -46,7 +46,8 @@ class _StubBot:
 class _StubMessage:
     def __init__(self, *, chat_type: str = "supergroup", reply_to=None,
                  user_id: int = USER_ID, text: str | None = None,
-                 caption: str | None = None, user_is_bot: bool = False) -> None:
+                 caption: str | None = None, user_is_bot: bool = False,
+                 message_id: int = 500) -> None:
         self.bot = _StubBot()
         self.chat = types.SimpleNamespace(id=-100_123, type=chat_type)
         self.from_user = types.SimpleNamespace(id=user_id, username="tizio",
@@ -55,10 +56,12 @@ class _StubMessage:
         self.reply_to_message = reply_to
         self.text = text
         self.caption = caption
+        self.message_id = message_id
         self.replies: list[str] = []
 
     async def reply(self, text, **kwargs):
         self.replies.append(text)
+        return types.SimpleNamespace(message_id=900 + len(self.replies))
 
     @property
     def said(self) -> str:
@@ -67,8 +70,10 @@ class _StubMessage:
 
 def _replied(text: str | None = "ciao", *, caption: str | None = None,
              author_username: str | None = "vittima",
-             author_name: str = "La Vittima", author_id: int = 99):
+             author_name: str = "La Vittima", author_id: int = 99,
+             message_id: int = 400):
     return types.SimpleNamespace(
+        message_id=message_id,
         text=text,
         caption=caption,
         from_user=types.SimpleNamespace(id=author_id, username=author_username,
@@ -99,6 +104,7 @@ def llm(monkeypatch):
 def _no_admin_no_cooldown(monkeypatch):
     """Nobody is an admin (admins bypass the cooldown), and no cooldown leaks in."""
     monkeypatch.setattr(admin_filter.settings, "admin_ids", [])
+    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     admin_filter._cache.clear()
     cooldown.reset()
     yield
@@ -316,7 +322,7 @@ class TestNaturalAlduinoReplies:
         assert len(llm) == 1
         assert "Ti consiglio Hades." in llm[0]["text"]
         assert "perché?" in llm[0]["text"]
-        assert "MESSAGGIO PRECEDENTE DI ALDUINO" in llm[0]["text"]
+        assert "MESSAGGIO DEL BOT A CUI RISPONDE" in llm[0]["text"]
 
     async def test_caption_is_valid_user_text(self, llm):
         message = _StubMessage(

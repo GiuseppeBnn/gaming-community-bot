@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from database.models import Base, LedgerEntry, User, Wallet
+from database.models import AlduinoTurn, Base, LedgerEntry, User, Wallet
 from services.backup import state_export
 from services.backup.state_export import StateExportError
 
@@ -55,6 +55,40 @@ async def test_roundtrip_preserves_values(tmp_path, session, user_factory):
             ledger = (await s2.execute(select(LedgerEntry))).scalars().all()
             assert len(ledger) == 1
             assert ledger[0].amount == 12_345_678_900
+    finally:
+        await engine2.dispose()
+
+
+async def test_roundtrip_preserves_alduino_reply_branches(tmp_path, session):
+    root = AlduinoTurn(
+        id=10, group_id=-100, user_tg_id=1, user_message_id=100,
+        bot_message_id=101, parent_turn_id=None, input_text="ciao",
+        output_text="salve", history_json='[{"user":"ciao","alduino":"salve"}]',
+        provider="gemini", provider_interaction_id="interaction-root",
+    )
+    child = AlduinoTurn(
+        id=20, group_id=-100, user_tg_id=2, user_message_id=102,
+        bot_message_id=103, parent_turn_id=10, input_text="perché?",
+        output_text="per questo", history_json="[]", provider="groq",
+        provider_interaction_id=None,
+    )
+    session.add_all((root, child))
+    await session.commit()
+
+    snapshot = await state_export.export_state(session, tmp_path)
+    engine2, factory2 = await _fresh_db()
+    try:
+        async with factory2() as target:
+            report = await state_export.import_state(target, snapshot)
+            await target.commit()
+            restored = list((await target.execute(
+                select(AlduinoTurn).order_by(AlduinoTurn.id)
+            )).scalars())
+
+        assert report.tables["alduino_turns"] == 2
+        assert restored[1].parent_turn_id == restored[0].id == 10
+        assert restored[0].provider_interaction_id == "interaction-root"
+        assert restored[1].provider == "groq"
     finally:
         await engine2.dispose()
 

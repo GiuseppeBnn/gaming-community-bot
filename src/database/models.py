@@ -572,6 +572,39 @@ class ScheduledTask(Base):
     error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
 
+class AlduinoTurn(Base):
+    """One completed branch-aware conversation turn with the community mascot.
+
+    ``bot_message_id`` is the durable bridge between Telegram's reply tree and
+    local conversational state.  ``history_json`` is a bounded snapshot: a
+    follow-up loads its entire useful branch in one query instead of walking a
+    recursive chain, while ``parent_turn_id`` preserves the actual topology for
+    diagnostics and future features.
+    """
+
+    __tablename__ = "alduino_turns"
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_message_id"),
+        UniqueConstraint("group_id", "bot_message_id"),
+        Index("ix_alduino_group_created", "group_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bot_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    parent_turn_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("alduino_turns.id", ondelete="SET NULL"), nullable=True,
+    )
+    input_text: Mapped[str] = mapped_column(String(1500), nullable=False)
+    output_text: Mapped[str] = mapped_column(String(1000), nullable=False)
+    history_json: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_interaction_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class AIGameSession(Base):
     """Aggregate root shared by persistent AI-assisted community games."""
 

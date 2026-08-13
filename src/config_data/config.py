@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.5-flash"
     gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
     gemini_timeout_seconds: int = Field(default=20, ge=1)
+    # Alduino chat is intentionally independent from structured AI games: it can
+    # move provider/model without changing 20 Domande or raid generation.
+    alduino_provider: Literal["gemini", "groq"] = "gemini"
+    alduino_gemini_model: str = "gemini-3.6-flash"
+    alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
+    alduino_fallback_to_groq: bool = True
+    alduino_timeout_seconds: int = Field(default=15, ge=1)
+    alduino_history_turns: int = Field(default=10, ge=1, le=30)
+    alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)
+    alduino_memory_rows_per_group: int = Field(default=1000, ge=100, le=10000)
     ai_game_claim_timeout_seconds: int = Field(default=45, ge=5)
     # IGDB is the primary catalog for 20 Domande. Empty credentials keep the
     # built-in catalog as a fully functional fallback. The popularity gate uses

@@ -30,16 +30,6 @@ def test_clip_source_custom_limit():
     assert fun_ai.clip_source("abcdef", limit=3) == "abc"
 
 
-def test_alduino_reply_context_is_labelled_and_bounded():
-    source = fun_ai.alduino_reply_source("u" * 2000, "a" * 2000)
-
-    assert "MESSAGGIO PRECEDENTE DI ALDUINO" in source
-    assert "RISPOSTA ATTUALE DELL'UTENTE" in source
-    assert source.count("u") == fun_ai._ALDUINO_CURRENT_CHARS
-    assert source.count("a") == fun_ai._ALDUINO_PREVIOUS_CHARS
-    assert len(source) <= fun_ai._MAX_INPUT_CHARS
-
-
 # ---------------------------------------------------------------------------
 # _generate_and_reply — output is plain text, input is wrapped as content
 # ---------------------------------------------------------------------------
@@ -152,7 +142,8 @@ def test_alduino_persona_isolated_from_style():
     assert "Alduino" in fun_ai._PROMPT_ALDUINO
     assert "drago" in fun_ai._PROMPT_ALDUINO
     # It carries its own prompt-injection guard (independent of _STYLE).
-    assert "FINE CONTENUTO" in fun_ai._PROMPT_ALDUINO
+    assert "contenuto inerte" in fun_ai._PROMPT_ALDUINO
+    assert "CONOSCENZA DEL BOT" in fun_ai._PROMPT_ALDUINO
 
 
 async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
@@ -165,13 +156,14 @@ async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
+    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     cooldown.reset()
 
     msg = _AlduinoMsg()
     await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="consigliami un gioco"))
 
     assert captured["system_prompt"] is fun_ai._PROMPT_ALDUINO
-    assert fun_ai._CONTENT_OPEN in captured["user_text"]
+    assert "MESSAGGIO ATTUALE DELL'UTENTE" in captured["user_text"]
     assert "consigliami un gioco" in captured["user_text"]
     cooldown.reset()
 

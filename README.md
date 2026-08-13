@@ -208,6 +208,29 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
 
+### Alduino conversazionale
+
+`/alduino` usa Gemini come provider dedicato; gli altri comandi comici restano su
+Groq. Dopo la prima risposta non serve ripetere il comando: una normale risposta
+Telegram a un messaggio del bot continua la conversazione. La memoria segue il
+**ramo dei reply**, non una cronologia globale: se due persone rispondono allo
+stesso messaggio, ciascuna può proseguire senza ricevere il seguito dell'altra.
+
+Il contesto è deliberatamente piccolo e utile. Alduino riceve gli ultimi turni
+del ramo, il catalogo pubblico generato dalla stessa fonte di `/comandi` e lo
+stato aggiornato degli eventi aperti/in programma. Non gli viene inviato
+l'archivio del gruppo e non può fingere di avere eseguito comandi. I turni locali
+sono limitati sia per quantità sia per caratteri; le righe più vecchie vengono
+potate automaticamente. Se lo stato remoto di Gemini è scaduto, il ramo viene
+ricostruito dal DB locale; se Gemini non risponde, il solo `/alduino` passa a
+Groq senza interrompere la chat.
+
+Nota privacy: il free tier Gemini tratta i messaggi secondo le condizioni del
+provider; Google indica attualmente che i contenuti del free tier possono essere
+usati per migliorare i prodotti. Per questo l'integrazione invia soltanto il ramo
+esplicitamente evocato, mai la cronologia generale del gruppo. Vedi la
+[tabella prezzi e trattamento dati ufficiale](https://ai.google.dev/gemini-api/docs/pricing).
+
 ### Quiz a premi
 
 Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
@@ -375,11 +398,17 @@ gaming-community-bot/
 | `GROUP_ID` | `0` | supergruppo in forma `-100…`; `0` = guard disattivato |
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
-| `GROQ_API_KEY` | — | modulo AI (opzionale) |
+| `GROQ_API_KEY` | — | comandi AI comici e fallback opzionale di Alduino |
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
-| `GEMINI_API_KEY` | — | provider strutturato dei giochi AI persistenti |
+| `GEMINI_API_KEY` | — | giochi AI persistenti e chat di Alduino |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
 | `GEMINI_THINKING_LEVEL` | `medium` | default Gemini; 20 Domande forza `minimal` per il verdetto ternario |
+| `ALDUINO_PROVIDER` | `gemini` | provider della sola chat: `gemini` o `groq` |
+| `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
+| `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
+| `ALDUINO_FALLBACK_TO_GROQ` | `true` | usa Groq se Gemini fallisce |
+| `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
+| `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |
 | `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | — | abilita il catalogo IGDB in cache; app Twitch confidential |
 | `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache di 20 Domande |
 | `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |

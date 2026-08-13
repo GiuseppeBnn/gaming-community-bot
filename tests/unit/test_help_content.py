@@ -8,7 +8,12 @@ syntax, not HTML, and must be escaped before going into a ParseMode.HTML message
 from __future__ import annotations
 
 from handlers import help_content
-from handlers.help_content import _COMMANDS, render_command, render_command_or_hint
+from handlers.help_content import (
+    _COMMANDS,
+    render_alduino_reference,
+    render_command,
+    render_command_or_hint,
+)
 
 
 class TestRenderCommandIsHtmlSafe:
@@ -91,6 +96,23 @@ def test_d20_is_a_public_bare_roll_command():
     page = render_command("d20", is_admin=False)
     assert page is not None
     assert "/d20" in page and "1" in page and "20" in page
+
+
+class TestAlduinoReference:
+    def test_is_generated_from_the_public_catalog(self):
+        reference = render_alduino_reference()
+        for command in _COMMANDS:
+            if not command.admin_only:
+                assert f"/{command.name}" in reference
+
+    def test_never_leaks_admin_commands_or_html(self):
+        reference = render_alduino_reference()
+        assert "/credita" not in reference
+        assert "<b>" not in reference
+        assert "&lt;" not in reference
+
+    def test_forbids_claiming_side_effects(self):
+        assert "non fingere di aver eseguito" in render_alduino_reference()
 
 
 def esc_token(usage: str) -> str:

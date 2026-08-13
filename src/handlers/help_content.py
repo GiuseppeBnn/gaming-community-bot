@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass, field
+import html
+import re
 
 from config_data.config import settings
 from utils.text import esc
@@ -340,6 +342,34 @@ def render_legend(is_admin: bool = False) -> str:
         for cat, cmds in _by_category(ADMIN_CATEGORIES):
             lines.append(f"\n<b>{cat}</b>")
             lines.extend(f"/{c.name} — {c.summary}" for c in cmds)
+    return "\n".join(lines)
+
+
+def render_alduino_reference() -> str:
+    """Trusted plain-text product knowledge derived from the public help catalog.
+
+    This is deliberately generated from the same records as ``/comandi``: a new
+    public command becomes known to Alduino without maintaining a second prompt.
+    Admin-only manuals stay private and live state is supplied separately.
+    """
+    lines = [
+        "CONOSCENZA DEL BOT (fonte autorevole):",
+        "Puoi spiegare queste funzioni, ma non fingere di aver eseguito comandi o azioni.",
+    ]
+    for command in _COMMANDS:
+        if command.admin_only:
+            continue
+        usage = command.usage or f"/{command.name}"
+        details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
+        aliases = f" Alias: {', '.join('/' + value for value in command.aliases)}." \
+            if command.aliases else ""
+        lines.append(
+            f"- /{command.name} — {command.summary}. Uso: {usage}.{aliases} {details}".strip()
+        )
+    lines.append(
+        "Gli eventi pubblici aperti o programmati arrivano nei DATI LIVE. "
+        "Se un dato live non c'è, dichiaralo senza inventarlo."
+    )
     return "\n".join(lines)
 
 

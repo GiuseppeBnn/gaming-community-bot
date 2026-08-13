@@ -145,7 +145,15 @@ async def export_state(
             gz.write(json.dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n")
             for table in tables:
                 colnames = list(table.c.keys())
-                stmt = select(*[table.c[c] for c in colnames]).execution_options(yield_per=_YIELD)
+                # Stable primary-key order makes snapshots reproducible and is
+                # required by self-referencing tables such as alduino_turns:
+                # parents have lower IDs and must be restored before children.
+                primary_key = list(table.primary_key.columns)
+                stmt = (
+                    select(*[table.c[c] for c in colnames])
+                    .order_by(*primary_key)
+                    .execution_options(yield_per=_YIELD)
+                )
                 result = await session.stream(stmt)
                 async for row in result:
                     rec = {colnames[i]: _to_jsonable(row[i]) for i in range(len(colnames))}
