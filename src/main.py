@@ -22,6 +22,7 @@ from handlers.schedule import scheduler_loop
 from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
 from middlewares.group_guard import GroupMemberMiddleware
+from middlewares.group_context import GroupContextMiddleware
 from middlewares.rate_limit import RateLimitMiddleware
 from services import badge_service, catalog_loader, group_registry, igdb_catalog, twenty_questions_catalog
 from services.backup.loop import backup_loop
@@ -191,11 +192,12 @@ async def main() -> None:
 
     # Middleware order matters: rate-limit first, then DB session, then the
     # bot-level ban guard (needs db_session; silently drops banned users), then
-    # the group-membership guard.
+    # the group-membership guard and finally the best-effort context recorder.
     dp.update.middleware(RateLimitMiddleware())
     dp.update.middleware(DbSessionMiddleware())
     dp.update.middleware(BannedUserMiddleware())
     dp.update.middleware(GroupMemberMiddleware())
+    dp.update.middleware(GroupContextMiddleware())
 
     # Order is behaviour, not bookkeeping (aiogram stops at the first match), so it
     # is declared once in handlers/__init__.py and asserted by

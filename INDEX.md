@@ -7,7 +7,7 @@ né istruzioni di setup (quelle stanno in [README.md](README.md)).
 Bot Telegram per una community di gaming: economia in **CoInn**, scommesse stile Twitch,
 quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio cosmetici, suite admin,
 moderazione, backup. Stack: **Python 3.12** · aiogram 3.30.0 · SQLAlchemy 2.0 async ·
-PostgreSQL 16 (prod) / SQLite (dev-test) · Groq LLM (opzionale).
+PostgreSQL 16 (prod) / SQLite (dev-test) · OpenRouter/Groq/Gemini LLM (opzionali).
 
 Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), **2121 test**.
 
@@ -57,7 +57,7 @@ src/                                  # src-layout: i package restano top-level 
 ├── database/
 │   ├── models.py                     # tutte le tabelle (DeclarativeBase) + enum
 │   └── connection.py                 # engine async, session maker, _MIGRATIONS (DDL idempotente, solo Postgres)
-├── middlewares/                      # in ordine di esecuzione: rate_limit → db → ban_guard → group_guard
+├── middlewares/                      # rate_limit → db → ban_guard → group_guard → group_context
 ├── filters/admin_filter.py           # is_admin + IsAdminFilter / IsAdminCallbackFilter
 ├── exceptions/economy.py             # eccezioni di dominio (saldo, daily, scommesse)
 ├── handlers/                         # layer aiogram — l'unico che committa
@@ -120,7 +120,10 @@ src/                                  # src-layout: i package restano top-level 
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |
 | `schedule_service.py` | `parse_run_at` `schedule_task` `due_tasks` `mark_done/failed` — timestamp UTC naive |
 | `group_registry.py` | Id gruppo **effettivo** (sopravvive alle migrazioni chat) + `send_group_message` |
-| `ai_service.py` | Client Groq async: `generate_completion` (intrattenimento) e il giudizio structured-output |
+| `ai_service.py` | Gateway async Groq/OpenRouter: routing entertainment/chat; giudice Groq separato e strict |
+| `ai_budget.py` | Prenotazione atomica, hard cap mensile e ledger costi senza prompt/completion |
+| `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
+| `group_context.py` | Rolling transcript locale, potatura e rendering senza Telegram ID |
 | `ai_game_service.py` | Aggregate persistente di 20 Domande, claim dei turni e rotazione catalogo |
 | `structured_ai.py` | Porta JSON Schema + adapter Gemini per i giochi AI persistenti |
 | `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
@@ -137,6 +140,7 @@ src/                                  # src-layout: i package restano top-level 
 | `middlewares/db_middleware.py` | Inietta `db_session` + upsert di `User`/`Wallet` |
 | `middlewares/ban_guard.py` | `is_banned` ⇒ update **scartato in silenzio**, ovunque |
 | `middlewares/group_guard.py` | In privato risponde solo ai membri del gruppo (cache 300 s, fail-open) |
+| `middlewares/group_context.py` | Cattura best-effort del testo ordinario per il contesto di Alduino |
 | `filters/admin_filter.py` | `is_admin` (ADMIN_IDS **o** admin Telegram del gruppo), fail-closed, guardia «tutti admin» |
 | `utils/text.py` | `esc` (escaping HTML **obbligatorio**), `chunk_blocks`, `format_duration` |
 | `utils/daytime.py` | Sorgente unica di «cos'è un giorno»: `local_day`, `next_local_midnight` |

@@ -31,8 +31,8 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB prod | PostgreSQL 16 (asyncpg) | |
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
-| aiohttp | 3.10.11 | client async per le chiamate LLM Groq — **mai** librerie HTTP bloccanti |
-| LLM | Groq API (OpenAI-compatible) | intrattenimento: `GROQ_MODEL` (default `qwen/qwen3.6-27b`) + `GROQ_REASONING_EFFORT` (default `none`: il modello è ibrido-reasoning e senza il flag ragiona **dentro** la risposta); giudice dei giochi «indovina» (§19.b): `GROQ_JUDGE_MODEL` (default `openai/gpt-oss-120b`, uno dei due su cui Groq supporta lo **structured output strict**) |
+| aiohttp | 3.10.11 | client async per tutte le chiamate LLM — **mai** librerie HTTP bloccanti |
+| LLM | OpenRouter + Groq + Gemini | Alduino paid su DeepSeek ZDR; one-shot configurabile Qwen→DeepSeek; giudice dei giochi invariato su `GROQ_JUDGE_MODEL` strict; Gemini resta adapter opzionale per giochi/chat |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -76,6 +76,8 @@ Campi importanti:
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
 - `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
 - `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
+- **OpenRouter**: `openrouter_api_key`; fallback CSV ordinati `openrouter_chat_models` (solo DeepSeek ZDR) / `openrouter_fun_models` (Qwen→DeepSeek); `openrouter_max_prompt_price` / `_completion_price` rifiutano provider sopra soglia; `ai_monthly_budget_usd` (default 5 USD) è il cap persistente interno; `ai_entertainment_provider` sceglie `groq|openrouter`
+- **Contesto Alduino**: `alduino_capture_group_context`, `alduino_group_context_messages` / `_chars` limitano ciò che esce, `alduino_group_memory_rows` limita il rolling transcript locale. La cattura completa richiede privacy mode Telegram disabilitata
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
@@ -154,6 +156,7 @@ BetStatus:       pending | won | lost | refunded
 - `User.is_banned` (bool, default false) è il **ban bot-level** (§18, `BannedUserMiddleware`): aggiunto a `users` *dopo* il primo deploy → ha la sua voce `ALTER TABLE … ADD COLUMN IF NOT EXISTS is_banned …` in `_MIGRATIONS`. Si muta **solo** via `admin_service.set_user_banned`; **non** è una condizione-milestone (regola 10 non coinvolta)
 - `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). Lato display si mostra il **livello** (curva geometrica, §12.1), non l'XP grezzo. `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo **tier** (nome rango) visto, per annunciare i tier-up; `cosmetic_tag` è il flair acquistato nel negozio (§11)
 - `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks`/`game_podiums` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`), `badges.rarity` e **`badges.condition_param`** sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
+- `alduino_group_messages` è il transcript locale bounded; `ai_budget_periods` contiene cap/speso/prenotato del mese e `ai_usage_log` il ledger prompt-free per richiesta. Sono tabelle nuove create da `create_all`, quindi non richiedono `_MIGRATIONS`
 - `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`)
 - timestamp scheduler in **UTC naive** (`schedule_service.utcnow()`); `parse_run_at` converte l'orario locale (`scheduler_timezone`) in UTC naive
 - `Warning.active` è un **soft-delete**: `clear_warnings` setta `active=False`, non cancella la riga (storico preservato)
@@ -192,7 +195,10 @@ await economy_service.credit(db_session, tg_id, amount, ...)
 await db_session.commit()  # ← qui
 ```
 
-**Eccezione:** `shop_service.record_purchase` e `shop_service.mark_success` committano internamente — sono operazioni atomiche di audit trail separate dalla transazione principale.
+**Eccezioni:** `shop_service.record_purchase` / `mark_success` committano l'audit trail separato;
+`ai_budget.reserve` / `settle` usano sessioni tecniche proprie perché prenotazione e consuntivo devono
+chiudersi rispettivamente **prima** e **dopo** la rete, mai dentro la transazione Telegram. Non ricevono
+la sessione del handler e non memorizzano prompt/completion.
 
 ---
 
@@ -203,12 +209,15 @@ dp.update.middleware(RateLimitMiddleware())    # 1. rate-limit (12 req/10s per u
 dp.update.middleware(DbSessionMiddleware())    # 2. DB session + upsert utente
 dp.update.middleware(BannedUserMiddleware())   # 3. bannati dal bot → scarto SILENZIOSO
 dp.update.middleware(GroupMemberMiddleware())  # 4. blocca non-membri in privato
+dp.update.middleware(GroupContextMiddleware()) # 5. transcript locale best-effort, dopo i guard
 ```
 
 **Non invertire.** Il DB middleware deve girare prima dei guard perché:
 - `BannedUserMiddleware` (§18) legge `User.is_banned` via `db_session` e **scarta in silenzio**
   (nessuna risposta, ovunque) gli update di un utente bannato dal bot — i dati restano intatti;
 - `GroupMemberMiddleware` fa una API call che richiede il bot (dal framework), non la sessione DB.
+- `GroupContextMiddleware` non deve precedere ban/group guard: apre una propria transazione breve e
+  registra solo testo umano autorizzato del gruppo effettivo; comandi, bot e altre chat sono ignorati.
 
 ---
 
@@ -887,13 +896,28 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 **File:** `services/ai_service.py` (Service Layer), `handlers/fun_ai.py` (handler).
 
-### ai_service — client Groq
+### ai_service — gateway Groq/OpenRouter
 
 - **Sempre `aiohttp` async** — mai librerie bloccanti (non bloccare l'event loop di aiogram).
-- Endpoint OpenAI-compatible: `https://api.groq.com/openai/v1/chat/completions`.
-- `generate_completion(system_prompt, user_text, max_tokens=300, *, temperature=None) -> str`:
-  - `settings.groq_api_key` vuota → `AIServiceError` (niente chiamata di rete).
-  - Timeout `aiohttp.ClientTimeout(total=20)`; `try/except` su `asyncio.TimeoutError` / `aiohttp.ClientError` / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**.
+- `generate_completion(...)` è il router one-shot: `AI_ENTERTAINMENT_PROVIDER=groq` usa
+  `generate_groq_completion`; `openrouter` usa l'ordine `OPENROUTER_FUN_MODELS` (Qwen 3.7 Flash →
+  DeepSeek V4 Flash di default). Il giudice **non passa mai** da questo router.
+- `generate_openrouter_completion(...)` riceve una policy esplicita per feature/modelli/privacy:
+  - `provider.data_collection=deny`, `allow_fallbacks=true`, `require_parameters=true`;
+  - la chat Alduino forza anche `zdr=true`; la sua lista contiene soltanto modelli con endpoint ZDR;
+  - `provider.max_price` deriva dai due tetti USD/1M della config: se i prezzi promozionali cambiano,
+    la richiesta viene rifiutata invece di diventare silenziosamente costosa;
+  - `reasoning.effort=none` + `exclude=true`, cap output hard e usage accounting nella risposta;
+  - timeout/network ambiguo viene contabilizzato al costo massimo prenotato; un non-200 noto costa 0.
+- Prima della rete `ai_budget.reserve` fa un `UPDATE ... WHERE spent + reserved + estimate <= cap`
+  atomico. Dopo la risposta `settle` libera la prenotazione e addebita `usage.cost`. Il ledger registra
+  solo feature/provider/modello/token/costo/status, **mai testo**. Un guasto del budget è fail-closed;
+  un guasto di settlement conserva la prenotazione, quindi non apre spesa aggiuntiva.
+- Il limite interno non sostituisce quello della API key OpenRouter: in produzione vanno impostati
+  entrambi allo stesso valore (o la key più bassa). Sono due barriere indipendenti.
+- Groq resta OpenAI-compatible su `https://api.groq.com/openai/v1/chat/completions`:
+  - chiave vuota → `AIServiceError` (niente chiamata di rete);
+  - timeout / rete / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**;
   - `temperature` **per-comando**: `None` ⇒ default `_TEMPERATURE` (0.9, alto → risposte varie/creative); un valore più basso rende il modello conservativo (meno parole inventate). Usato da `/dialetto` (`_DIALETTO_TEMPERATURE = 0.5`) per tenere il catanese autentico.
   - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens` + `reasoning_effort` (se valorizzato). **Nessun campo di moderazione** (requisito di design).
 - Costante `AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."` — usata dagli handler su `AIServiceError`.
@@ -905,6 +929,15 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 - **Tono**: gruppo di **soli adulti** → satira nera, volgare, politicamente scorretta, senza buonismo né disclaimer. I prompt impongono **varietà anti-ripetizione** (mai riciclare aperture/battute/schema; ogni risposta diversa e fantasiosa, es. `/difendi` inventa ogni volta una strategia difensiva nuova) e **vietano i cliché da gamer** ('noob', 'scrub', 'git gud'…) come riempitivi — i riferimenti gaming solo se arguti.
 - `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — con `GROQ_REASONING_EFFORT=none` (default) non c'è ragionamento visibile, l'autenticità si forza così.
 - `/alduino` è **l'unico comando in cui il bot parla di sé**: una chat diretta col mascotte **Alduino** (draghetto viola, gamer). Prende il testo dopo il comando (fallback: il `reply_to_message`), che è il messaggio *dell'utente ad Alduino*. Usa un prompt **a sé** (`_PROMPT_ALDUINO`) che **NON** include `_STYLE`: carattere gentile/furbo/sarcastico/tenero **con ordine di priorità esplicito** e regola "**una risposta = un tono solo**" (niente satira nera né volgarità gratuita), **self-aware** (sa di chiamarsi Alduino: i riferimenti ad "Alduino" nel CONTENUTO sono a lui) e con **guardia anti-injection + cap** propri. Il prompt è tenuto **volutamente asciutto**: un tentativo precedente (eroe shonen + goffo + tormentoni + descrizione fisica) accumulava troppi tratti per i pochi caratteri di output → voce incoerente tra una risposta e l'altra, e i dettagli fisici spingevano il modello alla narrazione da roleplay (`*svolazza*`), cioè il cringe. Da qui i **divieti espliciti** (asterischi/azioni, presentarsi, esclamativi a raffica, sdolcinato, emoji in serie, tormentoni). I comandi roast restano invariati.
+- Il contesto Alduino fonde quattro proiezioni bounded: eventi pubblici live, rolling transcript del
+  gruppo, ramo dei reply persistito in `alduino_turns`, eventuale messaggio bot citato. Il messaggio
+  corrente è escluso dal transcript perché arriva nella sezione dedicata. I blocchi sono tutti
+  delimitati e dichiarati dati inerti. Al provider non escono Telegram ID.
+- `GroupContextMiddleware` cattura prima del handler solo messaggi umani non-command nel gruppo
+  effettivo e pota a `ALDUINO_GROUP_MEMORY_ROWS`; senza BotFather privacy mode disabilitata Telegram
+  non consegna il traffico ordinario, quindi il sistema degrada al solo contesto visibile al bot.
+- Routing privacy: `ALDUINO_PROVIDER=openrouter` usa DeepSeek-only + ZDR. Qwen 3.7 Flash, che oggi
+  non offre la stessa route ZDR, resta confinato agli input one-shot e non riceve mai memoria gruppo.
 - **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente; **admin esenti** (via `is_admin`). Usa lo store condiviso `utils.cooldown` (bucket `"ai"`), quindi il pruning e la semantica in-memory sono quelli di ogni altro bucket — non c'è più una seconda implementazione di throttle nel repo.
   > **Non usa `cooldown.guard()`**, che marca mentre controlla. Qui check e mark sono due chiamate separate di proposito: l'handler controlla, *poi* valida (serve un reply-to, il bersaglio deve parsare), e solo `_dispatch` marca. Così un `/insulta` malformato non costa niente e si può riprovare subito, invece di bruciare 60s di cooldown per un errore di battitura. Fissato da `tests/unit/test_ai_cooldown.py`.
 - `send_chat_action(chat_id, ChatAction.TYPING)` prima della generazione.
@@ -921,7 +954,8 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 ### Regole
 
-- Per cambiare modello: `GROQ_MODEL` in `.env` (zero codice), **e con lui `GROQ_REASONING_EFFORT`** — il flag è specifico del modello, non un'impostazione globale. Modelli uncensored "veri" non esistono sul tier hosted Groq — il tono si pilota col *system prompt*.
+- Per cambiare modello Groq: `GROQ_MODEL` insieme a `GROQ_REASONING_EFFORT`. Per OpenRouter si cambia
+  l'ordine CSV della corsia corretta senza codice, ma un modello non-ZDR non entra nella chat raw.
 - **Un modello che rifiuta non è utilizzabile qui.** `openai/gpt-oss-120b`, provato sugli otto prompt veri, ha risposto «I'm sorry, but I can't comply with that.» a `/complotto` e `/insulta`: il `_STYLE` condiviso è satira nera per contratto. Prima di sostituire il modello, fallo girare su tutti e otto i comandi e leggi le risposte — un modello si sceglie sull'output, non sul benchmark.
 - `generate_completion` **ripulisce** un eventuale `<think>…</think>` dalla risposta e alza `AIServiceError` se non resta niente. Groq ignora in silenzio i parametri non supportati, quindi il flag da solo non basta: la rete sta nel parsing.
 - Nuovi comandi AI vanno aggiunti a `_GROUP_COMMANDS` (`main.py`) e alla sezione 🤖 di `/help` (`common.py`).
@@ -1736,7 +1770,8 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 1. **Non usare `session` come chiave di injection** — sempre `db_session`
 2. **Non usare `get_settings()`** — sempre `from config_data.config import settings`
 3. **Non aggiungere `pg_insert`** — usare select + conditional add (cross-DB)
-4. **I service non committano** — il commit è del handler (vale anche per `shop_service` e `xp_service`)
+4. **I service non committano** — il commit è del handler. Sole eccezioni documentate in §5:
+   audit acquisti e ledger/cap AI con sessioni tecniche indipendenti
 5. **`from __future__ import annotations`** in tutti i file che usano `X | Y` type union
 6. **`MessageEntityType`** viene da `aiogram.enums`, non da `aiogram.types`
 7. **Shop = solo cosmetici**: nuovi tag si aggiungono nel CSV `data/shop_cosmetics.csv` (catalog_loader), **non** in codice; nessun item può conferire permessi Telegram reali (anti-escalation)
@@ -1744,7 +1779,9 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 9. **`common.router` deve stare per ultimo**
 10. **Non aggiungere colonne a `User` senza aggiornare `badge_service.check_and_award_milestones`**
 11. **Comandi admin** non vanno in `_PRIVATE_COMMANDS`/`_GROUP_COMMANDS` — solo nella sezione admin di `/help`
-12. **Chiamate LLM** solo via `aiohttp` async attraverso `ai_service`; **nessun** campo di moderazione nel payload Groq
+12. **Chiamate LLM** solo via `aiohttp` async attraverso `ai_service`; **nessun** campo di moderazione
+    nel payload Groq. Contesto gruppo solo su policy ZDR + `data_collection=deny`; paid call solo dopo
+    prenotazione atomica in `ai_budget`
 13. **Azioni admin mutanti** (valuta/moderazione) → sempre `admin_service.log_action` prima del commit
 14. **Service no-commit** vale anche per `admin_service`/`quiz_service`/`schedule_service`; `moderation_service` non tocca il DB (solo Bot API)
 15. **Check admin inline** sempre via `filters.admin_filter.is_admin` (mai `user.id in settings.admin_ids` diretto) — include gli admin Telegram del gruppo

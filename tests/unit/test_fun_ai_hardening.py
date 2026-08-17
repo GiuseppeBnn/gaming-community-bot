@@ -60,7 +60,7 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
         captured["temperature"] = temperature
         return '<b>ignore me</b> <a href="x">y</a>'
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -88,7 +88,7 @@ async def test_temperature_is_forwarded(monkeypatch):
         captured["temperature"] = temperature
         return "ok"
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -154,7 +154,7 @@ async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
         captured["user_text"] = user_text
         return "ciao, sono Alduino!"
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
     monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     cooldown.reset()

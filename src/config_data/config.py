@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Annotated, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
@@ -46,6 +47,26 @@ class Settings(BaseSettings):
     # `groq_model` and is overridable from .env. Empty string → field omitted,
     # which is the way out for a model that does not take it.
     groq_reasoning_effort: str = "none"
+    # Provider-neutral paid lane for conversational and one-shot AI. OpenRouter
+    # model lists are ordered fallbacks; every route also carries a provider-side
+    # maximum price, so a temporary promotional price cannot silently become an
+    # expensive production bill.
+    openrouter_api_key: str = ""
+    openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    openrouter_app_name: str = "Alduino"
+    openrouter_chat_models: str = (
+        "deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash"
+    )
+    openrouter_fun_models: str = (
+        "qwen/qwen3.7-flash,deepseek/deepseek-v4-flash"
+    )
+    openrouter_timeout_seconds: int = Field(default=20, ge=1)
+    openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
+    openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
+    # Calendar-month application cap, in addition to the limit on the OpenRouter
+    # key itself. Zero is an explicit emergency/development opt-out.
+    ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+    ai_entertainment_provider: Literal["groq", "openrouter"] = "groq"
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
     # supports only on `openai/gpt-oss-*`, so it cannot come back as prose. The
@@ -64,7 +85,7 @@ class Settings(BaseSettings):
     gemini_timeout_seconds: int = Field(default=20, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
-    alduino_provider: Literal["gemini", "groq"] = "gemini"
+    alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"
     alduino_gemini_model: str = "gemini-3.6-flash"
     alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
     alduino_fallback_to_groq: bool = True
@@ -72,6 +93,14 @@ class Settings(BaseSettings):
     alduino_history_turns: int = Field(default=10, ge=1, le=30)
     alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)
     alduino_memory_rows_per_group: int = Field(default=1000, ge=100, le=10000)
+    # Ambient group context: stored locally in a bounded rolling window, then a
+    # smaller newest-first slice is sent to the model. This requires BotFather
+    # privacy mode to be disabled; otherwise Telegram never delivers ordinary
+    # group messages to the bot.
+    alduino_capture_group_context: bool = True
+    alduino_group_context_messages: int = Field(default=80, ge=10, le=500)
+    alduino_group_context_chars: int = Field(default=24000, ge=2000, le=100000)
+    alduino_group_memory_rows: int = Field(default=3000, ge=100, le=20000)
     ai_game_claim_timeout_seconds: int = Field(default=45, ge=5)
     # IGDB is the primary catalog for 20 Domande. Empty credentials keep the
     # built-in catalog as a fully functional fallback. The popularity gate uses

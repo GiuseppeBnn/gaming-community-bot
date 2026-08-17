@@ -96,7 +96,7 @@ def llm(monkeypatch):
                       "max_tokens": max_tokens, "temperature": temperature})
         return "risposta del modello"
 
-    monkeypatch.setattr(ai_service, "generate_completion", _fake)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", _fake)
     return calls
 
 
