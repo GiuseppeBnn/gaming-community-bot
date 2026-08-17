@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
     gemini_timeout_seconds: int = Field(default=20, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
-    # move provider/model without changing 20 Domande or raid generation.
+    # move provider/model without changing 20 Domande.
     alduino_provider: Literal["gemini", "groq"] = "gemini"
     alduino_gemini_model: str = "gemini-3.6-flash"
     alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
@@ -84,11 +84,6 @@ class Settings(BaseSettings):
     igdb_min_catalog_entries: int = Field(default=50, ge=10, le=2000)
     igdb_sync_interval_hours: int = Field(default=24, ge=1)
     igdb_timeout_seconds: int = Field(default=20, ge=1)
-    # Narrative raid: phases are intentionally long enough for an intermittent
-    # group. Admins can resolve the current phase immediately from /eventi while
-    # testing; a totally empty phase is extended once, then abandoned cleanly.
-    raid_phase_duration_minutes: int = Field(default=360, ge=5, le=1440)
-    raid_empty_extension_minutes: int = Field(default=120, ge=5, le=1440)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin

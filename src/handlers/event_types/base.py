@@ -104,8 +104,6 @@ class EventType(Protocol):
     #       Resolve a future ScheduledTask without teaching inline mode about the
     #       concrete event model. Return None when the item is no longer startable.
     #
-    #   async def advance_now(self, bot, db_session, item_id) -> StartResult
-    #       Resolve/advance one phase immediately (manual testing/administration).
     # ------------------------------------------------------------------
 
 

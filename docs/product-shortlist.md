@@ -33,31 +33,9 @@ Il catalogo primario è una cache locale sincronizzata da IGDB: soltanto giochi
 principali, pubblicati, documentati e con segnali sufficienti di notorietà. I
 titoli manuali integrati restano il fallback e non una dipendenza editoriale.
 
-La base tecnica è ora riutilizzata dai **Raid narrativi**; la prossima direzione
-approvata, dopo aver consolidato questo motore, è **Misteri di Alduino**.
+La prossima direzione approvata, dopo aver consolidato questo motore, è
+**Misteri di Alduino**.
 
 Provider scelto: **Gemini**, per structured output, free tier e finestra di
 contesto ampia. Il contesto lungo deve servire le meccaniche persistenti; non è
 una ragione per aggiungere un chatbot generico.
-
-### Implementato: Raid narrativo
-
-Raid comunitario asincrono in tre fasi, pensato per un gruppo ampio la cui
-composizione e presenza cambiano durante la giornata:
-
-- nessun quorum e nessuna fotografia iniziale dei membri;
-- ingresso libero nella fase corrente, senza penalità per le fasi perse;
-- una tattica per utente e fase, modificabile fino alla risoluzione;
-- difficoltà calcolata sulla proporzione delle scelte, mai sul numero assoluto
-  dei partecipanti;
-- conteggi delle singole tattiche nascosti finché la fase è aperta, per limitare
-  effetto gregge e rumore;
-- scadenza automatica persistente; una fase totalmente vuota viene prorogata una
-  sola volta e poi chiusa come spedizione abbandonata, non come sconfitta;
-- avvio immediato e pulsante admin **Risolvi fase ora** per testare tutto senza
-  attendere le scadenze.
-
-Gemini crea soltanto la veste narrativa immutabile (boss, scene, indizi e testi)
-con JSON Schema e validazione di dominio. Contromosse, danni, HP e risultato sono
-locali e deterministici. Se Gemini manca o restituisce dati invalidi viene usato
-uno scenario integrato completo; un raid avviato non dipende mai dalla rete.

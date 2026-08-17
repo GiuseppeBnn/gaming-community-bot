@@ -134,17 +134,40 @@ class TestMigrationsRepairAnOldDeploy:
         col = (await _columns(pg_engine, "guess_rounds"))["closes_at"]
         assert col["nullable"] is True
 
-    async def test_readds_a_safe_roll_to_older_raid_votes(
+    async def test_retires_live_raid_work_without_deleting_history(
         self, pg_engine, monkeypatch,
     ):
         async with pg_engine.begin() as conn:
-            await conn.execute(text("ALTER TABLE raid_actions DROP COLUMN roll"))
+            game_id = (
+                await conn.execute(text(
+                    "INSERT INTO ai_game_sessions "
+                    "(game_type, title, creator_tg_id, status) "
+                    "VALUES ('raid', 'Storico', 9, 'running') RETURNING id"
+                ))
+            ).scalar_one()
+            task_id = (
+                await conn.execute(text(
+                    "INSERT INTO scheduled_tasks "
+                    "(task_type, ref_id, run_at, status, created_by_tg_id) "
+                    "VALUES ('raid', :game_id, CURRENT_TIMESTAMP, 'pending', 9) RETURNING id"
+                ), {"game_id": game_id})
+            ).scalar_one()
 
         await _run_migrations(pg_engine, monkeypatch)
 
-        col = (await _columns(pg_engine, "raid_actions"))["roll"]
-        assert col["nullable"] is False
-        assert "10" in col["default"]
+        async with pg_engine.connect() as conn:
+            game = (
+                await conn.execute(text(
+                    "SELECT status, finished_at FROM ai_game_sessions WHERE id = :id"
+                ), {"id": game_id})
+            ).one()
+            task = (
+                await conn.execute(text(
+                    "SELECT status, executed_at FROM scheduled_tasks WHERE id = :id"
+                ), {"id": task_id})
+            ).one()
+        assert game[0] == "finished" and game[1] is not None
+        assert task[0] == "cancelled" and task[1] is not None
 
     async def test_readds_columns_missing_from_an_older_schema(self, pg_engine, monkeypatch):
         async with pg_engine.begin() as conn:

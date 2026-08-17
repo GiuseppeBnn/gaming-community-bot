@@ -67,7 +67,7 @@ def test_register_builtin_registers_every_type_in_hub_order():
     games — which is why they sit next to each other."""
     event_types.register_builtin()
     assert [t.key for t in event_types.all_types()] == [
-        "quiz", "guess", "sound", "poll", "bet", "twentyq", "raid",
+        "quiz", "guess", "sound", "poll", "bet", "twentyq",
     ]
 
 

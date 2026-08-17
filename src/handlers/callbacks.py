@@ -216,28 +216,11 @@ class EventCb(CallbackData, prefix="ev"):
     """
 
     #: "home" | "list" | "item" | "new"
-    #: | "ask{start,del,close,reset,advance}" | "start" | "close" | "del" | "reset" | "advance"
+    #: | "ask{start,del,close,reset}" | "start" | "close" | "del" | "reset"
     #: | "sched" | "sched_close"
     action: str
     task_type: str | None = None
     item_id: int | None = None
-
-
-class RaidCb(CallbackData, prefix="raid"):
-    """Player choice in the current narrative-raid phase."""
-
-    #: "vote"
-    action: str
-    session_id: int
-    phase_no: int
-    tactic: str
-
-
-class RaidCreateCb(CallbackData, prefix="raidnew"):
-    """Controls local to the raid-creation FSM."""
-
-    #: "cancel"
-    action: str
 
 
 class PollCreateCb(CallbackData, prefix="evpt"):

@@ -204,7 +204,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
-| `/eventi` | Hub privato: include 20 Domande e Raid narrativi, avviabili subito o programmabili |
+| `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
 
@@ -269,34 +269,6 @@ risponde, perché quelle vengono riconosciute **senza** interpellarla.
 Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
 tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
 ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto.
-
-### Raid narrativo asincrono
-
-Dall'hub `/eventi` un admin inserisce un tema; Gemini prepara un boss e tre fasi
-con tre tattiche leggibili su pulsanti a larghezza piena. Se Gemini non è
-disponibile viene creato uno scenario integrato completo, quindi la feature resta
-testabile e giocabile.
-
-Nel gruppo non esiste quorum: ogni fase accetta chi c'è in quel momento, anche se
-non ha giocato le precedenti. Ogni persona ha una scelta modificabile. Il bot non
-mostra i conteggi delle singole tattiche durante il voto, così la discussione non
-diventa una semplice corsa dietro alla maggioranza; li pubblica nel resoconto.
-La riuscita dipende dalla **frazione** di scelte efficaci, non dal numero di
-persone, e le tre contromosse sono bilanciate tra assalto, difesa e astuzia.
-
-Al primo voto di ogni fase Alduino assegna a ciascun partecipante un **d20
-immutabile**: cambiare tattica non permette di ritirarlo. Ogni tiro da 11 in su
-supera la prova; una maggioranza di successi aggiunge 3 danni, una parità ne
-aggiunge 1 e un fallimento non causa malus. Il dado dà quindi colore e può
-salvare una spedizione quasi riuscita, ma resta subordinato alla strategia:
-anche tre prove perfette non fanno vincere tre fasi giocate male. I 20 e gli 1
-naturali vengono raccontati, senza bonus cumulativi che favorirebbero i gruppi
-più numerosi.
-
-Le fasi durano 6 ore per default e si risolvono con task persistenti. Se nessuno
-risponde, la fase riceve una sola proroga di 2 ore e poi il raid termina senza
-penalità. In test l'admin può usare **Avvia ora** e, dopo almeno una scelta,
-**Risolvi fase ora** per percorrere tutte e tre le fasi immediatamente.
 
 ### Scommesse (stile Twitch)
 
@@ -413,8 +385,6 @@ gaming-community-bot/
 | `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache di 20 Domande |
 | `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |
 | `IGDB_SYNC_INTERVAL_HOURS` | `24` | frequenza massima di aggiornamento del catalogo IGDB |
-| `RAID_PHASE_DURATION_MINUTES` | `360` | durata ordinaria di ogni fase del raid; l'admin può risolverla subito |
-| `RAID_EMPTY_EXTENSION_MINUTES` | `120` | unica proroga per una fase senza risposte |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |

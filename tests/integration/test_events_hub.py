@@ -230,7 +230,6 @@ class TestHub:
             EventCb(action="list", task_type="poll").pack(),
             EventCb(action="list", task_type="bet").pack(),
             EventCb(action="list", task_type="twentyq").pack(),
-            EventCb(action="list", task_type="raid").pack(),
             AdminCb(action="home").pack(),
         }
         assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
@@ -340,7 +339,6 @@ class TestConfirmationGate:
         ("askclose", "close"),
         ("askdel", "del"),
         ("askreset", "reset"),
-        ("askadvance", "advance"),
     ])
     async def test_each_action_asks_first_and_routes_yes_to_its_executor(
         self, session, only_fake, action, exec_action
@@ -476,45 +474,6 @@ class TestStartAndClose:
     # A non-numeric id ("ev:close:fake:x") used to be ignored here; now the filter
     # drops it before it ever reaches cb_close, so the coverage moved to
     # tests/unit/test_callbacks.py::test_a_non_numeric_event_id_never_reaches_the_handler.
-
-
-class TestAdvance:
-    async def test_type_without_advance_ignores_the_button(self, session, only_fake):
-        cb = EventCb(action="advance", task_type="fake", item_id=7)
-        callback = _FakeCallback(cb.pack())
-
-        await events.cb_advance(callback, cb, session)
-
-        assert callback.toasts == []
-
-    @pytest.mark.parametrize("ok", [True, False])
-    async def test_advance_answers_and_refreshes_detail(self, session, ok):
-        event_types.clear()
-
-        class _PhasedType(_RichType):
-            key = "phased"
-
-            async def advance_now(self, bot, db_session, item_id):
-                return StartResult(ok, "avanzato" if ok else "vuoto", alert=not ok)
-
-        phased = _PhasedType()
-        event_types.register(phased)
-        cb = EventCb(action="advance", task_type="phased", item_id=7)
-        callback = _FakeCallback(cb.pack())
-
-        await events.cb_advance(callback, cb, session)
-
-        assert callback.toasts == ["avanzato" if ok else "vuoto"]
-        assert callback.answers[0][1] is (not ok)
-        assert phased.details == [7]
-
-    async def test_unknown_advance_type_is_ignored(self, session):
-        cb = EventCb(action="advance", task_type="missing", item_id=7)
-        callback = _FakeCallback(cb.pack())
-
-        await events.cb_advance(callback, cb, session)
-
-        assert callback.toasts == []
 
 
 class TestDeleteAndReset:

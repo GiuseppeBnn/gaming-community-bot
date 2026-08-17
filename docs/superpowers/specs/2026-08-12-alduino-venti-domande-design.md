@@ -8,7 +8,7 @@ sceglie segretamente un videogioco e il gruppo ha venti domande sì/no e tre
 tentativi per indovinarlo.
 
 Il codice deve essere la base, non un prototipo usa-e-getta, per i futuri
-"Misteri di Alduino" e "Raid narrativi".
+altri giochi AI persistenti, a partire da "Misteri di Alduino".
 
 ## Confini
 

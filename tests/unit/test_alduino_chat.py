@@ -242,14 +242,14 @@ def test_public_events_are_compact_and_dated():
     events = [
         PublicEvent("quiz", 1, "Quiz", "Gioca ora", "🧠"),
         PublicEvent(
-            "raid", 2, "Raid", "Arriva presto", "🐉",
+            "bet", 2, "Scommessa", "Arriva presto", "🎲",
             starts_at=datetime(2026, 8, 20, 18, 30),
         ),
     ]
     rendered = alduino_chat.render_public_events(events)
 
     assert "Quiz (aperto adesso)" in rendered
-    assert "Raid (programmato" in rendered
+    assert "Scommessa (programmato" in rendered
     assert alduino_chat.render_public_events([]) == (
         "Nessun evento pubblico aperto o programmato."
     )

@@ -84,16 +84,21 @@ _MIGRATIONS: list[str] = [
     # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
     # so rounds created before this column keep behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
-    # raid_actions: the first vote in each phase now fixes one immutable d20.
-    # Existing open votes receive 10: a valid roll which cannot create a bonus,
-    # so deploying the mechanic never gifts damage to a half-played old phase.
-    "ALTER TABLE raid_actions ADD COLUMN IF NOT EXISTS "
-    "roll INTEGER NOT NULL DEFAULT 10",
+    # Raid was removed from the product. Preserve its historical rows, but make
+    # every still-live aggregate and timer inert so the scheduler cannot emit a
+    # failure alert later for an event type that intentionally no longer exists.
+    "UPDATE scheduled_tasks SET status = 'cancelled', "
+    "executed_at = COALESCE(executed_at, CURRENT_TIMESTAMP), error = NULL "
+    "WHERE task_type = 'raid' AND status = 'pending'",
+    "UPDATE ai_game_sessions SET status = 'finished', "
+    "finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), "
+    "pending_token = NULL, pending_since = NULL "
+    "WHERE game_type = 'raid' AND status IN ('ready', 'running')",
 ]
 
 
 async def run_migrations() -> None:
-    """Apply idempotent DDL migrations for columns added after the initial deploy.
+    """Apply idempotent schema migrations and feature-retirement maintenance.
 
     Only runs on PostgreSQL — SQLite test DBs are always created fresh by create_tables().
     """
