@@ -320,6 +320,84 @@ class TestAirdrops:
         assert message.answers and "non valido" in message.answers[0]
 
 
+class TestMassReward:
+    """The «Manda premi» flow: pick XP/CoInn → amount → an @username list. The
+    money must reach exactly the matched users, the unmatched ones must be
+    reported, and an all-miss list must let the admin retype instead of dropping
+    them out of the flow."""
+
+    async def test_entry_asks_what_to_send(self):
+        callback_data = AdminCb(action="massreward")
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_massreward(cb, callback_data, _state())
+        assert "Manda premi" in cb.message.answers[-1]
+
+    async def test_choosing_a_type_arms_the_amount_step(self):
+        state = _state()
+        callback_data = AdminCb(action="massreward", key="coins")
+        await ad.cb_massreward(_FakeCallback(callback_data.pack()), callback_data, state)
+        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_amount
+        assert (await state.get_data())["mass_kind"] == "coins"
+
+    async def test_the_amount_validates_then_asks_for_recipients(self):
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_mass_amount)
+        await state.update_data(mass_kind="coins")
+
+        bad = _FakeMessage("tanti")
+        await ad.fsm_mass_amount(bad, state)
+        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_amount
+        assert bad.answers and "non valido" in bad.answers[0]
+
+        good = _FakeMessage("100")
+        await ad.fsm_mass_amount(good, state)
+        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_recipients
+        assert (await state.get_data())["mass_amount"] == 100
+
+    async def _armed_recipients(self, kind: str, amount: int) -> FSMContext:
+        state = _state()
+        await state.set_state(ad.AdminPanelStates.waiting_mass_recipients)
+        await state.update_data(mass_kind=kind, mass_amount=amount)
+        return state
+
+    async def test_coins_reach_matched_users_and_the_missing_are_reported(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=10, username="alice", coins=0)
+        await user_factory(tg_id=11, username="bob", coins=0)
+        message = _FakeMessage("@alice\nbob\n@ghost")
+
+        await ad.fsm_mass_recipients(message, await self._armed_recipients("coins", 100), session)
+
+        assert await _coins(session, 10) == 100 and await _coins(session, 11) == 100
+        [row] = await _audit(session)
+        assert row.action_type == "mass_credit" and row.amount == 100
+        assert "2" in (row.detail or "")
+        assert any("ghost" in a for a in message.answers), "unmatched names must be reported"
+        # Both matched users were DM'd.
+        assert {c for c, _t in message.bot.sent} == {10, 11}
+
+    async def test_xp_reaches_matched_users(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice", xp=0)
+        message = _FakeMessage("@alice")
+
+        await ad.fsm_mass_recipients(message, await self._armed_recipients("xp", 50), session)
+
+        assert await _xp(session, 10) == 50
+        [row] = await _audit(session)
+        assert row.action_type == "mass_xp" and row.amount == 50
+
+    async def test_no_matched_username_keeps_the_state_to_retry(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice", coins=0)
+        state = await self._armed_recipients("coins", 100)
+        message = _FakeMessage("@ghost\n@nobody")
+
+        await ad.fsm_mass_recipients(message, state, session)
+
+        assert await _audit(session) == [] and await _coins(session, 10) == 0
+        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_recipients
+
+
 class TestActionRouting:
     async def test_each_money_action_arms_the_amount_step_for_its_target(self):
         """`cb_act` is the only place the action name and the target id get into the

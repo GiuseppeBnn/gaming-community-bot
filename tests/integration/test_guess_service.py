@@ -427,11 +427,11 @@ class TestPrizes:
 
         assert await _coins(session, 10) == 10
 
-    async def test_a_player_who_ran_out_of_attempts_gets_no_coins(
+    async def test_a_non_solver_gets_a_consolation_below_the_solver(
         self, session, round_, user_factory
     ):
-        """Here "finisher" means "guessed it" — that is what makes fewer attempts
-        worth something."""
+        """Non-solvers now share the consolation schedule too (everyone who played
+        is rewarded), but always below the solvers: guessing still ranks higher."""
         await user_factory(7, "u7")
         await user_factory(8, "u8")
         await _solve(session, round_, 7)
@@ -442,7 +442,9 @@ class TestPrizes:
         await gs.award_prizes(session, round_.id)
         await session.commit()
 
-        assert await _coins(session, 8) == 0
+        solver, non_solver = await _coins(session, 7), await _coins(session, 8)
+        assert solver == 100                 # podium 1st
+        assert 0 < non_solver < solver       # rewarded, but below the winner
 
     async def test_everyone_who_played_gets_xp(self, session, round_, user_factory):
         await user_factory(7, "u7")
@@ -472,9 +474,11 @@ class TestPrizes:
         rows = dict((await session.execute(select(User.tg_id, User.xp))).all())
         assert rows[7] > rows[8]
 
-    async def test_xp_reaches_players_even_when_nobody_solved_it(
+    async def test_players_are_paid_and_get_xp_even_when_nobody_solved_it(
         self, session, round_, user_factory
     ):
+        """With nobody solving, there is no podium — but the participants still share
+        the consolation schedule and still get participation XP."""
         await user_factory(7, "u7")
         await gs.start_or_resume(session, round_.id, 7)
         await gs.record_attempt(session, round_, 7, "Quake", _no())
@@ -483,10 +487,35 @@ class TestPrizes:
         await session.commit()
 
         xp = (await session.execute(select(User.xp).where(User.tg_id == 7))).scalar_one()
-        assert awards == [] and xp > 0
+        assert xp > 0
+        assert [a.user_tg_id for a in awards] == [7]
+        assert awards[0].kind == "consolation" and await _coins(session, 7) > 0
 
     async def test_awarding_on_a_missing_round_is_empty_not_a_crash(self, session):
         assert await gs.award_prizes(session, 999) == []
+
+    async def test_full_standings_puts_solvers_before_non_solvers(
+        self, session, round_, user_factory
+    ):
+        """The full ranking used for payout: a solver always outranks a non-solver,
+        and non-solvers are ordered by effort (most attempts first)."""
+        await user_factory(7, "u7")
+        await user_factory(8, "u8")
+        await user_factory(9, "u9")
+        await _solve(session, round_, 7)                 # solver
+        await gs.start_or_resume(session, round_.id, 8)  # non-solver, 1 attempt
+        await gs.record_attempt(session, round_, 8, "Quake", _no())
+        await gs.start_or_resume(session, round_.id, 9)  # non-solver, 3 attempts
+        for _ in range(3):
+            await gs.record_attempt(session, round_, 9, "Quake", _no())
+
+        ranking = await gs.full_standings(session, round_.id)
+
+        assert [(r.user_tg_id, r.solved) for r in ranking] == [
+            (7, True),    # solver first
+            (9, False),   # more attempts → ahead of the other non-solver
+            (8, False),
+        ]
 
 
 class TestClaimClose:

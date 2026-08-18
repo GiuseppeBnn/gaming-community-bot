@@ -3,6 +3,30 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.4] - 2026-08-18
+
+### Aggiunto
+- **Manda premi a più utenti** — nuovo pulsante «🎯 Manda premi» nella dashboard
+  `/admin` → 💰 Economia. Flusso guidato: scegli **XP** o **CoInn** → digita
+  l'importo → incolla la lista degli **@username** (uno per riga). Gli utenti
+  trovati vengono premiati e avvisati in privato; quelli non trovati sono
+  segnalati nel riepilogo. Registrato nell'audit log.
+- **Guess The Game / Sound Quest — premi a tutti i partecipanti** — anche chi
+  **non indovina** ora entra in classifica e riceve CoInn (oltre agli XP di
+  partecipazione che già prendeva). I CoInn seguono la stessa scala decrescente
+  dei quiz, estesa a tutti: chi indovina resta sopra (podio 1°/2°/3° riservato a
+  loro), i non-solver ricevono la consolazione a scendere. La classifica di
+  chiusura mostra tutti, con i CoInn ricevuti e un segno «non indovinato».
+
+### Corretto
+- **`/quiz`, `/guessTheGame`, `/soundQuest` (admin)** — dal gruppo, il pulsante
+  «gestisci in privato» ora porta **direttamente all'elenco** di quell'attività,
+  invece di aprire tutta la dashboard `/admin`.
+- **Trofeo «Ehi, ti sei svegliato finalmente!»** — ora viene assegnato
+  retroattivamente a chi usa il bot ma non l'aveva ancora ricevuto (tipicamente un
+  admin che aveva saltato la schermata delle regole). Nessun effetto per chi lo ha
+  già.
+
 ## [1.3] - 2026-08-18
 
 ### Aggiunto

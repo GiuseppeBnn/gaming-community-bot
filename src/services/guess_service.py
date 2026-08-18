@@ -596,6 +596,18 @@ class Standing:
     solved_at: datetime
 
 
+@dataclass
+class RankedPlayer:
+    """A row of the *full* ranking used for payout and the closing announcement:
+    every participant, solvers first, then non-solvers. ``solve_ms`` is ``None``
+    for a non-solver (they never solved), and ``attempts`` is how many they used."""
+
+    user_tg_id: int
+    solved: bool
+    attempts: int
+    solve_ms: int | None
+
+
 async def standings(session: AsyncSession, round_id: int) -> list[Standing]:
     """Solvers only, ranked by **fewest attempts**, then by time, with arrival
     order as the final tie-break.
@@ -625,6 +637,37 @@ async def standings(session: AsyncSession, round_id: int) -> list[Standing]:
     return out
 
 
+async def full_standings(session: AsyncSession, round_id: int) -> list[RankedPlayer]:
+    """Every participant (submitted ≥1 attempt), solvers first then non-solvers.
+
+    Solvers keep their competitive order (fewest attempts, then time). Non-solvers
+    follow, ranked by effort (most attempts first, then who arrived earlier) — they
+    never overtake a solver, so the payout keeps «chi indovina più in alto» while
+    still rewarding everyone who took part.
+    """
+    solvers = [
+        RankedPlayer(user_tg_id=s.user_tg_id, solved=True, attempts=s.attempts,
+                     solve_ms=s.solve_ms)
+        for s in await standings(session, round_id)
+    ]
+    rows = (
+        await session.execute(
+            select(GuessSession.user_tg_id, GuessSession.attempts_used)
+            .where(
+                GuessSession.round_id == round_id,
+                GuessSession.solved_at.is_(None),
+                GuessSession.attempts_used >= 1,
+            )
+            .order_by(GuessSession.attempts_used.desc(), GuessSession.started_at.asc())
+        )
+    ).all()
+    non_solvers = [
+        RankedPlayer(user_tg_id=r[0], solved=False, attempts=int(r[1] or 0), solve_ms=None)
+        for r in rows
+    ]
+    return solvers + non_solvers
+
+
 @dataclass
 class PrizeAward:
     user_tg_id: int
@@ -633,14 +676,15 @@ class PrizeAward:
     kind: str = "podium"  # "podium" | "consolation"
 
 
-async def _grant_xp(session: AsyncSession, round_id: int, ranked: list[Standing]) -> None:
+async def _grant_xp(session: AsyncSession, round_id: int, solvers: list[RankedPlayer]) -> None:
     """Event XP for a closed round (uncapped — admin-gated, not farmable):
 
     * everyone who submitted at least one answer gets ``guess_xp_participation``;
     * solvers get ``guess_xp_solved`` on top;
-    * the top three get a podium bonus.
+    * the top three (solvers) get a podium bonus.
 
-    Rewards showing up, not just winning — the same shape as the quiz.
+    Rewards showing up, not just winning — the same shape as the quiz. ``solvers``
+    is the solver-only ranking, so the podium bonus never reaches a non-solver.
     """
     players = (
         await session.execute(
@@ -649,18 +693,18 @@ async def _grant_xp(session: AsyncSession, round_id: int, ranked: list[Standing]
             .group_by(GuessAttempt.user_tg_id)
         )
     ).scalars().all()
-    solvers = {s.user_tg_id for s in ranked}
+    solver_ids = {s.user_tg_id for s in solvers}
 
     for uid in players:
         amount = max(0, settings.guess_xp_participation)
-        if uid in solvers:
+        if uid in solver_ids:
             amount += max(0, settings.guess_xp_solved)
         if amount > 0:
             await xp_service.grant_xp(session, uid, amount, XpSource.guess, capped=False)
 
     bonuses = (settings.guess_xp_podium_first, settings.guess_xp_podium_second,
                settings.guess_xp_podium_third)
-    for i, row in enumerate(ranked[:3]):
+    for i, row in enumerate(solvers[:3]):
         bonus = max(0, bonuses[i])
         if bonus > 0:
             await xp_service.grant_xp(session, row.user_tg_id, bonus,
@@ -668,19 +712,23 @@ async def _grant_xp(session: AsyncSession, round_id: int, ranked: list[Standing]
 
 
 async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]:
-    """Pay the solvers and grant event XP. No commit.
+    """Pay every participant and grant event XP. No commit.
 
-    The podium takes first/second/third; every solver below it gets a consolation
-    decreasing linearly from ``prize_consolation`` to ``prize_min`` — the shared
-    schedule in ``services.prizes``.
+    The podium (1st/2nd/3rd) is reserved for **solvers** — a non-solver never takes
+    a podium prize, so guessing always ranks higher. Everyone below the podium
+    (remaining solvers **and** all non-solvers) shares the consolation schedule
+    decreasing linearly from ``prize_consolation`` down to ``prize_min`` — the same
+    shared schedule (``services.prizes``) the quiz uses, now spanning everyone who
+    took part instead of only the winners.
     """
     round_ = await get_round(session, round_id)
     if round_ is None:
         return []
 
-    ranked = await standings(session, round_id)
+    ranked = await full_standings(session, round_id)
+    solvers = [p for p in ranked if p.solved]
     # XP first: participation reaches everyone who played, even when nobody solved it.
-    await _grant_xp(session, round_id, ranked)
+    await _grant_xp(session, round_id, solvers)
     if not ranked:
         return []
 
@@ -696,17 +744,21 @@ async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]
         )
         awards.append(PrizeAward(user_tg_id=user_tg_id, rank=rank, coins=coins, kind=kind))
 
-    for i, row in enumerate(ranked[:3]):
+    # Podium: only the top solvers (at most 3). A non-solver can never reach it.
+    podium_n = min(3, len(solvers))
+    for i in range(podium_n):
+        row = ranked[i]
         coins = (round_.prize_first, round_.prize_second, round_.prize_third)[i]
         if coins > 0:
             await _pay(row.user_tg_id, coins, i + 1, "podium", f"podio #{i + 1}")
 
-    others = ranked[3:]
+    # Consolation: everyone else — remaining solvers AND all non-solvers.
+    others = ranked[podium_n:]
     schedule = consolation_amounts(len(others), round_.prize_consolation, round_.prize_min)
     # strict=True: `schedule` is built with len(others) entries, so a length
-    # mismatch would mean silently paying a subset of the solvers.
+    # mismatch would mean silently paying a subset of the participants.
     for offset, (row, coins) in enumerate(zip(others, schedule, strict=True)):
         if coins > 0:
-            rank = offset + 4
+            rank = podium_n + offset + 1
             await _pay(row.user_tg_id, coins, rank, "consolation", f"consolazione #{rank}")
     return awards

@@ -142,6 +142,22 @@ class TestDossierAndStats:
         found = await admin.search_users(session, "mario")
         assert [u.tg_id for u in found] == [1]
 
+    async def test_resolve_usernames_exact_case_insensitive_with_missing(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=1, username="Mario")
+        await user_factory(tg_id=2, username="luigi")
+        # '@' optional, case-insensitive, exact only; blanks and duplicates dropped;
+        # a partial ('mari') must NOT match — this pays out, no fuzzy matching.
+        found, missing = await admin.resolve_usernames(
+            session, ["@mario", "LUIGI", "luigi", "", "  ", "mari", "@ghost"]
+        )
+        assert sorted(u.tg_id for u in found) == [1, 2]
+        assert missing == ["mari", "ghost"]
+
+    async def test_resolve_usernames_empty_input(self, session):
+        assert await admin.resolve_usernames(session, ["", "  ", "@"]) == ([], [])
+
     async def test_economy_stats(self, session, user_factory):
         await user_factory(tg_id=1, coins=100)
         await user_factory(tg_id=2, coins=300)

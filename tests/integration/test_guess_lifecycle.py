@@ -327,7 +327,7 @@ class TestClose:
         ok, _ = await lc.close_round(bot, session, round_.id)
 
         assert ok is True
-        assert "PODIO" in bot.texts
+        assert "CLASSIFICA" in bot.texts
 
     async def test_closing_pays_the_podium(self, session, round_, user_factory):
         round_.status = "running"
@@ -424,6 +424,8 @@ class TestClose:
     async def test_closing_a_round_nobody_solved_still_works(
         self, session, round_, user_factory
     ):
+        """Nobody guessed, but the player who tried is still in the ranking (marked
+        «non indovinato») — the close works and announces it."""
         round_.status = "running"
         await session.flush()
         await user_factory(7, "u7")
@@ -434,7 +436,7 @@ class TestClose:
 
         ok, _ = await lc.close_round(bot, session, round_.id)
 
-        assert ok is True and "nessuno" in bot.texts.lower()
+        assert ok is True and "non indovinato" in bot.texts.lower()
 
     async def test_even_then_the_answer_is_revealed(self, session, round_):
         """A round that ends unsolved still owes everyone the answer."""
