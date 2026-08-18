@@ -45,6 +45,7 @@ from handlers import (
     inline_mode,
     leaderboard,
     onboarding,
+    poll_vote,
     quiz,
     schedule,
     shop,
@@ -65,6 +66,7 @@ ROUTERS: tuple[Router, ...] = (
     admin.router,
     admin_dashboard.router,
     events.router,
+    poll_vote.router,       # public poll_answer tracking; disjoint update type
     quiz.router,
     guess.router,          # next to its twin; the callback prefixes are disjoint
     twenty_questions.router,

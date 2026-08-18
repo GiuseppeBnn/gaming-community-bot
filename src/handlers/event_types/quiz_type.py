@@ -73,9 +73,11 @@ class QuizType:
         lines = ["🧠 <b>Quiz</b>\n"]
         for q in quizzes:
             dot, label = _STATUS.get(q.status, ("•", q.status))
-            lines.append(f"{dot} #{q.id} {esc(q.title)} — <i>{label}</i>")
+            # Title only — no `#id` in the listing (the id still travels in the
+            # callback payload, so tapping still resolves the right quiz).
+            lines.append(f"{dot} {esc(q.title)} — <i>{label}</i>")
             b.button(
-                text=f"{dot} #{q.id} {q.title[:22]}",
+                text=f"{dot} {q.title[:25]}",
                 callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack(),
             )
         if not quizzes:

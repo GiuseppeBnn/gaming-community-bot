@@ -102,9 +102,11 @@ class GuessType:
         lines = [f"{self.hub_label}\n"]
         for r in rounds:
             dot, label = _STATUS.get(r.status, ("•", r.status))
-            lines.append(f"{dot} #{r.id} {esc(r.title)} — <i>{label}</i>")
+            # Title only — no `#id` in the listing (the id still travels in the
+            # callback payload, so tapping still resolves the right round).
+            lines.append(f"{dot} {esc(r.title)} — <i>{label}</i>")
             b.button(
-                text=f"{dot} #{r.id} {r.title[:22]}",
+                text=f"{dot} {r.title[:25]}",
                 callback_data=EventCb(action="item", task_type=self.key, item_id=r.id).pack(),
             )
         if not rounds:

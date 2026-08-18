@@ -114,6 +114,20 @@ _COMMANDS: list[CommandDoc] = [
                 "invece per gestire e avviare i quiz.",
     ),
     CommandDoc(
+        "guessthegame", "Guess The Game attivi da giocare", "🏆 Progressione",
+        usage="/guessTheGame",
+        details="Elenca i <b>Guess The Game</b> (indovina il gioco da una foto) in corso, col "
+                "pulsante per giocarli in chat privata. Se non ce ne sono, te lo dice. Gli admin "
+                "lo usano per gestire i round.",
+    ),
+    CommandDoc(
+        "soundquest", "Sound Quest attivi da giocare", "🏆 Progressione",
+        usage="/soundQuest",
+        details="Elenca i <b>Sound Quest</b> (indovina il gioco da un audio) in corso, col "
+                "pulsante per giocarli in chat privata. Se non ce ne sono, te lo dice. Gli admin "
+                "lo usano per gestire i round.",
+    ),
+    CommandDoc(
         "trofei", "I tuoi trofei (per rarità) e il rango", "🏆 Progressione",
         usage="/trofei",
         details="Mostra i trofei che hai sbloccato, raggruppati per rarità, e il tuo rango XP attuale.",

@@ -37,6 +37,19 @@ class _FakeMessage:
         self.replies.append((text, reply_markup))
 
 
+class _FakeCallback:
+    """Drives the poll-creation menu steps (description/prize/close), which are
+    callback-driven. `message` is the panel the handlers answer on."""
+
+    def __init__(self, bot, user_id=1):
+        self.message = _FakeMessage("", bot, user_id)
+        self.from_user = SimpleNamespace(id=user_id)
+        self.answers = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append(text)
+
+
 def _fresh_state() -> FSMContext:
     return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1))
 
@@ -136,32 +149,174 @@ class TestPollCreationFlow:
     explicit admin choice — never auto-published on creation (like quiz/scommesse)."""
 
     async def test_finishing_creation_stores_template_without_publishing(self, session):
-        from handlers.events import PollTemplateStates, fsm_pt_options
+        """The minimal path (skip description, no prize, no auto-close) still stores
+        a ready template and never publishes it — the admin picks avvia/programma."""
+        from handlers.events import (
+            PollTemplateStates,
+            cb_pt_close_none,
+            cb_pt_desc_skip,
+            cb_pt_prize_none,
+            fsm_pt_options,
+        )
 
         state = _fresh_state()
         await state.set_state(PollTemplateStates.options)
-        await state.update_data(pt_question="Best game?")
+        await state.update_data(pt_question="Best game?", pt_creator=1)
         bot = _FakeBot()
-        message = _FakeMessage("A\nB\nC", bot)
 
-        await fsm_pt_options(message, state, session)
+        await fsm_pt_options(_FakeMessage("A\nB\nC", bot), state)
+        await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await cb_pt_prize_none(_FakeCallback(bot), state)
+        cb = _FakeCallback(bot)
+        await cb_pt_close_none(cb, state, session)
 
         # Stored as a ready (pre-created) template...
         polls = await poll_service.list_ready(session)
         assert len(polls) == 1
         assert polls[0].question == "Best game?"
         assert poll_service.options_of(polls[0]) == ["A", "B", "C"]
+        assert not poll_service.has_prize(polls[0]) and polls[0].closes_at is None
         # ...and NOT posted to the group.
         assert bot.polls == []
         # The admin is offered the explicit choice (Avvia ora / Programma).
-        assert message.replies
-        _text, kb = message.replies[-1]
+        _text, kb = cb.message.replies[-1]
         assert isinstance(kb, InlineKeyboardMarkup)
         callbacks = [b.callback_data for row in kb.inline_keyboard for b in row]
         assert EventCb(action="start", task_type="poll", item_id=polls[0].id).pack() in callbacks
         assert EventCb(action="sched", task_type="poll", item_id=polls[0].id).pack() in callbacks
         # Flow is finished.
         assert await state.get_state() is None
+
+    async def test_full_creation_with_prize_description_and_close(self, session):
+        """The rich path: a description, the default prize and a scheduled close are
+        all captured on the stored template."""
+        from datetime import datetime, timedelta, timezone
+
+        from config_data.config import settings
+        from handlers.events import (
+            PollTemplateStates,
+            cb_pt_prize_default,
+            fsm_pt_close_at,
+            fsm_pt_description,
+            fsm_pt_options,
+        )
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.options)
+        await state.update_data(pt_question="Best game?", pt_creator=1)
+        bot = _FakeBot()
+
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
+        await fsm_pt_description(_FakeMessage("Vota il migliore!", bot), state)
+        await cb_pt_prize_default(_FakeCallback(bot), state)
+        # An absolute future date for the auto-close.
+        when = (datetime.now(tz=timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+        await fsm_pt_close_at(_FakeMessage(when, bot), state, session)
+
+        poll = (await poll_service.list_ready(session))[0]
+        assert poll.description == "Vota il migliore!"
+        assert poll.prize_coins == settings.poll_reward_coins
+        assert poll.prize_xp == settings.poll_reward_xp
+        assert poll.closes_at is not None
+        assert await state.get_state() is None
+
+    async def test_custom_prize_forces_a_close_date(self, session):
+        """Custom-prize branch (with an invalid-entry reprompt on each amount). A
+        prize is paid at the close, so choosing one jumps straight to the required
+        close-date step — there is no «no close» option once a prize is set."""
+        from datetime import datetime, timedelta, timezone
+
+        from handlers.events import (
+            PollTemplateStates,
+            cb_pt_desc_skip,
+            cb_pt_prize_custom,
+            fsm_pt_close_at,
+            fsm_pt_options,
+            fsm_pt_prize_coins,
+            fsm_pt_prize_xp,
+        )
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.options)
+        await state.update_data(pt_question="Best game?", pt_creator=1)
+        bot = _FakeBot()
+
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
+        await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await cb_pt_prize_custom(_FakeCallback(bot), state)
+        assert await state.get_state() == PollTemplateStates.prize_coins.state
+
+        await fsm_pt_prize_coins(_FakeMessage("abc", bot), state)  # invalid → reprompt
+        assert await state.get_state() == PollTemplateStates.prize_coins.state
+        await fsm_pt_prize_coins(_FakeMessage("100", bot), state)
+        assert await state.get_state() == PollTemplateStates.prize_xp.state
+
+        await fsm_pt_prize_xp(_FakeMessage("-5", bot), state)  # invalid → reprompt
+        assert await state.get_state() == PollTemplateStates.prize_xp.state
+        await fsm_pt_prize_xp(_FakeMessage("7", bot), state)
+        # Prize set → the close date is REQUIRED, so we land straight on it.
+        assert await state.get_state() == PollTemplateStates.close_at.state
+
+        await fsm_pt_close_at(_FakeMessage("boh non è una data", bot), state, session)  # reprompt
+        assert await state.get_state() == PollTemplateStates.close_at.state
+        when = (datetime.now(tz=timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+        await fsm_pt_close_at(_FakeMessage(when, bot), state, session)
+
+        poll = (await poll_service.list_ready(session))[0]
+        assert poll.prize_coins == 100 and poll.prize_xp == 7
+        assert poll.closes_at is not None
+        assert await state.get_state() is None
+
+    async def test_no_prize_with_a_scheduled_close(self, session):
+        """A close date WITHOUT a prize is allowed: at close the bot announces the
+        winning option but pays nothing. Exercises the «schedule close» menu button."""
+        from datetime import datetime, timedelta, timezone
+
+        from handlers.events import (
+            PollTemplateStates,
+            cb_pt_close_set,
+            cb_pt_desc_skip,
+            cb_pt_prize_none,
+            fsm_pt_close_at,
+            fsm_pt_options,
+        )
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.options)
+        await state.update_data(pt_question="Best game?", pt_creator=1)
+        bot = _FakeBot()
+
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
+        await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await cb_pt_prize_none(_FakeCallback(bot), state)
+        # No prize → the close is a menu (none / schedule); pick «schedule».
+        assert await state.get_state() == PollTemplateStates.close_choice.state
+        await cb_pt_close_set(_FakeCallback(bot), state)
+        assert await state.get_state() == PollTemplateStates.close_at.state
+        when = (datetime.now(tz=timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+        await fsm_pt_close_at(_FakeMessage(when, bot), state, session)
+
+        poll = (await poll_service.list_ready(session))[0]
+        assert not poll_service.has_prize(poll) and poll.closes_at is not None
+        assert await state.get_state() is None
+
+    async def test_a_relative_close_token_is_refused(self, session):
+        """'1d' is ambiguous for a poll not yet running (from now or from start?),
+        so the close field takes only an absolute date."""
+        from handlers.events import PollTemplateStates, fsm_pt_close_at
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.close_at)
+        await state.update_data(pt_question="Q", pt_creator=1, pt_options=["A", "B"])
+        bot = _FakeBot()
+        msg = _FakeMessage("1d", bot)
+
+        await fsm_pt_close_at(msg, state, session)
+
+        # Nothing created, still waiting on the close field.
+        assert await poll_service.list_ready(session) == []
+        assert await state.get_state() == PollTemplateStates.close_at.state
+        assert "durata" in msg.replies[-1][0]
 
     async def test_sondaggio_entry_starts_creation_without_publishing(self):
         """/sondaggio reuses the canonical creation flow: it prompts for the

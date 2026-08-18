@@ -81,6 +81,7 @@ Campi importanti:
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
 - **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
+- **Premi sondaggio** (evento, uncapped, §18.2): `poll_reward_coins: int` (default 25), `poll_reward_xp: int` (default 10) — default suggeriti in creazione, pagati a **ogni votante** alla chiusura; 0 in un campo ne spegne quella metà
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
 - **Backup & export** (§25): `backup_dir: str` (default `"backups"`), `backup_state_interval_hours: int` (24), `backup_state_keep: int` (5), `backup_chat_interval_hours: int` (168), `backup_max_message_chars: int` (4096); **MTProto** `telegram_api_id: int` (0), `telegram_api_hash: str` (""), `telegram_session: str` ("") — creds vuote ⇒ archivio chat disattivato (la `telegram_session` è una **credenziale sensibile**, solo `.env`)
 
@@ -129,6 +130,15 @@ scheduled_tasks (id PK, task_type [quiz|poll|bet], ref_id, payload_json, run_at 
                  status, created_by_tg_id, group_id, created_at, executed_at, error)
 game_podiums    (id PK, user_tg_id BigInt index, game_key index, rank, ref_id, created_at)
                  ← podio per gioco (trivia|guess|sound); fuel trofei podium_count/first_place_count (§12)
+poll_templates  (id PK, question, options_json, creator_tg_id, status, group_id,
+                 description, prize_coins, prize_xp, closes_at, tg_poll_id index,
+                 message_id, chat_id, created_at, used_at)
+                 ← sondaggio pre-creato: ready→running→finished. premio opzionale (CoInn+XP a
+                   ogni votante), descrizione, chiusura automatica su closes_at; tg_poll_id/
+                   message_id/chat_id armati all'avvio per stopPoll + payout (§18.2)
+poll_votes      (id PK, poll_id FK, user_tg_id, option_ids_json, voted_at)
+                 UniqueConstraint(poll_id, user_tg_id) ← voti tracciati dagli update poll_answer
+                   (sondaggio NON anonimo): l'unico modo di sapere CHI premiare (§18.2)
 ```
 
 ### Enums (str, Enum — valori in DB come stringa)
@@ -136,7 +146,8 @@ game_podiums    (id PK, user_tg_id BigInt index, game_key index, rank, ref_id, c
 ```python
 TransactionType: deposit | withdrawal | transfer_out | transfer_in |
                  bet_placed | bet_won | bet_refund | admin_credit |
-                 admin_debit | daily_reward | shop_purchase | quiz_reward
+                 admin_debit | daily_reward | shop_purchase | quiz_reward |
+                 poll_reward
 
 EventStatus:     open | locked | resolved | cancelled
 BetStatus:       pending | won | lost | refunded
@@ -154,7 +165,8 @@ BetStatus:       pending | won | lost | refunded
 - `User.is_banned` (bool, default false) è il **ban bot-level** (§18, `BannedUserMiddleware`): aggiunto a `users` *dopo* il primo deploy → ha la sua voce `ALTER TABLE … ADD COLUMN IF NOT EXISTS is_banned …` in `_MIGRATIONS`. Si muta **solo** via `admin_service.set_user_banned`; **non** è una condizione-milestone (regola 10 non coinvolta)
 - `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). Lato display si mostra il **livello** (curva geometrica, §12.1), non l'XP grezzo. `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo **tier** (nome rango) visto, per annunciare i tier-up; `cosmetic_tag` è il flair acquistato nel negozio (§11)
 - `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks`/`game_podiums` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`), `badges.rarity` e **`badges.condition_param`** sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
-- `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`)
+- `poll_votes` è una tabella **nuova** (create_all, niente `_MIGRATIONS`). Le colonne premio/chiusura/handle di `poll_templates` (`description`, `prize_coins`, `prize_xp`, `closes_at`, `tg_poll_id`, `message_id`, `chat_id`) sono aggiunte a una **tabella esistente** *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (regola sopra). La delete di un sondaggio rimuove i suoi `poll_votes` **esplicitamente** (`delete_poll`): l'`ON DELETE CASCADE` del FK non è applicato da SQLite senza pragma e non c'è relationship ORM da cui cascatare
+- `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`); `poll_templates.options_json`/`poll_votes.option_ids_json` sono liste JSON (`poll_service.options_of`, voti dagli update `poll_answer`)
 - timestamp scheduler in **UTC naive** (`schedule_service.utcnow()`); `parse_run_at` converte l'orario locale (`scheduler_timezone`) in UTC naive
 - `Warning.active` è un **soft-delete**: `clear_warnings` setta `active=False`, non cancella la riga (storico preservato)
 - ordinamento warn: `(created_at DESC, id DESC)` — secondary sort per la precisione-al-secondo di SQLite (stesso motivo di `get_history`)
@@ -287,7 +299,7 @@ il prefisso senza copiarlo in una stringa. `common.router`, ultimo, risponde ai 
 | `BetConfirmCb` (`bet_confirm`) | `action`, `event_id: int`, `option_id: int`, `amount: int` | `bet_confirm:place:<event>:<option>:<amount>` |
 | `SchedCb` (`sched`) | `action`, `key: str \| None`, `item_id: int \| None` | `sched:cancel::`; `sched:del::<task>` |
 | `EventCb` (`ev`) | `action`, `task_type: str \| None`, `item_id: int \| None` | `ev:home::`; `ev:item:<type>:<id>` |
-| `PollCreateCb` (`evpt`) | `action` | `evpt:cancel` |
+| `PollCreateCb` (`evpt`) | `action` | `evpt:cancel`; `evpt:desc_skip`; `evpt:prize_default`; `evpt:prize_custom`; `evpt:prize_none`; `evpt:close_none`; `evpt:close_set` |
 | `QuizNewCb` (`quiz_new`) | `action`, `key: str \| None`, `value: int \| None` | `quiz_new:cancel::`; `quiz_new:time_limit::<seconds>` |
 | `GuessNewCb` (`guess_new`) | `action`, `key: str \| None`, `value: int \| None` | `guess_new:cancel::`; `guess_new:hint_at::<threshold>` |
 | `GuessAliasCb` (`guess_alias`) | `action`, `round_id: int \| None` | `guess_alias:cancel:`; `guess_alias:add:<round>` |
@@ -701,6 +713,8 @@ mostrano accanto al livello (`⚡ Livello N · 🎖️ Tier`). Sito di display u
   ai primi 3 del podio un bonus `quiz_xp_podium_first/second/third`.
 - `bet_placed` / `bet_won` (evento, **non capped**): `xp_per_bet_placed` quando si **piazza** una
   scommessa (una volta per evento — `place_bet`); `xp_per_bet_won` extra ai **vincitori** (`resolve_event`).
+- `poll_vote` (evento, **non capped**, in `poll_service.pay_voters`): `poll_reward_xp` a **ogni
+  votante** di un sondaggio con premio, pagato alla chiusura insieme a `poll_reward_coins` (§18.2).
 - `daily` (**capped**) — `xp_per_daily_claim`.
 - `admin_grant` / `admin_airdrop` (**non capped**) — `/dai_xp`, `/set_xp`, Airdrop XP dashboard
 
@@ -821,7 +835,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
 | `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`SchedCb(action="act", key="start"\|"close")`, packed `sched:act:start:` / `sched:act:close:`), poi l'orario run-at |
-| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio (domanda + opzioni); riusata da 🎬 Eventi **e** da `/sondaggio` (`events.start_poll_creation`) |
+| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio: domanda → opzioni → **descrizione** (opz.) → **premio** (default/custom/nessuno, `PollCreateCb`) → **chiusura** (nessuna/data assoluta) → crea. Riusata da 🎬 Eventi **e** da `/sondaggio` |
 
 ---
 
@@ -837,10 +851,16 @@ in profondità sulla chat privata, l'identità da `callback.from_user`, l'assegn
 i commit dell'handler.
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/quiz`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
+
+> **`/guessTheGame` e `/soundQuest` hanno due facce come `/quiz`** (un solo handler per kind, ramifica su
+> `is_admin`): per i **non-admin** elencano i round `running` di quel gioco con bottoni deep-link ▶️ Gioca
+> (o «nessun evento attivo»); per gli **admin** aprono la lista di gestione `GuessType(kind).render_list`.
+> Telegram forza i nomi comando **minuscoli** nel menù «/» → registrati come `guessthegame`/`soundquest`
+> con `Command(..., ignore_case=True)`, così la grafia camelCase digitata funziona lo stesso.
 > `/trasferisci` e `/catalogo_badge` (alias `/catalogo_trofei`) sono ora nel menù «/» **anche di gruppo**
 > (prima solo privato/admin). NB: il menù «/» è cachato dai client Telegram → dopo il deploy può servire
 > riaprire l'app per vederli (non serve rinominare il comando).
@@ -1080,9 +1100,31 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   orario, e `handlers/schedule.py` lo legge con `getattr` — un tipo che non lo dichiara si comporta
   esattamente come prima.
 - **Modello "pre-creato"**: quiz già `status=ready`; **sondaggi** → nuovo `PollTemplate`
-  (`poll_service`, status `ready|used`); **scommesse** → nuovo stato `EventStatus.draft` (la creazione
-  community via `/crea_scommessa` resta `open`; l'hub crea `draft` con `start_bet_creation(as_draft=True)`
-  e `bet_service.activate_event` fa `draft→open`). `get_open_events`/`get_all_active_events` escludono i draft.
+  (`poll_service`, status `ready→running→finished`); **scommesse** → nuovo stato `EventStatus.draft`
+  (la creazione community via `/crea_scommessa` resta `open`; l'hub crea `draft` con
+  `start_bet_creation(as_draft=True)` e `bet_service.activate_event` fa `draft→open`).
+  `get_open_events`/`get_all_active_events` escludono i draft.
+- **Sondaggi: due forme, discriminate da `closes_at`** (`PollType`, `poll_service`, `handlers/poll_vote.py`).
+  La creazione (FSM in `events.py`) chiede, dopo domanda e opzioni, una **descrizione** opzionale, i
+  **premi** (⚡ default `poll_reward_coins`+`poll_reward_xp` / ✏️ personalizza / 🚫 nessuno — a **ogni
+  votante**, non c'è risposta giusta) e la **chiusura**. **Regola di prodotto**: un premio si paga *alla
+  chiusura*, quindi **scegliere un premio obbliga a una data** (lo step chiusura salta il «nessuna» e va
+  dritto alla data); una **data senza premio** è ammessa (alla chiusura annuncia solo l'opzione vincente,
+  non paga); **né premio né data** ⇒ **sondaggio normale spara-e-dimentica**. La data è **assoluta**
+  (`parse_run_at`; i token relativi `30m/2h/1d` sono rifiutati come ambigui, come per il guess).
+  - **`open_poll` ramifica su `closes_at`**: `None` ⇒ *plain* — pubblica e basta, `ready→used`, nessun
+    tracciamento/auto-close/annuncio; valorizzato ⇒ *managed* — `ready→running`, sondaggio **non anonimo**
+    (unico modo per ricevere gli update `poll_answer` e sapere chi premiare), salva
+    `tg_poll_id`/`message_id`/`chat_id`, e arma un auto-close riusando `task_type="poll"` +
+    `payload={"action":"close"}` (nessun nuovo task type).
+  - L'handler `poll_answer` (`handlers/poll_vote.py`, router **pubblico** in `ROUTERS`, non gated: i
+    votanti sono utenti normali) registra i voti dei soli sondaggi *managed* in corso in `poll_votes`.
+  - La chiusura (`close_poll`, manuale dalla scheda o programmata): `claim_close` **prima** (UPDATE
+    condizionale `running→finished`, guardia anti-doppio-pagamento e freeze dei voti), poi `stopPoll`
+    (best-effort) per l'**opzione vincente** dai conteggi finali, `pay_voters` (CoInn+XP mintati a **ogni
+    votante**, `TransactionType.poll_reward`/`XpSource.poll_vote`, no-commit; soldi committati **prima**
+    dell'annuncio), infine annuncio nel gruppo. La scheda (`render_detail`) offre
+    avvia/chiudi/programma-chiusura/**elimina** come per quiz e guess.
 - **Quiz persistenti**: l'hub quiz elenca via `quiz_service.list_manageable` **tutti** i quiz non-`draft`
   (running → ready → **finished** come archivio, cap sugli ultimi N) — un quiz avviato/concluso **non
   scompare** più. Dalla scheda info: `delete_quiz` (elimina quiz+domande+risposte e **annulla** i task

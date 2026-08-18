@@ -663,45 +663,54 @@ class TestPollTemplateCreation:
     ])
     async def test_bad_option_lists_are_refused_and_create_nothing(self, session, raw):
         state = _state()
-        await state.update_data(pt_question="Meglio?")
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
         await state.set_state(events.PollTemplateStates.options)
         message = _FakeMessage(text=raw)
 
-        await events.fsm_pt_options(message, state, session)
+        await events.fsm_pt_options(message, state)
 
         assert (await session.execute(select(PollTemplate))).scalars().all() == []
         assert await state.get_state() == events.PollTemplateStates.options.state
 
-    async def test_a_valid_list_creates_the_template_and_offers_the_next_step(
-        self, session, user_factory
-    ):
+    async def test_a_valid_list_advances_to_the_description_step(self, session, user_factory):
+        """The options step no longer creates the poll: it stores them and moves to
+        the (optional) description — creation happens at the end of the flow."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
-        await state.update_data(pt_question="Meglio?")
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
         await state.set_state(events.PollTemplateStates.options)
         message = _FakeMessage(text="Pizza\nSushi")
 
-        await events.fsm_pt_options(message, state, session)
+        await events.fsm_pt_options(message, state)
+
+        assert (await session.execute(select(PollTemplate))).scalars().all() == []
+        assert (await state.get_data())["pt_options"] == ["Pizza", "Sushi"]
+        assert await state.get_state() == events.PollTemplateStates.description.state
+
+    async def test_the_full_flow_creates_a_template_that_survives_a_rollback(
+        self, session, user_factory
+    ):
+        """It is offered for an immediate start on the very next tap, so it has to be
+        committed, not merely pending in the session. The minimal path (skip
+        description, no prize, no auto-close) reaches the create at the end."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        state = _state()
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
+        await state.set_state(events.PollTemplateStates.options)
+
+        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state)
+        await events.cb_pt_desc_skip(_FakeCallback(""), state)
+        await events.cb_pt_prize_none(_FakeCallback(""), state)
+        cb = _FakeCallback("")
+        await events.cb_pt_close_none(cb, state, session)
 
         poll = (await session.execute(select(PollTemplate))).scalar_one()
-        assert poll.question == "Meglio?"
-        assert set(_callbacks(message.markups[-1])) == {
+        assert set(_callbacks(cb.message.markups[-1])) == {
             EventCb(action="start", task_type="poll", item_id=poll.id).pack(),
             EventCb(action="sched", task_type="poll", item_id=poll.id).pack(),
             EventCb(action="list", task_type="poll").pack(),
         }
         assert await state.get_state() is None
-
-    async def test_the_created_template_survives_a_rollback(self, session, user_factory):
-        """It is offered for an immediate start on the very next tap, so it has to be
-        committed, not merely pending in the session."""
-        await user_factory(tg_id=ADMIN_ID, username="admin")
-        state = _state()
-        await state.update_data(pt_question="Meglio?")
-        await state.set_state(events.PollTemplateStates.options)
-
-        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state, session)
-
         assert await _survived(session, "Meglio?")
 
 

@@ -172,6 +172,14 @@ class Settings(BaseSettings):
     guess_xp_podium_second: int = 30
     guess_xp_podium_third: int = 20
 
+    # Poll rewards (optional, chosen per poll at creation). A poll has no "right"
+    # answer, so the prize is for *participation*: every user who casts a vote gets
+    # these, paid when the poll is closed. 0 in either field disables that half.
+    # Uncapped like the other admin-gated events. Requires a non-anonymous poll so
+    # the voters can be identified (poll_answer updates).
+    poll_reward_coins: int = 25   # CoInn per voter, default suggested in creation
+    poll_reward_xp: int = 10      # XP per voter, default suggested in creation
+
     # Shop cosmetics: how many purchased tags a user can keep active at once
     # (they can switch among owned tags and combine several). Raise to allow more.
     max_active_tags: int = 3

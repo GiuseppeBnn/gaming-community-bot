@@ -21,12 +21,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters.command import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from database.models import ScheduledTask
+from filters.admin_filter import is_admin
 from handlers._mentions import mention
+from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from services import (
     badge_service,
@@ -35,9 +40,11 @@ from services import (
     progress_service,
     schedule_service,
 )
+from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc, format_seconds_short
 
-from handlers.guess._shared import kind_of, log, send_media
+from handlers.guess._shared import _GUESS_PRIVATE_NOTICE, kind_of, log, router, send_media
 
 
 async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool, str]:
@@ -228,6 +235,73 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
             log.warning("Impossibile annunciare il podio del round %s.", round_id)
         return True, "🏁 Round chiuso. Podio pubblicato nel gruppo."
     return True, text
+
+
+# ---------------------------------------------------------------------------
+# Public commands: /guessTheGame and /soundQuest — same two-faced shape as /quiz.
+# Non-admins get a "play" view (buttons to the running rounds, or a clear "none
+# active" message instead of silence); admins get the events-hub management list.
+# Telegram lowercases command names in the "/" menu, so they are registered as
+# `guessthegame`/`soundquest` — `ignore_case=True` still matches the camelCase a
+# user might type.
+# ---------------------------------------------------------------------------
+
+async def _show_play_view(message: Message, db_session: AsyncSession, kind: str) -> None:
+    spec = kind_of(kind)
+    if not await cooldown.ready(message, kind, settings.command_cooldown_seconds):
+        return
+    running = [
+        r for r in await guess_service.list_manageable(db_session, kind)
+        if r.status == "running"
+    ]
+    if not running:
+        await reply_static(
+            message,
+            f"{spec.emoji} <b>Nessun {esc(spec.label)} attivo al momento.</b>\n"
+            "Quando un admin ne avvia uno te lo segnaliamo qui nel gruppo! 🏁",
+            kind,
+        )
+        return
+    bot_info = await message.bot.get_me()
+    b = InlineKeyboardBuilder()
+    for r in running:
+        # Button text is not HTML-parsed → raw title is fine here.
+        b.button(
+            text=f"▶️ Gioca: {r.title[:30]}",
+            url=f"https://t.me/{bot_info.username}?start={kind}_{r.id}",
+        )
+    b.adjust(1)
+    await reply_static(
+        message,
+        f"{spec.emoji} <b>{esc(spec.label)} in corso!</b> Tocca per giocare in chat privata:",
+        kind,
+        reply_markup=b.as_markup(),
+    )
+
+
+async def _cmd_guess_list(message: Message, db_session: AsyncSession, kind: str) -> None:
+    # Public entry point. Non-admins get the play view; admins get the hub list.
+    # The admin branch is still gated by this in-handler is_admin check.
+    if not await is_admin(message.bot, message.from_user.id):
+        await _show_play_view(message, db_session, kind)
+        return
+    if await redirect_to_private(
+        message, "admin", "🛠️ Apri il pannello", notice=_GUESS_PRIVATE_NOTICE
+    ):
+        return
+    from handlers.event_types.guess_type import GuessType
+
+    await GuessType(kind).render_list(message, db_session)
+
+
+@router.message(Command("guessthegame", ignore_case=True))
+async def cmd_guess_the_game(message: Message, db_session: AsyncSession) -> None:
+    await _cmd_guess_list(message, db_session, "guess")
+
+
+@router.message(Command("soundquest", ignore_case=True))
+async def cmd_sound_quest(message: Message, db_session: AsyncSession) -> None:
+    await _cmd_guess_list(message, db_session, "sound")
 
 
 async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:

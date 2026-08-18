@@ -29,6 +29,7 @@ quiz, betting and scheduling services/handlers — no duplicated business logic.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import F, Router
 from aiogram.filters.command import Command
@@ -42,13 +43,14 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
 from handlers._privacy import redirect_to_private
 from handlers.callbacks import AdminCb, EventCb, PollCreateCb
 from handlers.event_types import edit_or_send
 from keyboards.common_kb import confirm_cancel_kb
-from services import group_registry, poll_service
+from services import group_registry, poll_service, schedule_service
 from utils.text import esc
 
 log = logging.getLogger(__name__)
@@ -64,6 +66,20 @@ _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
 class PollTemplateStates(StatesGroup):
     question = State()
     options = State()
+    description = State()   # optional free text (or ⏭️ Salta)
+    prize_choice = State()  # menu: default / custom / none
+    prize_coins = State()   # custom: CoInn per voter
+    prize_xp = State()      # custom: XP per voter
+    close_choice = State()  # menu: no auto-close / schedule one
+    close_at = State()      # absolute AAAA-MM-GG HH:MM
+
+
+#: A bare relative token (30m/2h/1d): refused for the poll's auto-close date. The
+#: poll is not running yet, so "from now" vs "from start" is ambiguous — only an
+#: absolute instant is unambiguous here (same rule as the guess auto-close).
+_REL_TOKEN_RE = re.compile(r"^\d+\s*[mhd]$", re.IGNORECASE)
+#: Sanity bound on a per-voter prize, so a fat-fingered amount can't mint millions.
+_MAX_PRIZE = 1_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +400,10 @@ async def fsm_pt_question(message: Message, state: FSMContext) -> None:
     if len(q) < 3:
         await message.answer("⚠️ Domanda troppo corta (min 3).", reply_markup=_pt_cancel_kb())
         return
-    await state.update_data(pt_question=q)
+    # The admin's id is captured here, from a real user message, so the final
+    # create can run from a *callback* (e.g. «no prize», «no close») where
+    # `from_user` would be the bot.
+    await state.update_data(pt_question=q, pt_creator=message.from_user.id)
     await state.set_state(PollTemplateStates.options)
     await message.answer(
         f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
@@ -393,7 +412,7 @@ async def fsm_pt_question(message: Message, state: FSMContext) -> None:
 
 
 @router.message(PollTemplateStates.options, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_pt_options(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+async def fsm_pt_options(message: Message, state: FSMContext) -> None:
     options = _parse_options(message.text)
     if options is None:
         await message.answer(
@@ -401,16 +420,228 @@ async def fsm_pt_options(message: Message, state: FSMContext, db_session: AsyncS
             reply_markup=_pt_cancel_kb(),
         )
         return
+    await state.update_data(pt_options=options)
+    await _ask_description(message, state)
+
+
+# --- Optional description -------------------------------------------------
+
+def _desc_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭️ Salta", callback_data=PollCreateCb(action="desc_skip").pack())
+    b.button(text="❌ Annulla", callback_data=PollCreateCb(action="cancel").pack())
+    b.adjust(2)
+    return b.as_markup()
+
+
+async def _ask_description(message: Message, state: FSMContext) -> None:
+    await state.set_state(PollTemplateStates.description)
+    await message.answer(
+        "📝 Vuoi aggiungere una <b>descrizione</b> (mostrata nel gruppo insieme al "
+        "sondaggio)? Inviala ora, oppure salta.",
+        reply_markup=_desc_kb(),
+    )
+
+
+@router.message(PollTemplateStates.description, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_pt_description(message: Message, state: FSMContext) -> None:
+    desc = (message.text or "").strip()[:1024]
+    await state.update_data(pt_description=desc or None)
+    await _ask_prize(message, state)
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "desc_skip"), IsAdminCallbackFilter())
+async def cb_pt_desc_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(pt_description=None)
+    await _ask_prize(callback.message, state)
+    await callback.answer()
+
+
+# --- Optional prize -------------------------------------------------------
+
+def _prize_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(
+        text=f"⚡ Premio consigliato ({settings.poll_reward_coins}🪙 + {settings.poll_reward_xp}⚡)",
+        callback_data=PollCreateCb(action="prize_default").pack(),
+    )
+    b.button(text="✏️ Personalizza", callback_data=PollCreateCb(action="prize_custom").pack())
+    b.button(text="🚫 Nessun premio", callback_data=PollCreateCb(action="prize_none").pack())
+    b.button(text="❌ Annulla", callback_data=PollCreateCb(action="cancel").pack())
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def _ask_prize(message: Message, state: FSMContext) -> None:
+    await state.set_state(PollTemplateStates.prize_choice)
+    await message.answer(
+        "🏆 <b>Premio ai votanti?</b>\n"
+        "Un sondaggio non ha risposte giuste: il premio va a <b>ogni utente che vota</b>, "
+        "pagato alla chiusura.",
+        reply_markup=_prize_kb(),
+    )
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "prize_default"), IsAdminCallbackFilter())
+async def cb_pt_prize_default(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(
+        pt_prize_coins=settings.poll_reward_coins, pt_prize_xp=settings.poll_reward_xp
+    )
+    await _ask_close(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "prize_none"), IsAdminCallbackFilter())
+async def cb_pt_prize_none(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(pt_prize_coins=0, pt_prize_xp=0)
+    await _ask_close(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "prize_custom"), IsAdminCallbackFilter())
+async def cb_pt_prize_custom(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PollTemplateStates.prize_coins)
+    await callback.message.answer(
+        "🪙 Quanti <b>CoInn</b> a ogni votante? (0 per nessuno)", reply_markup=_pt_cancel_kb()
+    )
+    await callback.answer()
+
+
+def _parse_prize(text: str | None) -> int | None:
+    raw = (text or "").strip()
+    if not raw.isdigit():
+        return None
+    value = int(raw)
+    return value if value <= _MAX_PRIZE else None
+
+
+@router.message(PollTemplateStates.prize_coins, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_pt_prize_coins(message: Message, state: FSMContext) -> None:
+    value = _parse_prize(message.text)
+    if value is None:
+        await message.answer(
+            f"⚠️ Inserisci un numero intero fra 0 e {_MAX_PRIZE}.", reply_markup=_pt_cancel_kb()
+        )
+        return
+    await state.update_data(pt_prize_coins=value)
+    await state.set_state(PollTemplateStates.prize_xp)
+    await message.answer(
+        "⚡ Quanti <b>XP</b> a ogni votante? (0 per nessuno)", reply_markup=_pt_cancel_kb()
+    )
+
+
+@router.message(PollTemplateStates.prize_xp, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_pt_prize_xp(message: Message, state: FSMContext) -> None:
+    value = _parse_prize(message.text)
+    if value is None:
+        await message.answer(
+            f"⚠️ Inserisci un numero intero fra 0 e {_MAX_PRIZE}.", reply_markup=_pt_cancel_kb()
+        )
+        return
+    await state.update_data(pt_prize_xp=value)
+    await _ask_close(message, state)
+
+
+# --- Optional scheduled close --------------------------------------------
+
+def _close_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🚫 Nessuna chiusura automatica", callback_data=PollCreateCb(action="close_none").pack())
+    b.button(text="🗓️ Programma chiusura", callback_data=PollCreateCb(action="close_set").pack())
+    b.button(text="❌ Annulla", callback_data=PollCreateCb(action="cancel").pack())
+    b.adjust(1)
+    return b.as_markup()
+
+
+async def _ask_close(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
+    has_prize = (data.get("pt_prize_coins", 0) or 0) > 0 or (data.get("pt_prize_xp", 0) or 0) > 0
+    if has_prize:
+        # A prize is paid AT the close, so a prized poll MUST have a close date —
+        # there is no «nessuna chiusura» option here (the reward would never land).
+        await state.set_state(PollTemplateStates.close_at)
+        await message.answer(
+            "🏆 <b>I premi si pagano alla chiusura</b>, quindi serve una <b>data</b>.\n"
+            "All'orario scelto il bot chiude il sondaggio, annuncia l'opzione vincente e "
+            "paga i votanti.\n\nInvia la data:\n<code>2026-05-30 18:00</code>",
+            reply_markup=_pt_cancel_kb(),
+        )
+        return
+    # No prize: a close date is OPTIONAL. Without it the poll is a plain, normal
+    # Telegram poll (fire-and-forget). With it, the bot closes it and announces the
+    # winning option (no payment).
+    await state.set_state(PollTemplateStates.close_choice)
+    await message.answer(
+        "⏳ <b>Chiusura automatica?</b>\n"
+        "Con una data il bot chiude il sondaggio e annuncia l'opzione vincente. "
+        "Senza, resta un sondaggio normale.",
+        reply_markup=_close_kb(),
+    )
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "close_none"), IsAdminCallbackFilter())
+async def cb_pt_close_none(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    await state.update_data(pt_closes_at=None)
+    await _finish_poll(callback.message, state, db_session)
+    await callback.answer()
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "close_set"), IsAdminCallbackFilter())
+async def cb_pt_close_set(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PollTemplateStates.close_at)
+    await callback.message.answer(
+        "🕒 Quando chiuderlo? Invia una <b>data assoluta</b>:\n"
+        "<code>2026-05-30 18:00</code>",
+        reply_markup=_pt_cancel_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(PollTemplateStates.close_at, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_pt_close_at(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    if _REL_TOKEN_RE.match(raw):
+        await message.answer(
+            "⚠️ Per la chiusura usa una <b>data</b> assoluta (<code>AAAA-MM-GG HH:MM</code>), "
+            "non una durata relativa.",
+            reply_markup=_pt_cancel_kb(),
+        )
+        return
+    try:
+        closes_at = schedule_service.parse_run_at(raw)
+    except ValueError as e:
+        await message.answer(f"⚠️ {e}\n\nEsempio: <code>2026-05-30 18:00</code>", reply_markup=_pt_cancel_kb())
+        return
+    await state.update_data(pt_closes_at=closes_at.isoformat())
+    await _finish_poll(message, state, db_session)
+
+
+# --- Create ---------------------------------------------------------------
+
+async def _finish_poll(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    from datetime import datetime
+
+    data = await state.get_data()
+    closes_raw = data.get("pt_closes_at")
+    closes_at = datetime.fromisoformat(closes_raw) if closes_raw else None
     poll = await poll_service.create_template(
-        db_session, message.from_user.id, data["pt_question"], options,
+        db_session, data["pt_creator"], data["pt_question"], data["pt_options"],
         group_registry.get_group_id() or None,
+        description=data.get("pt_description"),
+        prize_coins=data.get("pt_prize_coins", 0),
+        prize_xp=data.get("pt_prize_xp", 0),
+        closes_at=closes_at,
     )
     await db_session.commit()
     await state.clear()
+    prize_line = f"🏆 {poll_service.format_prize_summary(poll)}"
+    close_line = (
+        f"\n⏳ Chiusura: {schedule_service.to_local(poll.closes_at):%d/%m %H:%M}"
+        if poll.closes_at is not None else ""
+    )
     await message.answer(
-        f"✅ <b>Sondaggio #{poll.id} creato!</b>\n\n"
-        f"❓ {esc(poll.question)}\n\n"
+        f"✅ <b>Sondaggio creato!</b>\n\n"
+        f"❓ {esc(poll.question)}\n{prize_line}{close_line}\n\n"
         "Avvialo subito nel gruppo oppure programmalo:",
         reply_markup=_item_kb("poll", poll.id),
     )

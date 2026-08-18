@@ -45,6 +45,7 @@ _TX_LABELS = {
     TransactionType.daily_reward.value: "📅 Premio giornaliero",
     TransactionType.shop_purchase.value: "🛒 Acquisto negozio",
     TransactionType.quiz_reward.value: "🧠 Premio quiz",
+    TransactionType.poll_reward.value: "📊 Premio sondaggio",
 }
 
 

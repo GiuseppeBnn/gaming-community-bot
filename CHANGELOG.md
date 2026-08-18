@@ -3,6 +3,35 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.3] - 2026-08-18
+
+### Aggiunto
+- **Comandi `/guessTheGame` e `/soundQuest`** — funzionano come `/quiz`: scritti
+  da un utente mostrano i round attivi di quel tipo con il pulsante per giocarli
+  in privato (o un messaggio chiaro quando non ce ne sono); agli admin mostrano
+  la lista di gestione in chat privata. (Nel menù «/» compaiono in minuscolo
+  perché Telegram lo impone, ma la grafia con le maiuscole funziona lo stesso.)
+- **Sondaggi — premi ai votanti** — in creazione si può decidere se assegnare un
+  premio a **ogni votante**: CoInn + XP (di default 25 🪙 + 10 ⚡, personalizzabili
+  o nessuno). Il premio viene pagato alla **chiusura** del sondaggio.
+- **Sondaggi — descrizione** — si può aggiungere una descrizione opzionale,
+  mostrata nel gruppo insieme al sondaggio.
+- **Sondaggi — chiusura programmata** — si può impostare una **data di chiusura**
+  (`AAAA-MM-GG HH:MM`): all'orario scelto il bot chiude il sondaggio e annuncia
+  nel gruppo l'**opzione vincente**. Se il sondaggio ha un premio la data è
+  obbligatoria (è il momento in cui si paga); senza premio la data è facoltativa.
+- **Sondaggi — gestione dagli Eventi** — dall'elenco si possono ora **eliminare**
+  (come per Trivia Nerd, Guess The Game e Sound Quest) e ogni sondaggio ha una
+  scheda con avvia / chiudi / programma chiusura / elimina.
+
+### Modificato
+- **Elenchi eventi (Trivia Nerd, Guess The Game, Sound Quest, Sondaggi)** —
+  rimosso il codice `#numero` prima del titolo: nell'elenco si vede solo il
+  **titolo** scelto in creazione.
+- **Sondaggi senza premio né data** — restano sondaggi normali
+  «spara-e-dimentica» come prima: pubblicati nel gruppo, senza chiusura
+  automatica né premi.
+
 ## [1.2] - 2026-08-07
 
 ### Aggiunto

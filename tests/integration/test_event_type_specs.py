@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from aiogram.fsm.context import FSMContext
@@ -51,6 +52,11 @@ ADMIN_ID = 1
 GROUP_ID = -100_777
 
 
+def _future() -> datetime:
+    """A naive-UTC instant in the future, for a poll's scheduled close."""
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None) + timedelta(days=1)
+
+
 # ---------------------------------------------------------------------------
 # Stubs
 # ---------------------------------------------------------------------------
@@ -60,6 +66,10 @@ class _FakeBot:
     def __init__(self) -> None:
         self.messages: list[tuple[int, str]] = []
         self.polls: list[dict] = []
+        self.stopped: list[tuple[int, int]] = []
+        self._poll_seq = 0
+        #: Tests set this to a fake final Poll returned by ``stop_poll``.
+        self.stop_result = None
 
     async def get_me(self):
         from types import SimpleNamespace
@@ -70,7 +80,19 @@ class _FakeBot:
         self.messages.append((chat_id, text))
 
     async def send_poll(self, chat_id, question, options, **kw):
+        from types import SimpleNamespace
+
         self.polls.append({"chat_id": chat_id, "question": question, "options": options})
+        self._poll_seq += 1
+        return SimpleNamespace(
+            message_id=1000 + self._poll_seq,
+            chat=SimpleNamespace(id=chat_id),
+            poll=SimpleNamespace(id=f"pid{self._poll_seq}"),
+        )
+
+    async def stop_poll(self, chat_id, message_id, **kw):
+        self.stopped.append((chat_id, message_id))
+        return self.stop_result
 
 
 class _BrokenBot(_FakeBot):
@@ -440,7 +462,7 @@ class TestPollType:
 
         await PollType().render_list(message, session)
 
-        assert "Nessun sondaggio pronto" in message.said
+        assert "Nessun sondaggio" in message.said
         assert EventCb(action="new", task_type="poll").pack() in _callbacks(message.markups[0])
 
     async def test_a_used_poll_is_neither_listed_nor_schedulable(self, session, user_factory):
@@ -451,10 +473,9 @@ class TestPollType:
 
         assert await PollType().schedulable_items(session) == []
 
-    async def test_publishing_sends_the_poll_and_consumes_the_template(
-        self, session, user_factory, in_group
-    ):
-        """`mark_used` is what stops the same template being published twice."""
+    async def test_a_plain_poll_is_fire_and_forget(self, session, user_factory, in_group):
+        """No prize and no close date → a normal Telegram poll: published and marked
+        `used`, with no live-poll tracking."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
         poll = await poll_service.create_template(session, ADMIN_ID, "Meglio?", ["A", "B"])
         await session.commit()
@@ -464,7 +485,28 @@ class TestPollType:
 
         assert result.ok
         assert bot.polls == [{"chat_id": GROUP_ID, "question": "Meglio?", "options": ["A", "B"]}]
-        assert (await session.get(PollTemplate, poll.id)).status == "used"
+        stored = await session.get(PollTemplate, poll.id)
+        assert stored.status == "used"
+        assert stored.tg_poll_id is None
+
+    async def test_a_poll_with_a_close_date_is_tracked_and_running(
+        self, session, user_factory, in_group
+    ):
+        """A scheduled close makes it a managed poll: it goes `running` and stores
+        the live-poll handles a later close needs."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Meglio?", ["A", "B"], closes_at=_future(),
+        )
+        await session.commit()
+        bot = _FakeBot()
+
+        result = await PollType().start_now(bot, session, poll.id)
+
+        assert result.ok
+        stored = await session.get(PollTemplate, poll.id)
+        assert stored.status == "running"
+        assert stored.tg_poll_id == "pid1" and stored.message_id == 1001
 
     async def test_publishing_the_same_poll_twice_is_refused(self, session, user_factory, in_group):
         await user_factory(tg_id=ADMIN_ID, username="admin")
@@ -499,7 +541,9 @@ class TestPollType:
             "a template must not be consumed by a send that never happened"
         )
 
-    async def test_a_scheduled_poll_is_published_and_consumed(self, session, user_factory):
+    async def test_a_scheduled_plain_poll_is_published_and_used(
+        self, session, user_factory, in_group
+    ):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         poll = await poll_service.create_template(session, ADMIN_ID, "Meglio?", ["A", "B"])
         await session.commit()
@@ -536,8 +580,88 @@ class TestPollType:
 
         assert await state.get_state() is not None
 
-    async def test_a_poll_has_no_close_action(self, session):
-        assert await PollType().close_now(_FakeBot(), session, 1) is None
+    async def test_closing_a_non_running_poll_is_refused(self, session, user_factory):
+        """A poll is now closable, but only while it is actually running: closing a
+        ready one returns a not-ok StartResult (never None, never a crash)."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        poll = await poll_service.create_template(session, ADMIN_ID, "Meglio?", ["A", "B"])
+        await session.commit()
+
+        res = await PollType().close_now(_FakeBot(), session, poll.id)
+
+        assert res is not None and not res.ok
+
+    async def test_closing_a_running_poll_announces_the_winner_and_pays(
+        self, session, user_factory, in_group
+    ):
+        from types import SimpleNamespace
+
+        from database.models import PollVote
+        from services import economy_service
+
+        voter = 42
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        await user_factory(tg_id=voter, username="voter")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Meglio?", ["A", "B"],
+            prize_coins=25, prize_xp=10, closes_at=_future(),
+        )
+        await session.commit()
+        bot = _FakeBot()
+        await PollType().start_now(bot, session, poll.id)
+        await session.commit()
+        # One voter picked option B (index 1).
+        session.add(PollVote(poll_id=poll.id, user_tg_id=voter, option_ids_json="[1]"))
+        await session.commit()
+        # The final tallies Telegram returns on stop_poll: B wins.
+        bot.stop_result = SimpleNamespace(
+            total_voter_count=1,
+            options=[
+                SimpleNamespace(text="A", voter_count=0),
+                SimpleNamespace(text="B", voter_count=1),
+            ],
+        )
+
+        res = await PollType().close_now(bot, session, poll.id)
+
+        assert res.ok
+        assert bot.stopped == [(GROUP_ID, 1001)]
+        assert await _poll_status(session, poll.id) == "finished"
+        assert await economy_service.get_balance(session, voter) == 25
+        # The winning option is announced in the group.
+        assert any("B" in text for _cid, text in bot.messages)
+
+    async def test_a_scheduled_close_finishes_the_running_poll(
+        self, session, user_factory, in_group
+    ):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Meglio?", ["A", "B"], closes_at=_future()
+        )
+        await session.commit()
+        bot = _FakeBot()
+        await PollType().start_now(bot, session, poll.id)
+        await session.commit()
+
+        await PollType().execute_scheduled(
+            bot, session, _task(task_type="poll", ref_id=poll.id,
+                                payload_json=json.dumps({"action": "close"})), GROUP_ID
+        )
+
+        assert await _poll_status(session, poll.id) == "finished"
+
+    async def test_a_scheduled_close_of_a_non_running_poll_skips(
+        self, session, user_factory, in_group
+    ):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        poll = await poll_service.create_template(session, ADMIN_ID, "Meglio?", ["A", "B"])
+        await session.commit()
+
+        with pytest.raises(TaskSkip):
+            await PollType().execute_scheduled(
+                _FakeBot(), session, _task(task_type="poll", ref_id=poll.id,
+                                           payload_json=json.dumps({"action": "close"})), GROUP_ID
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +680,15 @@ async def _quiz_status(session, quiz_id: int) -> str:
     from database.models import Quiz
 
     return (await session.execute(select(Quiz.status).where(Quiz.id == quiz_id))).scalar_one()
+
+
+async def _poll_status(session, poll_id: int) -> str:
+    """Read the poll status as a *column* — same identity-map caveat as
+    ``_quiz_status``: ``claim_close`` is a conditional UPDATE that bypasses the
+    in-session instance."""
+    return (
+        await session.execute(select(PollTemplate.status).where(PollTemplate.id == poll_id))
+    ).scalar_one()
 
 
 async def _quiz(session, *, status="ready", questions=1, title="Capitali"):

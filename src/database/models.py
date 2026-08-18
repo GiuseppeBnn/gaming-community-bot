@@ -37,6 +37,7 @@ class TransactionType(str, Enum):
     daily_reward = "daily_reward"
     shop_purchase = "shop_purchase"
     quiz_reward = "quiz_reward"
+    poll_reward = "poll_reward"
 
 
 class EventStatus(str, Enum):
@@ -400,7 +401,17 @@ class PollTemplate(Base):
     """A pre-created poll (question + options) that an admin can later start in
     the group immediately or schedule — mirroring how quizzes are pre-created.
 
-    Status: ``ready`` (usable) → ``used`` (already sent). One-shot, like a quiz run.
+    Status lifecycle: ``ready`` (usable) → ``running`` (live in the group,
+    collecting votes) → ``finished`` (closed, prizes paid). The legacy ``used``
+    value is treated as terminal for back-compat with rows created before the
+    prize/close feature (they were sent fire-and-forget).
+
+    A poll can carry an optional participation prize (``prize_coins``/``prize_xp``,
+    0 = none) paid to every voter at close, an optional ``description`` shown in
+    the group alongside the poll, and an optional absolute ``closes_at`` that arms
+    an auto-close task when the poll is started. Votes are tracked via ``PollVote``
+    (populated by the poll_answer handler) so the prize can be paid to the people
+    who actually voted — which is why the poll is sent non-anonymous.
     """
 
     __tablename__ = "poll_templates"
@@ -411,8 +422,44 @@ class PollTemplate(Base):
     creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
     group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Optional context shown in the group with the poll (the native poll cannot
+    # carry it, so it is sent as a separate message). NULL = no description line.
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Participation prize paid to every voter at close. 0 = that half is off.
+    prize_coins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Absolute auto-close instant chosen at creation. NULL = closed by hand.
+    closes_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Set when the poll goes live, needed to stop the poll and pay its voters.
+    tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PollVote(Base):
+    """One user's vote in a running poll, recorded from ``poll_answer`` updates.
+
+    The Telegram Bot API tells us the per-option counts on ``stopPoll`` but never
+    who voted; a non-anonymous poll emits a ``poll_answer`` update per voter, and
+    that is the only way to know whom to pay the participation prize. Retracting a
+    vote arrives as an update with no option ids → ``option_ids_json`` becomes
+    ``"[]"`` and that user is no longer paid.
+
+    One row per (poll, user); the latest choice overwrites the previous one.
+    """
+
+    __tablename__ = "poll_votes"
+    __table_args__ = (UniqueConstraint("poll_id", "user_tg_id", name="uq_poll_vote"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    poll_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("poll_templates.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    option_ids_json: Mapped[str] = mapped_column(String(256), nullable=False)  # JSON list[int]
+    voted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class BotState(Base):

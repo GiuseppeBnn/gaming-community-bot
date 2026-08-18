@@ -84,6 +84,19 @@ _MIGRATIONS: list[str] = [
     # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
     # so rounds created before this column keep behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    # poll_templates: participation prizes, optional description, scheduled auto-close
+    # and the live-poll handles needed to stop it and pay its voters (STEERING §18.2).
+    # All defaulted/nullable, so polls created before this feature keep behaving as
+    # fire-and-forget sends.
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS description TEXT",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS prize_coins INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS prize_xp INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS tg_poll_id VARCHAR(64)",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS message_id BIGINT",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS chat_id BIGINT",
+    "CREATE INDEX IF NOT EXISTS ix_poll_templates_tg_poll_id "
+    "ON poll_templates (tg_poll_id)",
     # Raid was removed from the product. Preserve its historical rows, but make
     # every still-live aggregate and timer inert so the scheduler cannot emit a
     # failure alert later for an event type that intentionally no longer exists.

@@ -43,6 +43,7 @@ class XpSource(str, Enum):
     guess = "guess"                  # event, uncapped (guess games: play + solve + podium)
     bet_placed = "bet_placed"        # event, uncapped (participation: placed a bet)
     bet_won = "bet_won"              # event, uncapped (bonus: bet won)
+    poll_vote = "poll_vote"          # event, uncapped (voted in a rewarded poll)
     daily = "daily"                  # daily quota, capped
     admin_grant = "admin_grant"      # event, uncapped
     admin_airdrop = "admin_airdrop"  # event, uncapped
