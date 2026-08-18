@@ -652,6 +652,69 @@ class AlduinoTurn(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AlduinoGroupMessage(Base):
+    """Bounded local transcript used to understand the surrounding group chat.
+
+    The external model receives display names and text, never Telegram ids.  The
+    ids remain local solely for deduplication, reply topology and per-group
+    retention. Commands are not captured by the middleware.
+    """
+
+    __tablename__ = "alduino_group_messages"
+    __table_args__ = (
+        UniqueConstraint("group_id", "message_id"),
+        Index("ix_alduino_group_message_created", "group_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reply_to_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[str] = mapped_column(String(1500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIBudgetPeriod(Base):
+    """Atomic monthly spend guard shared by every paid AI route."""
+
+    __tablename__ = "ai_budget_periods"
+
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)  # YYYY-MM, UTC
+    cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spent_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class AIUsageLog(Base):
+    """Prompt-free audit row for one physical paid-provider request."""
+
+    __tablename__ = "ai_usage_log"
+    __table_args__ = (Index("ix_ai_usage_period_feature", "period", "feature"),)
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    feature: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    actual_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cached_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
 class AIGameSession(Base):
     """Aggregate root shared by persistent AI-assisted community games."""
 

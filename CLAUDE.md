@@ -16,7 +16,7 @@ suite admin, moderazione, backup.
 
 **Stack vincolante** (§1): Python **3.12** · aiogram **3.30.0** (mai 2.x) · SQLAlchemy 2.0 async ·
 pydantic-settings 2.x · PostgreSQL 16/asyncpg in prod, SQLite/aiosqlite in dev e test ·
-aiohttp per le chiamate LLM (**mai** HTTP bloccante) · Groq (opzionale).
+aiohttp per le chiamate LLM (**mai** HTTP bloccante) · OpenRouter/Groq/Gemini (opzionali).
 
 ---
 
@@ -68,7 +68,8 @@ Convenzione: i path di modulo citati nei documenti (`handlers/quiz/play.py`) son
 1. `main.py` fa il bootstrap: tabelle → migrazioni → cataloghi CSV → id gruppo effettivo →
    `event_types.register_builtin()` → middleware → router → `dp.errors` → polling + 2 task
    (scheduler, backup).
-2. **Ordine middleware** (§6, non invertire): `RateLimit` → `DbSession` → `BanGuard` → `GroupGuard`.
+2. **Ordine middleware** (§6, non invertire): `RateLimit` → `DbSession` → `BanGuard` →
+   `GroupGuard` → `GroupContext`.
 3. **Ordine router** (§7): dichiarato **una volta** in `handlers/__init__.py` (`ROUTERS`) e
    asserito da `tests/unit/test_router_order.py`. Due invarianti: `admin_betting` prima di
    `betting`, `common` **ultimo**.
@@ -83,8 +84,9 @@ Convenzione: i path di modulo citati nei documenti (`handlers/quiz/play.py`) son
 Elenco completo: **STEERING §22 (regole 1–27)** e **§24 (checklist pre-PR)**. Le essenziali:
 
 1. **La sessione si inietta come `db_session`** (§4). `session: AsyncSession` non funziona e basta.
-2. **I service non committano** (§5): committa l'handler. Unica eccezione documentata:
-   `shop_service.record_purchase` / `mark_success` (audit trail separato).
+2. **I service non committano** (§5): committa l'handler. Eccezioni documentate:
+   `shop_service.record_purchase` / `mark_success` (audit trail separato) e `ai_budget`
+   (transazioni tecniche brevi prima/dopo la rete, mai la sessione del handler).
 3. **Denaro, XP e transizioni di stato si decidono in SQL, non in Python** (§22 regola 22).
    Il check va nella `WHERE`, l'aritmetica nella `SET` (`coins = coins + :delta`), `rowcount == 0`
    significa gara persa, sempre `.execution_options(synchronize_session=False)` seguito da
@@ -117,7 +119,8 @@ Elenco completo: **STEERING §22 (regole 1–27)** e **§24 (checklist pre-PR)**
 12. **`from __future__ import annotations`** in ogni modulo.
 13. **Azioni admin mutanti** → `admin_service.log_action` prima del commit, + guard self/bot-target
     per la moderazione.
-14. **LLM**: l'intrattenimento passa da `ai_service.generate_completion`; un **giudizio** passa da
+14. **LLM**: l'intrattenimento passa da `ai_service.generate_completion`; Alduino usa la corsia
+    provider-neutral dello stesso gateway. Il contesto gruppo va solo su una route ZDR. Un **giudizio** passa da
     `judge_equivalence` — temperature 0, schema `strict`, parse che rifiuta tutto ciò che non è un
     booleano. Un raise significa *non dimostrato corretto*, mai *corretto* (§19.b).
 

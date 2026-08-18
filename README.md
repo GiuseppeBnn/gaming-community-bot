@@ -210,26 +210,29 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 ### Alduino conversazionale
 
-`/alduino` usa Gemini come provider dedicato; gli altri comandi comici restano su
-Groq. Dopo la prima risposta non serve ripetere il comando: una normale risposta
-Telegram a un messaggio del bot continua la conversazione. La memoria segue il
-**ramo dei reply**, non una cronologia globale: se due persone rispondono allo
-stesso messaggio, ciascuna può proseguire senza ricevere il seguito dell'altra.
+`/alduino` ha una corsia provider indipendente. La configurazione consigliata usa
+DeepSeek V4 Flash via OpenRouter; Gemini e Groq restano selezionabili e Groq può
+fare da fallback operativo. Dopo la prima risposta non serve ripetere il comando:
+una normale risposta Telegram a un messaggio del bot continua il ramo corretto.
 
-Il contesto è deliberatamente piccolo e utile. Alduino riceve gli ultimi turni
-del ramo, il catalogo pubblico generato dalla stessa fonte di `/comandi` e lo
-stato aggiornato degli eventi aperti/in programma. Non gli viene inviato
-l'archivio del gruppo e non può fingere di avere eseguito comandi. I turni locali
-sono limitati sia per quantità sia per caratteri; le righe più vecchie vengono
-potate automaticamente. Se lo stato remoto di Gemini è scaduto, il ramo viene
-ricostruito dal DB locale; se Gemini non risponde, il solo `/alduino` passa a
-Groq senza interrompere la chat.
+Alduino ora capisce anche ciò che si stava dicendo nel gruppo: combina il ramo dei
+reply, gli ultimi messaggi ordinari, il catalogo dei comandi e gli eventi realmente
+aperti/in programma. Non spedisce l'archivio intero solo perché un modello accetta
+1M token: il rolling context è configurabile e limitato per righe e caratteri, così
+rumore, latenza e costo restano bassi. Il transcript locale viene potato
+automaticamente; al provider arrivano nomi visualizzati e testo, non i Telegram ID.
 
-Nota privacy: il free tier Gemini tratta i messaggi secondo le condizioni del
-provider; Google indica attualmente che i contenuti del free tier possono essere
-usati per migliorare i prodotti. Per questo l'integrazione invia soltanto il ramo
-esplicitamente evocato, mai la cronologia generale del gruppo. Vedi la
-[tabella prezzi e trattamento dati ufficiale](https://ai.google.dev/gemini-api/docs/pricing).
+La corsia contestuale forza `zdr=true` e `data_collection=deny` e contiene solo
+modelli DeepSeek con endpoint ZDR. **Qwen 3.7 Flash non riceve mai la cronologia del
+gruppo**: è riservato ai comandi comici one-shot, dove offre il costo minimo senza
+trasportare memoria. Il ledger costi salva modello, token e costo, mai prompt o
+risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
+limite e dal prezzo massimo del provider.
+
+Per ricevere i messaggi ordinari devi disattivare la privacy del bot da BotFather:
+`/setprivacy` → scegli il bot → **Disable**. Se Telegram non applica il cambio a un
+gruppo esistente, rimuovi e riaggiungi il bot. Senza questo passaggio Alduino continua
+a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
 
 ### Quiz a premi
 
@@ -370,17 +373,24 @@ gaming-community-bot/
 | `GROUP_ID` | `0` | supergruppo in forma `-100…`; `0` = guard disattivato |
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
-| `GROQ_API_KEY` | — | comandi AI comici e fallback opzionale di Alduino |
+| `GROQ_API_KEY` | — | giudice, intrattenimento legacy e fallback opzionale di Alduino |
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
-| `GEMINI_API_KEY` | — | giochi AI persistenti e chat di Alduino |
+| `OPENROUTER_API_KEY` | — | corsie paid DeepSeek/Qwen; vuota = nessuna chiamata OpenRouter |
+| `AI_MONTHLY_BUDGET_USD` | `5.00` | hard cap interno persistente per mese UTC (`0` lo disabilita esplicitamente) |
+| `AI_ENTERTAINMENT_PROVIDER` | `groq` | `openrouter` abilita Qwen 3.7 Flash + fallback DeepSeek per i comandi comici |
+| `OPENROUTER_CHAT_MODELS` | DeepSeek V4 Flash 0731 → V4 Flash | fallback ordinato ZDR della chat |
+| `OPENROUTER_FUN_MODELS` | Qwen 3.7 Flash → DeepSeek V4 Flash | fallback ordinato one-shot, senza memoria |
+| `GEMINI_API_KEY` | — | giochi AI persistenti e chat legacy opzionale di Alduino |
 | `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
 | `GEMINI_THINKING_LEVEL` | `medium` | default Gemini; 20 Domande forza `minimal` per il verdetto ternario |
-| `ALDUINO_PROVIDER` | `gemini` | provider della sola chat: `gemini` o `groq` |
+| `ALDUINO_PROVIDER` | `gemini` | provider della sola chat: `openrouter`, `gemini` o `groq` |
 | `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
 | `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
 | `ALDUINO_FALLBACK_TO_GROQ` | `true` | usa Groq se Gemini fallisce |
 | `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
 | `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |
+| `ALDUINO_GROUP_CONTEXT_MESSAGES` / `_CHARS` | `80` / `24000` | finestra ambientale inviata al modello |
+| `ALDUINO_GROUP_MEMORY_ROWS` | `3000` | rolling transcript locale; richiede privacy mode Telegram disabilitata |
 | `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | — | abilita il catalogo IGDB in cache; app Twitch confidential |
 | `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache di 20 Domande |
 | `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |

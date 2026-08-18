@@ -1,9 +1,8 @@
 """Provider boundary and bounded, branch-aware memory for Alduino chat.
 
-Gemini is the preferred conversational model; Groq remains an operational
-fallback and continues to power the intentionally edgier one-shot commands.
-Telegram and SQL orchestration stay outside provider adapters so no network call
-ever holds a database transaction open.
+OpenRouter, Gemini and Groq are swappable conversational lanes. Telegram and SQL
+orchestration stay outside provider adapters so no network call ever holds a
+database transaction open.
 """
 
 from __future__ import annotations
@@ -188,6 +187,7 @@ def render_model_input(
     *,
     history: Sequence[DialogueTurn] = (),
     live_context: str = "",
+    group_context: str = "",
     quoted_bot_text: str = "",
     include_history: bool = True,
 ) -> str:
@@ -195,6 +195,12 @@ def render_model_input(
     sections: list[str] = []
     if live_context:
         sections.append(f"<<<DATI LIVE DEL BOT>>>\n{live_context}\n<<<FINE DATI LIVE>>>")
+    if group_context:
+        sections.append(
+            "<<<CONVERSAZIONE RECENTE DEL GRUPPO>>>\n"
+            f"{group_context}\n"
+            "<<<FINE CONVERSAZIONE DEL GRUPPO>>>"
+        )
     if include_history and history:
         transcript: list[str] = []
         for turn in history:
@@ -277,6 +283,7 @@ async def _gemini_reply(
     current: str,
     history: Sequence[DialogueTurn],
     live_context: str,
+    group_context: str,
     quoted_bot_text: str,
     previous_interaction_id: str | None,
 ) -> GeneratedReply:
@@ -290,6 +297,7 @@ async def _gemini_reply(
                 current,
                 history=history,
                 live_context=live_context,
+                group_context=group_context,
                 quoted_bot_text=quoted_bot_text,
                 include_history=not stateful,
             ),
@@ -320,18 +328,52 @@ async def _gemini_reply(
 async def _groq_reply(
     *, system_prompt: str, current: str, history: Sequence[DialogueTurn],
     live_context: str, quoted_bot_text: str,
+    group_context: str = "",
 ) -> GeneratedReply:
     prompt = render_model_input(
         current,
         history=history,
         live_context=live_context,
+        group_context=group_context,
         quoted_bot_text=quoted_bot_text,
     )
     try:
-        text = await ai_service.generate_completion(system_prompt, prompt, max_tokens=280)
+        text = await ai_service.generate_groq_completion(
+            system_prompt, prompt, max_tokens=280,
+        )
     except ai_service.AIServiceError as exc:
         raise AlduinoAIError("Groq unavailable") from exc
     return GeneratedReply(text=_clip_reply(text), provider="groq")
+
+
+async def _openrouter_reply(
+    *,
+    system_prompt: str,
+    current: str,
+    history: Sequence[DialogueTurn],
+    live_context: str,
+    quoted_bot_text: str,
+    group_context: str,
+) -> GeneratedReply:
+    prompt = render_model_input(
+        current,
+        history=history,
+        live_context=live_context,
+        group_context=group_context,
+        quoted_bot_text=quoted_bot_text,
+    )
+    try:
+        text = await ai_service.generate_openrouter_completion(
+            system_prompt,
+            prompt,
+            max_tokens=280,
+            feature="alduino_chat",
+            models=ai_service.parse_model_list(settings.openrouter_chat_models),
+            require_zdr=True,
+        )
+    except ai_service.AIServiceError as exc:
+        raise AlduinoAIError("OpenRouter unavailable") from exc
+    return GeneratedReply(text=_clip_reply(text), provider="openrouter")
 
 
 async def generate_reply(
@@ -340,6 +382,7 @@ async def generate_reply(
     current: str,
     parent: AlduinoTurn | None = None,
     live_context: str = "",
+    group_context: str = "",
     quoted_bot_text: str = "",
 ) -> GeneratedReply:
     """Generate through the selected provider, with a narrow Groq failover."""
@@ -352,14 +395,38 @@ async def generate_reply(
     if settings.alduino_provider == "groq":
         return await _groq_reply(
             system_prompt=system_prompt, current=current, history=history,
-            live_context=live_context, quoted_bot_text=quoted_bot_text,
+            live_context=live_context, group_context="",
+            quoted_bot_text=quoted_bot_text,
         )
+    if settings.alduino_provider == "openrouter":
+        try:
+            return await _openrouter_reply(
+                system_prompt=system_prompt,
+                current=current,
+                history=history,
+                live_context=live_context,
+                group_context=group_context,
+                quoted_bot_text=quoted_bot_text,
+            )
+        except AlduinoAIError as exc:
+            if not settings.alduino_fallback_to_groq:
+                raise
+            log.warning("OpenRouter Alduino non disponibile (%s): uso Groq.", exc)
+            return await _groq_reply(
+                system_prompt=system_prompt,
+                current=current,
+                history=history,
+                live_context=live_context,
+                group_context="",
+                quoted_bot_text=quoted_bot_text,
+            )
     try:
         return await _gemini_reply(
             system_prompt=system_prompt,
             current=current,
             history=history,
             live_context=live_context,
+            group_context="",
             quoted_bot_text=quoted_bot_text,
             previous_interaction_id=previous_id,
         )
@@ -369,5 +436,6 @@ async def generate_reply(
         log.warning("Gemini Alduino non disponibile (%s): uso Groq.", exc)
         return await _groq_reply(
             system_prompt=system_prompt, current=current, history=history,
-            live_context=live_context, quoted_bot_text=quoted_bot_text,
+            live_context=live_context, group_context="",
+            quoted_bot_text=quoted_bot_text,
         )

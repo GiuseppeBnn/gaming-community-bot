@@ -32,7 +32,10 @@ async def test_gemini_interaction_has_chat_optimized_contract(gemini_settings):
     with aioresponses() as mocked:
         mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=200, payload=_response())
         result = await alduino_chat.generate_reply(
-            system_prompt="persona + manuale", current="come va?", live_context="evento live",
+            system_prompt="persona + manuale",
+            current="come va?",
+            live_context="evento live",
+            group_context="non inviare al provider legacy",
         )
 
     assert result == GeneratedReply("Ciao.", "gemini", "turn-1")
@@ -47,6 +50,7 @@ async def test_gemini_interaction_has_chat_optimized_contract(gemini_settings):
         "thinking_summaries": "none",
     }
     assert "evento live" in sent["input"]
+    assert "non inviare al provider legacy" not in sent["input"]
     assert request.kwargs["headers"]["Api-Revision"] == alduino_chat._API_REVISION
 
 
@@ -123,7 +127,7 @@ async def test_gemini_transport_failure_falls_back_to_groq(
         return "risposta di scorta"
 
     monkeypatch.setattr(alduino_chat.asyncio, "sleep", no_sleep)
-    monkeypatch.setattr(ai_service, "generate_completion", groq)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", groq)
     with aioresponses() as mocked:
         mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, exception=failure)
         mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, exception=failure)
@@ -139,8 +143,62 @@ async def test_missing_both_providers_is_one_normalized_error(gemini_settings, m
     async def down(*args, **kwargs):
         raise ai_service.AIServiceError("down")
 
-    monkeypatch.setattr(ai_service, "generate_completion", down)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", down)
     with pytest.raises(AlduinoAIError, match="Groq unavailable"):
+        await alduino_chat.generate_reply(system_prompt="s", current="u")
+
+
+async def test_openrouter_chat_uses_zdr_deepseek_route_and_group_context(monkeypatch):
+    captured = {}
+
+    async def openrouter(system, user, **kwargs):
+        captured.update(system=system, user=user, **kwargs)
+        return "sono nel discorso"
+
+    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
+    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", False)
+    monkeypatch.setattr(
+        alduino_chat.settings, "openrouter_chat_models", "deepseek/first,deepseek/second",
+    )
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", openrouter)
+    result = await alduino_chat.generate_reply(
+        system_prompt="persona", current="che ne pensi?", group_context="Mario: Elden Ring",
+    )
+    assert result == GeneratedReply("sono nel discorso", "openrouter")
+    assert captured["models"] == ("deepseek/first", "deepseek/second")
+    assert captured["require_zdr"] is True
+    assert captured["feature"] == "alduino_chat"
+    assert "Mario: Elden Ring" in captured["user"]
+
+
+async def test_openrouter_failure_has_explicit_groq_fallback(monkeypatch):
+    captured = {}
+
+    async def down(*args, **kwargs):
+        raise ai_service.AIServiceError("down")
+
+    async def groq(_system, prompt, **kwargs):
+        captured["prompt"] = prompt
+        return "scorta"
+
+    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
+    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", True)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", down)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", groq)
+    assert await alduino_chat.generate_reply(
+        system_prompt="s", current="u", group_context="messaggio ambientale privato",
+    ) == GeneratedReply("scorta", "groq")
+    assert "messaggio ambientale privato" not in captured["prompt"]
+
+
+async def test_openrouter_failure_can_be_fail_closed(monkeypatch):
+    async def down(*args, **kwargs):
+        raise ai_service.AIServiceError("down")
+
+    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
+    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", False)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", down)
+    with pytest.raises(AlduinoAIError, match="OpenRouter unavailable"):
         await alduino_chat.generate_reply(system_prompt="s", current="u")
 
 
@@ -228,11 +286,13 @@ def test_model_input_labels_untrusted_sections_and_clips_them():
         "u" * 3000,
         history=(DialogueTurn("prima", "dopo"),),
         live_context="live",
+        group_context="Mario: contesto",
         quoted_bot_text="q" * 1000,
     )
 
     assert "<<<DATI LIVE DEL BOT>>>" in rendered
     assert "<<<CONVERSAZIONE RECENTE>>>" in rendered
+    assert "<<<CONVERSAZIONE RECENTE DEL GRUPPO>>>" in rendered
     assert "UTENTE: prima" in rendered and "ALDUINO: dopo" in rendered
     assert rendered.count("u") == alduino_chat._MAX_CURRENT_CHARS
     assert rendered.count("q") == alduino_chat._MAX_QUOTED_CHARS
