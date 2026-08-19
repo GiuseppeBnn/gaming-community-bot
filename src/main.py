@@ -15,7 +15,7 @@ from aiogram.types import (
     BotCommandScopeChatAdministrators,
 )
 from config_data.config import settings
-from database.connection import async_session_maker, create_tables, run_migrations
+from database.connection import async_session_maker, create_tables, engine, run_migrations
 import handlers
 from handlers import errors, event_types
 from handlers.schedule import scheduler_loop
@@ -246,20 +246,38 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        scheduler_task.cancel()
-        backup_task.cancel()
-        catalog_task.cancel()
+        background_tasks = (scheduler_task, backup_task, catalog_task, alert_task)
+        for task in background_tasks:
+            task.cancel()
         # Cancelled *before* the farewell drain, not after: the loop's own tick
         # runs every _POLL_INTERVAL_SECONDS, so draining alongside a live task
         # means two coroutines sharing the dedup state, and a suppressed-repeat
         # count can go unreported. Cancel first, then drain once, uncontested.
-        alert_task.cancel()
+        done, pending = await asyncio.wait(background_tasks, timeout=5)
+        for task in done:
+            if not task.cancelled() and (exc := task.exception()) is not None:
+                logger.error("Task background terminato con errore durante lo shutdown: %s", exc)
+        if pending:
+            logger.warning(
+                "%d task background non hanno terminato entro 5 secondi.", len(pending)
+            )
         # A clean SIGTERM (Watchtower restarts the container every
         # WATCHTOWER_POLL_INTERVAL) must not throw away up to _MAX_BUFFERED alerts
         # that never got a poll tick to go out.
         with contextlib.suppress(Exception):
             await asyncio.wait_for(alerts.drain(bot), 5)
-        await bot.session.close()
+        # Close every long-lived resource explicitly.  In particular, relying on
+        # a driver's worker thread being daemonized made clean process exit depend
+        # on the exact SQLAlchemy/aiosqlite version pair.
+        for resource_name, close in (
+            ("sessione Telegram", bot.session.close),
+            ("storage FSM", storage.close),
+            ("engine database", engine.dispose),
+        ):
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 — shutdown continues, but stays observable
+                logger.exception("Errore chiudendo %s.", resource_name)
         logger.info("Bot fermato.")
 
 
