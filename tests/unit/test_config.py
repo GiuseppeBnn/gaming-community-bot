@@ -232,3 +232,37 @@ class TestOpenRouterBudgetLanes:
         assert configured.ai_monthly_budget_usd == 0
         assert configured.twentyq_openrouter_budget_usd == 0
         assert configured.openrouter_other_budget_usd == 0
+
+
+class TestTwentyQuestionsProviderSettings:
+    def test_provider_defaults_are_dedicated_and_legacy_gemini_fields_are_gone(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.twentyq_gemini_model == "gemini-3.5-flash"
+        assert configured.twentyq_groq_model == "openai/gpt-oss-20b"
+        assert configured.twentyq_openrouter_model == "deepseek/deepseek-v4-flash-0731"
+        assert configured.twentyq_gemini_timeout_seconds == 8
+        assert configured.twentyq_groq_timeout_seconds == 8
+        assert configured.twentyq_openrouter_timeout_seconds == 12
+        assert "gemini_model" not in Settings.model_fields
+        assert "gemini_thinking_level" not in Settings.model_fields
+        assert "gemini_timeout_seconds" not in Settings.model_fields
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "twentyq_gemini_timeout_seconds",
+            "twentyq_groq_timeout_seconds",
+            "twentyq_openrouter_timeout_seconds",
+        ],
+    )
+    def test_provider_timeouts_reject_zero(self, field):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(bot_token="x", _env_file=None, **{field: 0})  # type: ignore[call-arg]
+        assert error.value.errors()[0]["type"] == "greater_than_equal"

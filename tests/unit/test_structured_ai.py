@@ -1,119 +1,375 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
+from dataclasses import FrozenInstanceError
+import json
+from types import SimpleNamespace
+
 import aiohttp
 from aioresponses import aioresponses
+import pytest
 
-from services import structured_ai
-from services.structured_ai import GeminiStructuredProvider, StructuredAIError
+from services import ai_budget, ai_game_service, structured_ai
 
 
 @pytest.fixture
-def gemini(monkeypatch):
+def structured_request() -> structured_ai.StructuredRequest:
+    return structured_ai.StructuredRequest(
+        operation="twentyq_question",
+        system_prompt="system-secret",
+        user_prompt='{"dossier":"private","question":"q","history":[]}',
+        schema_name="twentyq_verdict",
+        schema={
+            "type": "object",
+            "properties": {
+                "verdetto": {"type": "string", "enum": ["si", "no", "forse"]},
+            },
+            "required": ["verdetto"],
+            "additionalProperties": False,
+        },
+        prompt_version="v2",
+        schema_version="v2",
+        max_output_tokens=72,
+        temperature=0.2,
+        thinking_level="minimal",
+    )
+
+
+@pytest.fixture
+def gemini(monkeypatch) -> structured_ai.GeminiStructuredProvider:
     monkeypatch.setattr(structured_ai.settings, "gemini_api_key", "test-key")
-    monkeypatch.setattr(structured_ai.settings, "gemini_model", "gemini-test")
-    return GeminiStructuredProvider()
+    monkeypatch.setattr(structured_ai.settings, "twentyq_gemini_model", "gemini-test")
+    monkeypatch.setattr(structured_ai.settings, "twentyq_gemini_timeout_seconds", 3)
+    return structured_ai.GeminiStructuredProvider()
 
 
-def _url():
-    return f"{structured_ai._BASE_URL}/gemini-test:generateContent"
+def _url(model: str = "gemini-test") -> str:
+    return f"{structured_ai.GEMINI_BASE_URL}/{model}:generateContent"
 
 
-async def test_gemini_sends_schema_thinking_and_parses_only_non_thought_text(gemini):
-    response = {"candidates": [{"content": {"parts": [
-        {"thought": True, "text": "private reasoning"},
-        {"text": '{"verdetto":"si"}'},
-    ]}}]}
-    schema = {"type": "object", "properties": {"verdetto": {"type": "string"}}}
+def _response(
+    value: str = '{"verdetto":"si"}',
+    *,
+    finish_reason: str = "STOP",
+) -> dict:
+    return {
+        "modelVersion": "gemini-test-actual",
+        "candidates": [{
+            "finishReason": finish_reason,
+            "content": {"parts": [
+                {"thought": True, "text": "private reasoning"},
+                {"text": value},
+            ]},
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 12,
+            "candidatesTokenCount": 3,
+            "thoughtsTokenCount": 5,
+            "cachedContentTokenCount": 2,
+        },
+    }
+
+
+def _request_count(mocked: aioresponses) -> int:
+    return sum(len(calls) for calls in mocked.requests.values())
+
+
+def test_provider_neutral_contracts_are_immutable_and_complete(structured_request):
+    assert structured_request.operation == "twentyq_question"
+    with pytest.raises(FrozenInstanceError):
+        structured_request.operation = "changed"
+
+    assert {kind.value for kind in structured_ai.StructuredAIErrorKind} == {
+        "missing_key",
+        "authentication",
+        "configuration",
+        "quota",
+        "rate_limit",
+        "timeout",
+        "network",
+        "server",
+        "refusal",
+        "empty_output",
+        "malformed_json",
+        "invalid_schema",
+        "invalid_enum",
+        "output_limit",
+        "budget_exhausted",
+        "budget_unavailable",
+        "deadline",
+        "providers_unavailable",
+    }
+    error = structured_ai.StructuredAIError(
+        "slow down",
+        kind=structured_ai.StructuredAIErrorKind.rate_limit,
+        provider="gemini",
+        status=429,
+        retry_after_seconds=9,
+    )
+    assert (error.kind, error.provider, error.status, error.retry_after_seconds) == (
+        structured_ai.StructuredAIErrorKind.rate_limit,
+        "gemini",
+        429,
+        9,
+    )
+
+
+def test_retry_after_parses_seconds_dates_and_rejects_invalid_values():
+    assert structured_ai._retry_after_seconds(None) is None
+    assert structured_ai._retry_after_seconds({"Retry-After": 3}) is None
+    assert structured_ai._retry_after_seconds({"Retry-After": "-1"}) is None
+    assert structured_ai._retry_after_seconds({"Retry-After": "not-a-date"}) is None
+    assert structured_ai._retry_after_seconds({
+        "Retry-After": "Wed, 31 Dec 2099 23:59:59 GMT",
+    }) > 0
+    assert structured_ai._retry_after_seconds({
+        "Retry-After": "31 Dec 2099 23:59:59",
+    }) > 0
+
+
+@pytest.mark.parametrize(
+    ("value", "schema", "failure"),
+    [
+        ({}, {"type": "object"}, None),
+        ([], {"type": "array"}, None),
+        (True, {"type": "boolean"}, None),
+        (1, {"type": "integer"}, None),
+        (True, {"type": "integer"}, "invalid_schema"),
+        (1.5, {"type": "number"}, None),
+        (float("inf"), {"type": "number"}, "invalid_schema"),
+        (None, {"type": "null"}, None),
+        ("x", {"type": "unknown"}, "invalid_schema"),
+        ("x", ["not", "a", "schema"], "invalid_schema"),
+        ("x", {"type": ["string", "null"]}, None),
+        ("x", {"type": [42]}, "invalid_schema"),
+        ({}, {"type": "object", "properties": []}, "invalid_schema"),
+        ({}, {"type": "object", "required": "key"}, "invalid_schema"),
+        (
+            {"items": [1, "bad"]},
+            {
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "integer"}},
+                },
+            },
+            "invalid_schema",
+        ),
+    ],
+)
+def test_local_schema_validation_covers_supported_json_types(value, schema, failure):
+    got = structured_ai._schema_failure(value, schema)
+    assert (got.value if got is not None else None) == failure
+
+
+async def test_gemini_sends_schema_and_returns_provider_metadata(
+    gemini, structured_request,
+):
     with aioresponses() as mocked:
-        mocked.post(_url(), status=200, payload=response)
-        result = await gemini.generate_json(
-            system_prompt="system", user_prompt="user", schema=schema,
-            thinking_level="minimal", temperature=0.7,
+        mocked.post(_url(), payload=_response())
+        result = await gemini.generate_json(structured_request)
+
+    assert result == structured_ai.StructuredProviderResult(
+        value={"verdetto": "si"},
+        provider="gemini",
+        model="gemini-test-actual",
+        usage=ai_budget.UsageMetrics("gemini-test-actual", 12, 3, 5, 2),
+    )
+    assert _request_count(mocked) == 1
+    request = next(iter(mocked.requests.values()))[0]
+    sent = request.kwargs["json"]
+    assert sent == {
+        "systemInstruction": {"parts": [{"text": structured_request.system_prompt}]},
+        "contents": [{
+            "role": "user",
+            "parts": [{"text": structured_request.user_prompt}],
+        }],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 72,
+            "responseMimeType": "application/json",
+            "responseJsonSchema": structured_request.schema,
+            "thinkingConfig": {"thinkingLevel": "minimal"},
+        },
+    }
+    assert request.kwargs["headers"]["x-goog-api-key"] == "test-key"
+    assert gemini.name == "gemini"
+    assert gemini.model == "gemini-test"
+    assert gemini.timeout_seconds == 3
+    assert gemini.configured is True
+
+
+async def test_gemini_uses_default_thinking_level_when_request_omits_it(
+    gemini, structured_request,
+):
+    request = structured_ai.StructuredRequest(
+        operation=structured_request.operation,
+        system_prompt=structured_request.system_prompt,
+        user_prompt=structured_request.user_prompt,
+        schema_name=structured_request.schema_name,
+        schema=structured_request.schema,
+        prompt_version=structured_request.prompt_version,
+        schema_version=structured_request.schema_version,
+    )
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=_response())
+        await gemini.generate_json(request)
+    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
+    assert sent["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+
+
+async def test_gemini_legacy_service_path_returns_verdict_and_is_single_attempt(gemini):
+    snapshot = SimpleNamespace(
+        game=SimpleNamespace(dossier_json=json.dumps({"facts": "Aperture"})),
+        turns=(),
+    )
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=_response('{"verdetto":"forse"}'))
+        verdict = await ai_game_service.classify_question(
+            snapshot,  # type: ignore[arg-type]
+            "È in prima persona?",
+            gemini,  # type: ignore[arg-type]
         )
 
-        assert result == {"verdetto": "si"}
-        request = next(iter(mocked.requests.values()))[0]
-        sent = request.kwargs["json"]
-        assert sent["generationConfig"]["responseJsonSchema"] == schema
-        assert sent["generationConfig"]["responseMimeType"] == "application/json"
-        assert sent["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "minimal"
-        assert sent["generationConfig"]["temperature"] == 0.7
-        assert request.kwargs["headers"]["x-goog-api-key"] == "test-key"
+    assert verdict == ai_game_service.QuestionVerdict("forse")
+    assert _request_count(mocked) == 1
 
 
-async def test_gemini_rejects_malformed_json(gemini):
+async def test_gemini_legacy_shim_rejects_incomplete_keyword_call(gemini):
+    with pytest.raises(TypeError, match="requires prompts and schema"):
+        await gemini.generate_json()
+
+
+async def test_gemini_missing_key_fails_before_network(monkeypatch, structured_request):
+    monkeypatch.setattr(structured_ai.settings, "gemini_api_key", "")
+    provider = structured_ai.GeminiStructuredProvider()
+    assert provider.configured is False
+    with pytest.raises(structured_ai.StructuredAIError) as raised:
+        await provider.generate_json(structured_request)
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.missing_key
+    assert raised.value.provider == "gemini"
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_kind"),
+    [
+        (400, "configuration"),
+        (401, "authentication"),
+        (403, "authentication"),
+        (402, "quota"),
+        (408, "timeout"),
+        (422, "invalid_schema"),
+        (429, "rate_limit"),
+        (500, "server"),
+        (503, "server"),
+    ],
+)
+async def test_gemini_normalizes_status_retry_after_without_retrying(
+    gemini, structured_request, status, expected_kind, caplog,
+):
+    secret = "provider-secret-body"
     with aioresponses() as mocked:
-        mocked.post(_url(), status=200, payload={
-            "candidates": [{"content": {"parts": [{"text": "not-json"}]}}],
-        })
-        with pytest.raises(StructuredAIError, match="malformed"):
-            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
+        mocked.post(_url(), status=status, body=secret, headers={"Retry-After": "7"})
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await gemini.generate_json(structured_request)
+
+    assert raised.value.kind.value == expected_kind
+    assert raised.value.provider == "gemini"
+    assert raised.value.status == status
+    assert raised.value.retry_after_seconds == 7
+    assert _request_count(mocked) == 1
+    assert secret not in caplog.text
+    assert structured_request.system_prompt not in caplog.text
+    assert structured_request.user_prompt not in caplog.text
 
 
-async def test_max_tokens_has_safe_diagnostics_without_model_material(gemini, caplog):
-    signature = "secret-thought-signature-that-must-never-be-logged"
+@pytest.mark.parametrize(
+    ("failure", "kind"),
+    [
+        (TimeoutError(), "timeout"),
+        (aiohttp.ClientConnectionError("down"), "network"),
+    ],
+)
+async def test_gemini_transport_failure_is_typed_and_single_attempt(
+    gemini, structured_request, failure, kind,
+):
     with aioresponses() as mocked:
-        mocked.post(_url(), status=200, payload={
-            "modelVersion": "gemini-test",
-            "candidates": [{
-                "finishReason": "MAX_TOKENS",
-                "content": {"parts": [{"thoughtSignature": signature, "text": "partial"}]},
-            }],
-            "usageMetadata": {
-                "promptTokenCount": 12,
-                "candidatesTokenCount": 3,
-                "thoughtsTokenCount": 241,
-            },
-        })
-        with pytest.raises(StructuredAIError, match="max tokens"):
-            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
+        mocked.post(_url(), exception=failure)
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await gemini.generate_json(structured_request)
+    assert raised.value.kind.value == kind
+    assert _request_count(mocked) == 1
+
+
+async def test_gemini_cancellation_is_not_normalized(gemini, structured_request):
+    with aioresponses() as mocked:
+        mocked.post(_url(), exception=asyncio.CancelledError())
+        with pytest.raises(asyncio.CancelledError):
+            await gemini.generate_json(structured_request)
+
+
+@pytest.mark.parametrize(
+    ("response", "kind"),
+    [
+        ([], "malformed_json"),
+        ({"candidates": []}, "malformed_json"),
+        ({"candidates": [{}]}, "malformed_json"),
+        (_response("not-json"), "malformed_json"),
+        (_response('{"verdetto":NaN}'), "malformed_json"),
+        (_response("[]"), "invalid_schema"),
+        (_response("{}"), "invalid_schema"),
+        (_response('{"verdetto":"mai"}'), "invalid_enum"),
+        (_response('{"verdetto":"si","extra":1}'), "invalid_schema"),
+        (_response("", finish_reason="STOP"), "empty_output"),
+        (_response('{"verdetto":"si"}', finish_reason="MAX_TOKENS"), "output_limit"),
+        (_response('{"verdetto":"si"}', finish_reason="SAFETY"), "refusal"),
+    ],
+)
+async def test_gemini_normalizes_output_failures(
+    gemini, structured_request, response, kind,
+):
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=response)
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await gemini.generate_json(structured_request)
+    assert raised.value.kind.value == kind
+
+
+async def test_gemini_malformed_envelope_logs_only_safe_metadata(
+    gemini, structured_request, caplog,
+):
+    signature = "secret-thought-signature"
+    partial = "secret-partial-output"
+    response = {
+        "modelVersion": "gemini-test-actual",
+        "candidates": [{
+            "finishReason": "MAX_TOKENS",
+            "content": {"parts": [{"thoughtSignature": signature, "text": partial}]},
+        }],
+        "usageMetadata": {"promptTokenCount": 12, "thoughtsTokenCount": 241},
+    }
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=response)
+        with caplog.at_level("WARNING"), pytest.raises(structured_ai.StructuredAIError):
+            await gemini.generate_json(structured_request)
 
     assert signature not in caplog.text
-    assert "partial" not in caplog.text
+    assert partial not in caplog.text
+    assert structured_request.system_prompt not in caplog.text
+    assert structured_request.user_prompt not in caplog.text
+    assert "gemini-test-actual" in caplog.text
+    assert "MAX_TOKENS" in caplog.text
     assert "241" in caplog.text
 
 
-async def test_gemini_missing_key_fails_before_network(monkeypatch):
-    monkeypatch.setattr(structured_ai.settings, "gemini_api_key", "")
-    with pytest.raises(StructuredAIError, match="missing"):
-        await GeminiStructuredProvider().generate_json(
-            system_prompt="s", user_prompt="u", schema={},
-        )
-
-
-async def test_non_retryable_status_and_non_object_are_rejected(gemini):
+async def test_gemini_rejects_untrusted_usage_values(gemini, structured_request):
+    response = _response()
+    response["usageMetadata"] = {
+        "promptTokenCount": True,
+        "candidatesTokenCount": -1,
+        "thoughtsTokenCount": 4.5,
+        "cachedContentTokenCount": 0,
+    }
     with aioresponses() as mocked:
-        mocked.post(_url(), status=400, body="bad request")
-        with pytest.raises(StructuredAIError, match="status 400"):
-            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
-    with aioresponses() as mocked:
-        mocked.post(_url(), status=200, payload={
-            "candidates": [{"content": {"parts": [{"text": "[]"}]}}],
-        })
-        with pytest.raises(StructuredAIError, match="not an object"):
-            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
-
-
-async def test_retryable_status_recovers_once(gemini, monkeypatch):
-    async def no_sleep(_):
-        return None
-    monkeypatch.setattr(structured_ai.asyncio, "sleep", no_sleep)
-    with aioresponses() as mocked:
-        mocked.post(_url(), status=503, body="busy")
-        mocked.post(_url(), status=200, payload={
-            "candidates": [{"content": {"parts": [{"text": "{}"}]}}],
-        })
-        assert await gemini.generate_json(system_prompt="s", user_prompt="u", schema={}) == {}
-
-
-@pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ClientConnectionError("down")])
-async def test_transport_failure_is_normalized_after_retry(gemini, monkeypatch, failure):
-    async def no_sleep(_):
-        return None
-    monkeypatch.setattr(structured_ai.asyncio, "sleep", no_sleep)
-    with aioresponses() as mocked:
-        mocked.post(_url(), exception=failure)
-        mocked.post(_url(), exception=failure)
-        with pytest.raises(StructuredAIError):
-            await gemini.generate_json(system_prompt="s", user_prompt="u", schema={})
+        mocked.post(_url(), payload=response)
+        result = await gemini.generate_json(structured_request)
+    assert result.usage == ai_budget.UsageMetrics("gemini-test-actual", None, None, None, 0)

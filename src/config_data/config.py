@@ -79,13 +79,16 @@ class Settings(BaseSettings):
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
     guess_judge_timeout_seconds: int = Field(default=12, ge=1)
-    # Structured provider for persistent AI games. Gemini 3.5 Flash supports
-    # JSON Schema and level-based thinking; a separate key keeps the existing
-    # Groq entertainment commands independently deployable.
+    # Structured providers for persistent AI games. Their model and timeout
+    # settings are deliberately independent from entertainment, judge and
+    # conversational traffic: changing one workload must not move another.
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.5-flash"
-    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
-    gemini_timeout_seconds: int = Field(default=20, ge=1)
+    twentyq_gemini_model: str = "gemini-3.5-flash"
+    twentyq_groq_model: str = "openai/gpt-oss-20b"
+    twentyq_openrouter_model: str = "deepseek/deepseek-v4-flash-0731"
+    twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"
