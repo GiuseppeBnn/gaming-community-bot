@@ -166,6 +166,35 @@ async def test_lane_rejection_rolls_back_the_global_reservation(budget_db, monke
     assert count == 0
 
 
+async def test_lane_rejection_rolls_back_new_period_rows(budget_db, monkeypatch):
+    estimate = ai_budget.estimate_cost_microusd(
+        ai_budget.estimate_input_tokens("s", "u"),
+        10,
+        max_prompt_price=Decimal("0.25"),
+        max_completion_price=Decimal("0.60"),
+    )
+    monkeypatch.setattr(
+        ai_budget.settings,
+        "ai_monthly_budget_usd",
+        Decimal(estimate) / Decimal("1000000"),
+    )
+    monkeypatch.setattr(
+        ai_budget.settings, "twentyq_openrouter_budget_usd", Decimal("0.000001"),
+    )
+
+    with pytest.raises(ai_budget.AIBudgetExceeded):
+        await _reserve(feature="twentyq_question", budget_lane="twentyq")
+
+    period = ai_budget.current_period()
+    async with budget_db() as session:
+        global_row = await session.get(AIBudgetPeriod, period)
+        lane_row = await session.get(AIFeatureBudgetPeriod, (period, "twentyq"))
+        usage_count = (
+            await session.execute(select(func.count()).select_from(AIUsageLog))
+        ).scalar_one()
+    assert (global_row, lane_row, usage_count) == (None, None, 0)
+
+
 async def test_configured_caps_are_refreshed_on_each_reservation(budget_db, monkeypatch):
     first = await _reserve()
     await ai_budget.settle(first, status="failed", actual_microusd=0)

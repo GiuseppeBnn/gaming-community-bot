@@ -16,7 +16,9 @@ from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -102,23 +104,6 @@ def estimate_cost_microusd(
     return max(1, int(value.to_integral_value(rounding=ROUND_CEILING)))
 
 
-async def _add_period_if_missing(
-    session: AsyncSession,
-    row: AIBudgetPeriod | AIFeatureBudgetPeriod,
-    identity: str | tuple[str, str],
-) -> None:
-    if await session.get(type(row), identity) is not None:
-        return
-    try:
-        async with session.begin_nested():
-            session.add(row)
-            await session.flush()
-    except IntegrityError:
-        # A concurrent transaction inserted the same period first. The savepoint
-        # keeps this transaction usable so it can proceed to the atomic update.
-        return
-
-
 async def _ensure_periods(
     session: AsyncSession,
     period: str,
@@ -127,20 +112,32 @@ async def _ensure_periods(
     lane_cap: int,
 ) -> None:
     """Create global then lane period rows inside the reservation transaction."""
-    await _add_period_if_missing(
-        session,
-        AIBudgetPeriod(period=period, cap_microusd=global_cap),
-        period,
-    )
-    await _add_period_if_missing(
-        session,
-        AIFeatureBudgetPeriod(
-            period=period,
-            feature=budget_lane,
-            cap_microusd=lane_cap,
-        ),
-        (period, budget_lane),
-    )
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        await session.execute(
+            sqlite_insert(AIBudgetPeriod)
+            .values(period=period, cap_microusd=global_cap)
+            .on_conflict_do_nothing()
+        )
+        await session.execute(
+            sqlite_insert(AIFeatureBudgetPeriod)
+            .values(period=period, feature=budget_lane, cap_microusd=lane_cap)
+            .on_conflict_do_nothing()
+        )
+        return
+    if dialect == "postgresql":
+        await session.execute(
+            postgresql_insert(AIBudgetPeriod)
+            .values(period=period, cap_microusd=global_cap)
+            .on_conflict_do_nothing()
+        )
+        await session.execute(
+            postgresql_insert(AIFeatureBudgetPeriod)
+            .values(period=period, feature=budget_lane, cap_microusd=lane_cap)
+            .on_conflict_do_nothing()
+        )
+        return
+    raise AIBudgetError(f"unsupported budget storage dialect: {dialect}")
 
 
 def _configured_lane_cap(budget_lane: BudgetLane) -> int:
