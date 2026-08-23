@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+import asyncio
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select
@@ -187,6 +188,52 @@ async def test_v2_absolute_expiry_is_immutable_and_schedules_that_exact_deadline
     )
 
 
+async def test_v2_aware_absolute_expiry_is_stored_and_scheduled_as_naive_utc(
+    session, monkeypatch,
+):
+    """Keeping the source offset would compare aware and DB-naive expiry values wrongly."""
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    absolute = datetime(2026, 8, 24, 18, 30, tzinfo=timezone(timedelta(hours=2)))
+    expected = datetime(2026, 8, 24, 16, 30)
+    created = await _create_v2(
+        session, monkeypatch, duration_seconds=None, expires_at=absolute,
+    )
+
+    draft = await session.get(AIGameSession, created.session_id)
+    started = await ai_game_service.start(
+        session,
+        created.session_id,
+        group_id=-1001,
+        now=datetime(2026, 8, 23, 12, 0, tzinfo=timezone(timedelta(hours=2))),
+    )
+    task = (await session.execute(select(ScheduledTask))).scalar_one()
+
+    assert draft is not None and draft.expires_at == expected
+    assert (started.started, started.expires_at, task.run_at) == (True, expected, expected)
+
+
+async def test_v2_aware_start_time_calculates_relative_expiry_in_naive_utc(
+    session, monkeypatch,
+):
+    """Adding a duration before UTC normalization shifts the persisted timer by its offset."""
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    created = await _create_v2(session, monkeypatch)
+    aware_now = datetime(2026, 8, 23, 12, 0, tzinfo=timezone(timedelta(hours=2)))
+    expected_started = datetime(2026, 8, 23, 10, 0)
+    expected_expiry = datetime(2026, 8, 23, 22, 0)
+
+    started = await ai_game_service.start(
+        session, created.session_id, group_id=-1001, now=aware_now,
+    )
+    root = await session.get(AIGameSession, created.session_id)
+    task = (await session.execute(select(ScheduledTask))).scalar_one()
+
+    assert root is not None and (root.started_at, root.expires_at) == (
+        expected_started, expected_expiry,
+    )
+    assert (started.expires_at, task.run_at) == (expected_expiry, expected_expiry)
+
+
 async def test_v2_start_is_idempotent_and_anchor_compare_and_swap_is_lossless(
     session, monkeypatch,
 ):
@@ -246,8 +293,19 @@ async def test_v2_view_is_bounded_and_reveals_only_finished_answer(session, monk
 async def test_v2_delete_only_allows_drafts_and_finished_games_are_archived(session, monkeypatch):
     """Deleting a started v2 game would strand its immutable audit and reward policy."""
     draft = await _create_v2(session, monkeypatch)
+    session.add(ScheduledTask(
+        task_type="twentyq",
+        ref_id=draft.session_id,
+        payload_json=json.dumps({"action": "expire", "internal": True}),
+        run_at=datetime(2026, 8, 24, 10, 0),
+        created_by_tg_id=9,
+        group_id=-1001,
+        status="pending",
+    ))
+    await session.flush()
     assert await ai_game_service.delete_game(session, draft.session_id)
     assert await session.get(AIGameRewardSettlement, draft.session_id) is None
+    assert not (await session.execute(select(ScheduledTask))).scalars().all()
 
     started = await _create_v2(session, monkeypatch)
     await session.execute(
@@ -264,3 +322,144 @@ async def test_v2_delete_only_allows_drafts_and_finished_games_are_archived(sess
     assert await ai_game_service.archive_game(session, started.session_id)
     assert not await ai_game_service.delete_game(session, started.session_id)
     assert started.session_id not in [row.id for row in await ai_game_service.list_manageable(session)]
+
+
+def _synchronize_start_lifecycle(monkeypatch, sessions) -> None:
+    """Force two real PostgreSQL transactions through the pre-CAS read together."""
+    barrier = asyncio.Barrier(2)
+    for db_session in sessions:
+        original_execute = db_session.execute
+
+        async def execute(statement, *args, _original=original_execute, **kwargs):
+            result = await _original(statement, *args, **kwargs)
+            if getattr(statement, "is_select", False) and "duration_seconds" in str(statement):
+                await barrier.wait()
+            return result
+
+        monkeypatch.setattr(db_session, "execute", execute)
+
+
+@pytest.mark.pg
+async def test_pg_simultaneous_v2_starts_leave_one_timer_and_one_settlement(
+    pg_sessions, monkeypatch,
+):
+    """Without the ready-to-running CAS, two workers could create duplicate timers."""
+    monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    async with pg_sessions() as setup:
+        created = await ai_game_service.create_twenty_questions(
+            setup,
+            creator_tg_id=9,
+            title="Concorrenza",
+            duration_seconds=43_200,
+            expires_at=None,
+            max_coins_per_participant=100,
+            target=TARGET,
+        )
+        await setup.commit()
+
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_start_lifecycle(monkeypatch, (first, second))
+
+        async def run(db_session, group_id):
+            result = await ai_game_service.start(
+                db_session,
+                created.session_id,
+                group_id=group_id,
+                now=datetime(2026, 8, 23, 10, 0),
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.gather(run(first, -1001), run(second, -1002))
+
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(AIGameSession).where(
+            AIGameSession.id == created.session_id,
+        ))).scalar_one()
+        settlement = await observe.get(AIGameRewardSettlement, created.session_id)
+        tasks = list((await observe.execute(select(ScheduledTask).where(
+            ScheduledTask.ref_id == created.session_id,
+        ))).scalars())
+
+    assert sorted(result.started for result in (first_result, second_result)) == [False, True]
+    assert root.status == "running"
+    assert settlement is not None and settlement.status == "pending"
+    assert len(tasks) == 1
+
+
+@pytest.mark.pg
+async def test_pg_start_delete_race_leaves_only_a_complete_v2_outcome(pg_sessions, monkeypatch):
+    """Deleting settlement between a start read and its CAS must never leave a live orphan."""
+    monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    async with pg_sessions() as setup:
+        created = await ai_game_service.create_twenty_questions(
+            setup,
+            creator_tg_id=9,
+            title="Start o elimina",
+            duration_seconds=43_200,
+            expires_at=None,
+            max_coins_per_participant=100,
+            target=TARGET,
+        )
+        await setup.commit()
+
+    settlement_removed = asyncio.Event()
+    start_update_attempted = asyncio.Event()
+    async with pg_sessions() as starter, pg_sessions() as deleter:
+        original_delete_execute = deleter.execute
+
+        async def delete_execute(statement, *args, **kwargs):
+            result = await original_delete_execute(statement, *args, **kwargs)
+            table = getattr(statement, "table", None)
+            if getattr(table, "name", None) == AIGameRewardSettlement.__tablename__:
+                settlement_removed.set()
+                await start_update_attempted.wait()
+            return result
+
+        original_start_execute = starter.execute
+
+        async def start_execute(statement, *args, **kwargs):
+            table = getattr(statement, "table", None)
+            if getattr(statement, "is_update", False) and getattr(table, "name", None) == AIGameSession.__tablename__:
+                start_update_attempted.set()
+            return await original_start_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(deleter, "execute", delete_execute)
+        monkeypatch.setattr(starter, "execute", start_execute)
+
+        async def run_delete():
+            deleted = await ai_game_service.delete_game(deleter, created.session_id)
+            await deleter.commit()
+            return deleted
+
+        async def run_start():
+            await settlement_removed.wait()
+            started = await ai_game_service.start(
+                starter,
+                created.session_id,
+                group_id=-1001,
+                now=datetime(2026, 8, 23, 10, 0),
+            )
+            await starter.commit()
+            return started
+
+        deleted, started = await asyncio.gather(run_delete(), run_start())
+
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(AIGameSession).where(
+            AIGameSession.id == created.session_id,
+        ))).scalar_one_or_none()
+        settlement = await observe.get(AIGameRewardSettlement, created.session_id)
+        tasks = list((await observe.execute(select(ScheduledTask).where(
+            ScheduledTask.ref_id == created.session_id,
+        ))).scalars())
+
+    if root is None:
+        assert deleted and not started.started
+        assert settlement is None and tasks == []
+    else:
+        assert not deleted and started.started and root.status == "running"
+        assert settlement is not None and settlement.status == "pending"
+        assert len(tasks) == 1

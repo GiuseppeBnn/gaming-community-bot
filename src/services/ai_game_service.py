@@ -70,12 +70,20 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def _naive_utc(value: datetime | None) -> datetime | None:
+    """Normalize aware caller values to the database's naive-UTC convention."""
+    if value is None or value.tzinfo is None or value.utcoffset() is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 async def create_twenty_questions(
     session: AsyncSession, *, creator_tg_id: int, title: str,
     duration_seconds: int | None, expires_at: datetime | None,
     max_coins_per_participant: int,
     target: GameDossier | None = None,
 ) -> CreatedGame:
+    expires_at = _naive_utc(expires_at)
     if not settings.twentyq_v2_enabled:
         raise GameCreationError("feature_disabled")
     if (duration_seconds is None) == (expires_at is None):
@@ -344,7 +352,7 @@ async def start(
             session, session_id, group_id=group_id, anchor_message_id=anchor_message_id,
         )
 
-    started_at = now or _now()
+    started_at = _naive_utc(now) or _now()
     if not has_configured_twenty_questions_provider():
         return StartGameResult(False, StartRejectReason.providers_unavailable, None)
 
@@ -364,6 +372,7 @@ async def start(
     if lifecycle is None:
         return StartGameResult(False, StartRejectReason.not_ready, None)
     duration_seconds, absolute_expiry, creator_tg_id = lifecycle
+    absolute_expiry = _naive_utc(absolute_expiry)
     if duration_seconds is None and absolute_expiry is not None and absolute_expiry <= started_at:
         return StartGameResult(False, StartRejectReason.absolute_expiry_elapsed, None)
     if duration_seconds is None and absolute_expiry is None:
@@ -482,6 +491,14 @@ async def archive_game(session: AsyncSession, session_id: int) -> bool:
 
 
 async def delete_game(session: AsyncSession, session_id: int) -> bool:
+    # Lock the aggregate root before touching dependent policy/strategy rows.
+    # PostgreSQL keeps this lock to the caller's commit, serializing a concurrent
+    # v2 start; SQLite's single writer already gives the equivalent test/dev path.
+    await session.execute(
+        select(AIGameSession.id)
+        .where(AIGameSession.id == session_id, AIGameSession.game_type == GAME_TYPE)
+        .with_for_update()
+    )
     v2_eligible = select(AIGameSession.id).join(
         TwentyQuestionsGame,
         TwentyQuestionsGame.session_id == AIGameSession.id,
