@@ -101,6 +101,26 @@ class FakeProvider:
         )
 
 
+class ForgedMetadataProvider(FakeProvider):
+    def __init__(self, name: str, *, raw_provider: str, raw_model: str) -> None:
+        super().__init__(name)
+        self._raw_provider = raw_provider
+        self._raw_model = raw_model
+
+    async def generate_json(
+        self, structured_request: structured_ai.StructuredRequest,
+    ) -> structured_ai.StructuredProviderResult:
+        del structured_request
+        self.calls += 1
+        return structured_ai.StructuredProviderResult(
+            {"verdetto": "si"},
+            cast(structured_ai.ProviderName, self._raw_provider),
+            self._raw_model,
+            ai_budget.UsageMetrics(self._raw_model, 12, 3, 2, 1),
+            17,
+        )
+
+
 def test_attempt_contract_is_immutable_and_prompt_free():
     module = _module()
     record = module.ProviderAttemptRecord(
@@ -311,6 +331,23 @@ async def test_audit_failure_never_replaces_valid_result_or_leaks_exception(
     assert "provider=gemini" in caplog.text
 
 
+async def test_audit_log_allowlists_a_malformed_adapter_provider(structured_request, caplog):
+    module = _module()
+
+    async def broken(_attempt):
+        raise RuntimeError("db unavailable")
+
+    with caplog.at_level(logging.ERROR):
+        await module.StructuredAIRouter(
+            providers=(FakeProvider("gemini\nforged-log-line"),),
+            deadline_seconds=25,
+            recorder=broken,
+        ).generate(structured_request, session_id=7, validate=parse_verdict)
+
+    assert "forged-log-line" not in caplog.text
+    assert "provider=unknown" in caplog.text
+
+
 async def test_audit_failure_does_not_stop_provider_fallback(structured_request):
     module = _module()
 
@@ -331,6 +368,178 @@ async def test_audit_failure_does_not_stop_provider_fallback(structured_request)
 
     assert got.value is Verdict.si
     assert (first.calls, second.calls) == (1, 1)
+
+
+async def test_hanging_audit_cannot_delay_a_valid_result_past_route_deadline(
+    structured_request,
+):
+    module = _module()
+    never = asyncio.Event()
+
+    async def hanging(_attempt):
+        await never.wait()
+
+    got = await asyncio.wait_for(
+        module.StructuredAIRouter(
+            providers=(FakeProvider("gemini"),), deadline_seconds=0.01,
+            recorder=hanging,
+        ).generate(structured_request, session_id=7, validate=parse_verdict),
+        timeout=0.1,
+    )
+
+    assert got.value is Verdict.si
+
+
+async def test_domain_structured_error_retains_raw_usage_without_opening_breaker(
+    structured_request,
+):
+    module = _module()
+    first = FakeProvider("gemini", {"verdetto": "sì"}, {"verdetto": "si"})
+    second = FakeProvider("groq", {"verdetto": "no"})
+
+    def domain_validate(value):
+        if value["verdetto"] == "sì":
+            raise structured_ai.StructuredAIError(
+                "invalid verdict", kind=structured_ai.StructuredAIErrorKind.invalid_enum,
+            )
+        return parse_verdict(value)
+
+    router = module.StructuredAIRouter(
+        providers=(first, second), deadline_seconds=25,
+    )
+    first_result = await router.generate(
+        structured_request, session_id=None, validate=domain_validate, audit=False,
+    )
+    second_result = await router.generate(
+        structured_request, session_id=None, validate=domain_validate, audit=False,
+    )
+
+    assert first_result.attempts[0].outcome == "invalid_enum"
+    assert first_result.attempts[0].usage.prompt_tokens == 12
+    assert first_result.attempts[0].cost_microusd is None
+    assert (first_result.value, second_result.value) == (Verdict.no, Verdict.si)
+    assert (first.calls, second.calls) == (2, 1)
+
+
+async def test_unexpected_validation_structured_error_propagates_without_fallback(
+    structured_request,
+):
+    module = _module()
+    first = FakeProvider("gemini")
+    second = FakeProvider("groq")
+    sentinel = structured_ai.StructuredAIError(
+        "validator infrastructure failure", kind=structured_ai.StructuredAIErrorKind.network,
+    )
+
+    def fail_validation(_value):
+        raise sentinel
+
+    with pytest.raises(structured_ai.StructuredAIError) as raised:
+        await module.StructuredAIRouter(
+            providers=(first, second), deadline_seconds=25,
+        ).generate(structured_request, session_id=None, validate=fail_validation, audit=False)
+
+    assert raised.value is sentinel
+    assert (first.calls, second.calls) == (1, 0)
+
+
+async def test_forged_result_metadata_is_rejected_or_canonicalized_before_audit(
+    structured_request,
+):
+    module = _module()
+    forged = ForgedMetadataProvider(
+        "gemini", raw_provider="openrouter", raw_model="forged\nmodel",
+    )
+    fallback = FakeProvider("groq")
+    recorded = []
+
+    async def record(attempt):
+        recorded.append(attempt)
+
+    got = await module.StructuredAIRouter(
+        providers=(forged, fallback), deadline_seconds=25, recorder=record,
+    ).generate(structured_request, session_id=7, validate=parse_verdict)
+
+    assert got.value is Verdict.si
+    assert (forged.calls, fallback.calls) == (1, 1)
+    assert [(item.provider, item.model) for item in recorded] == [
+        ("gemini", "gemini/test"), ("groq", "groq/test"),
+    ]
+    assert recorded[0].outcome == "invalid_schema"
+
+
+async def test_success_uses_attempted_adapter_metadata_not_raw_model(structured_request):
+    module = _module()
+    provider = ForgedMetadataProvider(
+        "gemini", raw_provider="gemini", raw_model="forged\nmodel",
+    )
+    recorded = []
+
+    async def record(attempt):
+        recorded.append(attempt)
+
+    got = await module.StructuredAIRouter(
+        providers=(provider,), deadline_seconds=25, recorder=record,
+    ).generate(structured_request, session_id=7, validate=parse_verdict)
+
+    assert (got.provider, got.model) == ("gemini", "gemini/test")
+    assert (recorded[0].provider, recorded[0].model) == ("gemini", "gemini/test")
+
+
+async def test_concurrent_breaker_failures_keep_the_longest_open_deadline(
+    structured_request,
+):
+    module = _module()
+    clock = FakeClock()
+
+    class ConcurrentProvider(FakeProvider):
+        def __init__(self):
+            super().__init__("gemini")
+            self.waiters: list[asyncio.Future[BaseException]] = []
+            self.ready = asyncio.Event()
+
+        async def generate_json(self, _request):
+            self.calls += 1
+            if self.calls <= 2:
+                waiter = asyncio.get_running_loop().create_future()
+                self.waiters.append(waiter)
+                if len(self.waiters) == 2:
+                    self.ready.set()
+                raise await waiter
+            return structured_ai.StructuredProviderResult(
+                {"verdetto": "si"}, self.name, self.model,
+                ai_budget.UsageMetrics(), None,
+            )
+
+    provider = ConcurrentProvider()
+    router = module.StructuredAIRouter(
+        providers=(provider,), deadline_seconds=25, clock=clock,
+    )
+    first = asyncio.create_task(router.generate(
+        structured_request, session_id=None, validate=parse_verdict, audit=False,
+    ))
+    second = asyncio.create_task(router.generate(
+        structured_request, session_id=None, validate=parse_verdict, audit=False,
+    ))
+    await provider.ready.wait()
+    provider.waiters[0].set_result(structured_ai.StructuredAIError(
+        "quota", kind=structured_ai.StructuredAIErrorKind.quota,
+    ))
+    await asyncio.sleep(0)
+    clock.advance(1)
+    provider.waiters[1].set_result(structured_ai.StructuredAIError(
+        "network", kind=structured_ai.StructuredAIErrorKind.network,
+    ))
+    await asyncio.gather(first, second, return_exceptions=True)
+    clock.advance(60)
+
+    with pytest.raises(structured_ai.StructuredAIError) as raised:
+        await router.generate(
+            structured_request, session_id=None, validate=parse_verdict, audit=False,
+        )
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.providers_unavailable
+    assert provider.calls == 2
 
 
 async def test_asyncio_timeout_uses_8_8_9_budget_and_deadline_is_typed(
@@ -373,8 +582,8 @@ async def test_asyncio_timeout_uses_8_8_9_budget_and_deadline_is_typed(
 
     assert raised.value.kind is structured_ai.StructuredAIErrorKind.deadline
     assert timeouts == [8, 8, 9]
-    assert [attempt.error_kind for attempt in recorded] == ["timeout"] * 3
-    assert [attempt.latency_ms for attempt in recorded] == [8000, 8000, 9000]
+    assert [attempt.error_kind for attempt in recorded] == ["timeout"] * 2
+    assert [attempt.latency_ms for attempt in recorded] == [8000, 8000]
 
 
 async def test_absolute_deadline_stops_before_next_provider(structured_request):

@@ -43,6 +43,14 @@ _LONG_BREAKER_KINDS = frozenset({
     StructuredAIErrorKind.budget_exhausted,
     StructuredAIErrorKind.budget_unavailable,
 })
+_DOMAIN_VALIDATION_KINDS = frozenset({
+    StructuredAIErrorKind.invalid_schema,
+    StructuredAIErrorKind.invalid_enum,
+})
+_LOGGABLE_PROVIDERS = frozenset({"gemini", "groq", "openrouter"})
+_LOGGABLE_OUTCOMES = frozenset({
+    "success", "failure", "invalid_schema", "invalid_enum", "timeout",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +77,18 @@ class RoutedStructuredResult(Generic[T]):
 
 
 Recorder = Callable[[ProviderAttemptRecord], Awaitable[None]]
+
+
+def _control_safe_metadata(value: str) -> str:
+    return "".join(character for character in value if character.isprintable())
+
+
+def _safe_log_provider(value: str) -> str:
+    return value if value in _LOGGABLE_PROVIDERS else "unknown"
+
+
+def _safe_log_outcome(value: str) -> str:
+    return value if value in _LOGGABLE_OUTCOMES else "failure"
 
 
 def _breaker_delay(error: StructuredAIError) -> float | None:
@@ -103,7 +123,9 @@ class _CircuitBreaker:
     ) -> None:
         delay = _breaker_delay(error)
         if delay is not None:
-            self._open_until[(provider, model)] = self._clock() + delay
+            key = (provider, model)
+            deadline = self._clock() + delay
+            self._open_until[key] = max(self._open_until.get(key, deadline), deadline)
 
 
 async def _default_recorder(record: ProviderAttemptRecord) -> None:
@@ -147,7 +169,7 @@ class StructuredAIRouter:
             session_id=session_id,
             operation=request.operation,
             provider=provider.name,
-            model=provider.model,
+            model=_control_safe_metadata(provider.model),
             prompt_version=request.prompt_version,
             schema_version=request.schema_version,
             outcome="failure",
@@ -161,41 +183,44 @@ class StructuredAIRouter:
         self,
         session_id: int | None,
         request: StructuredRequest,
-        result: StructuredProviderResult,
-        error: TypeError | ValueError,
+        provider: StructuredAIProvider,
+        result: StructuredProviderResult | None,
+        error: StructuredAIError | TypeError | ValueError,
         started: float,
     ) -> ProviderAttemptRecord:
-        kind = (
-            StructuredAIErrorKind.invalid_enum
-            if isinstance(error, ValueError)
-            else StructuredAIErrorKind.invalid_schema
-        )
+        if isinstance(error, StructuredAIError):
+            kind = error.kind
+        elif isinstance(error, ValueError):
+            kind = StructuredAIErrorKind.invalid_enum
+        else:
+            kind = StructuredAIErrorKind.invalid_schema
         return ProviderAttemptRecord(
             session_id=session_id,
             operation=request.operation,
-            provider=result.provider,
-            model=result.model,
+            provider=provider.name,
+            model=_control_safe_metadata(provider.model),
             prompt_version=request.prompt_version,
             schema_version=request.schema_version,
             outcome=kind.value,
             error_kind=kind.value,
             latency_ms=self._latency_ms(started, self._clock()),
-            usage=result.usage,
-            cost_microusd=result.cost_microusd,
+            usage=result.usage if result is not None else ai_budget.UsageMetrics(),
+            cost_microusd=result.cost_microusd if result is not None else None,
         )
 
     def _success_record(
         self,
         session_id: int | None,
         request: StructuredRequest,
+        provider: StructuredAIProvider,
         result: StructuredProviderResult,
         started: float,
     ) -> ProviderAttemptRecord:
         return ProviderAttemptRecord(
             session_id=session_id,
             operation=request.operation,
-            provider=result.provider,
-            model=result.model,
+            provider=provider.name,
+            model=_control_safe_metadata(provider.model),
             prompt_version=request.prompt_version,
             schema_version=request.schema_version,
             outcome="success",
@@ -206,18 +231,21 @@ class StructuredAIRouter:
         )
 
     async def _record_best_effort(
-        self, record: ProviderAttemptRecord, *, enabled: bool,
+        self, record: ProviderAttemptRecord, *, enabled: bool, remaining: float,
     ) -> None:
-        if not enabled:
+        if not enabled or remaining <= 0:
             return
         try:
-            await self._recorder(record)
+            await asyncio.wait_for(self._recorder(record), timeout=remaining)
         except Exception:
             log.error(
                 "Structured AI audit failed provider=%s outcome=%s",
-                record.provider,
-                record.outcome,
+                _safe_log_provider(record.provider),
+                _safe_log_outcome(record.outcome),
             )
+
+    def _remaining(self, route_started: float) -> float:
+        return self._deadline_seconds - (self._clock() - route_started)
 
     async def generate(
         self,
@@ -234,7 +262,7 @@ class StructuredAIRouter:
                 continue
             if self._breaker.is_open(provider.name, provider.model):
                 continue
-            remaining = self._deadline_seconds - (self._clock() - route_started)
+            remaining = self._remaining(route_started)
             if remaining <= 0:
                 raise StructuredAIError(
                     "structured provider deadline exhausted",
@@ -255,7 +283,9 @@ class StructuredAIRouter:
                 )
                 attempts.append(record)
                 self._breaker.observe(provider.name, provider.model, error)
-                await self._record_best_effort(record, enabled=audit)
+                await self._record_best_effort(
+                    record, enabled=audit, remaining=self._remaining(route_started),
+                )
                 continue
             except StructuredAIError as error:
                 record = self._failed_record(
@@ -263,32 +293,56 @@ class StructuredAIRouter:
                 )
                 attempts.append(record)
                 self._breaker.observe(provider.name, provider.model, error)
-                await self._record_best_effort(record, enabled=audit)
+                await self._record_best_effort(
+                    record, enabled=audit, remaining=self._remaining(route_started),
+                )
+                continue
+            if raw.provider != provider.name:
+                attribution_error = StructuredAIError(
+                    "structured provider result attribution mismatch",
+                    kind=StructuredAIErrorKind.invalid_schema,
+                    provider=provider.name,
+                )
+                record = self._invalid_record(
+                    session_id, request, provider, None, attribution_error,
+                    attempt_started,
+                )
+                attempts.append(record)
+                await self._record_best_effort(
+                    record, enabled=audit, remaining=self._remaining(route_started),
+                )
                 continue
             try:
                 value = validate(raw.value)
             except StructuredAIError as error:
-                record = self._failed_record(
-                    session_id, request, provider, error, attempt_started,
+                if error.kind not in _DOMAIN_VALIDATION_KINDS:
+                    raise
+                record = self._invalid_record(
+                    session_id, request, provider, raw, error, attempt_started,
                 )
                 attempts.append(record)
-                self._breaker.observe(provider.name, provider.model, error)
-                await self._record_best_effort(record, enabled=audit)
+                await self._record_best_effort(
+                    record, enabled=audit, remaining=self._remaining(route_started),
+                )
                 continue
             except (TypeError, ValueError) as error:
                 record = self._invalid_record(
-                    session_id, request, raw, error, attempt_started,
+                    session_id, request, provider, raw, error, attempt_started,
                 )
                 attempts.append(record)
-                await self._record_best_effort(record, enabled=audit)
+                await self._record_best_effort(
+                    record, enabled=audit, remaining=self._remaining(route_started),
+                )
                 continue
             record = self._success_record(
-                session_id, request, raw, attempt_started,
+                session_id, request, provider, raw, attempt_started,
             )
             attempts.append(record)
-            await self._record_best_effort(record, enabled=audit)
+            await self._record_best_effort(
+                record, enabled=audit, remaining=self._remaining(route_started),
+            )
             return RoutedStructuredResult(
-                value, raw.provider, raw.model, tuple(attempts),
+                value, provider.name, _control_safe_metadata(provider.model), tuple(attempts),
             )
         if self._clock() - route_started >= self._deadline_seconds:
             raise StructuredAIError(

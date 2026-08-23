@@ -122,13 +122,35 @@ async def test_recorder_truncates_strings_and_bounds_db_numeric_types(engine, mo
     assert (
         len(attempt.operation), len(attempt.model), len(attempt.prompt_version),
         len(attempt.schema_version), len(attempt.outcome), len(attempt.error_class),
-    ) == (32, 128, 32, 32, 16, 128)
+    ) == (32, 128, 32, 32, 7, 128)
     assert attempt.latency_ms == maximum
     assert attempt.prompt_tokens is None
-    assert attempt.completion_tokens == 0
+    assert attempt.completion_tokens is None
     assert attempt.reasoning_tokens == maximum
     assert attempt.cached_tokens == 5
-    assert attempt.cost_microusd == 0
+    assert attempt.cost_microusd is None
+
+
+async def test_recorder_maps_negative_and_non_integer_measurements_to_none(
+    engine, monkeypatch,
+):
+    audit, router = _modules()
+    factory = _factory(engine)
+    monkeypatch.setattr(audit, "async_session_maker", factory)
+    game_id = await _game_id(factory)
+    record = _record(
+        router, game_id, latency_ms=-1,
+        usage=ai_budget.UsageMetrics("ignored", 1.5, -2, True, 3),
+        cost_microusd=4.5,
+    )
+    await audit.record_provider_attempt(record)
+
+    async with factory() as reader:
+        attempt = (await reader.execute(select(AIGameProviderAttempt))).scalar_one()
+    assert (
+        attempt.latency_ms, attempt.prompt_tokens, attempt.completion_tokens,
+        attempt.reasoning_tokens, attempt.cached_tokens, attempt.cost_microusd,
+    ) == (None, None, None, None, 3, None)
 
 
 async def test_each_recorder_call_creates_exactly_one_row(engine, monkeypatch):
