@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
     twentyq_provider_order: str = "gemini,groq,openrouter"
     twentyq_provider_deadline_seconds: int = Field(default=25, ge=1)
+    # Bounded, local history sent with one secret-game question. These limits cap
+    # both the number of projected turns and the serialized UTF-8 context size.
+    twentyq_context_turns: int = Field(default=24, ge=1, le=96)
+    twentyq_context_chars: int = Field(default=12_000, ge=1_000, le=30_000)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"

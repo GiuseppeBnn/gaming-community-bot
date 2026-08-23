@@ -344,3 +344,23 @@ class TestTwentyQuestionsProviderSettings:
                 twentyq_provider_deadline_seconds=0,
             )
         assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+
+class TestTwentyQuestionsContextSettings:
+    def test_context_limits_have_safe_defaults_and_reject_out_of_range_values(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+        assert configured.twentyq_context_turns == 24
+        assert configured.twentyq_context_chars == 12_000
+
+        for field, value in (
+            ("twentyq_context_turns", 0),
+            ("twentyq_context_turns", 97),
+            ("twentyq_context_chars", 999),
+            ("twentyq_context_chars", 30_001),
+        ):
+            with pytest.raises(ValidationError):
+                Settings(bot_token="x", _env_file=None, **{field: value})  # type: ignore[call-arg]
