@@ -10,6 +10,7 @@ from enum import Enum
 import json
 import logging
 import math
+import re
 from typing import Any, Literal, Protocol, overload
 
 import aiohttp
@@ -24,6 +25,26 @@ GROQ_URL = ai_service.GROQ_URL
 ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 ProviderName = Literal["gemini", "groq", "openrouter"]
 _DEFAULT_GEMINI_THINKING_LEVEL: ThinkingLevel = "medium"
+_SAFE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}\Z")
+_SAFE_FINISH_REASONS = frozenset({
+    "BLOCKLIST",
+    "IMAGE_SAFETY",
+    "LANGUAGE",
+    "MAX_TOKENS",
+    "OTHER",
+    "PROHIBITED_CONTENT",
+    "RECITATION",
+    "SAFETY",
+    "SPII",
+    "STOP",
+    "content_filter",
+    "length",
+    "max_tokens",
+    "refusal",
+    "safety",
+    "stop",
+    "tool_calls",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,9 +321,27 @@ def _validated_value(
 def _safe_model(data: Any, fallback: str, *, key: str = "model") -> str:
     if isinstance(data, dict):
         actual = data.get(key)
-        if isinstance(actual, str) and actual:
+        if isinstance(actual, str) and _SAFE_MODEL.fullmatch(actual) is not None:
             return actual
     return fallback
+
+
+def _safe_finish_reason(value: Any) -> str | None:
+    if value is None:
+        return None
+    return value if isinstance(value, str) and value in _SAFE_FINISH_REASONS else "unknown"
+
+
+def _metrics_for_model(
+    metrics: ai_budget.UsageMetrics, model: str,
+) -> ai_budget.UsageMetrics:
+    return ai_budget.UsageMetrics(
+        actual_model=model,
+        prompt_tokens=metrics.prompt_tokens,
+        completion_tokens=metrics.completion_tokens,
+        reasoning_tokens=metrics.reasoning_tokens,
+        cached_tokens=metrics.cached_tokens,
+    )
 
 
 def _openai_finish_reason(data: Any) -> str | None:
@@ -381,7 +420,7 @@ def _log_output_failure(
         "prompt_tokens=%s output_tokens=%s reasoning_tokens=%s kind=%s",
         provider,
         model,
-        finish_reason,
+        _safe_finish_reason(finish_reason),
         metrics.prompt_tokens,
         metrics.completion_tokens,
         metrics.reasoning_tokens,
@@ -505,6 +544,17 @@ class GeminiStructuredProvider:
                     kind=StructuredAIErrorKind.malformed_json,
                     provider=self.name,
                 )
+            prompt_feedback = data.get("promptFeedback")
+            if (
+                isinstance(prompt_feedback, dict)
+                and isinstance(prompt_feedback.get("blockReason"), str)
+                and prompt_feedback["blockReason"]
+            ):
+                raise StructuredAIError(
+                    "provider refusal",
+                    kind=StructuredAIErrorKind.refusal,
+                    provider=self.name,
+                )
             candidates = data.get("candidates")
             if (
                 not isinstance(candidates, list)
@@ -526,7 +576,14 @@ class GeminiStructuredProvider:
                     provider=self.name,
                 )
             if finish_reason in {
-                "SAFETY", "BLOCKLIST", "PROHIBITED_CONTENT", "RECITATION", "SPII",
+                "SAFETY",
+                "BLOCKLIST",
+                "PROHIBITED_CONTENT",
+                "RECITATION",
+                "SPII",
+                "LANGUAGE",
+                "IMAGE_SAFETY",
+                "OTHER",
             }:
                 raise StructuredAIError(
                     "provider refusal",
@@ -554,7 +611,7 @@ class GeminiStructuredProvider:
         except StructuredAIError as exc:
             _log_output_failure(
                 provider=self.name,
-                model=model,
+                model=self.model,
                 finish_reason=finish_reason,
                 metrics=metrics,
                 kind=exc.kind,
@@ -618,12 +675,13 @@ class GroqStructuredProvider:
         )
         model = _safe_model(data, self.model)
         metrics, _cost = ai_service._openrouter_usage(data)
+        metrics = _metrics_for_model(metrics, model)
         try:
             value = _openai_value(data, request=request, provider=self.name)
         except StructuredAIError as exc:
             _log_output_failure(
                 provider=self.name,
-                model=model,
+                model=self.model,
                 finish_reason=_openai_finish_reason(data),
                 metrics=metrics,
                 kind=exc.kind,
@@ -639,14 +697,30 @@ async def _settle_openrouter_authoritatively(
     actual_microusd: int | None,
     metrics: ai_budget.UsageMetrics,
 ) -> None:
+    settlement = asyncio.create_task(ai_budget.settle(
+        reservation,
+        status=status,
+        actual_microusd=actual_microusd,
+        metrics=metrics,
+    ))
     try:
-        await ai_budget.settle(
-            reservation,
-            status=status,
-            actual_microusd=actual_microusd,
-            metrics=metrics,
-        )
-    except ai_budget.AIBudgetError as exc:
+        await asyncio.shield(settlement)
+    except asyncio.CancelledError:
+        while not settlement.done():
+            try:
+                await asyncio.shield(settlement)
+            except asyncio.CancelledError:
+                continue
+        try:
+            settlement.result()
+        except (Exception, asyncio.CancelledError):
+            log.error(
+                "Structured OpenRouter settlement failed during cancellation "
+                "provider=openrouter status=%s",
+                status,
+            )
+        raise
+    except Exception as exc:
         log.error(
             "Structured OpenRouter settlement failed provider=openrouter status=%s",
             status,
@@ -743,17 +817,14 @@ class OpenRouterStructuredProvider:
             )
         except asyncio.CancelledError:
             try:
-                await ai_budget.settle(
+                await _settle_openrouter_authoritatively(
                     reservation,
                     status="uncertain",
                     actual_microusd=None,
                     metrics=ai_budget.UsageMetrics(),
                 )
-            except ai_budget.AIBudgetError:
-                log.error(
-                    "Structured OpenRouter settlement failed during cancellation "
-                    "provider=openrouter status=uncertain",
-                )
+            except StructuredAIError:
+                pass
             raise
         except StructuredAIError as exc:
             known_http_failure = exc.status is not None and exc.status != 200
@@ -769,15 +840,31 @@ class OpenRouterStructuredProvider:
                 metrics=ai_budget.UsageMetrics(),
             )
             raise
+        except Exception as exc:
+            await _settle_openrouter_authoritatively(
+                reservation,
+                status="malformed",
+                actual_microusd=None,
+                metrics=ai_budget.UsageMetrics(),
+            )
+            raise StructuredAIError(
+                "malformed OpenRouter provider envelope",
+                kind=StructuredAIErrorKind.malformed_json,
+                provider=self.name,
+            ) from exc
 
-        metrics, actual_microusd = ai_service._openrouter_usage(data)
-        model = _safe_model(data, self.model)
+        metrics = ai_budget.UsageMetrics()
+        actual_microusd: int | None = None
+        model = self.model
         try:
+            metrics, actual_microusd = ai_service._openrouter_usage(data)
+            model = _safe_model(data, self.model)
+            metrics = _metrics_for_model(metrics, model)
             value = _openai_value(data, request=request, provider=self.name)
         except StructuredAIError as exc:
             _log_output_failure(
                 provider=self.name,
-                model=model,
+                model=self.model,
                 finish_reason=_openai_finish_reason(data),
                 metrics=metrics,
                 kind=exc.kind,
@@ -789,6 +876,18 @@ class OpenRouterStructuredProvider:
                 metrics=metrics,
             )
             raise
+        except Exception as exc:
+            await _settle_openrouter_authoritatively(
+                reservation,
+                status="malformed",
+                actual_microusd=None,
+                metrics=ai_budget.UsageMetrics(),
+            )
+            raise StructuredAIError(
+                "malformed OpenRouter accounting metadata",
+                kind=StructuredAIErrorKind.malformed_json,
+                provider=self.name,
+            ) from exc
         await _settle_openrouter_authoritatively(
             reservation,
             status="completed",

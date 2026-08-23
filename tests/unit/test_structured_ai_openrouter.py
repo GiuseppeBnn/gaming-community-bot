@@ -391,3 +391,123 @@ async def test_openrouter_never_trusts_invalid_token_counters(
     assert result.usage == ai_budget.UsageMetrics(
         "deepseek/deepseek-v4-flash-0731", None, None, None, 3,
     )
+
+
+@pytest.mark.parametrize("cost", ["1e999999999", "9223372036854.775808"])
+async def test_openrouter_extreme_usage_settles_conservatively_once(
+    openrouter, structured_request, cost,
+):
+    response = _response(cost=cost)
+    response["usage"].update({
+        "prompt_tokens": 2**31,
+        "completion_tokens": 2**63,
+        "reasoning_tokens": 10**100,
+        "prompt_tokens_details": {"cached_tokens": 2**31},
+    })
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=response)
+        result = await structured_ai.OpenRouterStructuredProvider().generate_json(
+            structured_request,
+        )
+
+    assert result.cost_microusd is None
+    assert result.usage == ai_budget.UsageMetrics(
+        "deepseek/deepseek-v4-flash-0731",
+    )
+    assert openrouter.settlements == [{
+        "status": "completed",
+        "actual_microusd": None,
+        "metrics": result.usage,
+    }]
+
+
+async def test_openrouter_unexpected_post_reservation_parse_failure_is_settled(
+    monkeypatch, openrouter, structured_request,
+):
+    def broken_usage(_data):
+        raise RuntimeError("provider-number-parser-failed")
+
+    monkeypatch.setattr(structured_ai.ai_service, "_openrouter_usage", broken_usage)
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await structured_ai.OpenRouterStructuredProvider().generate_json(
+                structured_request,
+            )
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.malformed_json
+    assert openrouter.settlements == [{
+        "status": "malformed",
+        "actual_microusd": None,
+        "metrics": ai_budget.UsageMetrics(),
+    }]
+
+
+async def test_openrouter_unexpected_envelope_parse_failure_is_settled(
+    monkeypatch, openrouter, structured_request,
+):
+    async def broken_post(**_kwargs):
+        raise OverflowError("provider-envelope-parser-failed")
+
+    monkeypatch.setattr(structured_ai, "_post_json_once", broken_post)
+    with pytest.raises(structured_ai.StructuredAIError) as raised:
+        await structured_ai.OpenRouterStructuredProvider().generate_json(
+            structured_request,
+        )
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.malformed_json
+    assert openrouter.settlements == [{
+        "status": "malformed",
+        "actual_microusd": None,
+        "metrics": ai_budget.UsageMetrics(),
+    }]
+
+
+async def test_openrouter_cancellation_waits_for_pending_settlement(
+    monkeypatch, openrouter, structured_request,
+):
+    settlement_started = asyncio.Event()
+    release_settlement = asyncio.Event()
+    settlement_events: list[str] = []
+
+    async def blocking_settle(_reservation, **_kwargs):
+        settlement_events.append("started")
+        settlement_started.set()
+        await release_settlement.wait()
+        settlement_events.append("completed")
+
+    monkeypatch.setattr(structured_ai.ai_budget, "settle", blocking_settle)
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        task = asyncio.create_task(
+            structured_ai.OpenRouterStructuredProvider().generate_json(
+                structured_request,
+            ),
+        )
+        await settlement_started.wait()
+        task.cancel()
+        asyncio.get_running_loop().call_soon(release_settlement.set)
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert settlement_events == ["started", "completed"]
+
+
+async def test_openrouter_provider_model_is_safe_in_result_and_settlement(
+    openrouter, structured_request,
+):
+    response = _response()
+    response["model"] = "provider-model-secret\nforged-log-line"
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=response)
+        result = await structured_ai.OpenRouterStructuredProvider().generate_json(
+            structured_request,
+        )
+
+    assert result.model == "deepseek/deepseek-v4-flash-0731"
+    assert result.usage.actual_model == "deepseek/deepseek-v4-flash-0731"
+    assert openrouter.settlements == [{
+        "status": "completed",
+        "actual_microusd": 1,
+        "metrics": result.usage,
+    }]

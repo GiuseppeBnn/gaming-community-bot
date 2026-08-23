@@ -220,3 +220,19 @@ def test_invalid_model_and_usage_shapes_are_safe():
     })
     assert metrics == ai_budget.UsageMetrics()
     assert cost is None
+
+
+@pytest.mark.parametrize("raw_cost", ["1e999999999", "9223372036854.775808"])
+def test_usage_rejects_values_that_cannot_fit_accounting_columns(raw_cost):
+    metrics, cost = ai_service._openrouter_usage({
+        "usage": {
+            "cost": raw_cost,
+            "prompt_tokens": 2**31,
+            "completion_tokens": 2**63,
+            "reasoning_tokens": 10**100,
+            "prompt_tokens_details": {"cached_tokens": 2**31},
+        },
+    })
+
+    assert metrics == ai_budget.UsageMetrics()
+    assert cost is None

@@ -14,7 +14,7 @@ and user prompts.
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, DecimalException, ROUND_CEILING
 import json
 import logging
 import re
@@ -34,6 +34,8 @@ AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 _TEMPERATURE = 0.9
 _DEFAULT_MAX_TOKENS = 300
+_MAX_DB_INTEGER = 2_147_483_647
+_MAX_DB_BIGINT = 9_223_372_036_854_775_807
 
 #: A hybrid-reasoning model writes its chain of thought INSIDE `content` when the
 #: reasoning switch is off — unlike `openai/gpt-oss-*`, which puts it in a field
@@ -57,7 +59,15 @@ def parse_model_list(raw: str) -> tuple[str, ...]:
 
 
 def _usage_int(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return (
+        value
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_DB_INTEGER
+        )
+        else None
+    )
 
 
 def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
@@ -85,11 +95,13 @@ def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
     try:
         cost = Decimal(str(usage["cost"]))
         if not cost.is_finite() or cost < 0:
-            raise InvalidOperation
-    except (KeyError, InvalidOperation, ValueError):
+            return metrics, None
+        microusd = int(
+            (cost * Decimal("1000000")).to_integral_value(rounding=ROUND_CEILING),
+        )
+    except (KeyError, DecimalException, OverflowError, ValueError):
         return metrics, None
-    microusd = int((cost * Decimal("1000000")).to_integral_value(rounding=ROUND_CEILING))
-    return metrics, microusd
+    return metrics, microusd if microusd <= _MAX_DB_BIGINT else None
 
 
 def _openrouter_provider_policy(

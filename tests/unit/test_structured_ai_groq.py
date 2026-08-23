@@ -220,6 +220,50 @@ async def test_groq_rejects_untrusted_usage_values(groq, structured_request):
     assert result.usage == ai_budget.UsageMetrics("groq-test-actual", None, None, None, 0)
 
 
+async def test_groq_extreme_usage_never_leaks_numeric_errors(groq, structured_request):
+    response = _response()
+    response["usage"] = {
+        "cost": "1e999999999",
+        "prompt_tokens": 2**31,
+        "completion_tokens": 2**63,
+        "reasoning_tokens": 10**100,
+        "prompt_tokens_details": {"cached_tokens": 2**31},
+    }
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.GROQ_URL, payload=response)
+        result = await groq.generate_json(structured_request)
+
+    assert result.usage == ai_budget.UsageMetrics("groq-test-actual")
+
+
+async def test_groq_provider_metadata_is_bounded_and_logs_requested_model_only(
+    groq, structured_request, caplog,
+):
+    model_secret = "provider-model-secret\nforged-log-line"
+    finish_secret = "provider-finish-secret\nforged-finish-line"
+    response = _response("not-json", finish_reason=finish_secret)
+    response["model"] = model_secret
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.GROQ_URL, payload=response)
+        with caplog.at_level("WARNING"), pytest.raises(structured_ai.StructuredAIError):
+            await groq.generate_json(structured_request)
+
+    assert model_secret not in caplog.text
+    assert finish_secret not in caplog.text
+    assert "forged-log-line" not in caplog.text
+    assert "forged-finish-line" not in caplog.text
+    assert "model=groq-test" in caplog.text
+    assert "finish_reason=unknown" in caplog.text
+
+    valid = _response()
+    valid["model"] = "x" * 129
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.GROQ_URL, payload=valid)
+        result = await groq.generate_json(structured_request)
+    assert result.model == "groq-test"
+    assert result.usage.actual_model == "groq-test"
+
+
 async def test_textual_groq_never_logs_provider_error_body(monkeypatch, caplog):
     secret = "textual-provider-secret-body"
     monkeypatch.setattr(ai_service.settings, "groq_api_key", "test-key")

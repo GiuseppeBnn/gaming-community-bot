@@ -334,6 +334,72 @@ async def test_gemini_normalizes_output_failures(
     assert raised.value.kind.value == kind
 
 
+async def test_gemini_prompt_feedback_without_candidates_is_refusal_and_private(
+    gemini, structured_request, caplog,
+):
+    feedback_secret = "feedback-secret-must-not-be-logged"
+    response = {
+        "modelVersion": "gemini-test-actual",
+        "promptFeedback": {
+            "blockReason": "SAFETY",
+            "blockReasonMessage": feedback_secret,
+        },
+        "candidates": [],
+    }
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=response)
+        with caplog.at_level("WARNING"), pytest.raises(
+            structured_ai.StructuredAIError,
+        ) as raised:
+            await gemini.generate_json(structured_request)
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.refusal
+    assert feedback_secret not in caplog.text
+
+
+@pytest.mark.parametrize("finish_reason", ["LANGUAGE", "IMAGE_SAFETY", "OTHER"])
+async def test_gemini_real_refusal_finish_reasons(
+    gemini, structured_request, finish_reason,
+):
+    with aioresponses() as mocked:
+        mocked.post(
+            _url(),
+            payload=_response('{"verdetto":"si"}', finish_reason=finish_reason),
+        )
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await gemini.generate_json(structured_request)
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.refusal
+
+
+async def test_gemini_provider_metadata_is_bounded_and_logs_requested_model_only(
+    gemini, structured_request, caplog,
+):
+    model_secret = "provider-model-secret\nforged-log-line"
+    finish_secret = "provider-finish-secret\nforged-finish-line"
+    response = _response("not-json", finish_reason=finish_secret)
+    response["modelVersion"] = model_secret
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=response)
+        with caplog.at_level("WARNING"), pytest.raises(structured_ai.StructuredAIError):
+            await gemini.generate_json(structured_request)
+
+    assert model_secret not in caplog.text
+    assert finish_secret not in caplog.text
+    assert "forged-log-line" not in caplog.text
+    assert "forged-finish-line" not in caplog.text
+    assert "model=gemini-test" in caplog.text
+    assert "finish_reason=unknown" in caplog.text
+
+    valid = _response()
+    valid["modelVersion"] = "x" * 129
+    with aioresponses() as mocked:
+        mocked.post(_url(), payload=valid)
+        result = await gemini.generate_json(structured_request)
+    assert result.model == "gemini-test"
+    assert result.usage.actual_model == "gemini-test"
+
+
 async def test_gemini_malformed_envelope_logs_only_safe_metadata(
     gemini, structured_request, caplog,
 ):
@@ -356,7 +422,8 @@ async def test_gemini_malformed_envelope_logs_only_safe_metadata(
     assert partial not in caplog.text
     assert structured_request.system_prompt not in caplog.text
     assert structured_request.user_prompt not in caplog.text
-    assert "gemini-test-actual" in caplog.text
+    assert "model=gemini-test " in caplog.text
+    assert "gemini-test-actual" not in caplog.text
     assert "MAX_TOKENS" in caplog.text
     assert "241" in caplog.text
 
