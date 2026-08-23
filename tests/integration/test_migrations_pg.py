@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 import database.connection as conn_mod
 
@@ -39,6 +40,82 @@ async def _columns(engine, table: str) -> dict[str, dict]:
 async def _run_migrations(engine, monkeypatch) -> None:
     monkeypatch.setattr(conn_mod, "engine", engine)
     await conn_mod.run_migrations()
+
+
+async def _restore_pre_v2_alduino_schema(engine) -> None:
+    """Make the v2 test schema match the deployed Alduino v1 tables."""
+    statements = (
+        "DROP INDEX IF EXISTS ix_ai_game_turn_quota",
+        "DROP INDEX IF EXISTS uq_ai_game_turn_normalized",
+        "ALTER TABLE ai_game_sessions DROP COLUMN duration_seconds",
+        "ALTER TABLE ai_game_sessions DROP COLUMN expires_at",
+        "ALTER TABLE ai_game_sessions DROP COLUMN finish_reason",
+        "ALTER TABLE ai_game_sessions DROP COLUMN archived_at",
+        "ALTER TABLE ai_game_sessions DROP COLUMN pending_user_tg_id",
+        "ALTER TABLE ai_game_sessions DROP COLUMN pending_kind",
+        "ALTER TABLE ai_game_turns DROP COLUMN normalized_input_hash",
+        "ALTER TABLE twenty_questions_games DROP COLUMN rules_version",
+        "ALTER TABLE twenty_questions_games DROP COLUMN questions_per_user",
+        "ALTER TABLE twenty_questions_games DROP COLUMN guesses_per_user",
+        "ALTER TABLE twenty_questions_games ALTER COLUMN question_limit SET NOT NULL",
+        "ALTER TABLE twenty_questions_games ALTER COLUMN guess_limit SET NOT NULL",
+        "ALTER TABLE scheduled_tasks DROP COLUMN retry_count",
+    )
+    async with engine.begin() as conn:
+        for statement in statements:
+            await conn.execute(text(statement))
+
+
+async def _seed_pre_v2_twenty_questions(pg_session) -> tuple[int, int, int]:
+    """Insert ready, running, and finished v1 games with their 20/3 snapshots."""
+    session_ids = []
+    for status, title in (
+        ("ready", "Legacy ready"),
+        ("running", "Legacy running"),
+        ("finished", "Legacy finished"),
+    ):
+        session_ids.append(
+            (
+                await pg_session.execute(
+                    text(
+                        "INSERT INTO ai_game_sessions "
+                        "(game_type, title, creator_tg_id, status, next_turn_no) "
+                        "VALUES ('twentyq', :title, 1, :status, 1) RETURNING id"
+                    ),
+                    {"status": status, "title": title},
+                )
+            ).scalar_one()
+        )
+
+    for session_id, questions_used, guesses_used in zip(
+        session_ids, (0, 7, 20), (0, 1, 3), strict=True
+    ):
+        await pg_session.execute(
+            text(
+                "INSERT INTO twenty_questions_games "
+                "(session_id, catalog_key, answer, aliases_json, dossier_json, "
+                "question_limit, guess_limit, questions_used, guesses_used) "
+                "VALUES (:session_id, :catalog_key, 'Alduino', '[]', '{}', 20, 3, "
+                ":questions_used, :guesses_used)"
+            ),
+            {
+                "session_id": session_id,
+                "catalog_key": f"legacy-{session_id}",
+                "questions_used": questions_used,
+                "guesses_used": guesses_used,
+            },
+        )
+
+    await pg_session.execute(
+        text(
+            "INSERT INTO scheduled_tasks "
+            "(task_type, ref_id, run_at, status, created_by_tg_id) "
+            "VALUES ('twentyq', :session_id, CURRENT_TIMESTAMP, 'pending', 1)"
+        ),
+        {"session_id": session_ids[0]},
+    )
+    await pg_session.commit()
+    return tuple(session_ids)
 
 
 # Raw SQL on purpose: the ORM would fill in its Python-side defaults and hide the
@@ -148,8 +225,8 @@ class TestMigrationsRepairAnOldDeploy:
             task_id = (
                 await conn.execute(text(
                     "INSERT INTO scheduled_tasks "
-                    "(task_type, ref_id, run_at, status, created_by_tg_id) "
-                    "VALUES ('raid', :game_id, CURRENT_TIMESTAMP, 'pending', 9) RETURNING id"
+                    "(task_type, ref_id, run_at, status, created_by_tg_id, retry_count) "
+                    "VALUES ('raid', :game_id, CURRENT_TIMESTAMP, 'pending', 9, 0) RETURNING id"
                 ), {"game_id": game_id})
             ).scalar_one()
 
@@ -257,6 +334,137 @@ class TestMigrationsRepairAnOldDeploy:
                 await conn.execute(text("SELECT xp FROM users WHERE tg_id = 8"))
             ).scalar_one()
         assert stored == big
+
+
+class TestAlduinoV2Migration:
+    async def test_upgrades_v1_games_without_changing_legacy_state(
+        self, pg_engine, pg_session, monkeypatch
+    ):
+        await _restore_pre_v2_alduino_schema(pg_engine)
+        await _seed_pre_v2_twenty_questions(pg_session)
+
+        await _run_migrations(pg_engine, monkeypatch)
+        await _run_migrations(pg_engine, monkeypatch)
+
+        rows = (
+            await pg_session.execute(
+                text(
+                    """
+                    SELECT s.status, s.expires_at, s.finish_reason,
+                           g.rules_version, g.question_limit, g.guess_limit
+                    FROM ai_game_sessions AS s
+                    JOIN twenty_questions_games AS g ON g.session_id = s.id
+                    WHERE s.game_type = 'twentyq'
+                    ORDER BY s.status
+                    """
+                )
+            )
+        ).all()
+        assert {(row.status, row.finish_reason) for row in rows} == {
+            ("ready", None),
+            ("running", None),
+            ("finished", "legacy"),
+        }
+        assert all(row.expires_at is None for row in rows)
+        assert all(
+            (row.rules_version, row.question_limit, row.guess_limit) == (1, 20, 3)
+            for row in rows
+        )
+        assert (
+            await pg_session.execute(text("SELECT count(*) FROM ai_game_reward_settlements"))
+        ).scalar_one() == 0
+
+        sessions = await _columns(pg_engine, "ai_game_sessions")
+        turns = await _columns(pg_engine, "ai_game_turns")
+        games = await _columns(pg_engine, "twenty_questions_games")
+        tasks = await _columns(pg_engine, "scheduled_tasks")
+        assert {
+            "duration_seconds",
+            "expires_at",
+            "finish_reason",
+            "archived_at",
+            "pending_user_tg_id",
+            "pending_kind",
+        } <= sessions.keys()
+        assert all(
+            sessions[column]["nullable"]
+            for column in (
+                "duration_seconds",
+                "expires_at",
+                "finish_reason",
+                "archived_at",
+                "pending_user_tg_id",
+                "pending_kind",
+            )
+        )
+        assert turns["normalized_input_hash"] == {
+            "default": None,
+            "nullable": True,
+            "type": "character",
+        }
+        assert games["rules_version"]["nullable"] is False
+        assert "1" in games["rules_version"]["default"]
+        assert games["questions_per_user"]["nullable"] is True
+        assert games["guesses_per_user"]["nullable"] is True
+        assert games["question_limit"]["nullable"] is True
+        assert games["guess_limit"]["nullable"] is True
+        assert tasks["retry_count"]["nullable"] is False
+        assert "0" in tasks["retry_count"]["default"]
+        assert (
+            await pg_session.execute(text("SELECT retry_count FROM scheduled_tasks"))
+        ).scalar_one() == 0
+
+        async with pg_engine.connect() as conn:
+            index_names = {
+                row.indexname
+                for row in (
+                    await conn.execute(
+                        text("SELECT indexname FROM pg_indexes WHERE tablename = 'ai_game_turns'")
+                    )
+                ).all()
+            }
+        assert {"ix_ai_game_turn_quota", "uq_ai_game_turn_normalized"} <= index_names
+
+    async def test_unique_normalized_hash_allows_legacy_nulls(
+        self, pg_engine, pg_session, monkeypatch
+    ):
+        await _restore_pre_v2_alduino_schema(pg_engine)
+        (session_id, _, _) = await _seed_pre_v2_twenty_questions(pg_session)
+
+        await _run_migrations(pg_engine, monkeypatch)
+
+        for turn_no in (1, 2):
+            await pg_session.execute(
+                text(
+                    "INSERT INTO ai_game_turns "
+                    "(session_id, turn_no, user_tg_id, kind, input_text, output_json, "
+                    "normalized_input_hash) "
+                    "VALUES (:session_id, :turn_no, 1, 'question', 'legacy', '{}', NULL)"
+                ),
+                {"session_id": session_id, "turn_no": turn_no},
+            )
+        await pg_session.execute(
+            text(
+                "INSERT INTO ai_game_turns "
+                "(session_id, turn_no, user_tg_id, kind, input_text, output_json, "
+                "normalized_input_hash) "
+                "VALUES (:session_id, 3, 1, 'question', 'new', '{}', :hash)"
+            ),
+            {"session_id": session_id, "hash": "a" * 64},
+        )
+        await pg_session.commit()
+
+        with pytest.raises(IntegrityError, match="uq_ai_game_turn_normalized"):
+            await pg_session.execute(
+                text(
+                    "INSERT INTO ai_game_turns "
+                    "(session_id, turn_no, user_tg_id, kind, input_text, output_json, "
+                    "normalized_input_hash) "
+                    "VALUES (:session_id, 4, 1, 'question', 'duplicate', '{}', :hash)"
+                ),
+                {"session_id": session_id, "hash": "a" * 64},
+            )
+        await pg_session.rollback()
 
 
 class TestLedgerIndexes:
