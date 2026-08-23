@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict
 import json
 import re
@@ -66,16 +67,16 @@ def select_question_context(
         return ()
 
     newest_first = sorted(turns, key=lambda turn: turn.turn_no, reverse=True)
-    recent: list[QuestionContextTurn] = []
+    unique_newest_first: list[QuestionContextTurn] = []
     seen: set[str] = set()
     for turn in newest_first:
-        if len(recent) == min(12, max_turns):
-            break
         key = _unique_key(turn)
         if key in seen:
             continue
         seen.add(key)
-        recent.append(turn)
+        unique_newest_first.append(turn)
+
+    recent = unique_newest_first[:min(12, max_turns)]
 
     selected: list[QuestionContextTurn] = []
 
@@ -86,7 +87,7 @@ def select_question_context(
     for turn in recent:
         add_if_fits(turn)
 
-    remaining = [turn for turn in newest_first if turn not in recent]
+    remaining = unique_newest_first[len(recent):]
     relevant = [
         turn for turn in remaining
         if _lexical_overlap(turn.question, current_question) > 0
@@ -123,7 +124,7 @@ def build_question_request(
         system_prompt=SYSTEM_PROMPT,
         user_prompt=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         schema_name="twentyq_verdict",
-        schema=VERDICT_SCHEMA,
+        schema=copy.deepcopy(VERDICT_SCHEMA),
         prompt_version=PROMPT_VERSION,
         schema_version=SCHEMA_VERSION,
         max_output_tokens=32,

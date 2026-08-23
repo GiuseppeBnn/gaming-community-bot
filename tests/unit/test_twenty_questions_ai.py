@@ -96,6 +96,62 @@ def test_request_has_only_dossier_question_history_and_closed_enum():
         parse_question_verdict({"verdetto": "sì"})
 
 
+def test_request_schema_mutation_cannot_weaken_a_later_request():
+    """Reusing one nested schema object lets one caller open every later request."""
+    first = build_question_request(
+        dossier_json='{"facts":["puzzle cooperativo"]}',
+        current_question="Ha enigmi?",
+        context=(),
+    )
+    first.schema["properties"]["verdetto"]["enum"].append("risposta_libera")
+
+    later = build_question_request(
+        dossier_json='{"facts":["puzzle cooperativo"]}',
+        current_question="Ha enigmi?",
+        context=(),
+    )
+
+    assert later.schema["properties"]["verdetto"]["enum"] == [
+        "si", "no", "forse", "usa_risposta",
+    ]
+
+
+def test_older_duplicate_hash_cannot_reenter_after_the_recent_unique_core():
+    """Selecting an older duplicate during relevance/fill wastes a bounded slot."""
+    turns = (
+        QuestionContextTurn(1, "dragon", "Il gioco ha un drago rosso?", QuestionVerdict.si),
+        *tuple(_turn(i, f"irrilevante {i}") for i in range(2, 14)),
+        QuestionContextTurn(14, "dragon", "Il gioco ha un drago rosso?", QuestionVerdict.no),
+    )
+
+    got = select_question_context(
+        turns,
+        "Il drago rosso è un boss?",
+        max_turns=13,
+        max_chars=12_000,
+    )
+
+    assert [turn.turn_no for turn in got] == list(range(2, 15))
+
+
+def test_none_hash_deduplicates_by_conservatively_normalized_question_text():
+    """Treating None hashes as distinct admits the same canonical question twice."""
+    turns = (
+        QuestionContextTurn(1, None, " I PORTALI sono blu? ", QuestionVerdict.si),
+        QuestionContextTurn(2, None, "i portali sono blu", QuestionVerdict.no),
+        QuestionContextTurn(3, None, "Ha enigmi?", QuestionVerdict.forse),
+    )
+
+    got = select_question_context(
+        turns,
+        "I portali sono blu?",
+        max_turns=3,
+        max_chars=12_000,
+    )
+
+    assert [turn.turn_no for turn in got] == [2, 3]
+
+
 def test_request_truncates_question_and_preserves_a_title_inside_dossier():
     """Changing the 500-character question boundary or redacting dossier facts breaks this."""
     request = build_question_request(
