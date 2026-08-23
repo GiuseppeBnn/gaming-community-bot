@@ -47,6 +47,7 @@ class XpSource(str, Enum):
     daily = "daily"                  # daily quota, capped
     admin_grant = "admin_grant"      # event, uncapped
     admin_airdrop = "admin_airdrop"  # event, uncapped
+    twentyq = "twentyq"              # event, uncapped (Alduino's secret game)
 
 
 @dataclass

@@ -81,6 +81,7 @@ async def create_twenty_questions(
         session_id=root.id, catalog_key=target.key, answer=target.title,
         aliases_json=json.dumps(target.aliases, ensure_ascii=False),
         dossier_json=json.dumps({"facts": target.dossier}, ensure_ascii=False),
+        question_limit=20, guess_limit=3,
     ))
     await session.flush()
     return root

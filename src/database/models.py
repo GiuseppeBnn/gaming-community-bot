@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CHAR,
     DateTime,
     Float,
     ForeignKey,
@@ -38,6 +39,7 @@ class TransactionType(str, Enum):
     shop_purchase = "shop_purchase"
     quiz_reward = "quiz_reward"
     poll_reward = "poll_reward"
+    ai_game_reward = "ai_game_reward"
 
 
 class EventStatus(str, Enum):
@@ -617,6 +619,7 @@ class ScheduledTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class AlduinoTurn(Base):
@@ -734,6 +737,12 @@ class AIGameSession(Base):
     next_turn_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     pending_token: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     pending_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pending_user_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    pending_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finish_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -743,7 +752,17 @@ class AIGameTurn(Base):
     """Append-only, numbered audit ledger shared by every AI game strategy."""
 
     __tablename__ = "ai_game_turns"
-    __table_args__ = (UniqueConstraint("session_id", "turn_no"),)
+    __table_args__ = (
+        UniqueConstraint("session_id", "turn_no"),
+        Index("ix_ai_game_turn_quota", "session_id", "user_tg_id", "kind"),
+        Index(
+            "uq_ai_game_turn_normalized",
+            "session_id",
+            "kind",
+            "normalized_input_hash",
+            unique=True,
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id: Mapped[int] = mapped_column(
@@ -754,6 +773,7 @@ class AIGameTurn(Base):
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     input_text: Mapped[str] = mapped_column(String(512), nullable=False)
     output_json: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_input_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -769,11 +789,102 @@ class TwentyQuestionsGame(Base):
     answer: Mapped[str] = mapped_column(String(200), nullable=False)
     aliases_json: Mapped[str] = mapped_column(String(2048), nullable=False)
     dossier_json: Mapped[str] = mapped_column(Text, nullable=False)
-    question_limit: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
-    guess_limit: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    rules_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    question_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guess_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    questions_per_user: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guesses_per_user: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     guesses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+
+class AIGameRewardSettlement(Base):
+    """Immutable reward-policy snapshot and settlement result for one v2 game."""
+
+    __tablename__ = "ai_game_reward_settlements"
+
+    session_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("ai_game_sessions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_coins_per_participant: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    minimum_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_penalty_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    wrong_guess_penalty_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    xp_per_participant: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    finish_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    participant_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    question_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    wrong_guess_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    base_amount: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    penalty_amount: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    computed_pool: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    paid_pool: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    share: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    remainder: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AIGameRewardAllocation(Base):
+    """One participant's terminal reward allocation."""
+
+    __tablename__ = "ai_game_reward_allocations"
+    __table_args__ = (UniqueConstraint("session_id", "user_tg_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_reward_settlements.session_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    user_tg_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.tg_id", ondelete="RESTRICT"), nullable=False
+    )
+    coins: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    awarded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIGameProviderAttempt(Base):
+    """Prompt-free operational audit for one provider request in an AI game."""
+
+    __tablename__ = "ai_game_provider_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="RESTRICT"), nullable=False
+    )
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    schema_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_class: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cached_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cost_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIFeatureBudgetPeriod(Base):
+    """Per-feature monthly spend guard, stored in micro-USD."""
+
+    __tablename__ = "ai_feature_budget_periods"
+
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)
+    feature: Mapped[str] = mapped_column(String(32), primary_key=True)
+    cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spent_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class AIGameCatalogDraw(Base):
