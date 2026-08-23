@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 from types import SimpleNamespace
 
 import aiohttp
@@ -523,7 +524,7 @@ async def test_openrouter_self_cancelled_settlement_is_budget_unavailable(
 
 
 async def test_openrouter_cancellation_bounds_hung_settlement(
-    monkeypatch, openrouter, structured_request,
+    monkeypatch, openrouter, structured_request, caplog,
 ):
     monkeypatch.setattr(
         structured_ai,
@@ -532,17 +533,37 @@ async def test_openrouter_cancellation_bounds_hung_settlement(
         raising=False,
     )
     settlement_started = asyncio.Event()
-    never_release = asyncio.Event()
-    settlement_events: list[str] = []
+    child_cancelled = asyncio.Event()
+    release_child = asyncio.Event()
+    registry_cleaned = asyncio.Event()
+    attempts = 0
+    child_cancels = 0
+    secret = "settlement-child-secret-must-not-be-logged"
+
+    class ObservedRegistry(set):
+        def discard(self, value):
+            super().discard(value)
+            registry_cleaned.set()
+
+    registry = ObservedRegistry()
+    monkeypatch.setattr(
+        structured_ai,
+        "_PENDING_OPENROUTER_SETTLEMENTS",
+        registry,
+        raising=False,
+    )
 
     async def hung_settle(_reservation, **_kwargs):
-        settlement_events.append("started")
+        nonlocal attempts, child_cancels
+        attempts += 1
         settlement_started.set()
         try:
-            await never_release.wait()
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
-            settlement_events.append("cancelled")
-            raise
+            child_cancels += 1
+            child_cancelled.set()
+            await release_child.wait()
+            raise RuntimeError(secret) from None
 
     monkeypatch.setattr(structured_ai.ai_budget, "settle", hung_settle)
     with aioresponses() as mocked:
@@ -556,14 +577,41 @@ async def test_openrouter_cancellation_bounds_hung_settlement(
         task.cancel()
         done, _pending = await asyncio.wait({task}, timeout=0.2)
         if task not in done:
-            never_release.set()
+            release_child.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
     assert task in done
     with pytest.raises(asyncio.CancelledError):
         task.result()
-    assert settlement_events == ["started", "cancelled"]
+    assert attempts == 1
+    await child_cancelled.wait()
+    assert child_cancels == 1
+    assert len(registry) == 1
+    child = next(iter(registry))
+
+    loop = asyncio.get_running_loop()
+    loop_errors: list[dict] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: loop_errors.append(context))
+    try:
+        release_child.set()
+        await registry_cleaned.wait()
+        assert registry == set()
+        assert child.done()
+        del child
+        gc.collect()
+        next_turn = loop.create_future()
+        loop.call_soon(next_turn.set_result, None)
+        await next_turn
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert not any(
+        context.get("message") == "Task exception was never retrieved"
+        for context in loop_errors
+    )
+    assert secret not in caplog.text
 
 
 async def test_openrouter_second_cancellation_during_settlement_grace_terminates(
@@ -576,17 +624,35 @@ async def test_openrouter_second_cancellation_during_settlement_grace_terminates
         raising=False,
     )
     settlement_started = asyncio.Event()
-    never_release = asyncio.Event()
-    settlement_events: list[str] = []
+    child_cancelled = asyncio.Event()
+    release_child = asyncio.Event()
+    registry_cleaned = asyncio.Event()
+    attempts = 0
+    child_cancels = 0
+
+    class ObservedRegistry(set):
+        def discard(self, value):
+            super().discard(value)
+            registry_cleaned.set()
+
+    registry = ObservedRegistry()
+    monkeypatch.setattr(
+        structured_ai,
+        "_PENDING_OPENROUTER_SETTLEMENTS",
+        registry,
+        raising=False,
+    )
 
     async def hung_settle(_reservation, **_kwargs):
-        settlement_events.append("started")
+        nonlocal attempts, child_cancels
+        attempts += 1
         settlement_started.set()
         try:
-            await never_release.wait()
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
-            settlement_events.append("cancelled")
-            raise
+            child_cancels += 1
+            child_cancelled.set()
+            await release_child.wait()
 
     monkeypatch.setattr(structured_ai.ai_budget, "settle", hung_settle)
     with aioresponses() as mocked:
@@ -601,14 +667,20 @@ async def test_openrouter_second_cancellation_during_settlement_grace_terminates
         asyncio.get_running_loop().call_soon(task.cancel)
         done, _pending = await asyncio.wait({task}, timeout=0.2)
         if task not in done:
-            never_release.set()
+            release_child.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
 
     assert task in done
     with pytest.raises(asyncio.CancelledError):
         task.result()
-    assert settlement_events == ["started", "cancelled"]
+    assert attempts == 1
+    await child_cancelled.wait()
+    assert child_cancels == 1
+    assert len(registry) == 1
+    release_child.set()
+    await registry_cleaned.wait()
+    assert registry == set()
 
 
 async def test_openrouter_provider_model_is_safe_in_result_and_settlement(

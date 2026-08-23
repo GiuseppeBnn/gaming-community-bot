@@ -26,6 +26,7 @@ ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 ProviderName = Literal["gemini", "groq", "openrouter"]
 _DEFAULT_GEMINI_THINKING_LEVEL: ThinkingLevel = "medium"
 _SETTLEMENT_CANCELLATION_GRACE_SECONDS = 1.0
+_PENDING_OPENROUTER_SETTLEMENTS: set[asyncio.Task[None]] = set()
 _SAFE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}\Z")
 _SAFE_FINISH_REASONS = frozenset({
     "BLOCKLIST",
@@ -691,12 +692,68 @@ class GroqStructuredProvider:
         return StructuredProviderResult(value, self.name, model, metrics)
 
 
+def _consume_cancelled_settlement(
+    settlement: asyncio.Task[None], *, status: str,
+) -> None:
+    try:
+        settlement.result()
+    except (Exception, asyncio.CancelledError):
+        log.error(
+            "Structured OpenRouter settlement failed during cancellation "
+            "provider=openrouter status=%s",
+            status,
+        )
+
+
+def _cancel_and_retain_settlement(
+    settlement: asyncio.Task[None], *, status: str,
+) -> None:
+    _PENDING_OPENROUTER_SETTLEMENTS.add(settlement)
+
+    def consume(completed: asyncio.Task[None]) -> None:
+        try:
+            _consume_cancelled_settlement(completed, status=status)
+        finally:
+            _PENDING_OPENROUTER_SETTLEMENTS.discard(completed)
+
+    settlement.add_done_callback(consume)
+    settlement.cancel()
+
+
+async def _finish_settlement_after_caller_cancel(
+    settlement: asyncio.Task[None],
+    *,
+    status: str,
+    cancellation: asyncio.CancelledError,
+) -> None:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _SETTLEMENT_CANCELLATION_GRACE_SECONDS
+    try:
+        done, _pending = await asyncio.wait(
+            {settlement},
+            timeout=max(0.0, deadline - loop.time()),
+        )
+    except asyncio.CancelledError:
+        if settlement.done():
+            _consume_cancelled_settlement(settlement, status=status)
+        else:
+            _cancel_and_retain_settlement(settlement, status=status)
+        raise cancellation from None
+
+    if settlement in done:
+        _consume_cancelled_settlement(settlement, status=status)
+    else:
+        _cancel_and_retain_settlement(settlement, status=status)
+    raise cancellation
+
+
 async def _settle_openrouter_authoritatively(
     reservation: ai_budget.Reservation,
     *,
     status: str,
     actual_microusd: int | None,
     metrics: ai_budget.UsageMetrics,
+    caller_cancellation: asyncio.CancelledError | None = None,
 ) -> None:
     settlement = asyncio.create_task(ai_budget.settle(
         reservation,
@@ -704,6 +761,13 @@ async def _settle_openrouter_authoritatively(
         actual_microusd=actual_microusd,
         metrics=metrics,
     ))
+    if caller_cancellation is not None:
+        await _finish_settlement_after_caller_cancel(
+            settlement,
+            status=status,
+            cancellation=caller_cancellation,
+        )
+
     try:
         await asyncio.shield(settlement)
     except asyncio.CancelledError as exc:
@@ -719,32 +783,14 @@ async def _settle_openrouter_authoritatively(
                 kind=StructuredAIErrorKind.budget_unavailable,
                 provider="openrouter",
             ) from exc
-
         try:
-            done, _pending = await asyncio.wait(
-                {settlement},
-                timeout=_SETTLEMENT_CANCELLATION_GRACE_SECONDS,
+            await _finish_settlement_after_caller_cancel(
+                settlement,
+                status=status,
+                cancellation=exc,
             )
         except asyncio.CancelledError:
-            if not settlement.done():
-                settlement.cancel()
-            try:
-                await settlement
-            except (Exception, asyncio.CancelledError):
-                pass
             raise
-
-        if settlement not in done:
-            settlement.cancel()
-        try:
-            await settlement
-        except (Exception, asyncio.CancelledError):
-            log.error(
-                "Structured OpenRouter settlement failed during cancellation "
-                "provider=openrouter status=%s",
-                status,
-            )
-        raise
     except Exception as exc:
         log.error(
             "Structured OpenRouter settlement failed provider=openrouter status=%s",
@@ -840,13 +886,14 @@ class OpenRouterStructuredProvider:
                 payload=payload,
                 timeout_seconds=self.timeout_seconds,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
             try:
                 await _settle_openrouter_authoritatively(
                     reservation,
                     status="uncertain",
                     actual_microusd=None,
                     metrics=ai_budget.UsageMetrics(),
+                    caller_cancellation=exc,
                 )
             except StructuredAIError:
                 pass
