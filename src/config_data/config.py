@@ -64,8 +64,11 @@ class Settings(BaseSettings):
     openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
     openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
     # Calendar-month application cap, in addition to the limit on the OpenRouter
-    # key itself. Zero is an explicit emergency/development opt-out.
+    # key itself. Its two paid lanes may partition less than the global cap, but
+    # never more. Setting all three to zero is an explicit emergency shutdown.
     ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+    twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
+    openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
     ai_entertainment_provider: Literal["groq", "openrouter"] = "groq"
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
@@ -248,6 +251,15 @@ class Settings(BaseSettings):
     def validate_igdb_catalog_bounds(self) -> Self:
         if self.igdb_min_catalog_entries > self.igdb_catalog_size:
             raise ValueError("igdb_min_catalog_entries cannot exceed igdb_catalog_size")
+        return self
+
+    @model_validator(mode="after")
+    def validate_openrouter_budget_lanes(self) -> Self:
+        lane_total = (
+            self.twentyq_openrouter_budget_usd + self.openrouter_other_budget_usd
+        )
+        if lane_total > self.ai_monthly_budget_usd:
+            raise ValueError("OpenRouter lane budgets cannot exceed the global AI budget")
         return self
 
 

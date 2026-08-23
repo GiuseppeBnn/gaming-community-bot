@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 
@@ -176,3 +178,57 @@ class TestBoundsThatPreventRealDamage:
             Settings(  # type: ignore[call-arg]
                 bot_token="x", igdb_catalog_size=50, igdb_min_catalog_entries=51,
             )
+
+
+class TestOpenRouterBudgetLanes:
+    def test_documented_defaults_partition_the_global_cap(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.ai_monthly_budget_usd == Decimal("5.00")
+        assert configured.twentyq_openrouter_budget_usd == Decimal("4.00")
+        assert configured.openrouter_other_budget_usd == Decimal("1.00")
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("twentyq_openrouter_budget_usd", Decimal("-0.01")),
+            ("openrouter_other_budget_usd", Decimal("-0.01")),
+        ],
+    )
+    def test_lane_caps_cannot_be_negative(self, field, value):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(bot_token="x", **{field: value})  # type: ignore[call-arg]
+        assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+    def test_lane_caps_cannot_exceed_the_global_cap_in_sum(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError, match="lane budgets cannot exceed"):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x",
+                ai_monthly_budget_usd=Decimal("5.00"),
+                twentyq_openrouter_budget_usd=Decimal("4.01"),
+                openrouter_other_budget_usd=Decimal("1.00"),
+            )
+
+    def test_all_zero_caps_are_a_valid_shutdown_configuration(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            ai_monthly_budget_usd=Decimal("0"),
+            twentyq_openrouter_budget_usd=Decimal("0"),
+            openrouter_other_budget_usd=Decimal("0"),
+        )
+
+        assert configured.ai_monthly_budget_usd == 0
+        assert configured.twentyq_openrouter_budget_usd == 0
+        assert configured.openrouter_other_budget_usd == 0
