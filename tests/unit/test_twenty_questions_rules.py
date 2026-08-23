@@ -225,3 +225,11 @@ def test_direct_guess_guard_catches_unambiguous_disguised_answers(text):
 @pytest.mark.parametrize("text", ["È un RPG?", "Ha dei portali?", "È Portal 2?"])
 def test_direct_guess_guard_leaves_property_and_ambiguous_questions_to_the_classifier(text):
     assert not looks_like_direct_guess(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["Il gioco è uno sparatutto?", "Il gioco è un'avventura?", "Il gioco è un’avventura?"],
+)
+def test_direct_guess_guard_leaves_indefinite_property_questions_to_the_classifier(text):
+    assert not looks_like_direct_guess(text)

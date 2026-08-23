@@ -128,4 +128,4 @@ def looks_like_direct_guess(text: str) -> bool:
     match = _DIRECT_GAME_PREFIX_RE.fullmatch(formatted.rstrip(_TERMINAL_PUNCTUATION))
     if match is None:
         return False
-    return not match.group(1).startswith(("un ", "una "))
+    return not match.group(1).startswith(("un ", "una ", "uno ", "un'"))
