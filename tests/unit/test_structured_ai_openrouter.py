@@ -424,20 +424,22 @@ async def test_openrouter_extreme_usage_settles_conservatively_once(
 async def test_openrouter_unexpected_post_reservation_parse_failure_is_settled(
     monkeypatch, openrouter, structured_request,
 ):
+    sentinel = RuntimeError("provider-number-parser-failed")
+
     def broken_usage(_data):
-        raise RuntimeError("provider-number-parser-failed")
+        raise sentinel
 
     monkeypatch.setattr(structured_ai.ai_service, "_openrouter_usage", broken_usage)
     with aioresponses() as mocked:
         mocked.post(structured_ai.settings.openrouter_url, payload=_response())
-        with pytest.raises(structured_ai.StructuredAIError) as raised:
+        with pytest.raises(RuntimeError) as raised:
             await structured_ai.OpenRouterStructuredProvider().generate_json(
                 structured_request,
             )
 
-    assert raised.value.kind is structured_ai.StructuredAIErrorKind.malformed_json
+    assert raised.value is sentinel
     assert openrouter.settlements == [{
-        "status": "malformed",
+        "status": "uncertain",
         "actual_microusd": None,
         "metrics": ai_budget.UsageMetrics(),
     }]
@@ -446,18 +448,20 @@ async def test_openrouter_unexpected_post_reservation_parse_failure_is_settled(
 async def test_openrouter_unexpected_envelope_parse_failure_is_settled(
     monkeypatch, openrouter, structured_request,
 ):
+    sentinel = RuntimeError("provider-envelope-parser-failed")
+
     async def broken_post(**_kwargs):
-        raise OverflowError("provider-envelope-parser-failed")
+        raise sentinel
 
     monkeypatch.setattr(structured_ai, "_post_json_once", broken_post)
-    with pytest.raises(structured_ai.StructuredAIError) as raised:
+    with pytest.raises(RuntimeError) as raised:
         await structured_ai.OpenRouterStructuredProvider().generate_json(
             structured_request,
         )
 
-    assert raised.value.kind is structured_ai.StructuredAIErrorKind.malformed_json
+    assert raised.value is sentinel
     assert openrouter.settlements == [{
-        "status": "malformed",
+        "status": "uncertain",
         "actual_microusd": None,
         "metrics": ai_budget.UsageMetrics(),
     }]
@@ -491,6 +495,120 @@ async def test_openrouter_cancellation_waits_for_pending_settlement(
             await task
 
     assert settlement_events == ["started", "completed"]
+
+
+async def test_openrouter_self_cancelled_settlement_is_budget_unavailable(
+    monkeypatch, openrouter, structured_request,
+):
+    attempts = 0
+
+    async def self_cancelling_settle(_reservation, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        current = asyncio.current_task()
+        assert current is not None
+        current.cancel()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(structured_ai.ai_budget, "settle", self_cancelling_settle)
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await structured_ai.OpenRouterStructuredProvider().generate_json(
+                structured_request,
+            )
+
+    assert raised.value.kind is structured_ai.StructuredAIErrorKind.budget_unavailable
+    assert attempts == 1
+
+
+async def test_openrouter_cancellation_bounds_hung_settlement(
+    monkeypatch, openrouter, structured_request,
+):
+    monkeypatch.setattr(
+        structured_ai,
+        "_SETTLEMENT_CANCELLATION_GRACE_SECONDS",
+        0,
+        raising=False,
+    )
+    settlement_started = asyncio.Event()
+    never_release = asyncio.Event()
+    settlement_events: list[str] = []
+
+    async def hung_settle(_reservation, **_kwargs):
+        settlement_events.append("started")
+        settlement_started.set()
+        try:
+            await never_release.wait()
+        except asyncio.CancelledError:
+            settlement_events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(structured_ai.ai_budget, "settle", hung_settle)
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        task = asyncio.create_task(
+            structured_ai.OpenRouterStructuredProvider().generate_json(
+                structured_request,
+            ),
+        )
+        await settlement_started.wait()
+        task.cancel()
+        done, _pending = await asyncio.wait({task}, timeout=0.2)
+        if task not in done:
+            never_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert task in done
+    with pytest.raises(asyncio.CancelledError):
+        task.result()
+    assert settlement_events == ["started", "cancelled"]
+
+
+async def test_openrouter_second_cancellation_during_settlement_grace_terminates(
+    monkeypatch, openrouter, structured_request,
+):
+    monkeypatch.setattr(
+        structured_ai,
+        "_SETTLEMENT_CANCELLATION_GRACE_SECONDS",
+        60,
+        raising=False,
+    )
+    settlement_started = asyncio.Event()
+    never_release = asyncio.Event()
+    settlement_events: list[str] = []
+
+    async def hung_settle(_reservation, **_kwargs):
+        settlement_events.append("started")
+        settlement_started.set()
+        try:
+            await never_release.wait()
+        except asyncio.CancelledError:
+            settlement_events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(structured_ai.ai_budget, "settle", hung_settle)
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        task = asyncio.create_task(
+            structured_ai.OpenRouterStructuredProvider().generate_json(
+                structured_request,
+            ),
+        )
+        await settlement_started.wait()
+        task.cancel()
+        asyncio.get_running_loop().call_soon(task.cancel)
+        done, _pending = await asyncio.wait({task}, timeout=0.2)
+        if task not in done:
+            never_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    assert task in done
+    with pytest.raises(asyncio.CancelledError):
+        task.result()
+    assert settlement_events == ["started", "cancelled"]
 
 
 async def test_openrouter_provider_model_is_safe_in_result_and_settlement(

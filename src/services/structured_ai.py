@@ -25,6 +25,7 @@ GROQ_URL = ai_service.GROQ_URL
 ThinkingLevel = Literal["minimal", "low", "medium", "high"]
 ProviderName = Literal["gemini", "groq", "openrouter"]
 _DEFAULT_GEMINI_THINKING_LEVEL: ThinkingLevel = "medium"
+_SETTLEMENT_CANCELLATION_GRACE_SECONDS = 1.0
 _SAFE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}\Z")
 _SAFE_FINISH_REASONS = frozenset({
     "BLOCKLIST",
@@ -705,14 +706,38 @@ async def _settle_openrouter_authoritatively(
     ))
     try:
         await asyncio.shield(settlement)
-    except asyncio.CancelledError:
-        while not settlement.done():
-            try:
-                await asyncio.shield(settlement)
-            except asyncio.CancelledError:
-                continue
+    except asyncio.CancelledError as exc:
+        current = asyncio.current_task()
+        if current is None or current.cancelling() == 0:
+            log.error(
+                "Structured OpenRouter settlement cancelled "
+                "provider=openrouter status=%s",
+                status,
+            )
+            raise StructuredAIError(
+                "OpenRouter budget settlement unavailable",
+                kind=StructuredAIErrorKind.budget_unavailable,
+                provider="openrouter",
+            ) from exc
+
         try:
-            settlement.result()
+            done, _pending = await asyncio.wait(
+                {settlement},
+                timeout=_SETTLEMENT_CANCELLATION_GRACE_SECONDS,
+            )
+        except asyncio.CancelledError:
+            if not settlement.done():
+                settlement.cancel()
+            try:
+                await settlement
+            except (Exception, asyncio.CancelledError):
+                pass
+            raise
+
+        if settlement not in done:
+            settlement.cancel()
+        try:
+            await settlement
         except (Exception, asyncio.CancelledError):
             log.error(
                 "Structured OpenRouter settlement failed during cancellation "
@@ -840,18 +865,14 @@ class OpenRouterStructuredProvider:
                 metrics=ai_budget.UsageMetrics(),
             )
             raise
-        except Exception as exc:
+        except Exception:
             await _settle_openrouter_authoritatively(
                 reservation,
-                status="malformed",
+                status="uncertain",
                 actual_microusd=None,
                 metrics=ai_budget.UsageMetrics(),
             )
-            raise StructuredAIError(
-                "malformed OpenRouter provider envelope",
-                kind=StructuredAIErrorKind.malformed_json,
-                provider=self.name,
-            ) from exc
+            raise
 
         metrics = ai_budget.UsageMetrics()
         actual_microusd: int | None = None
@@ -876,18 +897,14 @@ class OpenRouterStructuredProvider:
                 metrics=metrics,
             )
             raise
-        except Exception as exc:
+        except Exception:
             await _settle_openrouter_authoritatively(
                 reservation,
-                status="malformed",
+                status="uncertain",
                 actual_microusd=None,
                 metrics=ai_budget.UsageMetrics(),
             )
-            raise StructuredAIError(
-                "malformed OpenRouter accounting metadata",
-                kind=StructuredAIErrorKind.malformed_json,
-                provider=self.name,
-            ) from exc
+            raise
         await _settle_openrouter_authoritatively(
             reservation,
             status="completed",
