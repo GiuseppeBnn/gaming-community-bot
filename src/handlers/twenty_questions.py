@@ -13,9 +13,15 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers.callbacks import EventCb
 from services import ai_game_service, group_registry
+from services.ai_game_types import (
+    DEFAULT_DURATION_SECONDS,
+    DEFAULT_MAX_COINS_PER_PARTICIPANT,
+    GameCreationError,
+)
 from services.ai_game_service import GameSnapshot
 from services.structured_ai import GeminiStructuredProvider, StructuredAIError
 from utils.text import esc
@@ -69,13 +75,27 @@ async def create_from_title(
             f"⚠️ Serve un titolo da 1 a 120 caratteri (ora: {len(title)})."
         )
         return
-    game = await ai_game_service.create_twenty_questions(
-        db_session, creator_tg_id=message.from_user.id, title=title,
-    )
+    if not settings.twentyq_v2_enabled:
+        await message.answer(
+            "⚠️ Le nuove partite di Alduino sono temporaneamente in manutenzione."
+        )
+        return
+    try:
+        game = await ai_game_service.create_twenty_questions(
+            db_session,
+            creator_tg_id=message.from_user.id,
+            title=title,
+            duration_seconds=DEFAULT_DURATION_SECONDS,
+            expires_at=None,
+            max_coins_per_participant=DEFAULT_MAX_COINS_PER_PARTICIPANT,
+        )
+    except GameCreationError:
+        await message.answer("⚠️ Impossibile creare la partita in questo momento.")
+        return
     await db_session.commit()
     await state.clear()
     await message.answer(
-        f"✅ Partita <b>#{game.id} · {esc(game.title)}</b> pronta.\n"
+        f"✅ Partita <b>#{game.session_id} · {esc(game.title)}</b> pronta.\n"
         "Puoi avviarla o programmarla dall'hub /eventi. Il segreto resta nel dossier."
     )
 
@@ -205,7 +225,9 @@ async def play_turn(message: Message, db_session: AsyncSession) -> None:
             await message.reply("🐲 Le domande disponibili sono finite.")
             return
         await db_session.commit()
-        label = {"si": "SÌ", "no": "NO", "forse": "FORSE"}[verdict.verdict]
+        label = {
+            "si": "SÌ", "no": "NO", "forse": "FORSE", "usa_risposta": "PROVA A INDOVINARE",
+        }[verdict.value]
         await message.reply(f"🐲 <b>{label}</b>")
 
     fresh = await ai_game_service.get_snapshot(db_session, snapshot.session.id)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Literal, TypeAlias
 
@@ -59,6 +60,18 @@ class TurnRejectReason(str, Enum):
     hash_collision = "hash_collision"
 
 
+class StartRejectReason(str, Enum):
+    not_ready = "not_ready"
+    absolute_expiry_elapsed = "absolute_expiry_elapsed"
+    providers_unavailable = "providers_unavailable"
+
+
+class GameCreationError(RuntimeError):
+    def __init__(self, reason: Literal["feature_disabled", "invalid_policy"]):
+        self.reason = reason
+        super().__init__(reason)
+
+
 @dataclass(frozen=True, slots=True)
 class TwentyQuestionsPolicy:
     version: int
@@ -81,6 +94,48 @@ class RewardProjection:
     computed_pool: int
     share: int
     remainder: int
+
+
+@dataclass(frozen=True, slots=True)
+class CreatedGame:
+    session_id: int
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
+class StartGameResult:
+    started: bool
+    reason: StartRejectReason | None
+    expires_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class TurnView:
+    turn_no: int
+    user_tg_id: int
+    kind: TurnKind
+    input_text: str
+    verdict: QuestionVerdict | None
+    correct: bool | None
+
+
+@dataclass(frozen=True, slots=True)
+class GameView:
+    session_id: int
+    title: str
+    status: str
+    group_id: int | None
+    anchor_message_id: int | None
+    expires_at: datetime | None
+    finish_reason: FinishReason | None
+    policy: TwentyQuestionsPolicy
+    projection: RewardProjection
+    participant_count: int
+    question_count: int
+    wrong_guess_count: int
+    recent_turns: tuple[TurnView, ...]
+    revealed_answer: str | None
+    winner_tg_id: int | None
 
 
 @dataclass(frozen=True, slots=True)

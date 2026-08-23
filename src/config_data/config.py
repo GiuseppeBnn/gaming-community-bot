@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     # both the number of projected turns and the serialized UTF-8 context size.
     twentyq_context_turns: int = Field(default=24, ge=1, le=96)
     twentyq_context_chars: int = Field(default=12_000, ge=1_000, le=30_000)
+    # Reward-bearing secret games remain off until the rollout is explicitly
+    # enabled. Existing version-one games intentionally ignore this switch.
+    twentyq_v2_enabled: bool = False
+    twentyq_max_coins_per_participant: int = Field(default=1_000, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"

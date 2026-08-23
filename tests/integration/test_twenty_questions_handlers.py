@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from aiogram.dispatcher.event.bases import SkipHandler
 
-from database.models import ScheduledTask
+from database.models import AIGameSession, ScheduledTask, TwentyQuestionsGame
 from handlers import twenty_questions as handler
 from handlers.event_types.twenty_questions_type import TwentyQuestionsType
 from services import ai_game_service, group_registry
@@ -91,9 +91,21 @@ class _Callback:
 
 
 async def _ready(session, title="Serata"):
-    root = await ai_game_service.create_twenty_questions(
-        session, creator_tg_id=9, title=title, target=TARGET,
+    root = AIGameSession(
+        game_type="twentyq", title=title, creator_tg_id=9, status="ready",
     )
+    session.add(root)
+    await session.flush()
+    session.add(TwentyQuestionsGame(
+        session_id=root.id,
+        catalog_key=TARGET.key,
+        answer=TARGET.title,
+        aliases_json='["portal two"]',
+        dossier_json='{"facts": "Aperture"}',
+        rules_version=1,
+        question_limit=20,
+        guess_limit=3,
+    ))
     await session.commit()
     return root.id
 
@@ -108,7 +120,7 @@ async def _running(session, title="Serata", anchor=77):
 
 
 class TestCreationAndScreens:
-    async def test_creation_prompt_validation_and_save(self, session):
+    async def test_creation_prompt_validation_flag_and_save(self, session, monkeypatch):
         state, message = _State(), _Message()
         await handler.start_creation(message, state, 9)
         assert state.value == handler.TwentyQuestionsCreateStates.title
@@ -118,6 +130,11 @@ class TestCreationAndScreens:
         assert "1 a 120" in message.said[-1]
 
         message.text = "Serata <epica>"
+        await handler.create_from_title(message, state, session)
+        assert "manutenzione" in message.said[-1]
+        assert state.value == handler.TwentyQuestionsCreateStates.title
+
+        monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
         await handler.create_from_title(message, state, session)
         assert "Serata &lt;epica&gt;" in message.said[-1]
         assert state.value is None
@@ -222,12 +239,12 @@ class TestEventLifecycle:
 
 
 class _Provider:
-    async def generate_json(self, **kwargs):
-        return {"verdetto": "si"}
+    async def generate_json(self, request):
+        return SimpleNamespace(value={"verdetto": "si"})
 
 
 class _BrokenProvider:
-    async def generate_json(self, **kwargs):
+    async def generate_json(self, request):
         raise StructuredAIError("down")
 
 

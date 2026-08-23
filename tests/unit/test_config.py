@@ -84,6 +84,22 @@ class TestDefaults:
         s = Settings(bot_token="x", fsm_storage="redis")  # type: ignore[call-arg]
         assert s.fsm_storage == "redis"
 
+    def test_twenty_questions_v2_is_opt_in_and_caps_each_participant_reward(self):
+        """A deploy must not create reward-bearing games until an admin opts in."""
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert getattr(configured, "twentyq_v2_enabled", None) is False
+        assert getattr(configured, "twentyq_max_coins_per_participant", None) == 1_000
+
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None, twentyq_max_coins_per_participant=0,
+            )
+
 
 class TestBoundsThatPreventRealDamage:
     """Constraints only where an out-of-range value does something worse than being
