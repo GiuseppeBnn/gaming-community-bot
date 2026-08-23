@@ -141,8 +141,8 @@ class TestMigrationsRepairAnOldDeploy:
             game_id = (
                 await conn.execute(text(
                     "INSERT INTO ai_game_sessions "
-                    "(game_type, title, creator_tg_id, status) "
-                    "VALUES ('raid', 'Storico', 9, 'running') RETURNING id"
+                    "(game_type, title, creator_tg_id, status, next_turn_no) "
+                    "VALUES ('raid', 'Storico', 9, 'running', 1) RETURNING id"
                 ))
             ).scalar_one()
             task_id = (
