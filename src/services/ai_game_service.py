@@ -26,7 +26,7 @@ from database.models import (
     ScheduledTask,
     TwentyQuestionsGame,
 )
-from services import schedule_service
+from services import ai_game_rewards, schedule_service
 from services.ai_game_types import (
     CreatedGame,
     FinishReason,
@@ -35,8 +35,10 @@ from services.ai_game_types import (
     QuestionContextTurn,
     QuestionVerdict,
     RewardProjection,
+    SettlementFinishReason,
     StartGameResult,
     StartRejectReason,
+    TerminalResult,
     TurnKind,
     TurnView,
     TwentyQuestionsPolicy,
@@ -468,6 +470,24 @@ async def finish(session: AsyncSession, session_id: int) -> bool:
         .execution_options(synchronize_session=False)
     )
     return result.rowcount == 1
+
+
+async def terminalize(
+    session: AsyncSession,
+    *,
+    session_id: int,
+    reason: SettlementFinishReason,
+    winner_tg_id: int | None = None,
+    now: datetime | None = None,
+) -> TerminalResult:
+    """Facade for v2 terminal rewards; the reward service owns the transaction work."""
+    return await ai_game_rewards.terminalize(
+        session,
+        session_id=session_id,
+        reason=reason,
+        winner_tg_id=winner_tg_id,
+        now=now,
+    )
 
 
 async def archive_game(session: AsyncSession, session_id: int) -> bool:
