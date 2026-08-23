@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
+    twentyq_provider_order: str = "gemini,groq,openrouter"
+    twentyq_provider_deadline_seconds: int = Field(default=25, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"
@@ -249,6 +251,31 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [int(i) for i in v]
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
+
+    @field_validator("twentyq_provider_order", mode="before")
+    @classmethod
+    def normalize_twentyq_provider_order(cls, value: object) -> str:
+        providers = [part.strip().lower() for part in str(value).split(",")]
+        allowed = {"gemini", "groq", "openrouter"}
+        if not providers or any(not provider for provider in providers):
+            raise ValueError("twentyq provider order cannot be empty")
+        if any(provider not in allowed for provider in providers):
+            raise ValueError("twentyq provider order contains an unknown provider")
+        if len(set(providers)) != len(providers):
+            raise ValueError("twentyq provider order contains duplicates")
+        return ",".join(providers)
+
+    @model_validator(mode="after")
+    def validate_twentyq_provider_models(self) -> Self:
+        model_fields = {
+            "gemini": "twentyq_gemini_model",
+            "groq": "twentyq_groq_model",
+            "openrouter": "twentyq_openrouter_model",
+        }
+        for provider in self.twentyq_provider_order.split(","):
+            if not getattr(self, model_fields[provider]).strip():
+                raise ValueError(f"{provider} model cannot be empty")
+        return self
 
     @model_validator(mode="after")
     def validate_igdb_catalog_bounds(self) -> Self:

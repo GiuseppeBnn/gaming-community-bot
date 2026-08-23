@@ -266,3 +266,81 @@ class TestTwentyQuestionsProviderSettings:
         with pytest.raises(ValidationError) as error:
             Settings(bot_token="x", _env_file=None, **{field: 0})  # type: ignore[call-arg]
         assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+    def test_router_defaults_have_free_first_order_and_one_total_deadline(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.twentyq_provider_order == "gemini,groq,openrouter"
+        assert configured.twentyq_provider_deadline_seconds == 25
+
+    def test_provider_order_is_normalized_once(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            _env_file=None,
+            twentyq_provider_order=" GROQ, gemini , OPENROUTER ",
+        )
+
+        assert configured.twentyq_provider_order == "groq,gemini,openrouter"
+
+    @pytest.mark.parametrize(
+        "order",
+        ["", "  ", ",", "gemini,,groq", "gemini,gemini", "gemini,unknown"],
+    )
+    def test_provider_order_rejects_empty_duplicate_and_unknown_entries(self, order):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None, twentyq_provider_order=order,
+            )
+
+    @pytest.mark.parametrize(
+        ("order", "field"),
+        [
+            ("gemini", "twentyq_gemini_model"),
+            ("groq", "twentyq_groq_model"),
+            ("openrouter", "twentyq_openrouter_model"),
+        ],
+    )
+    def test_every_present_provider_requires_a_nonempty_model(self, order, field):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError, match="model cannot be empty"):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x",
+                _env_file=None,
+                twentyq_provider_order=order,
+                **{field: "  "},
+            )
+
+    def test_model_for_absent_provider_may_be_empty(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            _env_file=None,
+            twentyq_provider_order="groq",
+            twentyq_gemini_model="",
+        )
+
+        assert configured.twentyq_provider_order == "groq"
+
+    def test_total_provider_deadline_rejects_zero(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None,
+                twentyq_provider_deadline_seconds=0,
+            )
+        assert error.value.errors()[0]["type"] == "greater_than_equal"
