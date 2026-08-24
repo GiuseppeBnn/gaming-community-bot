@@ -168,7 +168,7 @@ async def _managed_root_lock_race(
             raise cleanup_error
 
 
-async def test_pg_root_lock_cleanup_surfaces_unawaited_locker_failure():
+async def test_pg_root_lock_cleanup_surfaces_unawaited_locker_failure(pg_sessions):
     """A successful body must not conceal a completed root-lock worker failure."""
     released = asyncio.Event()
     root_locked = asyncio.Event()
