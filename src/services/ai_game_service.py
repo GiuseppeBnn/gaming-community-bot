@@ -899,6 +899,22 @@ async def _terminalize_if_due(
     )
 
 
+async def _lock_v2_action(
+    session: AsyncSession, session_id: int, now: datetime | None,
+) -> tuple[datetime, TerminalResult | None]:
+    """Linearize a v2 action at the root lock and resolve expiry there.
+
+    An explicit ``now`` is a caller-provided logical clock for deterministic
+    tests. The normal runtime path samples ``_now()`` only after waiting for
+    the root lock, so a preflight timestamp cannot survive an arbitrary wait.
+    """
+    await session.execute(select(AIGameSession.id).where(
+        AIGameSession.id == session_id,
+    ).with_for_update())
+    action_now = _naive_utc(now) or _now()
+    return action_now, await _terminalize_if_due(session, session_id, action_now)
+
+
 async def _find_normalized_turn(
     session: AsyncSession, session_id: int, kind: TurnKind, digest: str,
 ) -> AIGameTurn | None:
@@ -974,17 +990,12 @@ async def _claim_v2_turn(
     kind: TurnKind,
     now: datetime,
 ) -> str | None:
-    """Acquire the one short lease only if this actor's ledger quota allows it."""
+    """Claim under the root lock already held by ``_lock_v2_action``."""
     token = str(uuid.uuid4())
+    # PostgreSQL fixes an UPDATE snapshot before it waits for a row lock. The
+    # caller's separate root lock gives this CAS a fresh snapshot for its ledger
+    # aggregate while also establishing the action's expiry linearization point.
     stale = now - timedelta(seconds=settings.ai_game_claim_timeout_seconds)
-    # PostgreSQL fixes an UPDATE statement snapshot before it waits for a row
-    # lock. A second concurrent quota claim could therefore see the old ledger
-    # count after the first worker committed its turn. Locking the aggregate in
-    # its own statement makes the following conditional SQL CAS start with a
-    # fresh snapshot; the CAS below remains the authoritative state decision.
-    await session.execute(select(AIGameSession.id).where(
-        AIGameSession.id == session_id,
-    ).with_for_update())
     used = _quota_subquery(session_id, user_tg_id, kind)
     limit = _v2_limit_subquery(session_id, kind)
     v2_game = select(TwentyQuestionsGame.session_id).where(
@@ -994,6 +1005,7 @@ async def _claim_v2_turn(
     claimed = await session.execute(update(AIGameSession).where(
         AIGameSession.id == session_id,
         AIGameSession.status == "running",
+        AIGameSession.expires_at > now,
         v2_game,
         or_(
             AIGameSession.pending_token.is_(None),
@@ -1088,8 +1100,9 @@ async def _append_v2_turn(
     input_text: str,
     digest: str,
     output_json: str,
+    now: datetime,
 ) -> bool | None:
-    """Append one turn plus its projection and release in a savepoint.
+    """Append one turn under the root lock held by ``_lock_v2_action``.
 
     ``None`` means a uniqueness race was safely rolled back and should be
     translated to a typed dedupe/collision result by the public caller.
@@ -1112,6 +1125,7 @@ async def _append_v2_turn(
             released = await session.execute(update(AIGameSession).where(
                 AIGameSession.id == session_id,
                 AIGameSession.status == "running",
+                AIGameSession.expires_at > now,
                 AIGameSession.pending_token == token,
                 AIGameSession.pending_user_tg_id == user_tg_id,
                 AIGameSession.pending_kind == kind.value,
@@ -1219,12 +1233,21 @@ async def begin_question(
             TurnRejectReason.answer_confirmation_required,
             quota,
         )
+    action_now, terminal = await _lock_v2_action(session, session_id, now)
+    if terminal is not None:
+        return QuestionStartResult(
+            session_id,
+            TurnOutcome.rejected,
+            TurnRejectReason.expired,
+            await get_personal_quota(session, session_id, user_tg_id),
+            terminal=terminal,
+        )
     token = await _claim_v2_turn(
         session,
         session_id=session_id,
         user_tg_id=user_tg_id,
         kind=TurnKind.question,
-        now=current,
+        now=action_now,
     )
     if token is None:
         reason, quota, terminal = await _failed_v2_claim(
@@ -1232,7 +1255,7 @@ async def begin_question(
             session_id=session_id,
             user_tg_id=user_tg_id,
             kind=TurnKind.question,
-            now=current,
+            now=action_now,
         )
         return QuestionStartResult(
             session_id, TurnOutcome.rejected, reason, quota, terminal=terminal,
@@ -1322,6 +1345,15 @@ async def complete_question(
             TurnRejectReason.lost_claim,
             await get_personal_quota(session, claim.session_id, claim.user_tg_id),
         )
+    action_now, terminal = await _lock_v2_action(session, claim.session_id, now)
+    if terminal is not None:
+        return TurnResult(
+            claim.session_id,
+            TurnOutcome.rejected,
+            TurnRejectReason.expired,
+            await get_personal_quota(session, claim.session_id, claim.user_tg_id),
+            terminal=terminal,
+        )
     if verdict is QuestionVerdict.usa_risposta:
         released = await _release_v2_claim(session, claim)
         return TurnResult(
@@ -1342,6 +1374,7 @@ async def complete_question(
         input_text=claim.input_text,
         digest=claim.normalized_hash,
         output_json=json.dumps({"verdetto": verdict.value}, ensure_ascii=False),
+        now=action_now,
     )
     if appended is None:
         return await _question_duplicate_result(session, claim)
@@ -1464,12 +1497,21 @@ async def submit_guess(
             normalized=normalized,
             digest=digest,
         )
+    action_now, terminal = await _lock_v2_action(session, session_id, now)
+    if terminal is not None:
+        return TurnResult(
+            session_id,
+            TurnOutcome.rejected,
+            TurnRejectReason.expired,
+            await get_personal_quota(session, session_id, user_tg_id),
+            terminal=terminal,
+        )
     token = await _claim_v2_turn(
         session,
         session_id=session_id,
         user_tg_id=user_tg_id,
         kind=TurnKind.guess,
-        now=current,
+        now=action_now,
     )
     if token is None:
         reason, quota, terminal = await _failed_v2_claim(
@@ -1477,7 +1519,7 @@ async def submit_guess(
             session_id=session_id,
             user_tg_id=user_tg_id,
             kind=TurnKind.guess,
-            now=current,
+            now=action_now,
         )
         return TurnResult(session_id, TurnOutcome.rejected, reason, quota, terminal=terminal)
     target = (await session.execute(select(
@@ -1503,6 +1545,7 @@ async def submit_guess(
         input_text=answer,
         digest=digest,
         output_json=json.dumps({"correct": correct}),
+        now=action_now,
     )
     if appended is None:
         return await _guess_duplicate_result(
@@ -1526,7 +1569,7 @@ async def submit_guess(
         session_id=session_id,
         reason=FinishReason.victory,
         winner_tg_id=user_tg_id,
-        now=current,
+        now=action_now,
     )
     return TurnResult(
         session_id,

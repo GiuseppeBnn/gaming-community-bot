@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 from datetime import datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import func, select, update
@@ -52,12 +53,26 @@ def _rewards():
     return importlib.import_module("services.ai_game_rewards")
 
 
+async def _release_root_and_cleanup(
+    release_root: asyncio.Event,
+    lock_task: asyncio.Task[Any],
+    action_task: asyncio.Task[Any] | None,
+) -> None:
+    """Unblock the database race and leave no task behind on a failed barrier."""
+    release_root.set()
+    if action_task is not None and not action_task.done():
+        action_task.cancel()
+    tasks = (lock_task,) if action_task is None else (lock_task, action_task)
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _setup_running(
     pg_sessions,
     monkeypatch,
     *,
     turns: tuple[tuple[int, str, str, str], ...] = _BASE_TURNS + (_WINNING_TURN,),
     now: datetime | None = None,
+    duration_seconds: int = 43_200,
 ) -> int:
     monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
     monkeypatch.setattr(
@@ -71,7 +86,7 @@ async def _setup_running(
             setup,
             creator_tg_id=9,
             title="Concorrenza",
-            duration_seconds=43_200,
+            duration_seconds=duration_seconds,
             expires_at=None,
             max_coins_per_participant=100,
             target=TARGET,
@@ -563,6 +578,367 @@ async def test_pg_terminalize_and_place_bet_acquire_user_before_wallet(
     facts = await _settlement_facts(pg_sessions, session_id)
     assert facts["wallets"] == {10: 984, 20: 84}
     assert facts["xp"] == {10: 20, 20: 10}
+
+
+async def test_pg_question_claim_after_root_lock_expiry_is_terminalized_before_lease(
+    pg_sessions, monkeypatch,
+):
+    """Without a post-lock expiry check, a preflighted question gets a late lease."""
+    started_at = datetime(2034, 1, 2, 12, 0)
+    deadline = started_at + timedelta(seconds=60)
+    clock = {"now": deadline - timedelta(seconds=1)}
+    monkeypatch.setattr(ai_game_service, "_now", lambda: clock["now"])
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        turns=(),
+        now=started_at,
+        duration_seconds=60,
+    )
+
+    async with pg_sessions() as locker, pg_sessions() as worker:
+        root_locked = asyncio.Event()
+        worker_reached_claim_lock = asyncio.Event()
+        release_root = asyncio.Event()
+        original_execute = worker.execute
+
+        async def hold_root() -> None:
+            await locker.execute(select(AIGameSession.id).where(
+                AIGameSession.id == session_id,
+            ).with_for_update())
+            root_locked.set()
+            await asyncio.wait_for(release_root.wait(), timeout=3)
+            await locker.commit()
+
+        async def observe_claim_lock(statement, *args, **kwargs):
+            if (
+                getattr(statement, "is_select", False)
+                and getattr(statement, "_for_update_arg", None) is not None
+                and not worker_reached_claim_lock.is_set()
+            ):
+                worker_reached_claim_lock.set()
+            return await original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(worker, "execute", observe_claim_lock)
+        action_task: asyncio.Task[Any] | None = None
+        lock_task = asyncio.create_task(hold_root())
+        try:
+            await asyncio.wait_for(root_locked.wait(), timeout=3)
+            action_task = asyncio.create_task(ai_game_service.begin_question(
+                worker,
+                session_id=session_id,
+                user_tg_id=10,
+                question="La richiesta era già oltre il preflight?",
+            ))
+            await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
+            clock["now"] = deadline + timedelta(seconds=1)
+            release_root.set()
+            result = await asyncio.wait_for(action_task, timeout=5)
+            await worker.commit()
+        finally:
+            await _release_root_and_cleanup(release_root, lock_task, action_task)
+
+    assert (result.outcome, result.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.expired,
+    )
+    assert result.terminal is not None and result.terminal.finish_reason is FinishReason.expired
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status,
+            AIGameSession.finish_reason,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+        allocations = (await observe.execute(
+            select(func.count()).select_from(AIGameRewardAllocation).where(
+                AIGameRewardAllocation.session_id == session_id,
+            )
+        )).scalar_one()
+
+    assert root == ("finished", "expired", None, None, None, None)
+    assert settlement == ("void", "expired")
+    assert (turns, allocations) == (0, 0)
+
+
+async def test_pg_question_completion_after_root_lock_expiry_cannot_append(
+    pg_sessions, monkeypatch,
+):
+    """Without a post-lock expiry check, a preflighted completion appends late."""
+    started_at = datetime(2034, 1, 3, 12, 0)
+    deadline = started_at + timedelta(seconds=60)
+    clock = {"now": deadline - timedelta(seconds=1)}
+    monkeypatch.setattr(ai_game_service, "_now", lambda: clock["now"])
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        turns=(),
+        now=started_at,
+        duration_seconds=60,
+    )
+    async with pg_sessions() as setup:
+        started = await ai_game_service.begin_question(
+            setup,
+            session_id=session_id,
+            user_tg_id=10,
+            question="La completion ha oltrepassato il lock?",
+        )
+        await setup.commit()
+    assert started.claim is not None
+
+    async with pg_sessions() as locker, pg_sessions() as worker:
+        root_locked = asyncio.Event()
+        worker_reached_append_lock = asyncio.Event()
+        release_root = asyncio.Event()
+        original_execute = worker.execute
+
+        async def hold_root() -> None:
+            await locker.execute(select(AIGameSession.id).where(
+                AIGameSession.id == session_id,
+            ).with_for_update())
+            root_locked.set()
+            await asyncio.wait_for(release_root.wait(), timeout=3)
+            await locker.commit()
+
+        async def observe_append_lock(statement, *args, **kwargs):
+            table = getattr(statement, "table", None)
+            waits_for_root = (
+                getattr(statement, "is_select", False)
+                and getattr(statement, "_for_update_arg", None) is not None
+            ) or (
+                getattr(statement, "is_update", False)
+                and getattr(table, "name", None) == AIGameSession.__tablename__
+            )
+            if waits_for_root and not worker_reached_append_lock.is_set():
+                worker_reached_append_lock.set()
+            return await original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(worker, "execute", observe_append_lock)
+        action_task: asyncio.Task[Any] | None = None
+        lock_task = asyncio.create_task(hold_root())
+        try:
+            await asyncio.wait_for(root_locked.wait(), timeout=3)
+            action_task = asyncio.create_task(ai_game_service.complete_question(
+                worker,
+                claim=started.claim,
+                verdict=QuestionVerdict.si,
+            ))
+            await asyncio.wait_for(worker_reached_append_lock.wait(), timeout=3)
+            clock["now"] = deadline + timedelta(seconds=1)
+            release_root.set()
+            result = await asyncio.wait_for(action_task, timeout=5)
+            await worker.commit()
+        finally:
+            await _release_root_and_cleanup(release_root, lock_task, action_task)
+
+    assert (result.outcome, result.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.expired,
+    )
+    assert result.terminal is not None and result.terminal.finish_reason is FinishReason.expired
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status,
+            AIGameSession.finish_reason,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+
+    assert root == ("finished", "expired", None, None, None, None)
+    assert settlement == ("void", "expired")
+    assert turns == 0
+
+
+async def test_pg_wrong_guess_after_root_lock_expiry_cannot_append(
+    pg_sessions, monkeypatch,
+):
+    """Without a post-lock expiry check, a wrong guess is appended after deadline."""
+    started_at = datetime(2034, 1, 4, 12, 0)
+    deadline = started_at + timedelta(seconds=60)
+    clock = {"now": deadline - timedelta(seconds=1)}
+    monkeypatch.setattr(ai_game_service, "_now", lambda: clock["now"])
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        turns=(),
+        now=started_at,
+        duration_seconds=60,
+    )
+
+    async with pg_sessions() as locker, pg_sessions() as worker:
+        root_locked = asyncio.Event()
+        worker_reached_claim_lock = asyncio.Event()
+        release_root = asyncio.Event()
+        original_execute = worker.execute
+
+        async def hold_root() -> None:
+            await locker.execute(select(AIGameSession.id).where(
+                AIGameSession.id == session_id,
+            ).with_for_update())
+            root_locked.set()
+            await asyncio.wait_for(release_root.wait(), timeout=3)
+            await locker.commit()
+
+        async def observe_claim_lock(statement, *args, **kwargs):
+            if (
+                getattr(statement, "is_select", False)
+                and getattr(statement, "_for_update_arg", None) is not None
+                and not worker_reached_claim_lock.is_set()
+            ):
+                worker_reached_claim_lock.set()
+            return await original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(worker, "execute", observe_claim_lock)
+        action_task: asyncio.Task[Any] | None = None
+        lock_task = asyncio.create_task(hold_root())
+        try:
+            await asyncio.wait_for(root_locked.wait(), timeout=3)
+            action_task = asyncio.create_task(ai_game_service.submit_guess(
+                worker,
+                session_id=session_id,
+                user_tg_id=10,
+                answer="Half-Life 2",
+            ))
+            await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
+            clock["now"] = deadline + timedelta(seconds=1)
+            release_root.set()
+            result = await asyncio.wait_for(action_task, timeout=5)
+            await worker.commit()
+        finally:
+            await _release_root_and_cleanup(release_root, lock_task, action_task)
+
+    assert (result.outcome, result.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.expired,
+    )
+    assert result.terminal is not None and result.terminal.finish_reason is FinishReason.expired
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status,
+            AIGameSession.finish_reason,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+
+    assert root == ("finished", "expired", None, None, None, None)
+    assert settlement == ("void", "expired")
+    assert turns == 0
+
+
+async def test_pg_winning_guess_after_root_lock_expiry_cannot_settle_victory(
+    pg_sessions, monkeypatch,
+):
+    """Without a post-lock expiry check, a late alias guess pays a victory."""
+    started_at = datetime(2034, 1, 5, 12, 0)
+    deadline = started_at + timedelta(seconds=60)
+    clock = {"now": deadline - timedelta(seconds=1)}
+    monkeypatch.setattr(ai_game_service, "_now", lambda: clock["now"])
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        turns=(),
+        now=started_at,
+        duration_seconds=60,
+    )
+
+    async with pg_sessions() as locker, pg_sessions() as worker:
+        root_locked = asyncio.Event()
+        worker_reached_claim_lock = asyncio.Event()
+        release_root = asyncio.Event()
+        original_execute = worker.execute
+
+        async def hold_root() -> None:
+            await locker.execute(select(AIGameSession.id).where(
+                AIGameSession.id == session_id,
+            ).with_for_update())
+            root_locked.set()
+            await asyncio.wait_for(release_root.wait(), timeout=3)
+            await locker.commit()
+
+        async def observe_claim_lock(statement, *args, **kwargs):
+            if (
+                getattr(statement, "is_select", False)
+                and getattr(statement, "_for_update_arg", None) is not None
+                and not worker_reached_claim_lock.is_set()
+            ):
+                worker_reached_claim_lock.set()
+            return await original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(worker, "execute", observe_claim_lock)
+        action_task: asyncio.Task[Any] | None = None
+        lock_task = asyncio.create_task(hold_root())
+        try:
+            await asyncio.wait_for(root_locked.wait(), timeout=3)
+            action_task = asyncio.create_task(ai_game_service.submit_guess(
+                worker,
+                session_id=session_id,
+                user_tg_id=10,
+                answer="portal two",
+            ))
+            await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
+            clock["now"] = deadline + timedelta(seconds=1)
+            release_root.set()
+            result = await asyncio.wait_for(action_task, timeout=5)
+            await worker.commit()
+        finally:
+            await _release_root_and_cleanup(release_root, lock_task, action_task)
+
+    assert (result.outcome, result.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.expired,
+    )
+    assert result.terminal is not None and result.terminal.finish_reason is FinishReason.expired
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status,
+            AIGameSession.finish_reason,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+        allocations = (await observe.execute(
+            select(func.count()).select_from(AIGameRewardAllocation).where(
+                AIGameRewardAllocation.session_id == session_id,
+            )
+        )).scalar_one()
+        ledger = (await observe.execute(
+            select(func.count()).select_from(LedgerEntry)
+        )).scalar_one()
+
+    assert root == ("finished", "expired", None, None, None, None)
+    assert settlement == ("void", "expired")
+    assert (turns, allocations, ledger) == (0, 0, 0)
 
 
 async def test_pg_fifth_question_quota_claims_exactly_once(pg_sessions, monkeypatch):
