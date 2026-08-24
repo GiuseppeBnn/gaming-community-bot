@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -53,17 +54,141 @@ def _rewards():
     return importlib.import_module("services.ai_game_rewards")
 
 
+def _first_non_cancelled_error(results: tuple[Any, ...]) -> BaseException | None:
+    """Return a task/rollback failure, excluding cancellation requested by cleanup."""
+    return next(
+        (
+            result for result in results
+            if isinstance(result, BaseException)
+            and not isinstance(result, asyncio.CancelledError)
+        ),
+        None,
+    )
+
+
+async def _cleanup_actor_race(
+    tasks: tuple[asyncio.Task[Any], ...],
+    actor_sessions: tuple[Any, ...],
+    *,
+    finish_before_cancel: tuple[asyncio.Task[Any], ...] = (),
+) -> BaseException | None:
+    """Drain race workers and roll back their sessions without masking a primary failure."""
+    if finish_before_cancel:
+        await asyncio.wait(finish_before_cancel, timeout=3)
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    cleanup_error: BaseException | None = None
+    try:
+        task_results = tuple(await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=3,
+        ))
+    except BaseException as exc:
+        cleanup_error = exc
+    else:
+        cleanup_error = _first_non_cancelled_error(task_results)
+    try:
+        rollback_results = tuple(await asyncio.wait_for(
+            asyncio.gather(
+                *(db_session.rollback() for db_session in actor_sessions),
+                return_exceptions=True,
+            ),
+            timeout=3,
+        ))
+    except BaseException as exc:
+        if cleanup_error is None:
+            cleanup_error = exc
+    else:
+        if cleanup_error is None:
+            cleanup_error = _first_non_cancelled_error(rollback_results)
+    return cleanup_error
+
+
+@asynccontextmanager
+async def _managed_actor_race(
+    tasks: tuple[asyncio.Task[Any], ...],
+    actor_sessions: tuple[Any, ...],
+):
+    """Ensure every explicit actor task and session is drained on both race paths."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_error = await _cleanup_actor_race(tasks, actor_sessions)
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+
+async def _run_actor_race(
+    tasks: tuple[asyncio.Task[Any], ...],
+    actor_sessions: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    """Run explicit concurrent actors and preserve their error over cleanup failures."""
+    async with _managed_actor_race(tasks, actor_sessions):
+        async with asyncio.timeout(10):
+            return tuple(await asyncio.gather(*tasks))
+
+
 async def _release_root_and_cleanup(
     release_root: asyncio.Event,
     lock_task: asyncio.Task[Any],
     action_task: asyncio.Task[Any] | None,
-) -> None:
-    """Unblock the database race and leave no task behind on a failed barrier."""
+    actor_sessions: tuple[Any, ...],
+) -> BaseException | None:
+    """Unblock root-lock tests, then use the shared bounded actor cleanup."""
     release_root.set()
-    if action_task is not None and not action_task.done():
-        action_task.cancel()
     tasks = (lock_task,) if action_task is None else (lock_task, action_task)
-    await asyncio.gather(*tasks, return_exceptions=True)
+    return await _cleanup_actor_race(
+        tasks, actor_sessions, finish_before_cancel=(lock_task,),
+    )
+
+
+@asynccontextmanager
+async def _managed_root_lock_race(
+    release_root: asyncio.Event,
+    lock_task: asyncio.Task[Any],
+    action_task: list[asyncio.Task[Any] | None],
+    actor_sessions: tuple[Any, ...],
+):
+    """Release a held root and drain actors without replacing the body failure."""
+    primary_error: BaseException | None = None
+    try:
+        yield
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        cleanup_error = await _release_root_and_cleanup(
+            release_root, lock_task, action_task[0], actor_sessions,
+        )
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
+
+
+async def test_pg_root_lock_cleanup_surfaces_unawaited_locker_failure():
+    """A successful body must not conceal a completed root-lock worker failure."""
+    released = asyncio.Event()
+    root_locked = asyncio.Event()
+
+    class ActorSession:
+        async def rollback(self) -> None:
+            return None
+
+    async def fail_after_release() -> None:
+        root_locked.set()
+        await released.wait()
+        raise RuntimeError("locker failed after release")
+
+    action_task: list[asyncio.Task[Any] | None] = [None]
+    lock_task = asyncio.create_task(fail_after_release())
+    with pytest.raises(RuntimeError, match="locker failed after release"):
+        async with _managed_root_lock_race(
+            released, lock_task, action_task, (ActorSession(),),
+        ):
+            await asyncio.wait_for(root_locked.wait(), timeout=3)
 
 
 async def _setup_running(
@@ -118,6 +243,18 @@ async def _setup_running(
             update(AIGameSession)
             .where(AIGameSession.id == created.session_id)
             .values(next_turn_no=len(turns) + 1)
+        )
+        await setup.execute(
+            update(TwentyQuestionsGame)
+            .where(TwentyQuestionsGame.session_id == created.session_id)
+            .values(
+                questions_used=sum(
+                    kind == TurnKind.question.value for _, kind, _, _ in turns
+                ),
+                guesses_used=sum(
+                    kind == TurnKind.guess.value for _, kind, _, _ in turns
+                ),
+            )
         )
         await setup.commit()
         return created.session_id
@@ -190,6 +327,30 @@ def _synchronize_first_turn_claim(monkeypatch, sessions) -> None:
             return await _original(statement, *args, **kwargs)
 
         monkeypatch.setattr(db_session, "execute", execute)
+
+
+def _synchronize_first_account_lock(monkeypatch, rewards, sessions):
+    """Hold each actor immediately before its first real User -> Wallet lock helper call."""
+    original = rewards._lock_and_validate_users_then_wallets
+    actor_positions = {id(db_session): index for index, db_session in enumerate(sessions)}
+    reached = tuple(asyncio.Event() for _ in sessions)
+    all_reached = asyncio.Event()
+    release = asyncio.Event()
+    entered: set[int] = set()
+
+    async def synchronized_lock(db_session, participants):
+        position = actor_positions.get(id(db_session))
+        if position is None or position in entered:
+            return await original(db_session, participants)
+        entered.add(position)
+        reached[position].set()
+        if len(entered) == len(sessions):
+            all_reached.set()
+        await asyncio.wait_for(release.wait(), timeout=3)
+        return await original(db_session, participants)
+
+    monkeypatch.setattr(rewards, "_lock_and_validate_users_then_wallets", synchronized_lock)
+    return reached, all_reached, release
 
 
 def _targets_table(statement, table_name: str) -> bool:
@@ -269,9 +430,12 @@ async def test_pg_terminalize_two_victories_claim_once_and_pay_once(
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(
-            asyncio.gather(run(first), run(second)),
-            timeout=10,
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(run(first)),
+                asyncio.create_task(run(second)),
+            ),
+            (first, second),
         )
 
     assert sorted(result.transitioned for result in (first_result, second_result)) == [False, True]
@@ -330,9 +494,12 @@ async def test_pg_terminalize_victory_vs_terminal_close_persists_one_reason_and_
             await expirer.commit()
             return result
 
-        victory, competing_close = await asyncio.wait_for(
-            asyncio.gather(run_victory(), run_competing_close()),
-            timeout=10,
+        victory, competing_close = await _run_actor_race(
+            (
+                asyncio.create_task(run_victory()),
+                asyncio.create_task(run_competing_close()),
+            ),
+            (victor, expirer),
         )
 
     assert sorted(result.transitioned for result in (victory, competing_close)) == [False, True]
@@ -386,9 +553,12 @@ async def test_pg_concurrent_replay_reconstructs_one_immutable_settlement(
             await db_session.commit()
             return result
 
-        first_replay, second_replay = await asyncio.wait_for(
-            asyncio.gather(replay(one), replay(two)),
-            timeout=10,
+        first_replay, second_replay = await _run_actor_race(
+            (
+                asyncio.create_task(replay(one)),
+                asyncio.create_task(replay(two)),
+            ),
+            (one, two),
         )
 
     assert first.transitioned
@@ -441,7 +611,7 @@ async def test_pg_kth_payout_failure_rolls_back_for_an_independent_observer(
                 raise PayoutFault("second credit")
             result = await original(*args, **kwargs)
             first_write.set()
-            await observer_checked.wait()
+            await asyncio.wait_for(observer_checked.wait(), timeout=3)
             return result
 
         monkeypatch.setattr(rewards.economy_service, "credit", fail_second)
@@ -455,13 +625,14 @@ async def test_pg_kth_payout_failure_rolls_back_for_an_independent_observer(
                 raise PayoutFault("second grant")
             result = await original(*args, **kwargs)
             first_write.set()
-            await observer_checked.wait()
+            await asyncio.wait_for(observer_checked.wait(), timeout=3)
             return result
 
         monkeypatch.setattr(rewards.xp_service, "grant_xp", fail_second)
 
-    async def fail_and_rollback():
-        async with pg_sessions() as failing:
+    async with pg_sessions() as failing:
+
+        async def fail_and_rollback():
             await _append_winning_turn(failing, session_id)
             with pytest.raises(PayoutFault):
                 await rewards.terminalize(
@@ -473,32 +644,41 @@ async def test_pg_kth_payout_failure_rolls_back_for_an_independent_observer(
             await failing.rollback()
             rolled_back.set()
 
-    async def observe_uncommitted_then_rolled_back():
-        await first_write.wait()
-        before = await _settlement_facts(pg_sessions, session_id)
-        assert before == {
-            "root": ("running", None, 4),
-            "winner": None,
-            "settlement": ("pending", None, 0, 0, 0, 0, 0, 0, 0, 0, 0),
-            "allocations": 0,
-            "ledger": 0,
-            "turns": 3,
-            "wallets": {10: 0, 20: 0},
-            "xp": {10: 0, 20: 0},
-        }
-        observer_checked.set()
-        await rolled_back.wait()
-        after = await _settlement_facts(pg_sessions, session_id)
-        assert after == before
+        async def observe_uncommitted_then_rolled_back():
+            await asyncio.wait_for(first_write.wait(), timeout=3)
+            before = await _settlement_facts(pg_sessions, session_id)
+            assert before == {
+                "root": ("running", None, 4),
+                "winner": None,
+                "settlement": ("pending", None, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                "allocations": 0,
+                "ledger": 0,
+                "turns": 3,
+                "wallets": {10: 0, 20: 0},
+                "xp": {10: 0, 20: 0},
+            }
+            observer_checked.set()
+            await asyncio.wait_for(rolled_back.wait(), timeout=3)
+            after = await _settlement_facts(pg_sessions, session_id)
+            assert after == before
 
-    await asyncio.wait_for(
-        asyncio.gather(fail_and_rollback(), observe_uncommitted_then_rolled_back()),
-        timeout=10,
-    )
+        try:
+            await _run_actor_race(
+                (
+                    asyncio.create_task(fail_and_rollback()),
+                    asyncio.create_task(observe_uncommitted_then_rolled_back()),
+                ),
+                (failing,),
+            )
+        finally:
+            if failure_at == "credit":
+                monkeypatch.setattr(rewards.economy_service, "credit", original)
+            else:
+                monkeypatch.setattr(rewards.xp_service, "grant_xp", original)
     if failure_at == "credit":
-        monkeypatch.setattr(rewards.economy_service, "credit", original)
+        assert rewards.economy_service.credit is original
     else:
-        monkeypatch.setattr(rewards.xp_service, "grant_xp", original)
+        assert rewards.xp_service.grant_xp is original
 
     async with pg_sessions() as retry:
         await _append_winning_turn(retry, session_id)
@@ -729,11 +909,12 @@ async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not
             (20, TurnKind.guess.value, "Portal 2", '{"correct":true}'),
         ),
     )
-    start = asyncio.Barrier(2)
     async with pg_sessions() as first, pg_sessions() as second:
+        reached_account_lock, all_reached_account_lock, release_account_lock = (
+            _synchronize_first_account_lock(monkeypatch, rewards, (first, second))
+        )
 
         async def settle(db_session, session_id: int, winner_tg_id: int):
-            await start.wait()
             result = await rewards.terminalize(
                 db_session,
                 session_id=session_id,
@@ -747,16 +928,12 @@ async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not
             asyncio.create_task(settle(first, first_session_id, 10)),
             asyncio.create_task(settle(second, second_session_id, 20)),
         )
-        try:
+        async with _managed_actor_race(tasks, (first, second)):
+            await asyncio.wait_for(all_reached_account_lock.wait(), timeout=3)
+            assert all(event.is_set() for event in reached_account_lock)
+            release_account_lock.set()
             first_result, second_result = await asyncio.wait_for(
                 asyncio.gather(*tasks), timeout=10,
-            )
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.wait_for(
-                asyncio.gather(*tasks, return_exceptions=True), timeout=3,
             )
 
     assert first_result.transitioned and second_result.transitioned
@@ -766,6 +943,18 @@ async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not
         ).where(AIGameSession.id.in_((first_session_id, second_session_id))).order_by(
             AIGameSession.id.asc(),
         ))).all()
+        settlements = (await observe.execute(select(
+            AIGameRewardSettlement.session_id,
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(
+            AIGameRewardSettlement.session_id.in_((first_session_id, second_session_id)),
+        ).order_by(AIGameRewardSettlement.session_id.asc()))).all()
+        settlement_count = (await observe.execute(
+            select(func.count()).select_from(AIGameRewardSettlement).where(
+                AIGameRewardSettlement.session_id.in_((first_session_id, second_session_id)),
+            )
+        )).scalar_one()
         allocations = (await observe.execute(select(
             AIGameRewardAllocation.session_id,
             AIGameRewardAllocation.user_tg_id,
@@ -791,6 +980,11 @@ async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not
         (first_session_id, "finished", "victory"),
         (second_session_id, "finished", "victory"),
     ]
+    assert settlements == [
+        (first_session_id, "settled", "victory"),
+        (second_session_id, "settled", "victory"),
+    ]
+    assert settlement_count == 2
     assert allocations == [
         (first_session_id, 10, 84, 10),
         (first_session_id, 20, 84, 10),
@@ -939,11 +1133,13 @@ async def test_pg_question_claim_after_root_lock_expiry_is_terminalized_before_l
             return await original_execute(statement, *args, **kwargs)
 
         monkeypatch.setattr(worker, "execute", observe_claim_lock)
-        action_task: asyncio.Task[Any] | None = None
+        action_task: list[asyncio.Task[Any] | None] = [None]
         lock_task = asyncio.create_task(hold_root())
-        try:
+        async with _managed_root_lock_race(
+            release_root, lock_task, action_task, (locker, worker),
+        ):
             await asyncio.wait_for(root_locked.wait(), timeout=3)
-            action_task = asyncio.create_task(ai_game_service.begin_question(
+            action_task[0] = asyncio.create_task(ai_game_service.begin_question(
                 worker,
                 session_id=session_id,
                 user_tg_id=10,
@@ -952,10 +1148,8 @@ async def test_pg_question_claim_after_root_lock_expiry_is_terminalized_before_l
             await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
             clock["now"] = deadline + timedelta(seconds=1)
             release_root.set()
-            result = await asyncio.wait_for(action_task, timeout=5)
+            result = await asyncio.wait_for(action_task[0], timeout=5)
             await worker.commit()
-        finally:
-            await _release_root_and_cleanup(release_root, lock_task, action_task)
 
     assert (result.outcome, result.reason) == (
         TurnOutcome.rejected, TurnRejectReason.expired,
@@ -1041,11 +1235,13 @@ async def test_pg_question_completion_after_root_lock_expiry_cannot_append(
             return await original_execute(statement, *args, **kwargs)
 
         monkeypatch.setattr(worker, "execute", observe_append_lock)
-        action_task: asyncio.Task[Any] | None = None
+        action_task: list[asyncio.Task[Any] | None] = [None]
         lock_task = asyncio.create_task(hold_root())
-        try:
+        async with _managed_root_lock_race(
+            release_root, lock_task, action_task, (locker, worker),
+        ):
             await asyncio.wait_for(root_locked.wait(), timeout=3)
-            action_task = asyncio.create_task(ai_game_service.complete_question(
+            action_task[0] = asyncio.create_task(ai_game_service.complete_question(
                 worker,
                 claim=started.claim,
                 verdict=QuestionVerdict.si,
@@ -1053,10 +1249,8 @@ async def test_pg_question_completion_after_root_lock_expiry_cannot_append(
             await asyncio.wait_for(worker_reached_append_lock.wait(), timeout=3)
             clock["now"] = deadline + timedelta(seconds=1)
             release_root.set()
-            result = await asyncio.wait_for(action_task, timeout=5)
+            result = await asyncio.wait_for(action_task[0], timeout=5)
             await worker.commit()
-        finally:
-            await _release_root_and_cleanup(release_root, lock_task, action_task)
 
     assert (result.outcome, result.reason) == (
         TurnOutcome.rejected, TurnRejectReason.expired,
@@ -1124,11 +1318,13 @@ async def test_pg_wrong_guess_after_root_lock_expiry_cannot_append(
             return await original_execute(statement, *args, **kwargs)
 
         monkeypatch.setattr(worker, "execute", observe_claim_lock)
-        action_task: asyncio.Task[Any] | None = None
+        action_task: list[asyncio.Task[Any] | None] = [None]
         lock_task = asyncio.create_task(hold_root())
-        try:
+        async with _managed_root_lock_race(
+            release_root, lock_task, action_task, (locker, worker),
+        ):
             await asyncio.wait_for(root_locked.wait(), timeout=3)
-            action_task = asyncio.create_task(ai_game_service.submit_guess(
+            action_task[0] = asyncio.create_task(ai_game_service.submit_guess(
                 worker,
                 session_id=session_id,
                 user_tg_id=10,
@@ -1137,10 +1333,8 @@ async def test_pg_wrong_guess_after_root_lock_expiry_cannot_append(
             await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
             clock["now"] = deadline + timedelta(seconds=1)
             release_root.set()
-            result = await asyncio.wait_for(action_task, timeout=5)
+            result = await asyncio.wait_for(action_task[0], timeout=5)
             await worker.commit()
-        finally:
-            await _release_root_and_cleanup(release_root, lock_task, action_task)
 
     assert (result.outcome, result.reason) == (
         TurnOutcome.rejected, TurnRejectReason.expired,
@@ -1208,11 +1402,13 @@ async def test_pg_winning_guess_after_root_lock_expiry_cannot_settle_victory(
             return await original_execute(statement, *args, **kwargs)
 
         monkeypatch.setattr(worker, "execute", observe_claim_lock)
-        action_task: asyncio.Task[Any] | None = None
+        action_task: list[asyncio.Task[Any] | None] = [None]
         lock_task = asyncio.create_task(hold_root())
-        try:
+        async with _managed_root_lock_race(
+            release_root, lock_task, action_task, (locker, worker),
+        ):
             await asyncio.wait_for(root_locked.wait(), timeout=3)
-            action_task = asyncio.create_task(ai_game_service.submit_guess(
+            action_task[0] = asyncio.create_task(ai_game_service.submit_guess(
                 worker,
                 session_id=session_id,
                 user_tg_id=10,
@@ -1221,10 +1417,8 @@ async def test_pg_winning_guess_after_root_lock_expiry_cannot_settle_victory(
             await asyncio.wait_for(worker_reached_claim_lock.wait(), timeout=3)
             clock["now"] = deadline + timedelta(seconds=1)
             release_root.set()
-            result = await asyncio.wait_for(action_task, timeout=5)
+            result = await asyncio.wait_for(action_task[0], timeout=5)
             await worker.commit()
-        finally:
-            await _release_root_and_cleanup(release_root, lock_task, action_task)
 
     assert (result.outcome, result.reason) == (
         TurnOutcome.rejected, TurnRejectReason.expired,
@@ -1281,10 +1475,17 @@ async def test_pg_fifth_question_quota_claims_exactly_once(pg_sessions, monkeypa
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(asyncio.gather(
-            claim_one(first, "Is the fifth question accepted first?"),
-            claim_one(second, "Can another fifth question slip through?"),
-        ), timeout=10)
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(
+                    claim_one(first, "Is the fifth question accepted first?"),
+                ),
+                asyncio.create_task(
+                    claim_one(second, "Can another fifth question slip through?"),
+                ),
+            ),
+            (first, second),
+        )
 
     results = (first_result, second_result)
     assert sum(result.outcome is TurnOutcome.claimed for result in results) == 1
@@ -1305,7 +1506,30 @@ async def test_pg_fifth_question_quota_claims_exactly_once(pg_sessions, monkeypa
             user_tg_id=10,
             question="Does a sixth question exceed the personal quota?",
         )
-    assert (quota.questions_used, quota.questions_left) == (5, 0)
+        ledger = (await observe.execute(
+            select(func.count()).select_from(AIGameTurn).where(
+                AIGameTurn.session_id == session_id,
+            )
+        )).scalar_one()
+        projection = (await observe.execute(select(
+            TwentyQuestionsGame.questions_used,
+            TwentyQuestionsGame.guesses_used,
+        ).where(TwentyQuestionsGame.session_id == session_id))).one()
+        lease = (await observe.execute(select(
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+    assert (
+        quota.questions_used,
+        quota.questions_left,
+        quota.guesses_used,
+        quota.guesses_left,
+        ledger,
+        projection,
+        lease,
+    ) == (5, 0, 0, 2, 5, (5, 0), (None, None, None, None))
     assert (sixth.outcome, sixth.reason) == (
         TurnOutcome.rejected, TurnRejectReason.question_quota,
     )
@@ -1333,10 +1557,13 @@ async def test_pg_second_guess_quota_is_atomic_across_independent_sessions(
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(asyncio.gather(
-            guess_one(first, "Second wrong title one"),
-            guess_one(second, "Second wrong title two"),
-        ), timeout=10)
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(guess_one(first, "Second wrong title one")),
+                asyncio.create_task(guess_one(second, "Second wrong title two")),
+            ),
+            (first, second),
+        )
 
     assert sum(result.outcome is TurnOutcome.recorded for result in (
         first_result, second_result,
@@ -1346,11 +1573,35 @@ async def test_pg_second_guess_quota_is_atomic_across_independent_sessions(
     assert rejected.reason is TurnRejectReason.guess_quota
     async with pg_sessions() as observe:
         quota = await ai_game_service.get_personal_quota(observe, session_id, 10)
-        count = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+        guess_ledger = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
             AIGameTurn.session_id == session_id,
             AIGameTurn.kind == TurnKind.guess.value,
         ))).scalar_one()
-    assert (quota.guesses_used, quota.guesses_left, count) == (2, 0, 2)
+        ledger = (await observe.execute(
+            select(func.count()).select_from(AIGameTurn).where(
+                AIGameTurn.session_id == session_id,
+            )
+        )).scalar_one()
+        projection = (await observe.execute(select(
+            TwentyQuestionsGame.questions_used,
+            TwentyQuestionsGame.guesses_used,
+        ).where(TwentyQuestionsGame.session_id == session_id))).one()
+        lease = (await observe.execute(select(
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+    assert (
+        quota.questions_used,
+        quota.questions_left,
+        quota.guesses_used,
+        quota.guesses_left,
+        ledger,
+        guess_ledger,
+        projection,
+        lease,
+    ) == (0, 5, 2, 0, 2, 2, (0, 2), (None, None, None, None))
 
 
 async def test_pg_duplicate_guess_hash_race_returns_free_typed_rejection(
@@ -1371,12 +1622,14 @@ async def test_pg_duplicate_guess_hash_race_returns_free_typed_rejection(
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(
-            asyncio.gather(
-                same_guess(first, "The identical wrong title"),
-                same_guess(second, " the  identical wrong title! "),
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(same_guess(first, "The identical wrong title")),
+                asyncio.create_task(
+                    same_guess(second, " the  identical wrong title! "),
+                ),
             ),
-            timeout=10,
+            (first, second),
         )
 
     assert sum(result.outcome is TurnOutcome.recorded for result in (
@@ -1418,10 +1671,13 @@ async def test_pg_duplicate_question_hash_race_reuses_one_free_turn(
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(asyncio.gather(
-            start_one(first, "Il gioco usa portali?"),
-            start_one(second, "  il gioco   usa portali?! "),
-        ), timeout=10)
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(start_one(first, "Il gioco usa portali?")),
+                asyncio.create_task(start_one(second, "  il gioco   usa portali?! ")),
+            ),
+            (first, second),
+        )
 
     assert sum(result.outcome is TurnOutcome.claimed for result in (
         first_result, second_result,
@@ -1602,10 +1858,13 @@ async def test_two_correct_aliases_create_one_winner_and_one_settlement(
             await db_session.commit()
             return result
 
-        first_result, second_result = await asyncio.wait_for(asyncio.gather(
-            answer(first, 10, "Portal 2"),
-            answer(second, 20, "portal two"),
-        ), timeout=10)
+        first_result, second_result = await _run_actor_race(
+            (
+                asyncio.create_task(answer(first, 10, "Portal 2")),
+                asyncio.create_task(answer(second, 20, "portal two")),
+            ),
+            (first, second),
+        )
 
     winner_result = next(result for result in (first_result, second_result)
                          if result.outcome is TurnOutcome.recorded)
@@ -1618,3 +1877,23 @@ async def test_two_correct_aliases_create_one_winner_and_one_settlement(
     assert facts["winner"] == winner_result.terminal.winner_tg_id
     assert facts["settlement"][:5] == ("settled", "victory", 1, 0, 0)
     assert facts["allocations"] == facts["ledger"] == facts["turns"] == 1
+    winner_tg_id = winner_result.terminal.winner_tg_id
+    assert facts["wallets"] == {
+        10: 100 if winner_tg_id == 10 else 0,
+        20: 100 if winner_tg_id == 20 else 0,
+    }
+    assert facts["xp"] == {
+        10: 10 if winner_tg_id == 10 else 0,
+        20: 10 if winner_tg_id == 20 else 0,
+    }
+    async with pg_sessions() as observe:
+        allocation_coins, allocation_xp = (await observe.execute(select(
+            func.sum(AIGameRewardAllocation.coins),
+            func.sum(AIGameRewardAllocation.xp),
+        ).where(AIGameRewardAllocation.session_id == session_id))).one()
+        ledger_coins = (await observe.execute(select(
+            func.sum(LedgerEntry.amount),
+        ).where(
+            LedgerEntry.description == f"Premio gioco segreto di Alduino #{session_id}",
+        ))).scalar_one()
+    assert (allocation_coins, ledger_coins, allocation_xp) == (100, 100, 10)
