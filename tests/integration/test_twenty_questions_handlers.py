@@ -12,6 +12,21 @@ from database.models import AIGameSession, ScheduledTask, TwentyQuestionsGame
 from handlers import twenty_questions as handler
 from handlers.event_types.twenty_questions_type import TwentyQuestionsType
 from services import ai_game_service, group_registry
+from services.ai_game_types import (
+    FinishReason,
+    GameView,
+    PersonalQuota,
+    QuestionClaim,
+    QuestionStartResult,
+    QuestionVerdict,
+    RewardProjection,
+    RewardSummary,
+    TerminalResult,
+    TurnOutcome,
+    TurnRejectReason,
+    TurnResult,
+    TwentyQuestionsPolicy,
+)
 from services.structured_ai import StructuredAIError
 from services.twenty_questions_catalog import GameDossier
 
@@ -79,6 +94,83 @@ class _Sent:
         if self.fail_delete:
             raise RuntimeError("old")
         self.deleted = True
+
+
+class _OrderedSession:
+    """Small transaction boundary double used only for handler sequencing."""
+
+    def __init__(self, events):
+        self.events = events
+        self.pending = False
+        self.fail_commit = False
+
+    async def commit(self):
+        self.events.append("commit")
+        if self.fail_commit:
+            raise RuntimeError("commit failed")
+        self.pending = False
+
+    async def rollback(self):
+        self.events.append("rollback")
+        self.pending = False
+
+
+class _PublisherBot:
+    def __init__(self, events, *, fail_edit=False):
+        self.events = events
+        self.fail_edit = fail_edit
+        self.edits = []
+
+    async def edit_message_text(self, **kwargs):
+        assert not kwargs.pop("_pending", False)
+        self.events.append("edit")
+        if self.fail_edit:
+            raise RuntimeError("not editable")
+        self.edits.append(kwargs)
+
+
+def _v2_view(*, anchor=77, status="running"):
+    policy = TwentyQuestionsPolicy(2, 5, 2, 100, 3_000, 600, 2_000, 10)
+    projection = RewardProjection(1, 0, 0, 100, 0, 100, 100, 0)
+    return GameView(
+        session_id=7,
+        title="V2",
+        status=status,
+        group_id=-1001,
+        anchor_message_id=anchor,
+        expires_at=None,
+        finish_reason=None,
+        policy=policy,
+        projection=projection,
+        participant_count=1,
+        question_count=0,
+        wrong_guess_count=0,
+        recent_turns=(),
+        revealed_answer=None,
+        winner_tg_id=None,
+    )
+
+
+def _terminal(*, anchor=77, winner=42):
+    return TerminalResult(
+        session_id=7,
+        transitioned=True,
+        finish_reason=FinishReason.victory,
+        group_id=-1001,
+        anchor_message_id=anchor,
+        title="V2",
+        answer="Portal 2",
+        winner_tg_id=winner,
+        reward=RewardSummary("settled", 1, 0, 0, 100, 0, 100, 100, 100, 0),
+        allocations=(),
+    )
+
+
+def _v2_anchor_snapshot():
+    return SimpleNamespace(
+        session=SimpleNamespace(id=7),
+        game=SimpleNamespace(rules_version=2),
+    )
 
 
 class _Callback:
@@ -307,3 +399,747 @@ class TestPlayHandler:
         snapshot = await ai_game_service.get_snapshot(session, session_id)
         assert snapshot.session.anchor_message_id == 88
         assert snapshot.session.status == "finished"
+
+
+class TestV2PostCommitPresentation:
+    async def test_question_commits_before_network_reply_and_refresh(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        quota = PersonalQuota(0, 5, 0, 2, False)
+        claim = QuestionClaim(7, "token", 42, "Domanda?", "domanda", "a" * 64, '"d"', ())
+        started = QuestionStartResult(7, TurnOutcome.claimed, None, quota, claim=claim)
+        completed = TurnResult(
+            7,
+            TurnOutcome.recorded,
+            None,
+            PersonalQuota(1, 4, 0, 2, True),
+            verdict=QuestionVerdict.si,
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def begin(*args, **kwargs):
+            db_session.pending = True
+            return started
+
+        async def classify(*args, **kwargs):
+            assert not db_session.pending
+            events.append("network")
+            return SimpleNamespace(value=QuestionVerdict.si)
+
+        async def complete(*args, **kwargs):
+            db_session.pending = True
+            return completed
+
+        async def latest(*args, **kwargs):
+            assert not db_session.pending
+            events.append("view")
+            db_session.pending = True
+            return _v2_view()
+
+        async def refresh(*args, **kwargs):
+            assert not db_session.pending
+            events.append("refresh")
+
+        async def legacy_claim(*args, **kwargs):
+            raise AssertionError("v2 invoked legacy claim_turn")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "begin_question", begin)
+        monkeypatch.setattr(ai_game_service, "classify_question", classify)
+        monkeypatch.setattr(ai_game_service, "complete_question", complete)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(ai_game_service, "claim_turn", legacy_claim)
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        monkeypatch.setattr(
+            handler,
+            "GeminiStructuredProvider",
+            lambda: (_ for _ in ()).throw(AssertionError("v2 constructed Gemini")),
+        )
+        message = _Message("Domanda?")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+            message.said.append(text)
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["commit", "network", "commit", "reply", "view", "commit", "refresh"]
+
+    async def test_reused_question_replies_after_commit_without_refresh(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        result = QuestionStartResult(
+            7,
+            TurnOutcome.reused,
+            None,
+            PersonalQuota(1, 4, 0, 2, True),
+            cached_verdict=QuestionVerdict.no,
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def begin(*args, **kwargs):
+            db_session.pending = True
+            return result
+
+        async def refresh(*args, **kwargs):
+            raise AssertionError("reused question must not refresh the public card")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "begin_question", begin)
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        message = _Message("La domanda già fatta?")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+            assert "già fatta" in text
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["commit", "reply"]
+
+    async def test_terminal_rejection_commits_before_terminal_publish_and_reply(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        result = QuestionStartResult(
+            7,
+            TurnOutcome.rejected,
+            TurnRejectReason.expired,
+            PersonalQuota(0, 5, 0, 2, False),
+            terminal=_terminal(winner=None),
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def begin(*args, **kwargs):
+            db_session.pending = True
+            return result
+
+        async def publish(*args, **kwargs):
+            assert not db_session.pending
+            events.append("publish")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "begin_question", begin)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+        message = _Message(" ")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["commit", "publish", "reply"]
+
+    async def test_provider_failure_commits_abandon_before_reply_without_refresh(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        claim = QuestionClaim(7, "token", 42, "Domanda?", "domanda", "a" * 64, '"d"', ())
+        started = QuestionStartResult(
+            7,
+            TurnOutcome.claimed,
+            None,
+            PersonalQuota(0, 5, 0, 2, False),
+            claim=claim,
+        )
+        failed = TurnResult(
+            7,
+            TurnOutcome.rejected,
+            TurnRejectReason.providers_unavailable,
+            PersonalQuota(0, 5, 0, 2, False),
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def begin(*args, **kwargs):
+            db_session.pending = True
+            return started
+
+        async def classify(*args, **kwargs):
+            assert not db_session.pending
+            events.append("network")
+            raise StructuredAIError("down")
+
+        async def abandon(*args, **kwargs):
+            db_session.pending = True
+            events.append("abandon")
+            return failed
+
+        async def refresh(*args, **kwargs):
+            events.append("refresh")
+
+        async def legacy_claim(*args, **kwargs):
+            raise AssertionError("v2 invoked legacy claim_turn")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "begin_question", begin)
+        monkeypatch.setattr(ai_game_service, "classify_question", classify)
+        monkeypatch.setattr(ai_game_service, "abandon_claim", abandon)
+        monkeypatch.setattr(ai_game_service, "claim_turn", legacy_claim)
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        message = _Message("Domanda?")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["commit", "network", "abandon", "commit", "reply"]
+
+    async def test_guess_commits_before_success_reply_and_terminal_publish(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        result = TurnResult(
+            7,
+            TurnOutcome.recorded,
+            None,
+            PersonalQuota(0, 5, 1, 1, True),
+            correct=True,
+            terminal=_terminal(),
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def submit(*args, **kwargs):
+            db_session.pending = True
+            events.append("submit")
+            return result
+
+        async def publish(*args, **kwargs):
+            assert not db_session.pending
+            events.append("publish")
+
+        async def legacy_claim(*args, **kwargs):
+            raise AssertionError("v2 invoked legacy claim_turn")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "submit_guess", submit)
+        monkeypatch.setattr(ai_game_service, "claim_turn", legacy_claim)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+        message = _Message("RISPOSTA: Portal 2")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["submit", "commit", "reply", "publish"]
+
+    async def test_recorded_guess_closes_read_before_refreshing_live_card(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        result = TurnResult(
+            7,
+            TurnOutcome.recorded,
+            None,
+            PersonalQuota(0, 5, 1, 1, True),
+            correct=False,
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def submit(*args, **kwargs):
+            db_session.pending = True
+            events.append("submit")
+            return result
+
+        async def latest(*args, **kwargs):
+            assert not db_session.pending
+            events.append("view")
+            db_session.pending = True
+            return _v2_view()
+
+        async def refresh(*args, **kwargs):
+            assert not db_session.pending
+            events.append("refresh")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "submit_guess", submit)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        message = _Message("RISPOSTA: non è Portal 2")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["submit", "commit", "reply", "view", "commit", "refresh"]
+
+    async def test_guess_commit_failure_rolls_back_without_reply_or_publish(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        db_session.fail_commit = True
+        result = TurnResult(
+            7,
+            TurnOutcome.recorded,
+            None,
+            PersonalQuota(0, 5, 1, 1, True),
+            correct=True,
+            terminal=_terminal(),
+        )
+
+        async def find(*args, **kwargs):
+            return _v2_anchor_snapshot()
+
+        async def submit(*args, **kwargs):
+            db_session.pending = True
+            return result
+
+        async def publish(*args, **kwargs):
+            events.append("publish")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "submit_guess", submit)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+        message = _Message("RISPOSTA: Portal 2")
+
+        async def reply(text, **kwargs):
+            events.append("reply")
+
+        message.reply = reply
+        with pytest.raises(RuntimeError, match="commit failed"):
+            await handler.play_turn(message, db_session)
+
+        assert events == ["commit", "rollback"]
+
+    async def test_initial_null_anchor_sends_then_cas_commits(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        sent = _Sent(message_id=88)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(anchor=None)
+
+        async def send(bot, session, text, **kwargs):
+            assert not db_session.pending
+            events.append("send")
+            return sent
+
+        async def cas(session, session_id, *, expected_message_id, new_message_id):
+            assert expected_message_id is None
+            assert new_message_id == 88
+            db_session.pending = True
+            events.append("cas")
+            return True
+
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(ai_game_service, "move_anchor_if_current", cas)
+        await handler.refresh_group_card(_PublisherBot(events), db_session, _v2_view(anchor=None))
+
+        assert events == ["view", "commit", "send", "cas", "commit"]
+        assert not sent.deleted
+
+    async def test_live_refresh_rereads_and_skips_a_terminal_state_before_telegram(
+        self, monkeypatch,
+    ):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(status="finished")
+
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+
+        await handler.refresh_group_card(_PublisherBot(events), db_session, _v2_view())
+
+        assert events == ["view", "commit"]
+
+    async def test_terminal_without_anchor_reuses_send_cas_without_terminalizing(
+        self, monkeypatch,
+    ):
+        events = []
+        db_session = _OrderedSession(events)
+        sent = _Sent(message_id=88)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(anchor=None, status="finished")
+
+        async def send(bot, session, text, **kwargs):
+            assert not db_session.pending
+            events.append("send")
+            return sent
+
+        async def cas(session, session_id, *, expected_message_id, new_message_id):
+            assert expected_message_id is None
+            assert new_message_id == 88
+            db_session.pending = True
+            events.append("cas")
+            return True
+
+        async def terminalize(*args, **kwargs):
+            raise AssertionError("terminal publisher must not settle again")
+
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(ai_game_service, "move_anchor_if_current", cas)
+        monkeypatch.setattr(ai_game_service, "terminalize", terminalize)
+        await handler.publish_terminal(_PublisherBot(events), db_session, _terminal(anchor=None, winner=None))
+
+        assert events == ["commit", "view", "commit", "send", "cas", "commit"]
+        assert not sent.deleted
+
+    async def test_edit_failure_falls_back_to_cas_and_loser_deletes_only_its_orphan(
+        self, monkeypatch,
+    ):
+        events = []
+        db_session = _OrderedSession(events)
+        sent = _Sent(message_id=88)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(anchor=77)
+
+        async def send(bot, session, text, **kwargs):
+            assert not db_session.pending
+            events.append("send")
+            return sent
+
+        async def cas(session, session_id, *, expected_message_id, new_message_id):
+            assert expected_message_id == 77
+            assert new_message_id == 88
+            db_session.pending = True
+            events.append("cas")
+            return False
+
+        async def delete():
+            assert not db_session.pending
+            events.append("delete-orphan")
+            sent.deleted = True
+
+        sent.delete = delete
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(ai_game_service, "move_anchor_if_current", cas)
+        await handler.refresh_group_card(
+            _PublisherBot(events, fail_edit=True), db_session, _v2_view(anchor=77),
+        )
+
+        assert events == [
+            "view", "commit", "edit", "send", "cas", "commit", "delete-orphan",
+        ]
+        assert sent.deleted
+
+    async def test_refresh_send_failure_is_best_effort_after_a_committed_game_state(
+        self, monkeypatch,
+    ):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view()
+
+        async def send(*args, **kwargs):
+            raise RuntimeError("telegram unavailable")
+
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+
+        await handler.refresh_group_card(_PublisherBot(events, fail_edit=True), db_session, _v2_view())
+
+        assert events == ["view", "commit", "edit"]
+
+    async def test_terminal_mention_is_resolved_and_committed_before_telegram(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        bot = _PublisherBot(events)
+
+        async def mention(session, tg_id):
+            assert tg_id == 42
+            db_session.pending = True
+            events.append("mention")
+            return '<a href="tg://user?id=42">Aldo &amp; Lea</a>'
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(status="finished")
+
+        original_edit = bot.edit_message_text
+
+        async def edit(**kwargs):
+            assert not db_session.pending
+            assert "Aldo &amp; Lea" in kwargs["text"]
+            await original_edit(**kwargs)
+
+        bot.edit_message_text = edit
+        monkeypatch.setattr(handler._mentions, "mention", mention)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        await handler.publish_terminal(bot, db_session, _terminal(winner=42))
+
+        assert events == ["mention", "commit", "view", "commit", "edit"]
+
+    async def test_terminal_rereads_current_anchor_before_telegram(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        bot = _PublisherBot(events)
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(anchor=88, status="finished")
+
+        original_edit = bot.edit_message_text
+
+        async def edit(**kwargs):
+            assert not db_session.pending
+            assert kwargs["message_id"] == 88
+            await original_edit(**kwargs)
+
+        bot.edit_message_text = edit
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        await handler.publish_terminal(bot, db_session, _terminal(anchor=77, winner=None))
+
+        assert events == ["commit", "view", "commit", "edit"]
+
+    async def test_terminal_mention_lookup_failure_rolls_back_then_publishes_generic_card(
+        self, monkeypatch,
+    ):
+        events = []
+        db_session = _OrderedSession(events)
+        bot = _PublisherBot(events)
+
+        async def mention(session, tg_id):
+            db_session.pending = True
+            events.append("mention")
+            raise RuntimeError("lookup unavailable")
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(status="finished")
+
+        original_edit = bot.edit_message_text
+
+        async def edit(**kwargs):
+            assert not db_session.pending
+            assert "un partecipante" in kwargs["text"]
+            await original_edit(**kwargs)
+
+        bot.edit_message_text = edit
+        monkeypatch.setattr(handler._mentions, "mention", mention)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        await handler.publish_terminal(bot, db_session, _terminal(winner=42))
+
+        assert events == ["mention", "rollback", "view", "commit", "edit"]
+
+    async def test_missing_winner_user_uses_safe_existing_mention_fallback(self, session):
+        events = []
+        bot = _PublisherBot(events)
+        result = _terminal(winner=987654)
+
+        await handler.publish_terminal(bot, session, result)
+
+        assert bot.edits
+        assert 'href="tg://user?id=987654">giocatore</a>' in bot.edits[-1]["text"]
+
+    async def test_terminal_without_winner_skips_lookup_and_still_publishes(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def mention(*args, **kwargs):
+            raise AssertionError("winner-less terminal must not query a mention")
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return _v2_view(status="finished")
+
+        monkeypatch.setattr(handler._mentions, "mention", mention)
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        await handler.publish_terminal(_PublisherBot(events), db_session, _terminal(winner=None))
+
+        assert events == ["commit", "view", "commit", "edit"]
+
+    async def test_v1_snapshot_read_commits_before_legacy_card_network(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        root = AIGameSession(
+            id=7,
+            game_type="twentyq",
+            title="Legacy",
+            creator_tg_id=1,
+            status="running",
+            next_turn_no=1,
+            group_id=-1001,
+            anchor_message_id=77,
+        )
+        game = TwentyQuestionsGame(
+            session_id=7,
+            catalog_key="legacy",
+            answer="Portal 2",
+            aliases_json="[]",
+            dossier_json="{}",
+            question_limit=20,
+            guess_limit=3,
+            questions_used=0,
+            guesses_used=0,
+            rules_version=1,
+        )
+        snapshot = ai_game_service.GameSnapshot(root, game, ())
+
+        async def find(*args, **kwargs):
+            return snapshot
+
+        async def claim(*args, **kwargs):
+            db_session.pending = True
+            events.append("claim")
+            return "legacy-token"
+
+        async def record(*args, **kwargs):
+            db_session.pending = True
+            events.append("record")
+            return True
+
+        async def fresh(*args, **kwargs):
+            assert not db_session.pending
+            db_session.pending = True
+            events.append("snapshot")
+            return snapshot
+
+        class Bot:
+            async def edit_message_text(self, **kwargs):
+                assert not db_session.pending
+                events.append("edit")
+
+            async def send_message(self, *args, **kwargs):
+                assert not db_session.pending
+                events.append("send")
+                return _Sent()
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "claim_turn", claim)
+        monkeypatch.setattr(ai_game_service, "record_guess", record)
+        monkeypatch.setattr(ai_game_service, "guess_is_correct", lambda *args: False)
+        monkeypatch.setattr(ai_game_service, "get_snapshot", fresh)
+        message = _Message("RISPOSTA: Portal 2", bot=Bot())
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == [
+            "claim", "commit", "record", "commit", "reply", "snapshot", "commit", "edit",
+            "commit",
+        ]
+
+    async def test_v1_legacy_fallback_commits_its_new_anchor_after_send(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+        root = AIGameSession(
+            id=7,
+            game_type="twentyq",
+            title="Legacy",
+            creator_tg_id=1,
+            status="running",
+            next_turn_no=1,
+            group_id=-1001,
+            anchor_message_id=77,
+        )
+        game = TwentyQuestionsGame(
+            session_id=7,
+            catalog_key="legacy",
+            answer="Portal 2",
+            aliases_json="[]",
+            dossier_json="{}",
+            question_limit=20,
+            guess_limit=3,
+            questions_used=0,
+            guesses_used=0,
+            rules_version=1,
+        )
+        snapshot = ai_game_service.GameSnapshot(root, game, ())
+
+        async def find(*args, **kwargs):
+            return snapshot
+
+        async def claim(*args, **kwargs):
+            db_session.pending = True
+            events.append("claim")
+            return "legacy-token"
+
+        async def record(*args, **kwargs):
+            db_session.pending = True
+            events.append("record")
+            return True
+
+        async def fresh(*args, **kwargs):
+            db_session.pending = True
+            events.append("snapshot")
+            return snapshot
+
+        async def move_anchor(*args, **kwargs):
+            db_session.pending = True
+            events.append("move-anchor")
+
+        class Bot:
+            async def edit_message_text(self, **kwargs):
+                assert not db_session.pending
+                events.append("edit")
+                raise RuntimeError("anchor deleted")
+
+            async def send_message(self, *args, **kwargs):
+                assert not db_session.pending
+                events.append("send")
+                return _Sent(message_id=88)
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "claim_turn", claim)
+        monkeypatch.setattr(ai_game_service, "record_guess", record)
+        monkeypatch.setattr(ai_game_service, "guess_is_correct", lambda *args: False)
+        monkeypatch.setattr(ai_game_service, "get_snapshot", fresh)
+        monkeypatch.setattr(ai_game_service, "move_anchor", move_anchor)
+        message = _Message("RISPOSTA: Portal 2", bot=Bot())
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == [
+            "claim", "commit", "record", "commit", "reply", "snapshot", "commit",
+            "edit", "send", "move-anchor", "commit",
+        ]
+
+    async def test_v1_running_game_still_uses_the_isolated_legacy_path(self, session, monkeypatch):
+        await _running(session)
+        monkeypatch.setattr(handler, "GeminiStructuredProvider", _Provider)
+        message = _Message("È in prima persona?")
+
+        await handler.play_turn(message, session)
+
+        assert message.said[-1] == "🐲 <b>SÌ</b>"
