@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from database.models import PollTemplate, PollVote, ScheduledTask
+from database.models import PollTemplate, PollVote, ScheduledTask, User
 from handlers.event_types.poll_type import close_poll, open_poll
 from handlers.poll_vote import on_poll_answer
 from services import economy_service, group_registry, poll_service
@@ -275,6 +275,27 @@ class TestPayVoters:
         await session.commit()
 
         assert await poll_service.pay_voters(session, poll) == 0
+
+    async def test_missing_wallet_skips_only_that_voter_not_the_remaining_prizes(
+        self, session, user_factory,
+    ):
+        """Would fail if ordered prelocking turned poll payout into global validation."""
+        await user_factory(tg_id=ADMIN_ID, username="a")
+        await user_factory(tg_id=10, username="valid")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Q", ["A", "B"], prize_coins=25, prize_xp=10,
+        )
+        session.add_all([
+            PollVote(poll_id=poll.id, user_tg_id=10, option_ids_json="[0]"),
+            PollVote(poll_id=poll.id, user_tg_id=99, option_ids_json="[1]"),
+        ])
+        await session.commit()
+
+        assert await poll_service.pay_voters(session, poll) == 1
+        await session.commit()
+
+        assert await economy_service.get_balance(session, 10) == 25
+        assert (await session.execute(select(User.xp).where(User.tg_id == 10))).scalar_one() == 10
 
 
 # ---------------------------------------------------------------------------

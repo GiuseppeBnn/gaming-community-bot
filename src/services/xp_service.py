@@ -169,8 +169,9 @@ async def grant_xp(
         return XpGrantResult(granted=0, capped=False, new_rank=None)
 
     # Only the capped path does a read-modify-write on the daily counter that
-    # needs serializing; uncapped grants skip the lock (keeps the quiz
-    # award_prizes wallet→xp ordering deadlock-free).
+    # needs a preceding read lock. An uncapped SQL UPDATE still acquires the
+    # database User-row lock, so mixed money+XP callers must establish their
+    # aggregate → Users → Wallets order before calling this function.
     user = await _get_user(session, tg_id, for_update=capped)
     if user is None:
         return XpGrantResult(granted=0, capped=False, new_rank=None)
@@ -201,9 +202,8 @@ async def grant_xp(
         return XpGrantResult(granted=0, capped=was_capped, new_rank=None)
 
     # One UPDATE for everything this grant changes. XP is relative (`xp + granted`)
-    # because the uncapped path takes no User lock by design — that would invert the
-    # canonical Wallet → User order resolve_event relies on — so the arithmetic
-    # itself has to be safe. The daily counter is absolute, but computed from a
+    # so concurrent uncapped grants remain safe even where the caller has no
+    # preceding account lock. The daily counter is absolute, but computed from a
     # value read under the lock, so it is safe too.
     #
     # Writing rather than mutating the instance also keeps repeated grants in one

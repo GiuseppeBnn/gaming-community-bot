@@ -179,6 +179,15 @@ async def test_victory_pays_equal_coins_and_uncapped_xp_once(session, monkeypatc
     """Would fail if terminal CAS, equal rewards, or replay reconstruction regressed."""
     rewards = _rewards()
     session_id = await _running_game(session, monkeypatch)
+    distractor_session_id = await _running_game(
+        session,
+        monkeypatch,
+        users=(30,),
+        turns=(
+            (30, "question", "Domanda estranea?", '{"verdetto":"si"}'),
+            (30, "guess", "Half-Life 2", '{"correct":false}'),
+        ),
+    )
     await session.execute(
         update(User)
         .where(User.tg_id.in_((10, 20)))
@@ -243,9 +252,18 @@ async def test_victory_pays_equal_coins_and_uncapped_xp_once(session, monkeypatc
     assert (await session.execute(select(TwentyQuestionsGame.winner_tg_id).where(
         TwentyQuestionsGame.session_id == session_id,
     ))).scalar_one() == 10
-    wallets, xp = await _wallets_and_xp(session, (10, 20))
-    assert wallets == {10: 84, 20: 84}
-    assert xp == {10: 10, 20: 10}
+    wallets, xp = await _wallets_and_xp(session, (10, 20, 30))
+    assert wallets == {10: 84, 20: 84, 30: 0}
+    assert xp == {10: 10, 20: 10, 30: 0}
+    assert (await session.execute(select(func.count()).select_from(AIGameTurn).where(
+        AIGameTurn.session_id == session_id,
+    ))).scalar_one() == 4
+    assert (await session.execute(select(func.count()).select_from(AIGameTurn).where(
+        AIGameTurn.session_id == distractor_session_id,
+    ))).scalar_one() == 2
+    assert (await session.execute(select(func.count()).select_from(AIGameRewardAllocation).where(
+        AIGameRewardAllocation.session_id == distractor_session_id,
+    ))).scalar_one() == 0
     xp_today = dict((await session.execute(
         select(User.tg_id, User.xp_today).where(User.tg_id.in_((10, 20)))
     )).all())

@@ -278,6 +278,11 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
     xp = poll.prize_xp
     if coins <= 0 and xp <= 0:
         return 0
+    # The close claim normally already owns this root row. Re-lock it here so
+    # direct callers follow the same root → Users → Wallets order before payout.
+    await session.execute(
+        select(PollTemplate.id).where(PollTemplate.id == poll.id).with_for_update()
+    )
     rows = (
         await session.execute(
             select(PollVote.user_tg_id, PollVote.option_ids_json).where(
@@ -285,10 +290,14 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
             )
         )
     ).all()
+    participants = tuple(sorted(
+        uid for uid, opts_json in rows if _nonempty(opts_json)
+    ))
+    # Do not prevalidate: a missing wallet is deliberately handled per voter in
+    # the loop below, so it cannot abort another voter's prize.
+    await economy_service.lock_users_then_wallets(session, participants)
     paid = 0
-    for uid, opts_json in rows:
-        if not _nonempty(opts_json):
-            continue
+    for uid in participants:
         try:
             if coins > 0:
                 await economy_service.credit(

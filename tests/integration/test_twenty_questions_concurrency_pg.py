@@ -14,12 +14,13 @@ from database.models import (
     AIGameRewardSettlement,
     AIGameSession,
     AIGameTurn,
+    BettingOption,
     LedgerEntry,
     TwentyQuestionsGame,
     User,
     Wallet,
 )
-from services import ai_game_service
+from services import ai_game_service, bet_service
 from services.ai_game_types import FinishReason
 from services.twenty_questions_catalog import GameDossier
 
@@ -130,6 +131,16 @@ def _synchronize_terminal_claim(monkeypatch, sessions) -> None:
             return await _original(statement, *args, **kwargs)
 
         monkeypatch.setattr(db_session, "execute", execute)
+
+
+def _targets_table(statement, table_name: str) -> bool:
+    """Recognise the real SQLAlchemy statement that reaches one mapped table."""
+    if getattr(getattr(statement, "table", None), "name", None) == table_name:
+        return True
+    get_final_froms = getattr(statement, "get_final_froms", None)
+    return bool(get_final_froms) and any(
+        getattr(table, "name", None) == table_name for table in get_final_froms()
+    )
 
 
 async def _settlement_facts(pg_sessions, session_id: int) -> dict[str, object]:
@@ -408,3 +419,108 @@ async def test_pg_kth_payout_failure_rolls_back_for_an_independent_observer(
         asyncio.gather(fail_and_rollback(), observe_uncommitted_then_rolled_back()),
         timeout=10,
     )
+
+
+async def test_pg_terminalize_and_place_bet_acquire_user_before_wallet(
+    pg_sessions, monkeypatch,
+):
+    """Old place_bet took Wallet then its XP UPDATE(User), deadlocking terminalize."""
+    rewards = _rewards()
+    monkeypatch.setattr(bet_service.settings, "xp_per_bet_placed", 10)
+    session_id = await _setup_running(pg_sessions, monkeypatch)
+    async with pg_sessions() as setup:
+        await setup.execute(update(Wallet).where(Wallet.tg_id == 10).values(coins=1_000))
+        event = await bet_service.create_event(
+            setup,
+            creator_tg_id=10,
+            title="Ordine lock",
+            description="interleaving reale",
+            options=[{"label": "A"}],
+        )
+        await setup.flush()
+        option_id = (await setup.execute(
+            select(BettingOption.id).where(BettingOption.event_id == event.id)
+        )).scalar_one()
+        await setup.commit()
+
+    terminalizer_has_user = asyncio.Event()
+    bet_touches_user = asyncio.Event()
+    async with pg_sessions() as terminalizer, pg_sessions() as bettor:
+        terminal_execute = terminalizer.execute
+
+        async def terminal_execute_with_barrier(statement, *args, **kwargs):
+            result = await terminal_execute(statement, *args, **kwargs)
+            if (
+                _targets_table(statement, User.__tablename__)
+                and getattr(statement, "_for_update_arg", None) is not None
+                and not terminalizer_has_user.is_set()
+            ):
+                terminalizer_has_user.set()
+                await asyncio.wait_for(bet_touches_user.wait(), timeout=3)
+            return result
+
+        bet_execute = bettor.execute
+
+        async def bet_execute_with_signal(statement, *args, **kwargs):
+            if _targets_table(statement, User.__tablename__):
+                bet_touches_user.set()
+            return await bet_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(terminalizer, "execute", terminal_execute_with_barrier)
+        monkeypatch.setattr(bettor, "execute", bet_execute_with_signal)
+
+        async def settle():
+            result = await rewards.terminalize(
+                terminalizer,
+                session_id=session_id,
+                reason=FinishReason.victory,
+                winner_tg_id=10,
+            )
+            await terminalizer.commit()
+            return result
+
+        async def bet():
+            result = await bet_service.place_bet(
+                bettor,
+                user_tg_id=10,
+                event_id=event.id,
+                option_id=option_id,
+                amount=100,
+            )
+            await bettor.commit()
+            return result
+
+        tasks = (asyncio.create_task(settle()), asyncio.create_task(bet()))
+        outcomes: list[object] = []
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                outcomes.append("timed out waiting for the coordinated lock order")
+                for task in pending:
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                try:
+                    outcomes.append(task.result())
+                except BaseException as exc:  # the old order is expected to deadlock
+                    outcomes.append(exc)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await terminalizer.rollback()
+            await bettor.rollback()
+
+    assert terminalizer_has_user.is_set()
+    assert bet_touches_user.is_set()
+    assert len(outcomes) == 2 and all(
+        not isinstance(outcome, BaseException) and not isinstance(outcome, str)
+        for outcome in outcomes
+    ), f"wallet-before-user deadlocked the real service paths: {outcomes!r}"
+    settled, placed = outcomes
+    assert settled.transitioned
+    assert placed.user_tg_id == 10
+    facts = await _settlement_facts(pg_sessions, session_id)
+    assert facts["wallets"] == {10: 984, 20: 84}
+    assert facts["xp"] == {10: 20, 20: 10}
