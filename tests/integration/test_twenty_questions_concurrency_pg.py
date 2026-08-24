@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select, update
@@ -21,7 +21,13 @@ from database.models import (
     Wallet,
 )
 from services import ai_game_service, bet_service
-from services.ai_game_types import FinishReason
+from services.ai_game_types import (
+    FinishReason,
+    QuestionVerdict,
+    TurnKind,
+    TurnOutcome,
+    TurnRejectReason,
+)
 from services.twenty_questions_catalog import GameDossier
 
 
@@ -51,6 +57,7 @@ async def _setup_running(
     monkeypatch,
     *,
     turns: tuple[tuple[int, str, str, str], ...] = _BASE_TURNS + (_WINNING_TURN,),
+    now: datetime | None = None,
 ) -> int:
     monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
     monkeypatch.setattr(
@@ -69,7 +76,9 @@ async def _setup_running(
             max_coins_per_participant=100,
             target=TARGET,
         )
-        started = await ai_game_service.start(setup, created.session_id, group_id=-1001)
+        started = await ai_game_service.start(
+            setup, created.session_id, group_id=-1001, now=now,
+        )
         assert started.started
         setup.add_all([
             AIGameTurn(
@@ -125,6 +134,36 @@ def _synchronize_terminal_claim(monkeypatch, sessions) -> None:
                 not _state["waited"]
                 and getattr(statement, "is_update", False)
                 and getattr(table, "name", None) == AIGameSession.__tablename__
+            ):
+                _state["waited"] = True
+                await barrier.wait()
+            return await _original(statement, *args, **kwargs)
+
+        monkeypatch.setattr(db_session, "execute", execute)
+
+
+def _synchronize_first_turn_claim(monkeypatch, sessions) -> None:
+    """Release independent workers at the first lease boundary, not a timing guess."""
+    barrier = asyncio.Barrier(len(sessions))
+    for db_session in sessions:
+        original_execute = db_session.execute
+        state = {"waited": False}
+
+        async def execute(statement, *args, _original=original_execute, _state=state, **kwargs):
+            table = getattr(statement, "table", None)
+            locks_root = (
+                getattr(statement, "is_select", False)
+                and getattr(statement, "_for_update_arg", None) is not None
+            )
+            if (
+                not _state["waited"]
+                and (
+                    locks_root
+                    or (
+                        getattr(statement, "is_update", False)
+                        and getattr(table, "name", None) == AIGameSession.__tablename__
+                    )
+                )
             ):
                 _state["waited"] = True
                 await barrier.wait()
@@ -524,3 +563,226 @@ async def test_pg_terminalize_and_place_bet_acquire_user_before_wallet(
     facts = await _settlement_facts(pg_sessions, session_id)
     assert facts["wallets"] == {10: 984, 20: 84}
     assert facts["xp"] == {10: 20, 20: 10}
+
+
+async def test_pg_fifth_question_quota_claims_exactly_once(pg_sessions, monkeypatch):
+    """Two workers at question five must not both pass a stale Python quota read."""
+    turns = tuple(
+        (10, TurnKind.question.value, f"Historic question {index}?", '{"verdetto":"si"}')
+        for index in range(1, 5)
+    )
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=turns)
+
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_first_turn_claim(monkeypatch, (first, second))
+
+        async def claim_one(db_session, question: str):
+            result = await ai_game_service.begin_question(
+                db_session,
+                session_id=session_id,
+                user_tg_id=10,
+                question=question,
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.wait_for(asyncio.gather(
+            claim_one(first, "Is the fifth question accepted first?"),
+            claim_one(second, "Can another fifth question slip through?"),
+        ), timeout=10)
+
+    results = (first_result, second_result)
+    assert sum(result.outcome is TurnOutcome.claimed for result in results) == 1
+    assert sum(result.reason is TurnRejectReason.busy for result in results) == 1
+    claim = next(result.claim for result in results if result.claim is not None)
+    async with pg_sessions() as complete:
+        recorded = await ai_game_service.complete_question(
+            complete, claim=claim, verdict=QuestionVerdict.si,
+        )
+        await complete.commit()
+    assert recorded.outcome is TurnOutcome.recorded
+
+    async with pg_sessions() as observe:
+        quota = await ai_game_service.get_personal_quota(observe, session_id, 10)
+        sixth = await ai_game_service.begin_question(
+            observe,
+            session_id=session_id,
+            user_tg_id=10,
+            question="Does a sixth question exceed the personal quota?",
+        )
+    assert (quota.questions_used, quota.questions_left) == (5, 0)
+    assert (sixth.outcome, sixth.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.question_quota,
+    )
+
+
+async def test_pg_second_guess_quota_is_atomic_across_independent_sessions(
+    pg_sessions, monkeypatch,
+):
+    """Two second guesses must not both append after reading one old ledger row."""
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        turns=((10, TurnKind.guess.value, "First wrong title", '{"correct":false}'),),
+    )
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_first_turn_claim(monkeypatch, (first, second))
+
+        async def guess_one(db_session, answer: str):
+            result = await ai_game_service.submit_guess(
+                db_session,
+                session_id=session_id,
+                user_tg_id=10,
+                answer=answer,
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.wait_for(asyncio.gather(
+            guess_one(first, "Second wrong title one"),
+            guess_one(second, "Second wrong title two"),
+        ), timeout=10)
+
+    assert sum(result.outcome is TurnOutcome.recorded for result in (
+        first_result, second_result,
+    )) == 1
+    rejected = next(result for result in (first_result, second_result)
+                    if result.outcome is TurnOutcome.rejected)
+    assert rejected.reason is TurnRejectReason.guess_quota
+    async with pg_sessions() as observe:
+        quota = await ai_game_service.get_personal_quota(observe, session_id, 10)
+        count = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+            AIGameTurn.kind == TurnKind.guess.value,
+        ))).scalar_one()
+    assert (quota.guesses_used, quota.guesses_left, count) == (2, 0, 2)
+
+
+async def test_pg_duplicate_guess_hash_race_returns_free_typed_rejection(
+    pg_sessions, monkeypatch,
+):
+    """A unique-index race must not poison the transaction or consume a second guess."""
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=())
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_first_turn_claim(monkeypatch, (first, second))
+
+        async def same_guess(db_session):
+            result = await ai_game_service.submit_guess(
+                db_session,
+                session_id=session_id,
+                user_tg_id=10,
+                answer="The identical wrong title",
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.wait_for(
+            asyncio.gather(same_guess(first), same_guess(second)), timeout=10,
+        )
+
+    assert sum(result.outcome is TurnOutcome.recorded for result in (
+        first_result, second_result,
+    )) == 1
+    duplicate = next(result for result in (first_result, second_result)
+                     if result.outcome is TurnOutcome.rejected)
+    assert duplicate.reason is TurnRejectReason.duplicate_guess
+    async with pg_sessions() as observe:
+        quota = await ai_game_service.get_personal_quota(observe, session_id, 10)
+        turns = (await observe.execute(select(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalars().all()
+        pending = (await observe.execute(select(
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+    assert (quota.guesses_used, quota.guesses_left, len(turns)) == (1, 1, 1)
+    assert pending == (None, None, None, None)
+
+
+async def test_pg_completion_after_lease_recovery_cannot_append_stale_turn(
+    pg_sessions, monkeypatch,
+):
+    """The old token must lose after another connection replaces every lease field."""
+    monkeypatch.setattr(ai_game_service.settings, "ai_game_claim_timeout_seconds", 45)
+    now = datetime(2026, 8, 23, 12, 0)
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=(), now=now)
+    async with pg_sessions() as original:
+        first = await ai_game_service.begin_question(
+            original,
+            session_id=session_id,
+            user_tg_id=10,
+            question="Can the first lease become stale?",
+            now=now,
+        )
+        await original.commit()
+    assert first.claim is not None
+
+    async with pg_sessions() as replacement:
+        second = await ai_game_service.begin_question(
+            replacement,
+            session_id=session_id,
+            user_tg_id=20,
+            question="Can a replacement lease take ownership?",
+            now=now.replace(second=46),
+        )
+        await replacement.commit()
+    assert second.claim is not None
+
+    async with pg_sessions() as stale_worker:
+        stale = await ai_game_service.complete_question(
+            stale_worker,
+            claim=first.claim,
+            verdict=QuestionVerdict.si,
+            now=now + timedelta(seconds=47),
+        )
+        await stale_worker.commit()
+    assert (stale.outcome, stale.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.lost_claim,
+    )
+    async with pg_sessions() as observe:
+        fields = (await observe.execute(select(
+            AIGameSession.pending_user_tg_id, AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+    assert fields == (20, TurnKind.question.value)
+    assert turns == 0
+
+
+async def test_two_correct_aliases_create_one_winner_and_one_settlement(
+    pg_sessions, monkeypatch,
+):
+    """Concurrent locally-correct aliases must settle one winner, one turn, and one payout."""
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=())
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_first_turn_claim(monkeypatch, (first, second))
+
+        async def answer(db_session, user_tg_id: int, title: str):
+            result = await ai_game_service.submit_guess(
+                db_session,
+                session_id=session_id,
+                user_tg_id=user_tg_id,
+                answer=title,
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.wait_for(asyncio.gather(
+            answer(first, 10, "Portal 2"),
+            answer(second, 20, "portal two"),
+        ), timeout=10)
+
+    winner_result = next(result for result in (first_result, second_result)
+                         if result.outcome is TurnOutcome.recorded)
+    loser_result = next(result for result in (first_result, second_result)
+                        if result.outcome is TurnOutcome.rejected)
+    assert winner_result.correct is True
+    assert loser_result.reason in (TurnRejectReason.closed, TurnRejectReason.lost_claim)
+    facts = await _settlement_facts(pg_sessions, session_id)
+    assert facts["root"] == ("finished", "victory", 2)
+    assert facts["winner"] == winner_result.terminal.winner_tg_id
+    assert facts["settlement"][:5] == ("settled", "victory", 1, 0, 0)
+    assert facts["allocations"] == facts["ledger"] == facts["turns"] == 1

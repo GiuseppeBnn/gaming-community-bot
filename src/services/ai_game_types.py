@@ -200,6 +200,10 @@ class QuestionClaim:
     normalized_hash: str
     dossier_json: str
     context: tuple[QuestionContextTurn, ...]
+    # Question claims are currently the only public claim DTO. Keeping a
+    # default preserves callers that construct historical snapshots directly
+    # while completion still verifies the persisted lease kind explicitly.
+    kind: TurnKind = TurnKind.question
 
 
 @dataclass(frozen=True, slots=True)

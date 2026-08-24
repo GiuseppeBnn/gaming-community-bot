@@ -211,6 +211,19 @@ class _Provider:
 
 
 class TestStructuredStrategy:
+    async def test_legacy_keyword_classification_contract_is_preserved(self, session):
+        """The v2 overload must not break existing named v1 callers."""
+        snapshot = await ai_game_service.get_snapshot(session, await _running(session))
+        provider = _Provider({"verdetto": "si"})
+
+        verdict = await ai_game_service.classify_question(
+            snapshot=snapshot,
+            question="La compatibilità keyword resta intatta?",
+            provider=provider,
+        )
+
+        assert verdict is QuestionVerdict.si
+
     async def test_prompt_uses_dossier_history_and_closed_schema(self, session):
         snapshot = await ai_game_service.get_snapshot(session, await _running(session))
         provider = _Provider({"verdetto": "si"})
