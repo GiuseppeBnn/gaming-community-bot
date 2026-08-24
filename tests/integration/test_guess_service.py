@@ -428,11 +428,12 @@ class TestPrizes:
 
         assert await _coins(session, 10) == 10
 
-    async def test_a_non_solver_gets_the_fixed_reward(
+    async def test_a_non_solver_gets_the_fixed_coins_and_participation_xp(
         self, session, round_, user_factory
     ):
-        """A non-solver on a prized round gets a single FIXED reward (not the solver
-        consolation schedule): 25 CoInn + 10 XP, always below the solver."""
+        """A non-solver on a prized round gets the FIXED coin reward (not the solver
+        consolation schedule), below the solver, plus the standard participation XP
+        (unconditional, same as the trivia)."""
         await user_factory(7, "u7")
         await user_factory(8, "u8")
         await _solve(session, round_, 7)
@@ -450,13 +451,13 @@ class TestPrizes:
         non_solver_xp = (
             await session.execute(select(User.xp).where(User.tg_id == 8))
         ).scalar_one()
-        assert non_solver_xp == settings.guess_nonsolver_xp
+        assert non_solver_xp == settings.guess_xp_participation  # base XP, no solve bonus
 
-    async def test_a_prizeless_round_rewards_no_non_solver(
+    async def test_a_prizeless_round_pays_no_coins_but_still_grants_xp(
         self, session, user_factory
     ):
-        """With no prize configured (0 0 0 0), a non-solver gets nothing — neither the
-        fixed CoInn nor the fixed XP."""
+        """With no prize configured (0 0 0 0), a non-solver gets no coins — but XP is
+        unconditional (like the trivia), so they still get the participation XP."""
         r = await gs.create_round(
             session, kind="guess", creator_tg_id=1, title="Senza premi",
             media_file_id="F", media_kind="photo", answer="Doom",
@@ -473,10 +474,10 @@ class TestPrizes:
         awards = await gs.award_prizes(session, r.id)
         await session.commit()
 
-        assert awards == []
+        assert awards == []                       # no coin awards on a prize-less round
         assert await _coins(session, 8) == 0
         xp = (await session.execute(select(User.xp).where(User.tg_id == 8))).scalar_one()
-        assert xp == 0
+        assert xp == settings.guess_xp_participation  # XP flows regardless of prizes
 
     async def test_everyone_who_played_gets_xp(self, session, round_, user_factory):
         await user_factory(7, "u7")
@@ -510,7 +511,7 @@ class TestPrizes:
         self, session, round_, user_factory
     ):
         """With nobody solving, there is no podium — but on a prized round every
-        non-solver still gets the fixed participation reward (CoInn + XP)."""
+        non-solver still gets the participation XP and the fixed coin reward."""
         await user_factory(7, "u7")
         await gs.start_or_resume(session, round_.id, 7)
         await gs.record_attempt(session, round_, 7, "Quake", _no())
@@ -519,7 +520,7 @@ class TestPrizes:
         await session.commit()
 
         xp = (await session.execute(select(User.xp).where(User.tg_id == 7))).scalar_one()
-        assert xp == settings.guess_nonsolver_xp
+        assert xp == settings.guess_xp_participation
         assert [a.user_tg_id for a in awards] == [7]
         assert awards[0].kind == "participation"
         assert await _coins(session, 7) == settings.guess_nonsolver_coins

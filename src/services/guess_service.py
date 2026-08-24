@@ -687,14 +687,15 @@ class PrizeAward:
 
 
 async def _grant_xp(
-    session: AsyncSession, round_id: int, solvers: list[RankedPlayer], *, prized: bool
+    session: AsyncSession, round_id: int, solvers: list[RankedPlayer]
 ) -> None:
-    """Event XP for a closed round (uncapped — admin-gated, not farmable):
+    """Event XP for a closed round (uncapped — admin-gated, not farmable), same
+    shape as the trivia (``quiz_service._grant_xp``) and **unconditional** — it does
+    not depend on whether the round pays coin prizes:
 
-    * **solvers** get ``guess_xp_participation`` + ``guess_xp_solved``, and the top
-      three a podium bonus on top — their ranking is untouched;
-    * **non-solvers** get a **fixed** ``guess_nonsolver_xp``, but only when the round
-      is ``prized`` (a prize-less round rewards no non-solver).
+    * **every participant** (submitted ≥1 answer) gets ``guess_xp_participation``;
+    * **solvers** get ``guess_xp_solved`` on top;
+    * the top three (solvers) get a podium bonus.
 
     ``solvers`` is the solver-only ranking, so the podium bonus never reaches a
     non-solver.
@@ -709,11 +710,9 @@ async def _grant_xp(
     solver_ids = {s.user_tg_id for s in solvers}
 
     for uid in players:
+        amount = max(0, settings.guess_xp_participation)
         if uid in solver_ids:
-            amount = max(0, settings.guess_xp_participation) + max(0, settings.guess_xp_solved)
-        else:
-            # Non-solver: a fixed reward, and only if the round pays prizes at all.
-            amount = max(0, settings.guess_nonsolver_xp) if prized else 0
+            amount += max(0, settings.guess_xp_solved)
         if amount > 0:
             await xp_service.grant_xp(session, uid, amount, XpSource.guess, capped=False)
 
@@ -746,8 +745,10 @@ async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]
     solvers = [p for p in ranked if p.solved]
     non_solvers = [p for p in ranked if not p.solved]
     prized = has_prize(round_)
-    # XP first: solvers keep their scheme; non-solvers get the fixed XP only if prized.
-    await _grant_xp(session, round_id, solvers, prized=prized)
+    # XP first: participation (20) reaches everyone who played, +10 for solving,
+    # + podium — unconditional, exactly like the trivia. Coins below stay gated on
+    # `prized` for the non-solver fixed reward.
+    await _grant_xp(session, round_id, solvers)
     if not ranked:
         return []
 

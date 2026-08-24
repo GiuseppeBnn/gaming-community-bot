@@ -194,17 +194,18 @@ class Settings(BaseSettings):
     guess_default_second: int = 500
     guess_default_third: int = 250
     guess_default_consolation: int = 100
-    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable).
-    guess_xp_participation: int = 15   # XP for submitting at least one answer
-    guess_xp_solved: int = 25          # extra XP for actually guessing it
-    guess_xp_podium_first: int = 50
+    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable). Same
+    # shape as the trivia: participation to every player + a solve bonus + podium.
+    guess_xp_participation: int = 20   # base XP for submitting at least one answer
+    guess_xp_solved: int = 10          # extra XP for actually guessing it
+    guess_xp_podium_first: int = 50    # same podium bonus as the quiz (quiz_xp_podium_*)
     guess_xp_podium_second: int = 30
     guess_xp_podium_third: int = 20
-    # Fixed reward for a NON-solver in guess/sound, paid ONLY when the round has a
-    # prize configured (no prize → non-solvers get nothing). Solvers keep their own
-    # ranking (podium + consolation among solvers) untouched.
+    # Fixed COIN reward for a NON-solver in guess/sound, paid ONLY when the round has
+    # a prize configured (no prize → non-solvers get no coins). XP is unconditional
+    # (participation, above); solvers keep their own coin ranking (podium +
+    # consolation among solvers) untouched.
     guess_nonsolver_coins: int = 25
-    guess_nonsolver_xp: int = 10
 
     # Poll rewards (optional, chosen per poll at creation). A poll has no "right"
     # answer, so the prize is for *participation*: every user who casts a vote gets

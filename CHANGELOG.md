@@ -3,6 +3,16 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.7] - 2026-08-25
+
+### Modificato
+- **Guess The Game / Sound Quest — XP come il Trivia Nerd** — l'esperienza ora
+  segue lo stesso schema del trivia: **20 XP di base a ogni partecipante** +
+  **10 XP se si indovina** + il **bonus podio** (50 / 30 / 20 per 1°/2°/3°).
+  L'XP viene assegnato **sempre**, anche nei round senza premi. Le ricompense in
+  CoInn restano invariate (podio e consolazione a chi indovina; importo fisso a chi
+  non indovina, solo se il round ha premi).
+
 ## [1.6] - 2026-08-24
 
 ### Modificato

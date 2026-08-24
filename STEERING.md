@@ -1656,16 +1656,22 @@ claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
 Classifica competitiva (`standings`): **solo i risolutori**, ordinati per `(tentativi, tempo,
 arrivo)` — usata per **trofei** (podio/last/sub30) e il conteggio «indovinati». Ma il **payout**
 e l'**annuncio** usano `full_standings` = **tutti i partecipanti** (chi ha ≥1 tentativo): i
-risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo). Premi:
+risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo).
+
+**XP (`_grant_xp`) — incondizionato, identico al trivia** (`quiz_service._grant_xp`): non dipende
+dai premi in monete. `guess_xp_participation` (**20**) a **ogni partecipante** (≥1 tentativo) +
+`guess_xp_solved` (**10**) a chi indovina + **bonus podio** `guess_xp_podium_*` (**50/30/20**, gli
+stessi valori del quiz) ai top-3 risolutori. Anche un round senza premi in monete concede l'XP.
+
+**Monete (`award_prizes`) — gated sui premi configurati**:
 - **Risolutori — classifica invariata.** Il **podio 1°/2°/3° è riservato ai risolutori**
   (`podium_n = min(3, n_solver)`, un non-solver non lo raggiunge mai), e la **consolazione a
   scendere** (scala condivisa `services/prizes.py`, la stessa del quiz) da `prize_consolation` fino
-  a `prize_min` copre i **soli risolutori** oltre il podio. XP: partecipazione + solved + bonus podio.
-- **Non-risolutori — premio fisso, solo se il round ha premi.** Ognuno riceve un importo **fisso**
-  (`guess_nonsolver_coins`, default 25 🪙 + `guess_nonsolver_xp`, default 10 ⚡, kind
-  `participation`), pagato **solo** quando `has_prize(round_)` è vero: un round senza premi
-  (`0 0 0 0`) **non** premia chi non ha indovinato (né CoInn né XP). Così «chi indovina è sempre
-  più in alto», e chi non indovina prende un riconoscimento fisso quando c'è un montepremi.
+  a `prize_min` copre i **soli risolutori** oltre il podio.
+- **Non-risolutori — importo fisso, solo se il round ha premi.** Ognuno riceve `guess_nonsolver_coins`
+  (default **25 🪙**, kind `participation`), pagato **solo** quando `has_prize(round_)` è vero: un
+  round senza premi (`0 0 0 0`) **non** dà monete a chi non ha indovinato (ma l'XP sopra sì). Così
+  «chi indovina è sempre più in alto», e chi non indovina prende un riconoscimento fisso col montepremi.
 
 Il **minimo garantito** (`prize_min`, floor) è **derivato** (`services.prizes.participation_floor`)
 dallo shared `quiz_participation_floor_*` (`floor_min` default **25**): vale per quiz **e**
