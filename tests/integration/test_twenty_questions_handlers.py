@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import json
 from types import SimpleNamespace
+import weakref
 
 import pytest
 from aiogram.dispatcher.event.bases import SkipHandler
@@ -170,6 +173,13 @@ def _v2_anchor_snapshot():
     return SimpleNamespace(
         session=SimpleNamespace(id=7),
         game=SimpleNamespace(rules_version=2),
+    )
+
+
+def _v1_anchor_snapshot():
+    return SimpleNamespace(
+        session=SimpleNamespace(id=7),
+        game=SimpleNamespace(rules_version=1),
     )
 
 
@@ -402,6 +412,119 @@ class TestPlayHandler:
 
 
 class TestV2PostCommitPresentation:
+    async def test_v1_invalid_input_rolls_back_anchor_read_before_reply(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def find(*args, **kwargs):
+            db_session.pending = True
+            events.append("find")
+            return _v1_anchor_snapshot()
+
+        async def claim(*args, **kwargs):
+            raise AssertionError("invalid input must not claim a v1 turn")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "claim_turn", claim)
+        message = _Message(" ")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            assert "1 e 500" in text
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["find", "rollback", "reply"]
+
+    async def test_v1_empty_answer_rolls_back_anchor_read_before_reply(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def find(*args, **kwargs):
+            db_session.pending = True
+            events.append("find")
+            return _v1_anchor_snapshot()
+
+        async def claim(*args, **kwargs):
+            raise AssertionError("an empty answer must not claim a v1 turn")
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "claim_turn", claim)
+        message = _Message("RISPOSTA:")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            assert "dopo" in text
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["find", "rollback", "reply"]
+
+    async def test_v1_busy_lease_rolls_back_claim_before_reply(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def find(*args, **kwargs):
+            db_session.pending = True
+            events.append("find")
+            return _v1_anchor_snapshot()
+
+        async def claim(*args, **kwargs):
+            assert db_session.pending
+            events.append("claim")
+            return None
+
+        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "claim_turn", claim)
+        message = _Message("RISPOSTA: Portal 2")
+
+        async def reply(text, **kwargs):
+            assert not db_session.pending
+            assert "già rispondendo" in text
+            events.append("reply")
+
+        message.reply = reply
+        await handler.play_turn(message, db_session)
+
+        assert events == ["find", "claim", "rollback", "reply"]
+
+    async def test_card_publish_lock_serializes_concurrent_same_session_callers(self):
+        session_id = 10_001
+        lock = handler._card_publish_lock(session_id)
+        assert handler._card_publish_lock(session_id) is lock
+        await lock.acquire()
+        entered = asyncio.Event()
+
+        async def contender():
+            async with handler._card_publish_lock(session_id):
+                entered.set()
+
+        task = asyncio.create_task(contender())
+        try:
+            await asyncio.sleep(0)
+            assert not entered.is_set()
+        finally:
+            lock.release()
+        await task
+
+        assert entered.is_set()
+
+    def test_card_publish_lock_registry_evicts_unused_lock_after_collection(self):
+        session_id = 10_002
+        lock = handler._card_publish_lock(session_id)
+        lock_ref = weakref.ref(lock)
+        assert handler._card_publish_locks.get(session_id) is lock
+
+        del lock
+        gc.collect()
+
+        assert lock_ref() is None
+        assert handler._card_publish_locks.get(session_id) is None
+
     async def test_question_commits_before_network_reply_and_refresh(self, monkeypatch):
         events = []
         db_session = _OrderedSession(events)

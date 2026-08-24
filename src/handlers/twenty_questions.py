@@ -6,6 +6,7 @@ import json
 import logging
 from asyncio import Lock
 from datetime import UTC, datetime
+from weakref import WeakValueDictionary
 
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
@@ -44,9 +45,11 @@ router = Router(name="twenty_questions")
 
 # Telegram has no compare-and-swap edit. Serialize local publications for one
 # session, then re-read the small DTO under that lock so an older live card
-# cannot follow a newer terminal card in this process. Cross-process recovery
-# still uses the persistent anchor CAS below.
-_card_publish_locks: dict[int, Lock] = {}
+# cannot follow a newer terminal card in this process. Idle locks are weakly
+# held: an active ``async with`` retains its lock, while historical sessions do
+# not accumulate process-lifetime entries. Cross-process recovery still uses
+# the persistent anchor CAS below.
+_card_publish_locks: WeakValueDictionary[int, Lock] = WeakValueDictionary()
 
 
 def _card_publish_lock(session_id: int) -> Lock:
@@ -494,16 +497,22 @@ async def _play_turn_v1(
     """Historical 20/3 implementation, intentionally separate from v2 DTO APIs."""
     text = message.text.strip()
     if not text or len(text) > 500:
+        # find_by_anchor() read under the handler session; no mutation occurred.
+        await db_session.rollback()
         await message.reply("🐲 Tienila tra 1 e 500 caratteri, avventuriero.")
         return
 
     guess = _guess(text)
     if guess == "":
+        # The anchor lookup is still open, so close its read transaction first.
+        await db_session.rollback()
         await message.reply("🐲 Scrivi un titolo dopo <code>RISPOSTA:</code>.")
         return
 
     token = await ai_game_service.claim_turn(db_session, snapshot.session.id)
     if token is None:
+        # A failed conditional lease changed nothing; do not retain its transaction for Telegram.
+        await db_session.rollback()
         await message.reply("🐲 Sto già rispondendo a un'altra domanda. Un respiro e riprova.")
         return
     # This short commit is deliberate: never hold a DB transaction while Gemini thinks.

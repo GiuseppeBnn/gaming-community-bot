@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html.parser import HTMLParser
 
 import pytest
 
@@ -57,10 +58,31 @@ PROJECTION = RewardProjection(
 NOW = datetime(2026, 8, 24, 12, 0)
 
 
-def _view(*, status: str = "running", recent: tuple[TurnView, ...] = ()) -> GameView:
+class _VisibleHTML(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+
+def _telegram_visible_utf16_units(text: str) -> int:
+    parser = _VisibleHTML()
+    parser.feed(text)
+    parser.close()
+    return len("".join(parser.parts).encode("utf-16-le")) // 2
+
+
+def _view(
+    *,
+    status: str = "running",
+    recent: tuple[TurnView, ...] = (),
+    title: str = "Serata <epica>",
+) -> GameView:
     return GameView(
         session_id=77,
-        title="Serata <epica>",
+        title=title,
         status=status,
         group_id=-1001,
         anchor_message_id=55,
@@ -169,22 +191,22 @@ def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
     assert "RISPOSTA: titolo del gioco" in card
 
 
-def test_live_card_bounds_escaped_recent_inputs_to_a_telegram_safe_length():
+def test_live_card_bounds_visible_utf16_content_after_html_entity_parsing():
     turns = tuple(
         TurnView(
             turn_no=index,
             user_tg_id=index,
             kind=TurnKind.question,
-            input_text="<" * 500,
+            input_text="<😀" * 500,
             verdict=QuestionVerdict.si,
             correct=None,
         )
         for index in range(1, 7)
     )
 
-    card = render_live_card(_view(recent=turns), now=NOW)
+    card = render_live_card(_view(title="😀" * 120, recent=turns), now=NOW)
 
-    assert len(card) <= 4096
+    assert _telegram_visible_utf16_units(card) <= 4096
     assert "&lt;" in card
     assert "…" in card
 
