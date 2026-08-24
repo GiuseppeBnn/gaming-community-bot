@@ -43,9 +43,20 @@ def econ_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🎁 Airdrop monete", callback_data=AdminCb(action="airdrop").pack())
     b.button(text="⚡ Airdrop XP", callback_data=AdminCb(action="xpairdrop").pack())
+    b.button(text="🎯 Manda premi (a più utenti)", callback_data=AdminCb(action="massreward").pack())
     b.button(text="👤 Gestisci un utente", callback_data=AdminCb(action="users", item_id=0).pack())
     b.button(text="⬅️ Home", callback_data=AdminCb(action="home").pack())
     b.adjust(1)
+    return b.as_markup()
+
+
+def massreward_kb() -> InlineKeyboardMarkup:
+    """Choose what to send in the multi-recipient reward flow: XP or CoInn."""
+    b = InlineKeyboardBuilder()
+    b.button(text="⚡ XP", callback_data=AdminCb(action="massreward", key="xp").pack())
+    b.button(text="🪙 CoInn", callback_data=AdminCb(action="massreward", key="coins").pack())
+    b.button(text="⬅️ Annulla", callback_data=AdminCb(action="econ").pack())
+    b.adjust(2, 1)
     return b.as_markup()
 
 

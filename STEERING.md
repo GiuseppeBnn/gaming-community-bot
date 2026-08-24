@@ -431,6 +431,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
+| `manage_quiz` / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/quiz`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
@@ -859,6 +860,15 @@ rifiuta prima dell'handler callback di altri prefissi o non conformi. Restano in
 in profondità sulla chat privata, l'identità da `callback.from_user`, l'assegnazione del trofeo e
 i commit dell'handler.
 
+> **Backfill del trofeo di benvenuto (`first_steps`, «Ehi, ti sei svegliato finalmente!»).**
+> Il trofeo si assegna in `cb_accept_rules`, ma gli **admin bypassano il gate onboarding**
+> (riconosciuti via Telegram, §9), quindi un admin che usa il bot senza passare dalle regole non
+> avrebbe mai `onboarding_completed=True` e non lo otterrebbe. `common.cmd_start`, **dopo il gate**,
+> chiama `_ensure_welcome_trophy`: `award_badge(first_steps)` **idempotente** (assegna solo se
+> manca, `is_new=False` altrimenti) + annuncio. Nessun effetto per chi già ce l'ha; un utente nuovo
+> non-admin resta gated e lo prende comunque via `cb_accept_rules`. È la landing di ogni deep-link
+> admin, quindi copre di fatto ogni admin attivo.
+
 ### Privato
 `/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
@@ -1063,6 +1073,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
   Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`ask` → `do`).
 - **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`airdrop`) e **`⚡ Airdrop XP`** (`xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
+- **Manda premi a più utenti** (`💰 Economia` → `🎯 Manda premi`, `AdminCb(action="massreward")`): scelta tipo (`key="xp"|"coins"`) → FSM `waiting_mass_amount` (importo) → `waiting_mass_recipients` (lista **@username, uno per riga**). La risoluzione è **esatta** (case-insensitive) via `admin_service.resolve_usernames` — mai fuzzy: è un percorso che paga. Accredita a ogni utente trovato (`economy_service.credit`/`xp_service.grant_xp admin_grant`), **un solo** `log_action` (`mass_credit`/`mass_xp`, detail «N destinatari»), DM best-effort, e riporta gli @username non trovati. Lista tutta assente ⇒ **stato mantenuto** per ritentare.
 - **Classifica**: `lead` con switcher `lead_board` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
 - **Gating**: ogni callback `AdminCb` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
@@ -1623,11 +1634,18 @@ claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
 > dalla identity map, quindi senza refresh l'admin chiude e la schermata continua a dire «in
 > corso».
 
-Classifica: **solo i risolutori**, ordinati per `(tentativi, tempo, arrivo)`. Qui «finisher»
-vuol dire «ha indovinato» — è ciò che dà senso a «meno tentativi, meglio è» — quindi chi
-esaurisce i tentativi prende **XP ma non monete**. Premi: 1°/2°/3° più consolazione lineare
-fino a `prize_min`, dalla scala condivisa `services/prizes.py` (la stessa del quiz). Ledger:
-`TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco della community».
+Classifica competitiva (`standings`): **solo i risolutori**, ordinati per `(tentativi, tempo,
+arrivo)` — usata per **trofei** (podio/last/sub30) e il conteggio «indovinati». Ma il **payout**
+e l'**annuncio** usano `full_standings` = **tutti i partecipanti** (chi ha ≥1 tentativo): i
+risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo). Premi
+(scala condivisa `services/prizes.py`, la stessa del quiz): il **podio 1°/2°/3° è riservato ai
+risolutori** (`podium_n = min(3, n_solver)`, un non-solver non lo raggiunge mai), e la
+**consolazione a scendere** da `prize_consolation` fino a `prize_min` copre **tutti** gli altri —
+risolutori sotto il podio **e** non-risolutori. Così «chi indovina è sempre più in alto», ma
+anche chi non indovina riceve CoInn + gli XP di partecipazione che già prendeva. L'annuncio
+(`_podium_text`) mostra l'intera classifica, con i CoInn e il segno «non indovinato» per chi non
+ha risolto. Ledger: `TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco
+della community».
 
 La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico modo per
 accorgersi che il giudice ha rifiutato qualcosa che doveva accettare, perché un giocatore che

@@ -49,6 +49,7 @@ from keyboards.admin_dashboard_kb import (
     econ_kb,
     home_kb,
     lead_kb,
+    massreward_kb,
     skip_or_cancel_reason_kb,
     user_detail_kb,
     users_kb,
@@ -84,6 +85,8 @@ class AdminPanelStates(StatesGroup):
     waiting_search = State()      # user search
     waiting_airdrop = State()     # mass credit
     waiting_xp_airdrop = State()  # mass XP grant
+    waiting_mass_amount = State()      # multi-recipient reward: amount
+    waiting_mass_recipients = State()  # multi-recipient reward: username list
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +262,101 @@ async def fsm_xp_airdrop(message: Message, state: FSMContext, db_session: AsyncS
         f"⚡ <b>Airdrop XP!</b> Assegnati <b>+{amount:,} XP</b> a <b>{count}</b> utenti.",
         reply_markup=back_home_kb(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-recipient rewards ("Manda premi"): choose XP/CoInn → amount → @username list
+# ---------------------------------------------------------------------------
+
+_MAX_RECIPIENTS = 100
+
+
+@router.callback_query(AdminCb.filter(F.action == "massreward"), IsAdminCallbackFilter())
+async def cb_massreward(callback: CallbackQuery, callback_data: AdminCb, state: FSMContext) -> None:
+    kind = callback_data.key
+    if kind not in ("xp", "coins"):
+        # Entry: ask what to send.
+        await state.clear()
+        await callback.message.edit_text(
+            "🎯 <b>Manda premi</b>\n\nCosa vuoi mandare?", reply_markup=massreward_kb()
+        )
+        await callback.answer()
+        return
+    # Type chosen → ask the amount.
+    await state.update_data(mass_kind=kind)
+    await state.set_state(AdminPanelStates.waiting_mass_amount)
+    unit = "⚡ XP" if kind == "xp" else "🪙 CoInn"
+    await callback.message.edit_text(
+        f"🎯 <b>Manda premi</b> ({unit})\n\nQuanto vuoi mandare a ciascuno?",
+        reply_markup=cancel_to_home_kb(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminPanelStates.waiting_mass_amount, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_mass_amount(message: Message, state: FSMContext) -> None:
+    amount = _parse_amount(message.text)
+    if amount is None or amount <= 0 or amount > _MAX_AMOUNT:
+        await message.answer(
+            f"⚠️ Valore non valido (1–{_MAX_AMOUNT:,}).", reply_markup=cancel_to_home_kb()
+        )
+        return
+    await state.update_data(mass_amount=amount)
+    await state.set_state(AdminPanelStates.waiting_mass_recipients)
+    await message.answer(
+        "🎯 A chi vuoi mandarlo?\n\nScrivi gli <b>@username</b> dei membri, "
+        "<b>uno per riga</b>.",
+        reply_markup=cancel_to_home_kb(),
+    )
+
+
+@router.message(AdminPanelStates.waiting_mass_recipients, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_mass_recipients(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    lines = [ln for ln in (message.text or "").splitlines() if ln.strip()][:_MAX_RECIPIENTS]
+    found, missing = await admin_service.resolve_usernames(db_session, lines)
+    if not found:
+        await message.answer(
+            "⚠️ Nessun @username valido trovato (devono essere iscritti al bot). "
+            "Riprova con la lista, uno per riga.",
+            reply_markup=cancel_to_home_kb(),
+        )
+        return  # keep the state so the admin can re-send the list
+
+    data = await state.get_data()
+    kind, amount, admin_id = data["mass_kind"], data["mass_amount"], message.from_user.id
+    for user in found:
+        if kind == "coins":
+            await economy_service.credit(
+                db_session, user.tg_id, amount, TransactionType.admin_credit,
+                f"Premio multiplo da #{admin_id}",
+            )
+        else:
+            await xp_service.grant_xp(
+                db_session, user.tg_id, amount, XpSource.admin_grant, capped=False
+            )
+    await admin_service.log_action(
+        db_session, admin_id, "mass_credit" if kind == "coins" else "mass_xp",
+        amount=amount, detail=f"{len(found)} destinatari",
+    )
+    await db_session.commit()
+    await state.clear()
+
+    # Best-effort DM to each recipient.
+    dm = (
+        f"💰 Hai ricevuto <b>{amount:,} CoInn</b> da un amministratore! 🪙"
+        if kind == "coins"
+        else f"⚡ Hai ricevuto <b>+{amount:,} XP</b> da un amministratore!"
+    )
+    for user in found:
+        await _notify_dm(message.bot, user.tg_id, dm)
+
+    unit = "⚡ XP" if kind == "xp" else "🪙 CoInn"
+    report = f"🎯 <b>Premi inviati!</b>\n{unit}: <b>{amount:,}</b> a <b>{len(found)}</b> utenti."
+    if missing:
+        shown = ", ".join(f"@{esc(m)}" for m in missing[:20])
+        more = f" (+{len(missing) - 20})" if len(missing) > 20 else ""
+        report += f"\n\n⚠️ Non trovati: {shown}{more}"
+    await message.answer(report, reply_markup=back_home_kb())
 
 
 # ---------------------------------------------------------------------------

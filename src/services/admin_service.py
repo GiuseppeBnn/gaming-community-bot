@@ -141,6 +141,43 @@ async def search_users(session: AsyncSession, query: str, limit: int = 15) -> li
     return list(result.scalars().all())
 
 
+async def resolve_usernames(
+    session: AsyncSession, names: list[str]
+) -> tuple[list[User], list[str]]:
+    """Resolve a list of @usernames to users by **exact** (case-insensitive) match.
+
+    Returns ``(found, missing)``: the ``User`` rows that matched, and the input
+    tokens (as typed) that matched nothing. The leading ``@`` is optional and
+    stripped; blanks and duplicates are removed while preserving first-seen order.
+    Exact match only — this pays out coins/XP, so a fuzzy match to the wrong person
+    is not acceptable (unlike the ``search_users`` picker, which the admin confirms).
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in names:
+        token = raw.strip().lstrip("@").strip()
+        if token and token.lower() not in seen:
+            seen.add(token.lower())
+            cleaned.append(token)
+    if not cleaned:
+        return [], []
+    rows = (
+        await session.execute(
+            select(User).where(func.lower(User.username).in_([t.lower() for t in cleaned]))
+        )
+    ).scalars().all()
+    by_lower = {u.username.lower(): u for u in rows if u.username}
+    found: list[User] = []
+    missing: list[str] = []
+    for token in cleaned:
+        user = by_lower.get(token.lower())
+        if user is not None:
+            found.append(user)
+        else:
+            missing.append(token)
+    return found, missing
+
+
 async def list_users(
     session: AsyncSession, offset: int = 0, limit: int = 8
 ) -> list[tuple[User, int]]:
