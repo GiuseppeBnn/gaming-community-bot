@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from database.models import (
     AIGameRewardAllocation,
@@ -71,24 +71,29 @@ async def _setup_running(
     monkeypatch,
     *,
     turns: tuple[tuple[int, str, str, str], ...] = _BASE_TURNS + (_WINNING_TURN,),
+    users: tuple[int, ...] = (10, 20),
+    seed_accounts: bool = True,
     now: datetime | None = None,
     duration_seconds: int = 43_200,
+    max_coins_per_participant: int = 100,
+    title: str = "Concorrenza",
 ) -> int:
     monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
     monkeypatch.setattr(
         ai_game_service, "has_configured_twenty_questions_provider", lambda: True,
     )
     async with pg_sessions() as setup:
-        for tg_id in (10, 20):
-            setup.add(User(tg_id=tg_id, full_name=f"User {tg_id}"))
-            setup.add(Wallet(tg_id=tg_id, coins=0))
+        if seed_accounts:
+            for tg_id in users:
+                setup.add(User(tg_id=tg_id, full_name=f"User {tg_id}"))
+                setup.add(Wallet(tg_id=tg_id, coins=0))
         created = await ai_game_service.create_twenty_questions(
             setup,
             creator_tg_id=9,
-            title="Concorrenza",
+            title=title,
             duration_seconds=duration_seconds,
             expires_at=None,
-            max_coins_per_participant=100,
+            max_coins_per_participant=max_coins_per_participant,
             target=TARGET,
         )
         started = await ai_game_service.start(
@@ -284,10 +289,20 @@ async def test_pg_terminalize_two_victories_claim_once_and_pay_once(
         "wallets": {10: 84, 20: 84},
         "xp": {10: 10, 20: 10},
     }
+    async with pg_sessions() as observe:
+        allocated_coins, allocated_xp = (await observe.execute(select(
+            func.sum(AIGameRewardAllocation.coins),
+            func.sum(AIGameRewardAllocation.xp),
+        ).where(AIGameRewardAllocation.session_id == session_id))).one()
+        ledger_coins = (await observe.execute(select(func.sum(LedgerEntry.amount)))).scalar_one()
+    assert (allocated_coins, ledger_coins, allocated_xp) == (168, 168, 20)
 
 
-async def test_pg_terminalize_victory_vs_expired_persists_one_reason_and_one_reward_set(
-    pg_sessions, monkeypatch,
+@pytest.mark.parametrize(
+    "competing_reason", (FinishReason.expired, FinishReason.admin_closed),
+)
+async def test_pg_terminalize_victory_vs_terminal_close_persists_one_reason_and_one_reward_set(
+    pg_sessions, monkeypatch, competing_reason,
 ):
     """Without replay loading the losing closer could overwrite the winner's terminal fact."""
     rewards = _rewards()
@@ -306,23 +321,23 @@ async def test_pg_terminalize_victory_vs_expired_persists_one_reason_and_one_rew
             await victor.commit()
             return result
 
-        async def run_expired():
+        async def run_competing_close():
             result = await rewards.terminalize(
                 expirer,
                 session_id=session_id,
-                reason=FinishReason.expired,
+                reason=competing_reason,
             )
             await expirer.commit()
             return result
 
-        victory, expired = await asyncio.wait_for(
-            asyncio.gather(run_victory(), run_expired()),
+        victory, competing_close = await asyncio.wait_for(
+            asyncio.gather(run_victory(), run_competing_close()),
             timeout=10,
         )
 
-    assert sorted(result.transitioned for result in (victory, expired)) == [False, True]
-    assert victory.finish_reason is expired.finish_reason
-    assert victory.finish_reason in (FinishReason.victory, FinishReason.expired)
+    assert sorted(result.transitioned for result in (victory, competing_close)) == [False, True]
+    assert victory.finish_reason is competing_close.finish_reason
+    assert victory.finish_reason in (FinishReason.victory, competing_reason)
     facts = await _settlement_facts(pg_sessions, session_id)
     reason = facts["root"][1]
     assert reason == facts["settlement"][1] == victory.finish_reason.value
@@ -338,7 +353,7 @@ async def test_pg_terminalize_victory_vs_expired_persists_one_reason_and_one_rew
         )
     else:
         assert (facts["settlement"], facts["ledger"], facts["wallets"]) == (
-            ("settled", "expired", 2, 2, 1, 200, 32, 168, 0, 84, 0),
+            ("settled", competing_reason.value, 2, 2, 1, 200, 32, 168, 0, 84, 0),
             0,
             {10: 0, 20: 0},
         )
@@ -392,6 +407,13 @@ async def test_pg_concurrent_replay_reconstructs_one_immutable_settlement(
         "wallets": {10: 84, 20: 84},
         "xp": {10: 10, 20: 10},
     }
+    async with pg_sessions() as observe:
+        allocated_coins, allocated_xp = (await observe.execute(select(
+            func.sum(AIGameRewardAllocation.coins),
+            func.sum(AIGameRewardAllocation.xp),
+        ).where(AIGameRewardAllocation.session_id == session_id))).one()
+        ledger_coins = (await observe.execute(select(func.sum(LedgerEntry.amount)))).scalar_one()
+    assert (allocated_coins, ledger_coins, allocated_xp) == (168, 168, 20)
 
 
 @pytest.mark.parametrize("failure_at", ("credit", "grant"))
@@ -473,6 +495,111 @@ async def test_pg_kth_payout_failure_rolls_back_for_an_independent_observer(
         asyncio.gather(fail_and_rollback(), observe_uncommitted_then_rolled_back()),
         timeout=10,
     )
+    if failure_at == "credit":
+        monkeypatch.setattr(rewards.economy_service, "credit", original)
+    else:
+        monkeypatch.setattr(rewards.xp_service, "grant_xp", original)
+
+    async with pg_sessions() as retry:
+        await _append_winning_turn(retry, session_id)
+        retried = await rewards.terminalize(
+            retry,
+            session_id=session_id,
+            reason=FinishReason.victory,
+            winner_tg_id=10,
+        )
+        await retry.commit()
+    assert retried.transitioned
+    assert await _settlement_facts(pg_sessions, session_id) == {
+        "root": ("finished", "victory", 5),
+        "winner": 10,
+        "settlement": ("settled", "victory", 2, 2, 1, 200, 32, 168, 168, 84, 0),
+        "allocations": 2,
+        "ledger": 2,
+        "turns": 4,
+        "wallets": {10: 84, 20: 84},
+        "xp": {10: 10, 20: 10},
+    }
+
+
+@pytest.mark.parametrize("missing", ("user", "wallet"))
+async def test_pg_missing_participant_account_rolls_back_without_partial_payment(
+    pg_sessions, monkeypatch, missing,
+):
+    """Account prevalidation must fail before any credit and leave terminalization retryable."""
+    rewards = _rewards()
+    session_id = await _setup_running(pg_sessions, monkeypatch)
+    async with pg_sessions() as remove_account:
+        if missing == "user":
+            await remove_account.execute(delete(User).where(User.tg_id == 20))
+        else:
+            await remove_account.execute(delete(Wallet).where(Wallet.tg_id == 20))
+        await remove_account.commit()
+
+    original_credit = rewards.economy_service.credit
+
+    async def credit_must_not_run(*args, **kwargs):
+        raise AssertionError("participant accounts must be validated before the first credit")
+
+    monkeypatch.setattr(rewards.economy_service, "credit", credit_must_not_run)
+    async with pg_sessions() as failing:
+        with pytest.raises(rewards.RewardSettlementError):
+            await rewards.terminalize(
+                failing,
+                session_id=session_id,
+                reason=FinishReason.victory,
+                winner_tg_id=10,
+            )
+        await failing.rollback()
+    monkeypatch.setattr(rewards.economy_service, "credit", original_credit)
+
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status, AIGameSession.finish_reason,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status, AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        allocations = (await observe.execute(
+            select(func.count()).select_from(AIGameRewardAllocation).where(
+                AIGameRewardAllocation.session_id == session_id,
+            )
+        )).scalar_one()
+        ledger = (await observe.execute(select(func.count()).select_from(LedgerEntry))).scalar_one()
+        wallets = dict((await observe.execute(select(Wallet.tg_id, Wallet.coins))).all())
+        xp = dict((await observe.execute(select(User.tg_id, User.xp))).all())
+    assert root == ("running", None)
+    assert settlement == ("pending", None)
+    assert (allocations, ledger) == (0, 0)
+    if missing == "user":
+        assert (wallets, xp) == ({10: 0}, {10: 0})
+    else:
+        assert (wallets, xp) == ({10: 0}, {10: 0, 20: 0})
+
+    async with pg_sessions() as restore_account:
+        if missing == "user":
+            restore_account.add(User(tg_id=20, full_name="User 20"))
+        restore_account.add(Wallet(tg_id=20, coins=0))
+        await restore_account.commit()
+    async with pg_sessions() as retry:
+        retried = await rewards.terminalize(
+            retry,
+            session_id=session_id,
+            reason=FinishReason.victory,
+            winner_tg_id=10,
+        )
+        await retry.commit()
+    assert retried.transitioned
+    assert await _settlement_facts(pg_sessions, session_id) == {
+        "root": ("finished", "victory", 5),
+        "winner": 10,
+        "settlement": ("settled", "victory", 2, 2, 1, 200, 32, 168, 168, 84, 0),
+        "allocations": 2,
+        "ledger": 2,
+        "turns": 4,
+        "wallets": {10: 84, 20: 84},
+        "xp": {10: 10, 20: 10},
+    }
 
 
 async def test_pg_terminalize_and_place_bet_acquire_user_before_wallet(
@@ -578,6 +705,198 @@ async def test_pg_terminalize_and_place_bet_acquire_user_before_wallet(
     facts = await _settlement_facts(pg_sessions, session_id)
     assert facts["wallets"] == {10: 984, 20: 84}
     assert facts["xp"] == {10: 20, 20: 10}
+
+
+async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not_deadlock(
+    pg_sessions, monkeypatch,
+):
+    """Two roots sharing accounts must serialize User then Wallet locks by ascending tg_id."""
+    rewards = _rewards()
+    first_session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        title="Prima gara",
+    )
+    second_session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        title="Seconda gara",
+        seed_accounts=False,
+        turns=(
+            (20, TurnKind.question.value, "Domanda 20?", '{"verdetto":"si"}'),
+            (10, TurnKind.question.value, "Domanda 10?", '{"verdetto":"no"}'),
+            (10, TurnKind.guess.value, "Half-Life 2", '{"correct":false}'),
+            (20, TurnKind.guess.value, "Portal 2", '{"correct":true}'),
+        ),
+    )
+    start = asyncio.Barrier(2)
+    async with pg_sessions() as first, pg_sessions() as second:
+
+        async def settle(db_session, session_id: int, winner_tg_id: int):
+            await start.wait()
+            result = await rewards.terminalize(
+                db_session,
+                session_id=session_id,
+                reason=FinishReason.victory,
+                winner_tg_id=winner_tg_id,
+            )
+            await db_session.commit()
+            return result
+
+        tasks = (
+            asyncio.create_task(settle(first, first_session_id, 10)),
+            asyncio.create_task(settle(second, second_session_id, 20)),
+        )
+        try:
+            first_result, second_result = await asyncio.wait_for(
+                asyncio.gather(*tasks), timeout=10,
+            )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True), timeout=3,
+            )
+
+    assert first_result.transitioned and second_result.transitioned
+    async with pg_sessions() as observe:
+        roots = (await observe.execute(select(
+            AIGameSession.id, AIGameSession.status, AIGameSession.finish_reason,
+        ).where(AIGameSession.id.in_((first_session_id, second_session_id))).order_by(
+            AIGameSession.id.asc(),
+        ))).all()
+        allocations = (await observe.execute(select(
+            AIGameRewardAllocation.session_id,
+            AIGameRewardAllocation.user_tg_id,
+            AIGameRewardAllocation.coins,
+            AIGameRewardAllocation.xp,
+        ).where(
+            AIGameRewardAllocation.session_id.in_((first_session_id, second_session_id)),
+        ).order_by(
+            AIGameRewardAllocation.session_id.asc(),
+            AIGameRewardAllocation.user_tg_id.asc(),
+        ))).all()
+        ledger = (await observe.execute(select(
+            LedgerEntry.description, LedgerEntry.to_tg_id, LedgerEntry.amount,
+        ).where(
+            LedgerEntry.description.in_((
+                f"Premio gioco segreto di Alduino #{first_session_id}",
+                f"Premio gioco segreto di Alduino #{second_session_id}",
+            )),
+        ).order_by(LedgerEntry.description.asc(), LedgerEntry.to_tg_id.asc()))).all()
+        wallets = dict((await observe.execute(select(Wallet.tg_id, Wallet.coins))).all())
+        xp = dict((await observe.execute(select(User.tg_id, User.xp))).all())
+    assert roots == [
+        (first_session_id, "finished", "victory"),
+        (second_session_id, "finished", "victory"),
+    ]
+    assert allocations == [
+        (first_session_id, 10, 84, 10),
+        (first_session_id, 20, 84, 10),
+        (second_session_id, 10, 84, 10),
+        (second_session_id, 20, 84, 10),
+    ]
+    assert ledger == [
+        (f"Premio gioco segreto di Alduino #{first_session_id}", 10, 84),
+        (f"Premio gioco segreto di Alduino #{first_session_id}", 20, 84),
+        (f"Premio gioco segreto di Alduino #{second_session_id}", 10, 84),
+        (f"Premio gioco segreto di Alduino #{second_session_id}", 20, 84),
+    ]
+    assert wallets == {10: 168, 20: 168}
+    assert xp == {10: 20, 20: 20}
+
+
+async def test_pg_zero_participant_terminalization_is_void(
+    pg_sessions, monkeypatch,
+):
+    """A real PostgreSQL close with no valid turns creates neither allocation nor credit."""
+    rewards = _rewards()
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        users=(),
+        turns=(),
+    )
+    async with pg_sessions() as closer:
+        closed = await rewards.terminalize(
+            closer,
+            session_id=session_id,
+            reason=FinishReason.expired,
+        )
+        await closer.commit()
+    assert closed.transitioned and closed.reward.settlement_status == "void"
+    assert await _settlement_facts(pg_sessions, session_id) == {
+        "root": ("finished", "expired", 1),
+        "winner": None,
+        "settlement": ("void", "expired", 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        "allocations": 0,
+        "ledger": 0,
+        "turns": 0,
+        "wallets": {},
+        "xp": {},
+    }
+
+
+async def test_pg_remainder_is_not_paid_to_any_participant(
+    pg_sessions, monkeypatch,
+):
+    """PostgreSQL settlement preserves the deterministic integer remainder outside payouts."""
+    rewards = _rewards()
+    session_id = await _setup_running(
+        pg_sessions,
+        monkeypatch,
+        users=(10, 20, 30),
+        turns=_BASE_TURNS + (
+            (30, TurnKind.question.value, "Domanda 30?", '{"verdetto":"si"}'),
+            _WINNING_TURN,
+        ),
+    )
+    async with pg_sessions() as closer:
+        closed = await rewards.terminalize(
+            closer,
+            session_id=session_id,
+            reason=FinishReason.victory,
+            winner_tg_id=10,
+        )
+        await closer.commit()
+    assert closed.transitioned
+    assert await _settlement_facts(pg_sessions, session_id) == {
+        "root": ("finished", "victory", 6),
+        "winner": 10,
+        "settlement": ("settled", "victory", 3, 3, 1, 300, 38, 262, 262, 87, 1),
+        "allocations": 3,
+        "ledger": 3,
+        "turns": 5,
+        "wallets": {10: 87, 20: 87, 30: 87},
+        "xp": {10: 10, 20: 10, 30: 10},
+    }
+
+
+async def test_pg_admin_close_pays_participation_xp_without_coins(
+    pg_sessions, monkeypatch,
+):
+    """Administrative closure uses the authoritative settlement and awards XP exactly once."""
+    rewards = _rewards()
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=_BASE_TURNS)
+    async with pg_sessions() as closer:
+        closed = await rewards.terminalize(
+            closer,
+            session_id=session_id,
+            reason=FinishReason.admin_closed,
+        )
+        await closer.commit()
+    assert closed.transitioned and closed.finish_reason is FinishReason.admin_closed
+    assert await _settlement_facts(pg_sessions, session_id) == {
+        "root": ("finished", "admin_closed", 4),
+        "winner": None,
+        "settlement": ("settled", "admin_closed", 2, 2, 1, 200, 32, 168, 0, 84, 0),
+        "allocations": 2,
+        "ledger": 0,
+        "turns": 3,
+        "wallets": {10: 0, 20: 0},
+        "xp": {10: 10, 20: 10},
+    }
 
 
 async def test_pg_question_claim_after_root_lock_expiry_is_terminalized_before_lease(
@@ -1042,18 +1361,22 @@ async def test_pg_duplicate_guess_hash_race_returns_free_typed_rejection(
     async with pg_sessions() as first, pg_sessions() as second:
         _synchronize_first_turn_claim(monkeypatch, (first, second))
 
-        async def same_guess(db_session):
+        async def same_guess(db_session, answer: str):
             result = await ai_game_service.submit_guess(
                 db_session,
                 session_id=session_id,
                 user_tg_id=10,
-                answer="The identical wrong title",
+                answer=answer,
             )
             await db_session.commit()
             return result
 
         first_result, second_result = await asyncio.wait_for(
-            asyncio.gather(same_guess(first), same_guess(second)), timeout=10,
+            asyncio.gather(
+                same_guess(first, "The identical wrong title"),
+                same_guess(second, " the  identical wrong title! "),
+            ),
+            timeout=10,
         )
 
     assert sum(result.outcome is TurnOutcome.recorded for result in (
@@ -1075,6 +1398,71 @@ async def test_pg_duplicate_guess_hash_race_returns_free_typed_rejection(
         ).where(AIGameSession.id == session_id))).one()
     assert (quota.guesses_used, quota.guesses_left, len(turns)) == (1, 1, 1)
     assert pending == (None, None, None, None)
+
+
+async def test_pg_duplicate_question_hash_race_reuses_one_free_turn(
+    pg_sessions, monkeypatch,
+):
+    """A normalized duplicate must leave one persisted question and later reuse it for free."""
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=())
+    async with pg_sessions() as first, pg_sessions() as second:
+        _synchronize_first_turn_claim(monkeypatch, (first, second))
+
+        async def start_one(db_session, question: str):
+            result = await ai_game_service.begin_question(
+                db_session,
+                session_id=session_id,
+                user_tg_id=10,
+                question=question,
+            )
+            await db_session.commit()
+            return result
+
+        first_result, second_result = await asyncio.wait_for(asyncio.gather(
+            start_one(first, "Il gioco usa portali?"),
+            start_one(second, "  il gioco   usa portali?! "),
+        ), timeout=10)
+
+    assert sum(result.outcome is TurnOutcome.claimed for result in (
+        first_result, second_result,
+    )) == 1
+    assert sum(result.reason is TurnRejectReason.busy for result in (
+        first_result, second_result,
+    )) == 1
+    claim = next(result.claim for result in (first_result, second_result)
+                 if result.claim is not None)
+    async with pg_sessions() as complete:
+        recorded = await ai_game_service.complete_question(
+            complete, claim=claim, verdict=QuestionVerdict.si,
+        )
+        await complete.commit()
+    assert recorded.outcome is TurnOutcome.recorded
+
+    async with pg_sessions() as reuse:
+        reused = await ai_game_service.begin_question(
+            reuse,
+            session_id=session_id,
+            user_tg_id=10,
+            question="IL GIOCO USA PORTALI.",
+        )
+        await reuse.commit()
+    assert (reused.outcome, reused.cached_verdict) == (
+        TurnOutcome.reused, QuestionVerdict.si,
+    )
+    assert (reused.quota.questions_used, reused.quota.questions_left) == (1, 4)
+
+    async with pg_sessions() as observe:
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+            AIGameTurn.kind == TurnKind.question.value,
+        ))).scalar_one()
+        pending = (await observe.execute(select(
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+    assert (turns, pending) == (1, (None, None, None, None))
 
 
 async def test_pg_completion_after_lease_recovery_cannot_append_stale_turn(
@@ -1119,12 +1507,80 @@ async def test_pg_completion_after_lease_recovery_cannot_append_stale_turn(
     )
     async with pg_sessions() as observe:
         fields = (await observe.execute(select(
-            AIGameSession.pending_user_tg_id, AIGameSession.pending_kind,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
         ).where(AIGameSession.id == session_id))).one()
         turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
             AIGameTurn.session_id == session_id,
         ))).scalar_one()
-    assert fields == (20, TurnKind.question.value)
+        original_quota = await ai_game_service.get_personal_quota(observe, session_id, 10)
+        replacement_quota = await ai_game_service.get_personal_quota(observe, session_id, 20)
+    assert fields == (
+        second.claim.token,
+        now + timedelta(seconds=46),
+        20,
+        TurnKind.question.value,
+    )
+    assert turns == 0
+    assert (original_quota.questions_used, replacement_quota.questions_used) == (0, 0)
+
+
+async def test_pg_completion_after_admin_close_keeps_stale_lease_inert(
+    pg_sessions, monkeypatch,
+):
+    """A provider completion after authoritative closure cannot append or consume quota."""
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=())
+    async with pg_sessions() as claimant:
+        started = await ai_game_service.begin_question(
+            claimant,
+            session_id=session_id,
+            user_tg_id=10,
+            question="La completion sopravvive alla chiusura?",
+        )
+        await claimant.commit()
+    assert started.claim is not None
+
+    async with pg_sessions() as closer:
+        closed = await ai_game_service.terminalize(
+            closer,
+            session_id=session_id,
+            reason=FinishReason.admin_closed,
+        )
+        await closer.commit()
+    assert closed.transitioned and closed.finish_reason is FinishReason.admin_closed
+
+    async with pg_sessions() as stale_worker:
+        stale = await ai_game_service.complete_question(
+            stale_worker,
+            claim=started.claim,
+            verdict=QuestionVerdict.si,
+        )
+        await stale_worker.commit()
+    assert (stale.outcome, stale.reason) == (
+        TurnOutcome.rejected, TurnRejectReason.lost_claim,
+    )
+    assert (stale.quota.questions_used, stale.quota.questions_left) == (0, 5)
+
+    async with pg_sessions() as observe:
+        root = (await observe.execute(select(
+            AIGameSession.status,
+            AIGameSession.finish_reason,
+            AIGameSession.pending_token,
+            AIGameSession.pending_since,
+            AIGameSession.pending_user_tg_id,
+            AIGameSession.pending_kind,
+        ).where(AIGameSession.id == session_id))).one()
+        settlement = (await observe.execute(select(
+            AIGameRewardSettlement.status,
+            AIGameRewardSettlement.finish_reason,
+        ).where(AIGameRewardSettlement.session_id == session_id))).one()
+        turns = (await observe.execute(select(func.count()).select_from(AIGameTurn).where(
+            AIGameTurn.session_id == session_id,
+        ))).scalar_one()
+    assert root == ("finished", "admin_closed", None, None, None, None)
+    assert settlement == ("void", "admin_closed")
     assert turns == 0
 
 
