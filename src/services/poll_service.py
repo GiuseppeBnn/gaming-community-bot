@@ -46,6 +46,15 @@ def _now() -> datetime:
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
 
 
+def question_length(text: str) -> int:
+    """Length of a poll question the way Telegram counts it: **UTF-16 code units**,
+    not Python code points. An emoji like 🪙 is one code point but two UTF-16 units,
+    so counting code points would under-count and let an over-limit question through
+    to a rejected ``sendPoll``. Used to decide whether the prize/close info block
+    still fits inside the poll question (STEERING §18.2)."""
+    return len(text.encode("utf-16-le")) // 2
+
+
 # ---------------------------------------------------------------------------
 # Creation & reads
 # ---------------------------------------------------------------------------

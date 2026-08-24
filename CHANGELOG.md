@@ -3,6 +3,20 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.6] - 2026-08-24
+
+### Modificato
+- **Sondaggi — premio e chiusura nello stesso messaggio** — le righe
+  «🏆 Premio… / 🏁 Si chiude il…» ora compaiono **sotto il titolo, nello stesso
+  messaggio del sondaggio**, quando titolo + descrizione + queste righe stanno nel
+  limite di **300 caratteri** di Telegram. Se non ci stanno, restano in un
+  messaggio separato come prima.
+- **Guess The Game / Sound Quest — i comandi non contano come tentativi** — se
+  durante una partita si invia `/start` (capita ri-toccando «avvia» quando non ci
+  si accorge che l'attività è già partita) o un altro comando, non viene più
+  contato come tentativo: viene semplicemente ignorato e i tentativi restano
+  intatti.
+
 ## [1.5] - 2026-08-24
 
 ### Aggiunto

@@ -61,9 +61,10 @@ async def open_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool, 
       no results announcement. This is the default a bare poll falls back to.
     * **managed** (``closes_at`` set): the poll goes ``running``; its live handles
       are stored (so it can be stopped and its votes paid), an auto-close is armed,
-      and a context message (description + prize + close time) is posted first. It
-      is sent **non-anonymous** on purpose — the only way to receive ``poll_answer``
-      updates and know whom to pay.
+      and the prize + close "info block" is folded **into the poll question** (below
+      the title/description) when it still fits in 300 chars, otherwise posted as a
+      separate message. It is sent **non-anonymous** on purpose — the only way to
+      receive ``poll_answer`` updates and know whom to pay.
     """
     poll = await poll_service.get(db_session, poll_id)
     if poll is None:
@@ -97,25 +98,37 @@ async def open_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool, 
         return False, ("La data di chiusura automatica è già passata. "
                        "Aggiornala prima di avviare.")
 
-    # The description is folded into the poll question (below the title), so the
-    # intro carries only the prize and the close time — not the description.
-    intro_lines: list[str] = ["📊 <b>Sondaggio</b>"]
+    # The description is already folded into the poll question (below the title).
+    # The prize + close "info block" is folded in **too** — under the title, in the
+    # same poll message — as long as title + description + info still fit in the
+    # 300-char question. If it doesn't, the info goes as a separate message (its old
+    # shape). Plain text inside the question (polls aren't HTML-parsed), HTML in the
+    # separate message where bold renders (STEERING §18.2).
+    close_str = f"{schedule_service.to_local(poll.closes_at):%d/%m %H:%M}"
+    info_plain: list[str] = []
+    info_html: list[str] = ["📊 <b>Sondaggio</b>"]
     if poll_service.has_prize(poll):
-        intro_lines.append(
-            f"🏆 Premio: <b>{poll_service.format_prize_summary(poll)}</b> — vota per riceverlo!"
-        )
-    intro_lines.append(
-        f"🏁 Si chiude il <b>{schedule_service.to_local(poll.closes_at):%d/%m %H:%M}</b>."
-    )
-    try:
-        await group_registry.send_group_message(bot, db_session, "\n\n".join(intro_lines))
-    except Exception as e:  # noqa: BLE001 — the intro is a bonus, not the poll
-        log.warning("Intro sondaggio %s non inviata: %s", poll_id, e)
+        summary = poll_service.format_prize_summary(poll)
+        info_plain.append(f"🏆 Premio: {summary} — vota per riceverlo!")
+        info_html.append(f"🏆 Premio: <b>{summary}</b> — vota per riceverlo!")
+    info_plain.append(f"🏁 Si chiude il {close_str}.")
+    info_html.append(f"🏁 Si chiude il <b>{close_str}</b>.")
+
+    core = poll_service.render_question(poll)  # title + description
+    merged = f"{core}\n\n" + "\n".join(info_plain)
+    if poll_service.question_length(merged) <= poll_service.POLL_QUESTION_MAX:
+        question = merged  # everything in the poll message — no separate intro
+    else:
+        question = core
+        try:
+            await group_registry.send_group_message(bot, db_session, "\n\n".join(info_html))
+        except Exception as e:  # noqa: BLE001 — the intro is a bonus, not the poll
+            log.warning("Intro sondaggio %s non inviata: %s", poll_id, e)
 
     try:
         sent = await bot.send_poll(
             chat_id=group_id,
-            question=poll_service.render_question(poll),
+            question=question,
             options=poll_service.options_of(poll),
             is_anonymous=False,
         )

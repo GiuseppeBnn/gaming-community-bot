@@ -285,6 +285,22 @@ class TestEntry:
 
 
 class TestAnswering:
+    async def test_a_command_is_never_judged_or_counted(self, session, round_, state, judge):
+        """/start (re-tapping «avvia» mid-round) must not reach the judge or cost an
+        attempt — it is simply ignored while answering."""
+        await _playing(session, round_, state)
+        m = _Msg("/start guess_1")
+
+        await pl.fsm_answer(m, session, state)
+
+        assert judge == []  # the model was never called
+        attempts = (await session.execute(
+            select(GuessAttempt).where(GuessAttempt.round_id == round_.id)
+        )).scalars().all()
+        assert attempts == []
+        assert m.said == ""  # ignored: no reply
+        assert await state.get_state() == pl.GuessPlayStates.answering.state
+
     async def test_a_wrong_answer_is_told_how_many_are_left(self, session, round_, state):
         await _playing(session, round_, state)
         m = _Msg("Quake")

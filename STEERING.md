@@ -1166,6 +1166,13 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
     (unico modo per ricevere gli update `poll_answer` e sapere chi premiare), salva
     `tg_poll_id`/`message_id`/`chat_id`, e arma un auto-close riusando `task_type="poll"` +
     `payload={"action":"close"}` (nessun nuovo task type).
+  - **Blocco info (premio + chiusura) nel messaggio del sondaggio.** La descrizione è già dentro
+    la domanda (sotto il titolo). Il blocco `🏆 Premio… / 🏁 Si chiude…` viene **ripiegato nella
+    domanda** (sotto titolo+descrizione, testo plain — i poll non sono HTML-parsed) **se** il totale
+    sta nei **300 caratteri**, misurati in **unità UTF-16** (`poll_service.question_length`, come
+    conta Telegram — le emoji del premio contano doppio, `len()` sotto-stimerebbe e farebbe rifiutare
+    l'invio); **altrimenti** va come **messaggio separato** (forma HTML, col grassetto). Il controllo
+    è a **pubblicazione**, non a creazione, così vale sia per «Avvia ora» sia per l'avvio programmato.
   - L'handler `poll_answer` (`handlers/poll_vote.py`, router **pubblico** in `ROUTERS`, non gated: i
     votanti sono utenti normali) registra i voti dei soli sondaggi *managed* in corso in `poll_votes`.
   - La chiusura (`close_poll`, manuale dalla scheda o programmata): `claim_close` **prima** (UPDATE
@@ -1463,10 +1470,15 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
 
 - Il tentativo si **spende all'invio**, prima che il verdetto sia noto: è l'unica contabilità
   con cui un brute-forcer non può discutere.
-- **L'ordine delle guardie è portante**: cooldown → già risolto → scadenza → tentativi →
-  **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non deve costare
-  quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la mutazione che
-  sposta il controllo tentativi dopo il giudice era passata verde prima che ci fossero.
+- **L'ordine delle guardie è portante**: **comando** → cooldown → già risolto → scadenza →
+  tentativi → **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non
+  deve costare quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la
+  mutazione che sposta il controllo tentativi dopo il giudice era passata verde prima che ci
+  fossero.
+- **Un comando (testo che inizia con `/`) non è mai un tentativo**: `fsm_answer` lo **ignora**
+  in cima, prima di cooldown/giudice/registrazione. Serve al caso reale in cui un giocatore non
+  si accorge che il round è partito e ri-tocca «avvia», che rimanda `/start <deeplink>` in chat:
+  senza la guardia veniva giudicato e bruciava un tentativo.
 - **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
   Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
   azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo

@@ -333,9 +333,11 @@ class TestPollAnswerHandler:
 # ---------------------------------------------------------------------------
 
 class TestOpenPollEdges:
-    async def test_managed_poll_embeds_description_and_intro_has_prize(
+    async def test_short_managed_poll_folds_everything_into_the_question(
         self, session, user_factory, in_group
     ):
+        """Description + prize + close all fit in 300 chars → they go in the poll
+        question itself, under the title, with no separate intro message."""
         await user_factory(tg_id=ADMIN_ID, username="a")
         poll = await poll_service.create_template(
             session, ADMIN_ID, "Q", ["A", "B"],
@@ -349,16 +351,39 @@ class TestOpenPollEdges:
         await session.commit()
 
         assert ok
-        # The description is folded into the poll question (under the title)...
-        assert any("Vota!" in p["question"] for p in bot.polls)
-        assert not any("Vota!" in text for _cid, text in bot.messages)
-        # ...and the separate intro carries the prize (and the close time).
-        assert any("Premio" in text for _cid, text in bot.messages)
+        assert len(bot.polls) == 1
+        q = bot.polls[0]["question"]
+        assert "Vota!" in q and "Premio" in q and "Si chiude" in q
+        assert bot.messages == []  # no separate intro — everything is in the poll
         # The absolute close armed a scheduled auto-close task.
         tasks = (await session.execute(
             select(ScheduledTask).where(ScheduledTask.task_type == "poll")
         )).scalars().all()
         assert any(t.ref_id == poll.id for t in tasks)
+
+    async def test_long_managed_poll_sends_the_info_block_separately(
+        self, session, user_factory, in_group
+    ):
+        """When title + description + prize/close exceed 300, the info block goes as a
+        separate message and the poll question keeps only title + description."""
+        await user_factory(tg_id=ADMIN_ID, username="a")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Q", ["A", "B"],
+            description="D" * 280, prize_coins=25, prize_xp=10,
+            closes_at=datetime.now(tz=timezone.utc).replace(tzinfo=None) + timedelta(days=1),
+        )
+        await session.commit()
+        bot = _FakeBot()
+
+        ok, _msg = await open_poll(bot, session, poll.id)
+        await session.commit()
+
+        assert ok
+        assert any(
+            "Premio" in text and "Si chiude" in text for _cid, text in bot.messages
+        )
+        assert len(bot.polls) == 1
+        assert "Premio" not in bot.polls[0]["question"]
 
     async def test_a_past_close_date_refuses_to_start(self, session, user_factory, in_group):
         await user_factory(tg_id=ADMIN_ID, username="a")
@@ -433,9 +458,12 @@ class TestOpenPollEdges:
         assert not ok and "in corso" in msg
 
     async def test_managed_intro_failure_is_best_effort(self, session, user_factory, in_group):
+        """A long poll sends the info block separately; if that send fails, the poll
+        still goes up (the info block is a bonus, not the poll)."""
         await user_factory(tg_id=ADMIN_ID, username="a")
         poll = await poll_service.create_template(
-            session, ADMIN_ID, "Q", ["A", "B"], prize_coins=25, closes_at=_future()
+            session, ADMIN_ID, "Q", ["A", "B"],
+            description="D" * 280, prize_coins=25, closes_at=_future(),
         )
         await session.commit()
         bot = _FakeBot()
