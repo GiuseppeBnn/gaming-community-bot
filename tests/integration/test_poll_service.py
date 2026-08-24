@@ -238,6 +238,12 @@ class TestRecordVote:
 
 
 class TestPayVoters:
+    def test_active_voter_projection_deduplicates_to_one_payout_candidate(self):
+        """Would fail if duplicate projected active rows could pay one voter twice."""
+        rows = ((10, "[0]"), (10, "[1]"), (11, "[]"))
+
+        assert poll_service._active_voter_ids(rows) == (10,)
+
     async def test_pays_active_voters_only(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="a")
         await user_factory(tg_id=10, username="v1")

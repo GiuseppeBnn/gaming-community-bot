@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
@@ -265,6 +266,11 @@ def _nonempty(option_ids_json: str) -> bool:
         return False
 
 
+def _active_voter_ids(rows: Iterable[tuple[int, str]]) -> tuple[int, ...]:
+    """Project active vote rows to one deterministic payout candidate per user."""
+    return tuple(sorted({uid for uid, opts_json in rows if _nonempty(opts_json)}))
+
+
 async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
     """Pay the participation prize to every current voter. Returns how many were
     paid. No-commit (STEERING §5).
@@ -290,9 +296,9 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
             )
         )
     ).all()
-    participants = tuple(sorted(
-        uid for uid, opts_json in rows if _nonempty(opts_json)
-    ))
+    participants = _active_voter_ids(
+        (uid, opts_json) for uid, opts_json in rows
+    )
     # Do not prevalidate: a missing wallet is deliberately handled per voter in
     # the loop below, so it cannot abort another voter's prize.
     await economy_service.lock_users_then_wallets(session, participants)
