@@ -80,6 +80,21 @@ class PollTemplateStates(StatesGroup):
 _REL_TOKEN_RE = re.compile(r"^\d+\s*[mhd]$", re.IGNORECASE)
 #: Sanity bound on a per-voter prize, so a fat-fingered amount can't mint millions.
 _MAX_PRIZE = 1_000_000
+#: Telegram caps a native poll question at 300 chars, and a native poll has no
+#: separate description field — the description is concatenated into the question
+#: (``poll_service.render_question``). So question + description must fit within
+#: this, validated at the description step and re-asked until it does.
+_POLL_QUESTION_MAX = 300
+_DESC_SEP = "\n\n"
+
+
+def _poll_length_overflow(question: str, description: str) -> int:
+    """Chars by which ``question`` + ``description`` would exceed Telegram's
+    300-char poll question. 0 means it fits; an empty description always fits."""
+    if not description:
+        return 0
+    total = len(question) + len(_DESC_SEP) + len(description)
+    return max(0, total - _POLL_QUESTION_MAX)
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +419,57 @@ async def fsm_pt_question(message: Message, state: FSMContext) -> None:
     # create can run from a *callback* (e.g. «no prize», «no close») where
     # `from_user` would be the bot.
     await state.update_data(pt_question=q, pt_creator=message.from_user.id)
+    await _ask_description(message, state)
+
+
+# --- Optional description (right after the question) ----------------------
+
+def _desc_kb() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="⏭️ Salta", callback_data=PollCreateCb(action="desc_skip").pack())
+    b.button(text="❌ Annulla", callback_data=PollCreateCb(action="cancel").pack())
+    b.adjust(2)
+    return b.as_markup()
+
+
+async def _ask_description(message: Message, state: FSMContext) -> None:
+    await state.set_state(PollTemplateStates.description)
+    await message.answer(
+        "📝 Vuoi aggiungere una <b>descrizione</b>? Verrà mostrata <b>sotto la domanda</b>, "
+        "nello stesso messaggio del sondaggio. Inviala ora, oppure salta.",
+        reply_markup=_desc_kb(),
+    )
+
+
+@router.message(PollTemplateStates.description, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_pt_description(message: Message, state: FSMContext) -> None:
+    desc = (message.text or "").strip()
+    data = await state.get_data()
+    over = _poll_length_overflow(data.get("pt_question", ""), desc)
+    if over > 0:
+        # Description goes inside the poll question (max 300), so title + description
+        # must fit: reject and re-ask, like the trivia question length check.
+        await message.answer(
+            f"⚠️ Domanda e descrizione insieme superano di <b>{over}</b> caratteri il "
+            f"limite di <b>{_POLL_QUESTION_MAX}</b> di un sondaggio Telegram.\n"
+            "Invia una <b>descrizione più corta</b> (oppure salta).",
+            reply_markup=_desc_kb(),
+        )
+        return
+    await state.update_data(pt_description=desc or None)
+    await _ask_options(message, state)
+
+
+@router.callback_query(PollCreateCb.filter(F.action == "desc_skip"), IsAdminCallbackFilter())
+async def cb_pt_desc_skip(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(pt_description=None)
+    await _ask_options(callback.message, state)
+    await callback.answer()
+
+
+# --- Options --------------------------------------------------------------
+
+async def _ask_options(message: Message, state: FSMContext) -> None:
     await state.set_state(PollTemplateStates.options)
     await message.answer(
         f"Invia le <b>opzioni</b>, una per riga (da {_MIN_OPTIONS} a {_MAX_OPTIONS}):",
@@ -421,40 +487,7 @@ async def fsm_pt_options(message: Message, state: FSMContext) -> None:
         )
         return
     await state.update_data(pt_options=options)
-    await _ask_description(message, state)
-
-
-# --- Optional description -------------------------------------------------
-
-def _desc_kb() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="⏭️ Salta", callback_data=PollCreateCb(action="desc_skip").pack())
-    b.button(text="❌ Annulla", callback_data=PollCreateCb(action="cancel").pack())
-    b.adjust(2)
-    return b.as_markup()
-
-
-async def _ask_description(message: Message, state: FSMContext) -> None:
-    await state.set_state(PollTemplateStates.description)
-    await message.answer(
-        "📝 Vuoi aggiungere una <b>descrizione</b> (mostrata nel gruppo insieme al "
-        "sondaggio)? Inviala ora, oppure salta.",
-        reply_markup=_desc_kb(),
-    )
-
-
-@router.message(PollTemplateStates.description, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_pt_description(message: Message, state: FSMContext) -> None:
-    desc = (message.text or "").strip()[:1024]
-    await state.update_data(pt_description=desc or None)
     await _ask_prize(message, state)
-
-
-@router.callback_query(PollCreateCb.filter(F.action == "desc_skip"), IsAdminCallbackFilter())
-async def cb_pt_desc_skip(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(pt_description=None)
-    await _ask_prize(callback.message, state)
-    await callback.answer()
 
 
 # --- Optional prize -------------------------------------------------------

@@ -252,7 +252,7 @@ class TestPayVoters:
         paid = await poll_service.pay_voters(session, poll)
         await session.commit()
 
-        assert paid == 1
+        assert paid == [10]
         assert await economy_service.get_balance(session, 10) == 25
         assert await economy_service.get_balance(session, 11) == 0
 
@@ -263,7 +263,7 @@ class TestPayVoters:
         session.add(PollVote(poll_id=poll.id, user_tg_id=10, option_ids_json="[0]"))
         await session.commit()
 
-        assert await poll_service.pay_voters(session, poll) == 0
+        assert await poll_service.pay_voters(session, poll) == []
 
     async def test_missing_wallet_is_skipped_not_fatal(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID, username="a")
@@ -274,7 +274,7 @@ class TestPayVoters:
         session.add(PollVote(poll_id=poll.id, user_tg_id=99, option_ids_json="[0]"))
         await session.commit()
 
-        assert await poll_service.pay_voters(session, poll) == 0
+        assert await poll_service.pay_voters(session, poll) == []
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +333,7 @@ class TestPollAnswerHandler:
 # ---------------------------------------------------------------------------
 
 class TestOpenPollEdges:
-    async def test_intro_message_carries_description_and_prize(
+    async def test_managed_poll_embeds_description_and_intro_has_prize(
         self, session, user_factory, in_group
     ):
         await user_factory(tg_id=ADMIN_ID, username="a")
@@ -349,7 +349,11 @@ class TestOpenPollEdges:
         await session.commit()
 
         assert ok
-        assert any("Vota!" in text for _cid, text in bot.messages)
+        # The description is folded into the poll question (under the title)...
+        assert any("Vota!" in p["question"] for p in bot.polls)
+        assert not any("Vota!" in text for _cid, text in bot.messages)
+        # ...and the separate intro carries the prize (and the close time).
+        assert any("Premio" in text for _cid, text in bot.messages)
         # The absolute close armed a scheduled auto-close task.
         tasks = (await session.execute(
             select(ScheduledTask).where(ScheduledTask.task_type == "poll")
@@ -378,18 +382,22 @@ class TestOpenPollEdges:
         assert not ok
         assert await _status(session, poll.id) == "ready"
 
-    async def test_a_failed_intro_is_best_effort(self, session, user_factory, in_group):
-        """The context message is a bonus: if it fails, the poll still goes up."""
+    async def test_plain_poll_folds_description_into_the_question(
+        self, session, user_factory, in_group
+    ):
+        """A plain poll (no prize/close) sends no separate intro: the description
+        lives inside the poll question, under the title."""
         await user_factory(tg_id=ADMIN_ID, username="a")
         poll = await poll_service.create_template(
             session, ADMIN_ID, "Q", ["A", "B"], description="ctx"
         )
         await session.commit()
         bot = _FakeBot()
-        bot.fail_intro = True
 
         ok, _msg = await open_poll(bot, session, poll.id)
-        assert ok and bot.polls  # poll published despite the intro failure
+        assert ok
+        assert any("ctx" in p["question"] and "Q" in p["question"] for p in bot.polls)
+        assert bot.messages == []  # no separate intro message
 
     async def test_a_finished_poll_cannot_be_restarted(self, session, user_factory, in_group):
         await user_factory(tg_id=ADMIN_ID, username="a")
@@ -600,6 +608,52 @@ class TestClosePollEdges:
 
         ok, _msg = await close_poll(bot, session, poll.id)
 
+        assert ok
+        assert await _status(session, poll.id) == "finished"
+        assert await economy_service.get_balance(session, 20) == 25
+
+    async def test_close_dms_each_paid_voter(self, session, user_factory, in_group):
+        """Every paid voter gets a private reward notification, like an admin grant."""
+        await user_factory(tg_id=ADMIN_ID, username="a")
+        await user_factory(tg_id=20, username="v")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Q", ["A", "B"], prize_coins=25, prize_xp=10,
+            closes_at=_future(),
+        )
+        await session.commit()
+        bot = _FakeBot()
+        await open_poll(bot, session, poll.id)
+        await session.commit()
+        session.add(PollVote(poll_id=poll.id, user_tg_id=20, option_ids_json="[0]"))
+        await session.commit()
+        bot.stop_result = _final([("A", 1), ("B", 0)])
+
+        ok, _msg = await close_poll(bot, session, poll.id)
+
+        assert ok
+        # A message addressed to the voter's own chat id (not the group) = the DM.
+        assert any(cid == 20 and "votato" in text for cid, text in bot.messages)
+
+    async def test_a_failing_voter_dm_never_breaks_the_close(
+        self, session, user_factory, in_group
+    ):
+        """A voter who never started the bot makes send_message raise: the payout and
+        the close must still succeed."""
+        await user_factory(tg_id=ADMIN_ID, username="a")
+        await user_factory(tg_id=20, username="v")
+        poll = await poll_service.create_template(
+            session, ADMIN_ID, "Q", ["A", "B"], prize_coins=25, closes_at=_future()
+        )
+        await session.commit()
+        bot = _FakeBot()
+        await open_poll(bot, session, poll.id)
+        await session.commit()
+        session.add(PollVote(poll_id=poll.id, user_tg_id=20, option_ids_json="[0]"))
+        await session.commit()
+        bot.stop_result = _final([("A", 1), ("B", 0)])
+        bot.fail_intro = True  # every send_message raises (DM + announce)
+
+        ok, _msg = await close_poll(bot, session, poll.id)
         assert ok
         assert await _status(session, poll.id) == "finished"
         assert await economy_service.get_balance(session, 20) == 25

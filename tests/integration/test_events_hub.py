@@ -647,13 +647,14 @@ class TestPollTemplateCreation:
 
         assert await state.get_state() == events.PollTemplateStates.question.state
 
-    async def test_a_valid_question_moves_on_to_the_options(self, session):
+    async def test_a_valid_question_moves_on_to_the_description(self, session):
         state = _state()
         message = _FakeMessage(text="Meglio pizza o sushi?")
 
         await events.fsm_pt_question(message, state)
 
-        assert await state.get_state() == events.PollTemplateStates.options.state
+        # The description now comes right after the question (before the options).
+        assert await state.get_state() == events.PollTemplateStates.description.state
         assert (await state.get_data())["pt_question"] == "Meglio pizza o sushi?"
 
     @pytest.mark.parametrize("raw", [
@@ -672,9 +673,9 @@ class TestPollTemplateCreation:
         assert (await session.execute(select(PollTemplate))).scalars().all() == []
         assert await state.get_state() == events.PollTemplateStates.options.state
 
-    async def test_a_valid_list_advances_to_the_description_step(self, session, user_factory):
+    async def test_a_valid_list_advances_to_the_prize_step(self, session, user_factory):
         """The options step no longer creates the poll: it stores them and moves to
-        the (optional) description — creation happens at the end of the flow."""
+        the prize choice — creation happens at the end of the flow."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
         await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
@@ -685,7 +686,7 @@ class TestPollTemplateCreation:
 
         assert (await session.execute(select(PollTemplate))).scalars().all() == []
         assert (await state.get_data())["pt_options"] == ["Pizza", "Sushi"]
-        assert await state.get_state() == events.PollTemplateStates.description.state
+        assert await state.get_state() == events.PollTemplateStates.prize_choice.state
 
     async def test_the_full_flow_creates_a_template_that_survives_a_rollback(
         self, session, user_factory
@@ -696,10 +697,10 @@ class TestPollTemplateCreation:
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
         await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
-        await state.set_state(events.PollTemplateStates.options)
+        await state.set_state(events.PollTemplateStates.description)
 
-        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state)
         await events.cb_pt_desc_skip(_FakeCallback(""), state)
+        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state)
         await events.cb_pt_prize_none(_FakeCallback(""), state)
         cb = _FakeCallback("")
         await events.cb_pt_close_none(cb, state, session)

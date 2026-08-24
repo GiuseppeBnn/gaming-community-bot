@@ -363,6 +363,16 @@ async def recent_rejected(
     return seen
 
 
+def has_prize(round_: GuessRound) -> bool:
+    """Whether the round has *any* coin prize configured. The non-solver fixed
+    reward is paid only when this is true — a deliberately prize-less round
+    (``0 0 0 0``) rewards nobody who did not solve it."""
+    return any((
+        round_.prize_first, round_.prize_second, round_.prize_third,
+        round_.prize_consolation,
+    ))
+
+
 def format_prize_summary(round_: GuessRound) -> str:
     """One-line, human-readable summary of a round's prize structure."""
     parts = []
@@ -673,18 +683,21 @@ class PrizeAward:
     user_tg_id: int
     rank: int
     coins: int
-    kind: str = "podium"  # "podium" | "consolation"
+    kind: str = "podium"  # "podium" | "consolation" | "participation"
 
 
-async def _grant_xp(session: AsyncSession, round_id: int, solvers: list[RankedPlayer]) -> None:
+async def _grant_xp(
+    session: AsyncSession, round_id: int, solvers: list[RankedPlayer], *, prized: bool
+) -> None:
     """Event XP for a closed round (uncapped — admin-gated, not farmable):
 
-    * everyone who submitted at least one answer gets ``guess_xp_participation``;
-    * solvers get ``guess_xp_solved`` on top;
-    * the top three (solvers) get a podium bonus.
+    * **solvers** get ``guess_xp_participation`` + ``guess_xp_solved``, and the top
+      three a podium bonus on top — their ranking is untouched;
+    * **non-solvers** get a **fixed** ``guess_nonsolver_xp``, but only when the round
+      is ``prized`` (a prize-less round rewards no non-solver).
 
-    Rewards showing up, not just winning — the same shape as the quiz. ``solvers``
-    is the solver-only ranking, so the podium bonus never reaches a non-solver.
+    ``solvers`` is the solver-only ranking, so the podium bonus never reaches a
+    non-solver.
     """
     players = (
         await session.execute(
@@ -696,9 +709,11 @@ async def _grant_xp(session: AsyncSession, round_id: int, solvers: list[RankedPl
     solver_ids = {s.user_tg_id for s in solvers}
 
     for uid in players:
-        amount = max(0, settings.guess_xp_participation)
         if uid in solver_ids:
-            amount += max(0, settings.guess_xp_solved)
+            amount = max(0, settings.guess_xp_participation) + max(0, settings.guess_xp_solved)
+        else:
+            # Non-solver: a fixed reward, and only if the round pays prizes at all.
+            amount = max(0, settings.guess_nonsolver_xp) if prized else 0
         if amount > 0:
             await xp_service.grant_xp(session, uid, amount, XpSource.guess, capped=False)
 
@@ -714,12 +729,14 @@ async def _grant_xp(session: AsyncSession, round_id: int, solvers: list[RankedPl
 async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]:
     """Pay every participant and grant event XP. No commit.
 
-    The podium (1st/2nd/3rd) is reserved for **solvers** — a non-solver never takes
-    a podium prize, so guessing always ranks higher. Everyone below the podium
-    (remaining solvers **and** all non-solvers) shares the consolation schedule
-    decreasing linearly from ``prize_consolation`` down to ``prize_min`` — the same
-    shared schedule (``services.prizes``) the quiz uses, now spanning everyone who
-    took part instead of only the winners.
+    The podium (1st/2nd/3rd) and the consolation below it are reserved for
+    **solvers** — their competitive ranking is untouched: podium prizes to the top
+    three, then the consolation schedule (``prize_consolation`` → ``prize_min``,
+    shared ``services.prizes``) among the remaining solvers.
+
+    Every **non-solver** instead gets a single **fixed** reward
+    (``guess_nonsolver_coins``), and only when the round has a prize configured — a
+    prize-less round rewards nobody who did not solve it.
     """
     round_ = await get_round(session, round_id)
     if round_ is None:
@@ -727,8 +744,10 @@ async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]
 
     ranked = await full_standings(session, round_id)
     solvers = [p for p in ranked if p.solved]
-    # XP first: participation reaches everyone who played, even when nobody solved it.
-    await _grant_xp(session, round_id, solvers)
+    non_solvers = [p for p in ranked if not p.solved]
+    prized = has_prize(round_)
+    # XP first: solvers keep their scheme; non-solvers get the fixed XP only if prized.
+    await _grant_xp(session, round_id, solvers, prized=prized)
     if not ranked:
         return []
 
@@ -747,18 +766,25 @@ async def award_prizes(session: AsyncSession, round_id: int) -> list[PrizeAward]
     # Podium: only the top solvers (at most 3). A non-solver can never reach it.
     podium_n = min(3, len(solvers))
     for i in range(podium_n):
-        row = ranked[i]
+        row = solvers[i]
         coins = (round_.prize_first, round_.prize_second, round_.prize_third)[i]
         if coins > 0:
             await _pay(row.user_tg_id, coins, i + 1, "podium", f"podio #{i + 1}")
 
-    # Consolation: everyone else — remaining solvers AND all non-solvers.
-    others = ranked[podium_n:]
-    schedule = consolation_amounts(len(others), round_.prize_consolation, round_.prize_min)
-    # strict=True: `schedule` is built with len(others) entries, so a length
-    # mismatch would mean silently paying a subset of the participants.
-    for offset, (row, coins) in enumerate(zip(others, schedule, strict=True)):
+    # Consolation: the remaining SOLVERS only — the solver ranking is preserved.
+    remaining_solvers = solvers[podium_n:]
+    schedule = consolation_amounts(len(remaining_solvers), round_.prize_consolation, round_.prize_min)
+    # strict=True: `schedule` is built with len(remaining_solvers) entries, so a
+    # length mismatch would mean silently paying a subset of the solvers.
+    for offset, (row, coins) in enumerate(zip(remaining_solvers, schedule, strict=True)):
         if coins > 0:
             rank = podium_n + offset + 1
             await _pay(row.user_tg_id, coins, rank, "consolation", f"consolazione #{rank}")
+
+    # Non-solvers: a single FIXED reward each, only when the round pays prizes.
+    flat = max(0, settings.guess_nonsolver_coins)
+    if prized and flat > 0:
+        for offset, row in enumerate(non_solvers):
+            rank = len(solvers) + offset + 1
+            await _pay(row.user_tg_id, flat, rank, "participation", "partecipazione")
     return awards

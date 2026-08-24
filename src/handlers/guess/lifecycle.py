@@ -312,8 +312,8 @@ async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:
 
     ``ranked`` is the full participant list (``guess_service.RankedPlayer``): solvers
     first, with medals and their attempts/time, then non-solvers marked «non
-    indovinato». Both show the CoInn they received — non-solvers now share the same
-    decreasing consolation as the solvers below the podium.
+    indovinato». Both show the CoInn they received — solvers keep the podium +
+    consolation ranking, non-solvers a single fixed reward (only on a prized round).
     """
     spec = kind_of(round_.kind)
     header = (
@@ -333,7 +333,7 @@ async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:
-            icon = "🎖️" if award.kind == "consolation" else "🏆"
+            icon = "🏆" if award.kind == "podium" else "🎖️"
             prize_txt = f" — {icon} <b>+{award.coins} 🪙 CoInn</b>"
         if row.solved:
             tries = "1 tentativo" if row.attempts == 1 else f"{row.attempts} tentativi"

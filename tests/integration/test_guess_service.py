@@ -24,6 +24,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select, update
 
+from config_data.config import settings
 from database.models import GuessAttempt, GuessRound, GuessSession, User, Wallet
 from services import guess_service as gs
 from services.guess_judge import Verdict
@@ -427,11 +428,11 @@ class TestPrizes:
 
         assert await _coins(session, 10) == 10
 
-    async def test_a_non_solver_gets_a_consolation_below_the_solver(
+    async def test_a_non_solver_gets_the_fixed_reward(
         self, session, round_, user_factory
     ):
-        """Non-solvers now share the consolation schedule too (everyone who played
-        is rewarded), but always below the solvers: guessing still ranks higher."""
+        """A non-solver on a prized round gets a single FIXED reward (not the solver
+        consolation schedule): 25 CoInn + 10 XP, always below the solver."""
         await user_factory(7, "u7")
         await user_factory(8, "u8")
         await _solve(session, round_, 7)
@@ -443,8 +444,39 @@ class TestPrizes:
         await session.commit()
 
         solver, non_solver = await _coins(session, 7), await _coins(session, 8)
-        assert solver == 100                 # podium 1st
-        assert 0 < non_solver < solver       # rewarded, but below the winner
+        assert solver == 100                                    # podium 1st, untouched
+        assert non_solver == settings.guess_nonsolver_coins     # fixed, not a schedule
+        assert non_solver < solver                              # guessing still ranks higher
+        non_solver_xp = (
+            await session.execute(select(User.xp).where(User.tg_id == 8))
+        ).scalar_one()
+        assert non_solver_xp == settings.guess_nonsolver_xp
+
+    async def test_a_prizeless_round_rewards_no_non_solver(
+        self, session, user_factory
+    ):
+        """With no prize configured (0 0 0 0), a non-solver gets nothing — neither the
+        fixed CoInn nor the fixed XP."""
+        r = await gs.create_round(
+            session, kind="guess", creator_tg_id=1, title="Senza premi",
+            media_file_id="F", media_kind="photo", answer="Doom",
+            aliases=[], hints=[], max_attempts=5, time_limit_seconds=0,
+            prize_first=0, prize_second=0, prize_third=0, prize_consolation=0,
+            group_id=None,
+        )
+        r.status = "running"
+        await session.flush()
+        await user_factory(8, "u8")
+        await gs.start_or_resume(session, r.id, 8)
+        await gs.record_attempt(session, r, 8, "Quake", _no())
+
+        awards = await gs.award_prizes(session, r.id)
+        await session.commit()
+
+        assert awards == []
+        assert await _coins(session, 8) == 0
+        xp = (await session.execute(select(User.xp).where(User.tg_id == 8))).scalar_one()
+        assert xp == 0
 
     async def test_everyone_who_played_gets_xp(self, session, round_, user_factory):
         await user_factory(7, "u7")
@@ -477,8 +509,8 @@ class TestPrizes:
     async def test_players_are_paid_and_get_xp_even_when_nobody_solved_it(
         self, session, round_, user_factory
     ):
-        """With nobody solving, there is no podium — but the participants still share
-        the consolation schedule and still get participation XP."""
+        """With nobody solving, there is no podium — but on a prized round every
+        non-solver still gets the fixed participation reward (CoInn + XP)."""
         await user_factory(7, "u7")
         await gs.start_or_resume(session, round_.id, 7)
         await gs.record_attempt(session, round_, 7, "Quake", _no())
@@ -487,9 +519,10 @@ class TestPrizes:
         await session.commit()
 
         xp = (await session.execute(select(User.xp).where(User.tg_id == 7))).scalar_one()
-        assert xp > 0
+        assert xp == settings.guess_nonsolver_xp
         assert [a.user_tg_id for a in awards] == [7]
-        assert awards[0].kind == "consolation" and await _coins(session, 7) > 0
+        assert awards[0].kind == "participation"
+        assert await _coins(session, 7) == settings.guess_nonsolver_coins
 
     async def test_awarding_on_a_missing_round_is_empty_not_a_crash(self, session):
         assert await gs.award_prizes(session, 999) == []

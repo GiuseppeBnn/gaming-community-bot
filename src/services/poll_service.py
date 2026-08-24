@@ -34,6 +34,13 @@ log = logging.getLogger(__name__)
 
 POLL_MISSING = "missing"
 
+#: Telegram's hard cap on a native poll question. The description is folded into
+#: the question (a native poll has no description field), so the combined text is
+#: capped here as a defensive backstop — the creation flow already validates it.
+POLL_QUESTION_MAX = 300
+#: Separator between the question and the folded-in description.
+_DESC_SEP = "\n\n"
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
@@ -69,6 +76,28 @@ async def create_template(
     session.add(poll)
     await session.flush()
     return poll
+
+
+def render_question(poll: PollTemplate) -> str:
+    """The text sent as the native poll's question: the question and, when set, the
+    description on the lines below it (a native poll has no separate description
+    field, so it lives *inside* the question — STEERING §18.2). Capped at Telegram's
+    300-char limit as a backstop; the creation flow validates the combined length."""
+    if poll.description:
+        return f"{poll.question}{_DESC_SEP}{poll.description}"[:POLL_QUESTION_MAX]
+    return poll.question[:POLL_QUESTION_MAX]
+
+
+def format_reward_dm(poll: PollTemplate) -> str:
+    """The private notification each voter gets when a rewarded poll closes,
+    mirroring the admin manual-grant DM. Only called for a poll with a prize, so
+    at least one half is non-empty."""
+    parts: list[str] = []
+    if poll.prize_coins > 0:
+        parts.append(f"<b>{poll.prize_coins:,} CoInn</b> 🪙")
+    if poll.prize_xp > 0:
+        parts.append(f"<b>{poll.prize_xp:,} XP</b> ⚡")
+    return "🏆 Hai ricevuto " + " + ".join(parts) + " per aver votato al sondaggio!"
 
 
 def options_of(poll: PollTemplate) -> list[str]:
@@ -265,9 +294,9 @@ def _nonempty(option_ids_json: str) -> bool:
         return False
 
 
-async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
-    """Pay the participation prize to every current voter. Returns how many were
-    paid. No-commit (STEERING §5).
+async def pay_voters(session: AsyncSession, poll: PollTemplate) -> list[int]:
+    """Pay the participation prize to every current voter. Returns the tg ids that
+    were actually paid (so the caller can notify each one). No-commit (STEERING §5).
 
     A voter with a retracted (empty) choice is not a participant. Each user's
     payment is isolated: a missing wallet on one row (should not happen — voters
@@ -277,7 +306,7 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
     coins = poll.prize_coins
     xp = poll.prize_xp
     if coins <= 0 and xp <= 0:
-        return 0
+        return []
     rows = (
         await session.execute(
             select(PollVote.user_tg_id, PollVote.option_ids_json).where(
@@ -285,7 +314,7 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
             )
         )
     ).all()
-    paid = 0
+    paid: list[int] = []
     for uid, opts_json in rows:
         if not _nonempty(opts_json):
             continue
@@ -302,5 +331,5 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
         except WalletNotFoundError:
             log.warning("Votante %s del sondaggio %s senza wallet, premio saltato.", uid, poll.id)
             continue
-        paid += 1
+        paid.append(uid)
     return paid

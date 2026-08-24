@@ -3,6 +3,28 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.5] - 2026-08-24
+
+### Aggiunto
+- **Sondaggi — avviso del premio ai votanti** — alla chiusura di un sondaggio con
+  premio, ogni votante premiato riceve ora un **avviso in privato** (come quando è
+  un admin a mandare i premi a mano).
+
+### Modificato
+- **Guess The Game / Sound Quest — ricompense riviste** — chi **indovina** mantiene
+  la **classifica identica** (podio 1°/2°/3° e consolazione a scendere tra i soli
+  risolutori); chi **non indovina** riceve ora una **ricompensa fissa** di
+  **25 🪙 CoInn + 10 ⚡ XP**, ma **solo se il round ha premi assegnati** (un round
+  senza premi non dà nulla a chi non ha indovinato).
+- **Ricompensa minima garantita a 25 CoInn** — per Trivia Nerd, Guess The Game e
+  Sound Quest il minimo garantito dell'ultimo classificato è stato alzato da 1 a
+  **25 CoInn**.
+- **Sondaggi — descrizione** — ora si inserisce **subito dopo la domanda** e viene
+  mostrata **sotto il titolo, nello stesso messaggio del sondaggio** (non più in un
+  messaggio separato). Se domanda e descrizione insieme superano i **300 caratteri**
+  (limite di Telegram), il bot lo segnala e chiede una descrizione più corta.
+- **Comando `/daily`** — descrizione del comando semplificata nella guida.
+
 ## [1.4] - 2026-08-18
 
 ### Aggiunto

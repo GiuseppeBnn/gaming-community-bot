@@ -81,7 +81,7 @@ Campi importanti:
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
-- **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
+- **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (25) → minimo garantito = `max(floor_min, round(consolation*ratio))` (limitato alla consolazione), condiviso da quiz e guess/sound
 - **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - **Premi sondaggio** (evento, uncapped, §18.2): `poll_reward_coins: int` (default 25), `poll_reward_xp: int` (default 10) — default suggeriti in creazione, pagati a **ogni votante** alla chiusura; 0 in un campo ne spegne quella metà
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
@@ -845,7 +845,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
 | `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`SchedCb(action="act", key="start"\|"close")`, packed `sched:act:start:` / `sched:act:close:`), poi l'orario run-at |
-| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio: domanda → opzioni → **descrizione** (opz.) → **premio** (default/custom/nessuno, `PollCreateCb`) → **chiusura** (nessuna/data assoluta) → crea. Riusata da 🎬 Eventi **e** da `/sondaggio` |
+| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio: domanda → **descrizione** (opz., concatenata nella domanda, ≤300 con reinserimento) → opzioni → **premio** (default/custom/nessuno, `PollCreateCb`) → **chiusura** (nessuna/data assoluta) → crea. Riusata da 🎬 Eventi **e** da `/sondaggio` |
 
 ---
 
@@ -1150,9 +1150,13 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   `start_bet_creation(as_draft=True)` e `bet_service.activate_event` fa `draft→open`).
   `get_open_events`/`get_all_active_events` escludono i draft.
 - **Sondaggi: due forme, discriminate da `closes_at`** (`PollType`, `poll_service`, `handlers/poll_vote.py`).
-  La creazione (FSM in `events.py`) chiede, dopo domanda e opzioni, una **descrizione** opzionale, i
-  **premi** (⚡ default `poll_reward_coins`+`poll_reward_xp` / ✏️ personalizza / 🚫 nessuno — a **ogni
-  votante**, non c'è risposta giusta) e la **chiusura**. **Regola di prodotto**: un premio si paga *alla
+  La creazione (FSM in `events.py`) chiede, **subito dopo la domanda**, una **descrizione** opzionale
+  (poi le opzioni), i **premi** (⚡ default `poll_reward_coins`+`poll_reward_xp` / ✏️ personalizza /
+  🚫 nessuno — a **ogni votante**, non c'è risposta giusta) e la **chiusura**. La descrizione **non** è
+  un messaggio a parte: è **concatenata dentro la domanda** del sondaggio (sotto il titolo,
+  `poll_service.render_question`), perché un poll nativo non ha un campo descrizione. Domanda +
+  descrizione devono stare nei **300 caratteri** del limite Telegram: lo step descrizione **valida e
+  fa reinserire** finché non rientrano (come il controllo lunghezza delle domande trivia). **Regola di prodotto**: un premio si paga *alla
   chiusura*, quindi **scegliere un premio obbliga a una data** (lo step chiusura salta il «nessuna» e va
   dritto alla data); una **data senza premio** è ammessa (alla chiusura annuncia solo l'opzione vincente,
   non paga); **né premio né data** ⇒ **sondaggio normale spara-e-dimentica**. La data è **assoluta**
@@ -1168,7 +1172,10 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
     condizionale `running→finished`, guardia anti-doppio-pagamento e freeze dei voti), poi `stopPoll`
     (best-effort) per l'**opzione vincente** dai conteggi finali, `pay_voters` (CoInn+XP mintati a **ogni
     votante**, `TransactionType.poll_reward`/`XpSource.poll_vote`, no-commit; soldi committati **prima**
-    dell'annuncio), infine annuncio nel gruppo. La scheda (`render_detail`) offre
+    dell'annuncio; ritorna gli **id dei votanti pagati**), infine annuncio nel gruppo. Dopo il commit,
+    ogni votante pagato riceve una **notifica privata** best-effort (`format_reward_dm`, come un
+    accredito manuale admin): post-commit e best-effort, così un DM fallito non annulla mai un payout.
+    La scheda (`render_detail`) offre
     avvia/chiudi/programma-chiusura/**elimina** come per quiz e guess.
 - **Quiz persistenti**: l'hub quiz elenca via `quiz_service.list_manageable` **tutti** i quiz non-`draft`
   (running → ready → **finished** come archivio, cap sugli ultimi N) — un quiz avviato/concluso **non
@@ -1637,15 +1644,22 @@ claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
 Classifica competitiva (`standings`): **solo i risolutori**, ordinati per `(tentativi, tempo,
 arrivo)` — usata per **trofei** (podio/last/sub30) e il conteggio «indovinati». Ma il **payout**
 e l'**annuncio** usano `full_standings` = **tutti i partecipanti** (chi ha ≥1 tentativo): i
-risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo). Premi
-(scala condivisa `services/prizes.py`, la stessa del quiz): il **podio 1°/2°/3° è riservato ai
-risolutori** (`podium_n = min(3, n_solver)`, un non-solver non lo raggiunge mai), e la
-**consolazione a scendere** da `prize_consolation` fino a `prize_min` copre **tutti** gli altri —
-risolutori sotto il podio **e** non-risolutori. Così «chi indovina è sempre più in alto», ma
-anche chi non indovina riceve CoInn + gli XP di partecipazione che già prendeva. L'annuncio
-(`_podium_text`) mostra l'intera classifica, con i CoInn e il segno «non indovinato» per chi non
-ha risolto. Ledger: `TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco
-della community».
+risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo). Premi:
+- **Risolutori — classifica invariata.** Il **podio 1°/2°/3° è riservato ai risolutori**
+  (`podium_n = min(3, n_solver)`, un non-solver non lo raggiunge mai), e la **consolazione a
+  scendere** (scala condivisa `services/prizes.py`, la stessa del quiz) da `prize_consolation` fino
+  a `prize_min` copre i **soli risolutori** oltre il podio. XP: partecipazione + solved + bonus podio.
+- **Non-risolutori — premio fisso, solo se il round ha premi.** Ognuno riceve un importo **fisso**
+  (`guess_nonsolver_coins`, default 25 🪙 + `guess_nonsolver_xp`, default 10 ⚡, kind
+  `participation`), pagato **solo** quando `has_prize(round_)` è vero: un round senza premi
+  (`0 0 0 0`) **non** premia chi non ha indovinato (né CoInn né XP). Così «chi indovina è sempre
+  più in alto», e chi non indovina prende un riconoscimento fisso quando c'è un montepremi.
+
+Il **minimo garantito** (`prize_min`, floor) è **derivato** (`services.prizes.participation_floor`)
+dallo shared `quiz_participation_floor_*` (`floor_min` default **25**): vale per quiz **e**
+guess/sound. L'annuncio (`_podium_text`) mostra l'intera classifica, con i CoInn e il segno «non
+indovinato» per chi non ha risolto (🏆 podio, 🎖️ tutto il resto). Ledger:
+`TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco della community».
 
 La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico modo per
 accorgersi che il giudice ha rifiutato qualcosa che doveva accettare, perché un giocatore che

@@ -167,7 +167,7 @@ class Settings(BaseSettings):
     quiz_default_consolation: int = 100   # 4th place; consolation decreases from here
     # Guaranteed floor for the last finisher = max(floor_min, round(consolation * floor_ratio))
     quiz_participation_floor_ratio: float = 0.2
-    quiz_participation_floor_min: int = 1
+    quiz_participation_floor_min: int = 25
 
     # Guess games (Guess The Game · Sound Quest) — one engine, two games.
     # How many UN-JUDGED answers we accept from one player on one round before
@@ -200,6 +200,11 @@ class Settings(BaseSettings):
     guess_xp_podium_first: int = 50
     guess_xp_podium_second: int = 30
     guess_xp_podium_third: int = 20
+    # Fixed reward for a NON-solver in guess/sound, paid ONLY when the round has a
+    # prize configured (no prize → non-solvers get nothing). Solvers keep their own
+    # ranking (podium + consolation among solvers) untouched.
+    guess_nonsolver_coins: int = 25
+    guess_nonsolver_xp: int = 10
 
     # Poll rewards (optional, chosen per poll at creation). A poll has no "right"
     # answer, so the prize is for *participation*: every user who casts a vote gets

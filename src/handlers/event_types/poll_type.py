@@ -77,17 +77,12 @@ async def open_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool, 
         return False, "GROUP_ID non configurato."
 
     # --- Plain poll: publish and forget --------------------------------------
+    # The description (when any) is folded into the poll question itself, under the
+    # title — no separate intro message (STEERING §18.2).
     if poll.closes_at is None:
-        if poll.description:
-            try:
-                await group_registry.send_group_message(
-                    bot, db_session, f"📊 <b>Sondaggio</b>\n\n{esc(poll.description)}"
-                )
-            except Exception as e:  # noqa: BLE001 — the intro is a bonus, not the poll
-                log.warning("Intro sondaggio %s non inviata: %s", poll_id, e)
         try:
             await bot.send_poll(
-                chat_id=group_id, question=poll.question,
+                chat_id=group_id, question=poll_service.render_question(poll),
                 options=poll_service.options_of(poll), is_anonymous=False,
             )
         except Exception as e:  # noqa: BLE001 — bot not in group / not admin / API down
@@ -102,9 +97,9 @@ async def open_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool, 
         return False, ("La data di chiusura automatica è già passata. "
                        "Aggiornala prima di avviare.")
 
+    # The description is folded into the poll question (below the title), so the
+    # intro carries only the prize and the close time — not the description.
     intro_lines: list[str] = ["📊 <b>Sondaggio</b>"]
-    if poll.description:
-        intro_lines.append(esc(poll.description))
     if poll_service.has_prize(poll):
         intro_lines.append(
             f"🏆 Premio: <b>{poll_service.format_prize_summary(poll)}</b> — vota per riceverlo!"
@@ -120,7 +115,7 @@ async def open_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool, 
     try:
         sent = await bot.send_poll(
             chat_id=group_id,
-            question=poll.question,
+            question=poll_service.render_question(poll),
             options=poll_service.options_of(poll),
             is_anonymous=False,
         )
@@ -197,7 +192,18 @@ async def close_poll(bot, db_session: AsyncSession, poll_id: int) -> tuple[bool,
     # Money BEFORE announcing: a failed send must never undo a paid-out poll.
     await db_session.commit()
 
-    text = _close_text(poll, final, paid)
+    # Notify each paid voter privately, like an admin manual grant. Best-effort and
+    # post-commit: a DM failure (user never started the bot) must never undo a
+    # paid-out poll, exactly like the announcement below.
+    if paid and poll_service.has_prize(poll):
+        dm = poll_service.format_reward_dm(poll)
+        for uid in paid:
+            try:
+                await bot.send_message(uid, dm)
+            except Exception:  # noqa: BLE001 — user may not have started the bot
+                log.debug("DM premio sondaggio %s a %s saltato.", poll_id, uid)
+
+    text = _close_text(poll, final, len(paid))
     if group_registry.get_group_id() != 0:
         try:
             await group_registry.send_group_message(bot, db_session, text)

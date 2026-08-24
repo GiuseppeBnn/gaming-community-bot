@@ -44,13 +44,13 @@ class TestParticipationFloor:
     def test_zero_consolation_zero_floor(self):
         assert participation_floor(0) == 0
 
-    def test_default_ratio_twenty_percent(self):
-        # defaults: ratio 0.2, floor_min 1
-        assert participation_floor(100) == 20
+    def test_ratio_applies_when_it_beats_the_floor_min(self):
+        # ratio 0.2: round(200 * 0.2) = 40, above floor_min (25) → the ratio wins
+        assert participation_floor(200) == 40
 
     def test_never_below_floor_min(self):
-        # round(3 * 0.2) = 1 → equals floor_min
-        assert participation_floor(3) == max(settings.quiz_participation_floor_min, 1)
+        # round(100 * 0.2) = 20 is below floor_min (25) → the floor_min binds
+        assert participation_floor(100) == settings.quiz_participation_floor_min
 
     def test_never_above_consolation(self):
         assert participation_floor(2) <= 2
