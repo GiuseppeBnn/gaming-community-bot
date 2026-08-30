@@ -84,6 +84,10 @@ _MIGRATIONS: list[str] = [
     # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
     # so rounds created before this column keep behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    # guess_rounds: optional player-facing description, shown in the group
+    # announcement and the private play screen. NULL = no description, so rounds
+    # created before this column keep behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS description VARCHAR(512)",
     # poll_templates: participation prizes, optional description, scheduled auto-close
     # and the live-poll handles needed to stop it and pay its voters (STEERING §18.2).
     # All defaulted/nullable, so polls created before this feature keep behaving as

@@ -202,6 +202,15 @@ class TestEntry:
 
         assert "3" in m.said
 
+    async def test_the_description_is_shown_when_present(self, session, round_, state):
+        round_.description = "Un classico sparatutto"
+        await session.flush()
+        m = _Msg()
+
+        await pl.start_guess_session(m, session, state, round_.id)
+
+        assert "Un classico sparatutto" in m.said
+
     async def test_a_time_limit_is_shown_as_a_wall_clock_deadline(self, session, round_, state):
         """Nobody should sit waiting for a "time's up!" that no timer will send."""
         round_.time_limit_seconds = 600

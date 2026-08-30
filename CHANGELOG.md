@@ -3,6 +3,26 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.8] - 2026-08-30
+
+### Aggiunto
+- **Guess The Game / Sound Quest — descrizione** — in creazione si può aggiungere
+  una **descrizione** opzionale al round (un campo della scheda, come le grafie
+  alternative: si tocca per compilarlo, si manda «-» per saltarlo). Quando c'è,
+  viene mostrata **sotto il titolo** sia nell'annuncio nel gruppo sia all'avvio del
+  gioco in privato. Come il titolo la leggono tutti: non va messa la soluzione.
+
+### Modificato
+- **Manda premi — selezione dei destinatari dalla lista** — nella dashboard
+  `/admin` → 💰 Economia → «🎯 Manda premi», dopo aver scelto **XP** o **CoInn** e
+  l'importo non si incollano più gli @username a mano: si **spuntano i membri dalla
+  lista** (la stessa di 👥 Utenti, con scorrimento a pagine e **ricerca testuale**).
+  A ogni scelta il bot chiede se aggiungere un'altra persona; alla fine una
+  **schermata di riepilogo** mostra tutti i nomi selezionati e permette di
+  confermare l'invio, aggiungere o rimuovere qualcuno, oppure annullare tutto.
+  L'invio è possibile solo con almeno una persona selezionata. Premi, avvisi in
+  privato e registrazione nell'audit log restano invariati.
+
 ## [1.7] - 2026-08-25
 
 ### Modificato

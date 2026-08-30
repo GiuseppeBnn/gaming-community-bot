@@ -1073,7 +1073,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
   Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`ask` → `do`).
 - **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`airdrop`) e **`⚡ Airdrop XP`** (`xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
-- **Manda premi a più utenti** (`💰 Economia` → `🎯 Manda premi`, `AdminCb(action="massreward")`): scelta tipo (`key="xp"|"coins"`) → FSM `waiting_mass_amount` (importo) → `waiting_mass_recipients` (lista **@username, uno per riga**). La risoluzione è **esatta** (case-insensitive) via `admin_service.resolve_usernames` — mai fuzzy: è un percorso che paga. Accredita a ogni utente trovato (`economy_service.credit`/`xp_service.grant_xp admin_grant`), **un solo** `log_action` (`mass_credit`/`mass_xp`, detail «N destinatari»), DM best-effort, e riporta gli @username non trovati. Lista tutta assente ⇒ **stato mantenuto** per ritentare.
+- **Manda premi a più utenti** (`💰 Economia` → `🎯 Manda premi`, `AdminCb(action="massreward")`): scelta tipo (`key="xp"|"coins"`) → FSM `waiting_mass_amount` (importo) → **selettore membri a bottoni** (la stessa lista paginata di 👥 Utenti + 🔍 ricerca testuale via `waiting_mass_search`), **non** più una lista @username digitata. La selezione vive nello stato FSM come `mass_selected` (lista di `tg_id`, dedup, cap `_MAX_RECIPIENTS=100`): `mrpick` aggiunge un membro e chiede se selezionarne un altro (`mrmore key=yes|no`), `mrlist` naviga/torna alla lista, `mrsearch`/`fsm_mass_search` filtrano, `mrconfirm` mostra il riepilogo con tutti i nomi, `mrremlist`/`mrunpick` rimuovono, `mrsend` paga. `mrsend` con selezione vuota **non paga** (alert). Accredita a ogni membro selezionato (`economy_service.credit`/`xp_service.grant_xp admin_grant`), **un solo** `log_action` (`mass_credit`/`mass_xp`, detail «N destinatari»), DM best-effort. Utenti caricati per id esatto via `admin_service.get_users_by_ids` — mai fuzzy: è un percorso che paga.
 - **Classifica**: `lead` con switcher `lead_board` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
 - **Gating**: ogni callback `AdminCb` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
@@ -1081,7 +1081,10 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
 - **Callback tipizzata** (≤ 64 byte): `AdminCb(action: str, key: str | None = None, item_id: int | None = None)`,
   prefisso `adm`. Le azioni semplici sono `home|stats|lead|audit|help|close|bets|econ|airdrop|xpairdrop|search`;
   `lead_board` usa `key=<coins|xp|trofei>`, `users` usa `item_id=<pagina>`, `user` usa `item_id=<tg>`,
-  mentre `act|ask|do` usano `key=<verbo>, item_id=<tg>`. I campi opzionali mantengono il separatore vuoto:
+  mentre `act|ask|do` usano `key=<verbo>, item_id=<tg>`. Il flusso «Manda premi» aggiunge
+  `massreward` (`key=<xp|coins>`), `mrlist` (`item_id=<pagina>`), `mrpick`/`mrunpick`
+  (`item_id=<tg>`), `mrmore` (`key=<yes|no>`), `mrsearch`, `mrconfirm`, `mrremlist`, `mrsend`.
+  I campi opzionali mantengono il separatore vuoto:
   `AdminCb(action="home").pack()` è `adm:home::`, `AdminCb(action="lead_board", key="coins").pack()` è
   `adm:lead_board:coins:`, `AdminCb(action="users", item_id=2).pack()` è `adm:users::2`. Il deny deriva il
   prefisso dalla classe (`f"{AdminCb.__prefix__}:"`) per non poter divergere se il namespace cambia.
@@ -1519,7 +1522,10 @@ Ogni campo opzionale vive in `creation.FIELDS` con la sua etichetta, il suo prom
 parser e il suo renderer. **Un solo handler di edit li serve tutti**: aggiungere un campo è una
 voce di dizionario, mai uno stato nuovo e mai un handler nuovo. I quattro premi sono **un campo
 solo** — quattro step per quattro numeri dello stesso tipo erano quattro occasioni di sbagliare
-senza poter tornare al primo.
+senza poter tornare al primo. La **descrizione** (`description`, colonna nullable, max 512) è uno
+di questi campi opzionali: player-facing come il titolo (mostrata nell'annuncio nel gruppo e
+all'avvio del gioco in privato), quindi non deve contenere la soluzione; «-» la salta o la
+azzera, come le grafie alternative.
 
 Costo strutturale: 12 stati FSM → **5**, 17 handler → **10**, 453 → **424** righe di codice
 effettivo. La scheda doveva togliere codice, non aggiungerne.

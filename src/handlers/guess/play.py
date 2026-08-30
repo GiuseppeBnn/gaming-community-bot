@@ -187,10 +187,12 @@ async def start_guess_session(
 
     await state.set_state(GuessPlayStates.answering)
     await state.update_data(round_id=round_id)
+    desc_txt = f"<i>{esc(round_.description)}</i>\n\n" if round_.description else ""
     await _reply(
         message,
         state,
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
+        f"{desc_txt}"
         "Scrivimi il <b>titolo del gioco</b>.\n"
         f"{_status_line(round_, sess, left)}\n"
         "<i>Meno tentativi usi, più in alto finisci nel podio!</i>",

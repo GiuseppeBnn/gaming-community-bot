@@ -49,6 +49,10 @@ from keyboards.admin_dashboard_kb import (
     econ_kb,
     home_kb,
     lead_kb,
+    mass_confirm_kb,
+    mass_more_kb,
+    mass_picker_kb,
+    mass_remove_kb,
     massreward_kb,
     skip_or_cancel_reason_kb,
     user_detail_kb,
@@ -86,7 +90,7 @@ class AdminPanelStates(StatesGroup):
     waiting_airdrop = State()     # mass credit
     waiting_xp_airdrop = State()  # mass XP grant
     waiting_mass_amount = State()      # multi-recipient reward: amount
-    waiting_mass_recipients = State()  # multi-recipient reward: username list
+    waiting_mass_search = State()      # multi-recipient reward: search within the picker
 
 
 # ---------------------------------------------------------------------------
@@ -293,38 +297,221 @@ async def cb_massreward(callback: CallbackQuery, callback_data: AdminCb, state: 
     await callback.answer()
 
 
+def _mass_unit(kind: str) -> str:
+    return "⚡ XP" if kind == "xp" else "🪙 CoInn"
+
+
 @router.message(AdminPanelStates.waiting_mass_amount, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_mass_amount(message: Message, state: FSMContext) -> None:
+async def fsm_mass_amount(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     amount = _parse_amount(message.text)
     if amount is None or amount <= 0 or amount > _MAX_AMOUNT:
         await message.answer(
             f"⚠️ Valore non valido (1–{_MAX_AMOUNT:,}).", reply_markup=cancel_to_home_kb()
         )
         return
-    await state.update_data(mass_amount=amount)
-    await state.set_state(AdminPanelStates.waiting_mass_recipients)
+    # Amount locked in; the recipient list is now built by tapping members, so the
+    # selection starts empty and we hand off to the picker.
+    await state.update_data(mass_amount=amount, mass_selected=[])
+    await state.set_state(None)
+    text, kb = await _render_mass_picker(db_session, state, page=0)
+    await message.answer(text, reply_markup=kb)
+
+
+async def _render_mass_picker(
+    db_session: AsyncSession, state: FSMContext, page: int
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the member picker page for the current selection."""
+    data = await state.get_data()
+    selected = data.get("mass_selected", [])
+    kind, amount = data["mass_kind"], data["mass_amount"]
+    page = max(0, page)
+    rows = await admin_service.list_users(db_session, page * PAGE_SIZE, PAGE_SIZE + 1)
+    has_next = len(rows) > PAGE_SIZE
+    rows = rows[:PAGE_SIZE]
+    text = (
+        f"🎯 <b>Manda premi</b> — {_mass_unit(kind)}: <b>{amount:,}</b> a testa\n"
+        f"Selezionati finora: <b>{len(selected)}</b>\n\n"
+        "Tocca un membro per aggiungerlo alla lista:"
+    )
+    return text, mass_picker_kb(rows, selected, page, has_next)
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrlist"), IsAdminCallbackFilter())
+async def cb_mass_list(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    if await state.get_state() == AdminPanelStates.waiting_mass_search:
+        await state.set_state(None)  # leaving the search input
+    text, kb = await _render_mass_picker(db_session, state, page=callback_data.item_id or 0)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
+    except Exception:  # noqa: BLE001 — "message not modified" on re-tap
+        pass
+    await callback.answer()
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrpick"), IsAdminCallbackFilter())
+async def cb_mass_pick(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    tg_id = callback_data.item_id
+    if tg_id is None:
+        await callback.answer()
+        return
+    data = await state.get_data()
+    selected = list(data.get("mass_selected", []))
+    if tg_id not in selected:
+        if len(selected) >= _MAX_RECIPIENTS:
+            await callback.answer(f"Massimo {_MAX_RECIPIENTS} destinatari.", show_alert=True)
+            return
+        selected.append(tg_id)
+        await state.update_data(mass_selected=selected)
+    users = await admin_service.get_users_by_ids(db_session, [tg_id])
+    name = _member_name(users[0]) if users else str(tg_id)
+    await callback.message.edit_text(
+        f"✅ <b>{esc(name)}</b> aggiunto.\n"
+        f"Selezionati finora: <b>{len(selected)}</b>\n\n"
+        "Vuoi selezionare un'altra persona?",
+        reply_markup=mass_more_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrmore"), IsAdminCallbackFilter())
+async def cb_mass_more(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    if callback_data.key == "yes":
+        text, kb = await _render_mass_picker(db_session, state, page=0)
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer()
+        return
+    await _show_mass_confirm(callback, state, db_session)
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrsearch"), IsAdminCallbackFilter())
+async def cb_mass_search(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(AdminPanelStates.waiting_mass_search)
+    await callback.message.edit_text(
+        "🔍 Invia un nome o <code>@username</code> da cercare:",
+        reply_markup=mass_picker_kb([], (await state.get_data()).get("mass_selected", []),
+                                    page=0, has_next=False, is_search=True),
+    )
+    await callback.answer()
+
+
+@router.message(AdminPanelStates.waiting_mass_search, IsAdminFilter(), ~F.text.startswith("/"))
+async def fsm_mass_search(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+    query = (message.text or "").strip()
+    if len(query) < 2:
+        await message.answer("⚠️ Inserisci almeno 2 caratteri.", reply_markup=cancel_to_home_kb())
+        return
+    await state.set_state(None)
+    users = await admin_service.search_users(db_session, query)
+    selected = (await state.get_data()).get("mass_selected", [])
+    if not users:
+        await message.answer(
+            f"🔍 Nessun utente trovato per «{esc(query)}».",
+            reply_markup=mass_picker_kb([], selected, page=0, has_next=False, is_search=True),
+        )
+        return
+    ids = [u.tg_id for u in users]
+    coins = dict(
+        (await db_session.execute(select(Wallet.tg_id, Wallet.coins).where(Wallet.tg_id.in_(ids)))).all()
+    )
+    rows = [(u, coins.get(u.tg_id, 0)) for u in users]
     await message.answer(
-        "🎯 A chi vuoi mandarlo?\n\nScrivi gli <b>@username</b> dei membri, "
-        "<b>uno per riga</b>.",
-        reply_markup=cancel_to_home_kb(),
+        f"🔍 <b>Risultati per «{esc(query)}»: {len(rows)}</b>\nTocca un membro per aggiungerlo:",
+        reply_markup=mass_picker_kb(rows, selected, page=0, has_next=False, is_search=True),
     )
 
 
-@router.message(AdminPanelStates.waiting_mass_recipients, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_mass_recipients(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
-    lines = [ln for ln in (message.text or "").splitlines() if ln.strip()][:_MAX_RECIPIENTS]
-    found, missing = await admin_service.resolve_usernames(db_session, lines)
-    if not found:
-        await message.answer(
-            "⚠️ Nessun @username valido trovato (devono essere iscritti al bot). "
-            "Riprova con la lista, uno per riga.",
-            reply_markup=cancel_to_home_kb(),
-        )
-        return  # keep the state so the admin can re-send the list
-
+async def _show_mass_confirm(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession
+) -> None:
     data = await state.get_data()
-    kind, amount, admin_id = data["mass_kind"], data["mass_amount"], message.from_user.id
-    for user in found:
+    selected = data.get("mass_selected", [])
+    if not selected:
+        text, kb = await _render_mass_picker(db_session, state, page=0)
+        await callback.message.edit_text(
+            "⚠️ Non hai selezionato nessuno.\n\n" + text, reply_markup=kb
+        )
+        await callback.answer()
+        return
+    kind, amount = data["mass_kind"], data["mass_amount"]
+    users = await admin_service.get_users_by_ids(db_session, selected)
+    names = "\n".join(f"• {esc(_member_name(u))}" for u in users)
+    await callback.message.edit_text(
+        f"🎯 <b>Riepilogo</b>\n"
+        f"{_mass_unit(kind)}: <b>{amount:,}</b> a testa\n"
+        f"Destinatari (<b>{len(users)}</b>):\n{names}\n\n"
+        "Confermi l'invio?",
+        reply_markup=mass_confirm_kb(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrconfirm"), IsAdminCallbackFilter())
+async def cb_mass_confirm(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession
+) -> None:
+    await _show_mass_confirm(callback, state, db_session)
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrremlist"), IsAdminCallbackFilter())
+async def cb_mass_remove_list(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession
+) -> None:
+    selected = (await state.get_data()).get("mass_selected", [])
+    if not selected:
+        await _show_mass_confirm(callback, state, db_session)
+        return
+    users = await admin_service.get_users_by_ids(db_session, selected)
+    await callback.message.edit_text(
+        "➖ Tocca chi vuoi togliere dalla lista:", reply_markup=mass_remove_kb(users)
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrunpick"), IsAdminCallbackFilter())
+async def cb_mass_unpick(
+    callback: CallbackQuery, callback_data: AdminCb, state: FSMContext, db_session: AsyncSession
+) -> None:
+    tg_id = callback_data.item_id
+    if tg_id is None:
+        await callback.answer()
+        return
+    selected = [i for i in (await state.get_data()).get("mass_selected", []) if i != tg_id]
+    await state.update_data(mass_selected=selected)
+    if not selected:
+        # Nothing left to remove — send them back to build the list again.
+        text, kb = await _render_mass_picker(db_session, state, page=0)
+        await callback.message.edit_text(
+            "🗑️ Lista svuotata.\n\n" + text, reply_markup=kb
+        )
+        await callback.answer()
+        return
+    users = await admin_service.get_users_by_ids(db_session, selected)
+    await callback.message.edit_text(
+        "➖ Tocca chi vuoi togliere dalla lista:", reply_markup=mass_remove_kb(users)
+    )
+    await callback.answer()
+
+
+@router.callback_query(AdminCb.filter(F.action == "mrsend"), IsAdminCallbackFilter())
+async def cb_mass_send(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    data = await state.get_data()
+    selected = data.get("mass_selected", [])
+    if not selected:
+        await callback.answer("Seleziona almeno una persona.", show_alert=True)
+        text, kb = await _render_mass_picker(db_session, state, page=0)
+        await callback.message.edit_text(text, reply_markup=kb)
+        return
+    kind, amount = data["mass_kind"], data["mass_amount"]
+    admin_id = callback.from_user.id
+    users = await admin_service.get_users_by_ids(db_session, selected)
+
+    for user in users:
         if kind == "coins":
             await economy_service.credit(
                 db_session, user.tg_id, amount, TransactionType.admin_credit,
@@ -336,7 +523,7 @@ async def fsm_mass_recipients(message: Message, state: FSMContext, db_session: A
             )
     await admin_service.log_action(
         db_session, admin_id, "mass_credit" if kind == "coins" else "mass_xp",
-        amount=amount, detail=f"{len(found)} destinatari",
+        amount=amount, detail=f"{len(users)} destinatari",
     )
     await db_session.commit()
     await state.clear()
@@ -347,16 +534,15 @@ async def fsm_mass_recipients(message: Message, state: FSMContext, db_session: A
         if kind == "coins"
         else f"⚡ Hai ricevuto <b>+{amount:,} XP</b> da un amministratore!"
     )
-    for user in found:
-        await _notify_dm(message.bot, user.tg_id, dm)
+    for user in users:
+        await _notify_dm(callback.bot, user.tg_id, dm)
 
-    unit = "⚡ XP" if kind == "xp" else "🪙 CoInn"
-    report = f"🎯 <b>Premi inviati!</b>\n{unit}: <b>{amount:,}</b> a <b>{len(found)}</b> utenti."
-    if missing:
-        shown = ", ".join(f"@{esc(m)}" for m in missing[:20])
-        more = f" (+{len(missing) - 20})" if len(missing) > 20 else ""
-        report += f"\n\n⚠️ Non trovati: {shown}{more}"
-    await message.answer(report, reply_markup=back_home_kb())
+    report = (
+        f"🎯 <b>Premi inviati!</b>\n"
+        f"{_mass_unit(kind)}: <b>{amount:,}</b> a <b>{len(users)}</b> utenti."
+    )
+    await callback.message.edit_text(report, reply_markup=back_home_kb())
+    await callback.answer()
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +900,11 @@ async def _notify_dm(bot, tg_id: int, text: str) -> None:
         await bot.send_message(tg_id, text, parse_mode=ParseMode.HTML)
     except Exception:  # noqa: BLE001
         log.debug("DM notification to %s skipped (user may not have started the bot)", tg_id)
+
+
+def _member_name(user) -> str:
+    """Human label for a user in reward summaries: @username, or the full name."""
+    return f"@{user.username}" if user.username else (user.full_name or str(user.tg_id))
 
 
 def _parse_amount(text: str | None) -> int | None:

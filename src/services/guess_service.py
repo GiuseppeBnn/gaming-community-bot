@@ -58,6 +58,7 @@ async def create_round(
     kind: str,
     creator_tg_id: int,
     title: str,
+    description: str | None = None,
     media_file_id: str,
     media_kind: str,
     answer: str,
@@ -78,6 +79,7 @@ async def create_round(
     round_ = GuessRound(
         kind=kind,
         title=title[:256],
+        description=(description[:512] if description else None),
         creator_tg_id=creator_tg_id,
         status="draft",
         group_id=group_id,

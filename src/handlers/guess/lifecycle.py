@@ -91,9 +91,11 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
     # one nobody knows about. The medium is NOT posted — see the module docstring.
     try:
         bot_info = await bot.get_me()
+        desc_txt = f"<i>{esc(round_.description)}</i>\n" if round_.description else ""
         await group_registry.send_group_message(
             bot, db_session,
             f"{spec.emoji} <b>{esc(spec.label.upper())}: {esc(round_.title)}</b>\n"
+            f"{desc_txt}"
             f"🎯 {round_.max_attempts} tentativi · {time_txt} · "
             f"🏆 {guess_service.format_prize_summary(round_)}{closes_txt}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ci arriva in <b>meno "

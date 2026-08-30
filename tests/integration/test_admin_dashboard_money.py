@@ -321,10 +321,10 @@ class TestAirdrops:
 
 
 class TestMassReward:
-    """The «Manda premi» flow: pick XP/CoInn → amount → an @username list. The
-    money must reach exactly the matched users, the unmatched ones must be
-    reported, and an all-miss list must let the admin retype instead of dropping
-    them out of the flow."""
+    """The «Manda premi» flow: pick XP/CoInn → amount → a member picker (scrollable
+    list + text search) → summary → send. The money must reach exactly the selected
+    members, an empty selection must never pay out, and removing a member must take
+    them off the list before it is confirmed."""
 
     async def test_entry_asks_what_to_send(self):
         callback_data = AdminCb(action="massreward")
@@ -339,63 +339,226 @@ class TestMassReward:
         assert await state.get_state() == ad.AdminPanelStates.waiting_mass_amount
         assert (await state.get_data())["mass_kind"] == "coins"
 
-    async def test_the_amount_validates_then_asks_for_recipients(self):
+    async def test_the_amount_validates_then_opens_the_picker(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
         state = _state()
         await state.set_state(ad.AdminPanelStates.waiting_mass_amount)
         await state.update_data(mass_kind="coins")
 
         bad = _FakeMessage("tanti")
-        await ad.fsm_mass_amount(bad, state)
+        await ad.fsm_mass_amount(bad, state, session)
         assert await state.get_state() == ad.AdminPanelStates.waiting_mass_amount
         assert bad.answers and "non valido" in bad.answers[0]
 
         good = _FakeMessage("100")
-        await ad.fsm_mass_amount(good, state)
-        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_recipients
-        assert (await state.get_data())["mass_amount"] == 100
+        await ad.fsm_mass_amount(good, state, session)
+        # The picker is callback-driven: no message state, and the selection starts empty.
+        assert await state.get_state() is None
+        data = await state.get_data()
+        assert data["mass_amount"] == 100 and data["mass_selected"] == []
+        assert any("Tocca un membro" in a for a in good.answers)
 
-    async def _armed_recipients(self, kind: str, amount: int) -> FSMContext:
+    async def _armed_picker(
+        self, kind: str, amount: int, selected: list[int] | None = None
+    ) -> FSMContext:
         state = _state()
-        await state.set_state(ad.AdminPanelStates.waiting_mass_recipients)
-        await state.update_data(mass_kind=kind, mass_amount=amount)
+        await state.update_data(
+            mass_kind=kind, mass_amount=amount, mass_selected=list(selected or [])
+        )
         return state
 
-    async def test_coins_reach_matched_users_and_the_missing_are_reported(
-        self, session, user_factory
-    ):
+    async def _pick(self, state, session, tg_id: int) -> _FakeCallback:
+        callback_data = AdminCb(action="mrpick", item_id=tg_id)
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_pick(cb, callback_data, state, session)
+        return cb
+
+    async def test_picking_a_member_adds_it_and_asks_for_another(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100)
+
+        cb = await self._pick(state, session, 10)
+
+        assert (await state.get_data())["mass_selected"] == [10]
+        assert any("un'altra persona" in a for a in cb.message.answers)
+
+    async def test_picking_the_same_member_twice_does_not_duplicate(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100)
+
+        await self._pick(state, session, 10)
+        await self._pick(state, session, 10)
+
+        assert (await state.get_data())["mass_selected"] == [10]
+
+    async def test_coins_reach_the_selected_members(self, session, user_factory):
         await user_factory(tg_id=10, username="alice", coins=0)
         await user_factory(tg_id=11, username="bob", coins=0)
-        message = _FakeMessage("@alice\nbob\n@ghost")
+        state = await self._armed_picker("coins", 100, [10, 11])
 
-        await ad.fsm_mass_recipients(message, await self._armed_recipients("coins", 100), session)
+        cb = _FakeCallback(AdminCb(action="mrsend").pack())
+        await ad.cb_mass_send(cb, state, session)
 
         assert await _coins(session, 10) == 100 and await _coins(session, 11) == 100
         [row] = await _audit(session)
         assert row.action_type == "mass_credit" and row.amount == 100
         assert "2" in (row.detail or "")
-        assert any("ghost" in a for a in message.answers), "unmatched names must be reported"
-        # Both matched users were DM'd.
-        assert {c for c, _t in message.bot.sent} == {10, 11}
+        assert {c for c, _t in cb.bot.sent} == {10, 11}
+        assert await state.get_state() is None  # flow cleared after sending
 
-    async def test_xp_reaches_matched_users(self, session, user_factory):
+    async def test_xp_reaches_the_selected_members(self, session, user_factory):
         await user_factory(tg_id=10, username="alice", xp=0)
-        message = _FakeMessage("@alice")
+        state = await self._armed_picker("xp", 50, [10])
 
-        await ad.fsm_mass_recipients(message, await self._armed_recipients("xp", 50), session)
+        await ad.cb_mass_send(_FakeCallback(AdminCb(action="mrsend").pack()), state, session)
 
         assert await _xp(session, 10) == 50
         [row] = await _audit(session)
         assert row.action_type == "mass_xp" and row.amount == 50
 
-    async def test_no_matched_username_keeps_the_state_to_retry(self, session, user_factory):
+    async def test_send_with_no_selection_pays_nobody(self, session, user_factory):
         await user_factory(tg_id=10, username="alice", coins=0)
-        state = await self._armed_recipients("coins", 100)
-        message = _FakeMessage("@ghost\n@nobody")
+        state = await self._armed_picker("coins", 100, [])
 
-        await ad.fsm_mass_recipients(message, state, session)
+        cb = _FakeCallback(AdminCb(action="mrsend").pack())
+        await ad.cb_mass_send(cb, state, session)
 
         assert await _audit(session) == [] and await _coins(session, 10) == 0
-        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_recipients
+        assert cb.alerts, "an empty selection must warn instead of paying out"
+
+    async def test_confirm_with_no_selection_returns_to_the_picker(self, session):
+        state = await self._armed_picker("coins", 100, [])
+        cb = _FakeCallback(AdminCb(action="mrconfirm").pack())
+        await ad.cb_mass_confirm(cb, state, session)
+        assert any("nessuno" in a for a in cb.message.answers)
+
+    async def test_removing_a_member_takes_it_off_before_sending(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice", coins=0)
+        await user_factory(tg_id=11, username="bob", coins=0)
+        state = await self._armed_picker("coins", 100, [10, 11])
+
+        callback_data = AdminCb(action="mrunpick", item_id=11)
+        await ad.cb_mass_unpick(_FakeCallback(callback_data.pack()), callback_data, state, session)
+        assert (await state.get_data())["mass_selected"] == [10]
+
+        await ad.cb_mass_send(_FakeCallback(AdminCb(action="mrsend").pack()), state, session)
+        assert await _coins(session, 10) == 100 and await _coins(session, 11) == 0
+
+    async def test_removing_the_last_member_empties_and_reopens_the_picker(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100, [10])
+
+        callback_data = AdminCb(action="mrunpick", item_id=10)
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_unpick(cb, callback_data, state, session)
+
+        assert (await state.get_data())["mass_selected"] == []
+        assert any("svuotata" in a for a in cb.message.answers)
+
+    async def test_more_no_shows_the_summary(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100, [10])
+
+        callback_data = AdminCb(action="mrmore", key="no")
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_more(cb, callback_data, state, session)
+        assert any("Riepilogo" in a for a in cb.message.answers)
+
+    async def test_search_filters_and_stays_pickable(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice", coins=0)
+        await user_factory(tg_id=11, username="bob", coins=0)
+        state = await self._armed_picker("coins", 100)
+        await state.set_state(ad.AdminPanelStates.waiting_mass_search)
+
+        message = _FakeMessage("alice")
+        await ad.fsm_mass_search(message, state, session)
+
+        assert await state.get_state() is None
+        assert any("Risultati" in a for a in message.answers)
+
+    async def test_the_list_reopens_and_leaves_the_search_state(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100)
+        await state.set_state(ad.AdminPanelStates.waiting_mass_search)
+
+        callback_data = AdminCb(action="mrlist", item_id=0)
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_list(cb, callback_data, state, session)
+
+        assert await state.get_state() is None
+        assert any("Tocca un membro" in a for a in cb.message.answers)
+
+    async def test_the_list_survives_a_no_op_edit(self, session, user_factory):
+        """Re-tapping the same page raises «message is not modified» — the picker
+        must swallow it and still stop the spinner."""
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100)
+        callback_data = AdminCb(action="mrlist", item_id=0)
+        cb = _FakeCallback(callback_data.pack())
+
+        async def _boom(*a, **k):
+            raise RuntimeError("Bad Request: message is not modified")
+
+        cb.message.edit_text = _boom
+        await ad.cb_mass_list(cb, callback_data, state, session)  # must not raise
+
+        assert cb.answers, "the callback is answered even when the edit is a no-op"
+
+    async def test_more_yes_reopens_the_picker(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100, [10])
+
+        callback_data = AdminCb(action="mrmore", key="yes")
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_more(cb, callback_data, state, session)
+
+        assert any("Tocca un membro" in a for a in cb.message.answers)
+
+    async def test_pick_without_a_target_is_a_noop(self, session):
+        state = await self._armed_picker("coins", 100)
+        callback_data = AdminCb(action="mrpick")
+        cb = _FakeCallback(callback_data.pack())
+        await ad.cb_mass_pick(cb, callback_data, state, session)
+        assert (await state.get_data())["mass_selected"] == []
+
+    async def test_pick_beyond_the_cap_is_refused(self, session, user_factory):
+        await user_factory(tg_id=999, username="late")
+        full = list(range(ad._MAX_RECIPIENTS))
+        state = await self._armed_picker("coins", 100, full)
+
+        cb = await self._pick(state, session, 999)
+
+        assert cb.alerts, "the cap must warn instead of adding another recipient"
+        assert (await state.get_data())["mass_selected"] == full
+
+    async def test_pick_of_an_unknown_id_falls_back_to_the_id(self, session):
+        state = await self._armed_picker("coins", 100)
+        cb = await self._pick(state, session, 12345)
+        assert (await state.get_data())["mass_selected"] == [12345]
+        assert any("12345" in a for a in cb.message.answers)
+
+    async def test_search_prompts_for_a_query(self):
+        state = await self._armed_picker("coins", 100)
+        cb = _FakeCallback(AdminCb(action="mrsearch").pack())
+        await ad.cb_mass_search(cb, state)
+        assert await state.get_state() == ad.AdminPanelStates.waiting_mass_search
+
+    async def test_search_needs_at_least_two_chars(self, session):
+        state = await self._armed_picker("coins", 100)
+        await state.set_state(ad.AdminPanelStates.waiting_mass_search)
+        message = _FakeMessage("a")
+        await ad.fsm_mass_search(message, state, session)
+        assert message.answers and "2 caratteri" in message.answers[0]
+
+    async def test_search_with_no_match_is_reported(self, session, user_factory):
+        await user_factory(tg_id=10, username="alice")
+        state = await self._armed_picker("coins", 100)
+        await state.set_state(ad.AdminPanelStates.waiting_mass_search)
+        message = _FakeMessage("zzzznope")
+        await ad.fsm_mass_search(message, state, session)
+        assert any("Nessun utente" in a for a in message.answers)
 
 
 class TestActionRouting:

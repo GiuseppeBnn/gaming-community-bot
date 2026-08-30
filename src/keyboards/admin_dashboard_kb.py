@@ -60,6 +60,85 @@ def massreward_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
+def _picker_name(user) -> str:
+    """Label for a user in the reward picker: @username, or the name truncated."""
+    return f"@{user.username}" if user.username else user.full_name[:24]
+
+
+def mass_picker_kb(
+    users, selected_ids, page: int, has_next: bool, *, is_search: bool = False
+) -> InlineKeyboardMarkup:
+    """Member picker for the multi-recipient reward flow.
+
+    `users` is a list of (User, coins). Already-selected members are marked with a
+    ✅; tapping one toggles it via ``mrpick``. Search results (`is_search`) drop the
+    page navigation and offer a way back to the full list instead.
+    """
+    b = InlineKeyboardBuilder()
+    selected = set(selected_ids)
+    for user, coins in users:
+        mark = "✅ " if user.tg_id in selected else "👤 "
+        b.button(
+            text=f"{mark}{_picker_name(user)} · {coins:,}🪙",
+            callback_data=AdminCb(action="mrpick", item_id=user.tg_id).pack(),
+        )
+    tools: list[tuple[str, str]] = [("🔍 Cerca", AdminCb(action="mrsearch").pack())]
+    if is_search:
+        tools.append(("📋 Lista completa", AdminCb(action="mrlist", item_id=0).pack()))
+    for text, cb in tools:
+        b.button(text=text, callback_data=cb)
+    nav: list[tuple[str, str]] = []
+    if not is_search and page > 0:
+        nav.append(("⬅️ Prec", AdminCb(action="mrlist", item_id=page - 1).pack()))
+    if not is_search and has_next:
+        nav.append(("Succ ➡️", AdminCb(action="mrlist", item_id=page + 1).pack()))
+    for text, cb in nav:
+        b.button(text=text, callback_data=cb)
+    if selected:
+        b.button(
+            text=f"✔️ Conferma selezione ({len(selected)})",
+            callback_data=AdminCb(action="mrconfirm").pack(),
+        )
+    b.button(text="❌ Annulla", callback_data=AdminCb(action="home").pack())
+    layout = [1] * len(users) + [len(tools)] + ([len(nav)] if nav else [])
+    layout += ([1] if selected else []) + [1]
+    b.adjust(*layout)
+    return b.as_markup()
+
+
+def mass_more_kb() -> InlineKeyboardMarkup:
+    """After a member is picked: select another, or move on to the summary."""
+    b = InlineKeyboardBuilder()
+    b.button(text="➕ Sì, aggiungi", callback_data=AdminCb(action="mrmore", key="yes").pack())
+    b.button(text="✔️ No, prosegui", callback_data=AdminCb(action="mrmore", key="no").pack())
+    b.adjust(2)
+    return b.as_markup()
+
+
+def mass_confirm_kb() -> InlineKeyboardMarkup:
+    """The final summary of a multi-recipient reward before it is paid out."""
+    b = InlineKeyboardBuilder()
+    b.button(text="✅ Conferma e manda", callback_data=AdminCb(action="mrsend").pack())
+    b.button(text="➕ Aggiungi qualcuno", callback_data=AdminCb(action="mrlist", item_id=0).pack())
+    b.button(text="➖ Rimuovi qualcuno", callback_data=AdminCb(action="mrremlist").pack())
+    b.button(text="❌ Annulla tutto", callback_data=AdminCb(action="home").pack())
+    b.adjust(1, 2, 1)
+    return b.as_markup()
+
+
+def mass_remove_kb(users) -> InlineKeyboardMarkup:
+    """One button per selected member; tapping removes them (``mrunpick``)."""
+    b = InlineKeyboardBuilder()
+    for user in users:
+        b.button(
+            text=f"➖ {_picker_name(user)}",
+            callback_data=AdminCb(action="mrunpick", item_id=user.tg_id).pack(),
+        )
+    b.button(text="⬅️ Torna al riepilogo", callback_data=AdminCb(action="mrconfirm").pack())
+    b.adjust(*([1] * len(users) + [1]))
+    return b.as_markup()
+
+
 def lead_kb(active: str) -> InlineKeyboardMarkup:
     """Leaderboard switcher inside the dashboard (coins · xp · trofei)."""
     b = InlineKeyboardBuilder()

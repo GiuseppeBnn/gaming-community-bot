@@ -144,6 +144,15 @@ class TestOpen:
 
         assert "Doom" not in bot.texts
 
+    async def test_the_announcement_carries_the_description(self, session, round_):
+        round_.description = "Un classico sparatutto"
+        await session.flush()
+        bot = _Bot()
+
+        await lc.open_round(bot, session, round_.id)
+
+        assert "Un classico sparatutto" in bot.texts
+
     async def test_a_failed_announcement_leaves_the_round_ready(self, session, round_):
         """Otherwise the round is running and nobody was told."""
         ok, _ = await lc.open_round(_Bot(fail_group=True), session, round_.id)

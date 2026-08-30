@@ -192,6 +192,19 @@ async def list_users(
     return [(row[0], row[1]) for row in result.all()]
 
 
+async def get_users_by_ids(session: AsyncSession, tg_ids: list[int]) -> list[User]:
+    """Users for a set of tg_ids, returned in the order of ``tg_ids`` (ids that
+    match nothing are dropped). Used by the multi-recipient reward picker to render
+    and pay the current selection — an exact-id lookup, no fuzzy matching."""
+    if not tg_ids:
+        return []
+    rows = (
+        await session.execute(select(User).where(User.tg_id.in_(tg_ids)))
+    ).scalars().all()
+    by_id = {u.tg_id: u for u in rows}
+    return [by_id[i] for i in tg_ids if i in by_id]
+
+
 async def count_users(session: AsyncSession) -> int:
     return (await session.execute(select(func.count()).select_from(User))).scalar_one()
 

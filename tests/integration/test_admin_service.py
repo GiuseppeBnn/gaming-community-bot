@@ -158,6 +158,17 @@ class TestDossierAndStats:
     async def test_resolve_usernames_empty_input(self, session):
         assert await admin.resolve_usernames(session, ["", "  ", "@"]) == ([], [])
 
+    async def test_get_users_by_ids_preserves_order_and_drops_unknown(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=1, username="a")
+        await user_factory(tg_id=2, username="b")
+        found = await admin.get_users_by_ids(session, [2, 404, 1])
+        assert [u.tg_id for u in found] == [2, 1]
+
+    async def test_get_users_by_ids_empty(self, session):
+        assert await admin.get_users_by_ids(session, []) == []
+
     async def test_economy_stats(self, session, user_factory):
         await user_factory(tg_id=1, coins=100)
         await user_factory(tg_id=2, coins=300)

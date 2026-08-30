@@ -27,6 +27,7 @@ log = logging.getLogger(__name__)
 router = Router()
 
 _MAX_TITLE = 256
+_MAX_DESC = 512
 _MAX_ANSWER = 200
 _MAX_ALIAS = 100
 _MAX_ALIASES = 20
