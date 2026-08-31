@@ -506,6 +506,7 @@ def test_the_64_byte_ceiling_shows_up_in_tests_not_in_chat():
         (EventCb(action="item", task_type="quiz", item_id=7), "ev:item:quiz:7"),
         # byte-for-byte the payload we ship today
         (EventCb(action="askstart", task_type="quiz", item_id=7), "ev:askstart:quiz:7"),
+        (EventCb(action="askarchive", task_type="twentyq", item_id=7), "ev:askarchive:twentyq:7"),
         # today's optional 5th segment becomes an action of its own, same length
         (EventCb(action="sched", task_type="quiz", item_id=7), "ev:sched:quiz:7"),
         (EventCb(action="sched_close", task_type="quiz", item_id=7), "ev:sched_close:quiz:7"),
@@ -525,6 +526,11 @@ async def test_the_poll_triangle_does_not_answer_to_the_hub_prefix():
 def test_the_longest_real_event_payload_fits():
     """The ceiling is 64 bytes, and event-type keys are chosen by whoever writes the code."""
     packed = EventCb(action="sched_close", task_type="guess_sound", item_id=999_999).pack()
+    assert len(packed.encode()) <= 64, packed
+
+
+def test_archive_confirmation_payload_stays_inside_telegram_limit():
+    packed = EventCb(action="askarchive", task_type="twentyq", item_id=999_999).pack()
     assert len(packed.encode()) <= 64, packed
 
 

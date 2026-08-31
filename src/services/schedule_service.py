@@ -8,12 +8,13 @@ the DB, so schedules survive a restart. Follows STEERING §5 (no commit here).
 
 from __future__ import annotations
 
+from collections.abc import Collection
 import json
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -29,6 +30,11 @@ class TaskSkip(Exception):
 def utcnow() -> datetime:
     """Naive UTC, matching the DB's naive timestamps."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def retry_delay_minutes(retry_count: int) -> int:
+    """Bounded exponential delay for a failed internal lifecycle expiry."""
+    return min(60, 2 ** max(0, retry_count))
 
 _ABS_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})$")
 _REL_RE = re.compile(r"^(\d+)\s*([mhd])$", re.IGNORECASE)
@@ -175,6 +181,108 @@ async def mark_failed(session: AsyncSession, task: ScheduledTask, error: str) ->
     task.status = "failed"
     task.executed_at = utcnow()
     task.error = error[:512]
+
+
+async def mark_done_by_id(session: AsyncSession, task_id: int) -> None:
+    """Durably complete a task without dereferencing an ORM row after rollback."""
+    await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.id == task_id)
+        .values(status="done", executed_at=utcnow())
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def mark_failed_by_id(session: AsyncSession, task_id: int, error: str) -> None:
+    """Durably fail a task without dereferencing an ORM row after rollback."""
+    await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.id == task_id)
+        .values(status="failed", executed_at=utcnow(), error=error[:512])
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def mark_retry(
+    session: AsyncSession,
+    task_id: int,
+    *,
+    retry_count: int,
+    error: str,
+    now: datetime,
+) -> None:
+    """Persist the next bounded retry for one still-pending internal expiry.
+
+    The caller supplies only primitives captured before a rollback.  A lost row or
+    a concurrent cancellation is not silently resurrected as a retry.
+    """
+    result = await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.id == task_id, ScheduledTask.status == "pending")
+        .values(
+            status="pending",
+            retry_count=retry_count + 1,
+            run_at=now + timedelta(minutes=retry_delay_minutes(retry_count)),
+            error=error[:512],
+            executed_at=None,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        raise RuntimeError(f"scheduled task {task_id} is no longer pending")
+
+
+async def cancel_pending_for_ref(
+    session: AsyncSession,
+    *,
+    task_type: str,
+    ref_id: int,
+    actions: Collection[str] | None = None,
+) -> int:
+    """Cancel pending tasks belonging to exactly one aggregate, without committing.
+
+    Payload JSON is intentionally filtered in Python: this keeps the service
+    portable between SQLite tests and PostgreSQL production while leaving the
+    persisted task schema unchanged.  An absent action means the historic start
+    action, matching the scheduler's payload convention.
+    """
+    scope = (
+        ScheduledTask.task_type == task_type,
+        ScheduledTask.ref_id == ref_id,
+        ScheduledTask.status == "pending",
+    )
+    if actions is None:
+        result = await session.execute(
+            update(ScheduledTask)
+            .where(*scope)
+            .values(status="cancelled")
+            .execution_options(synchronize_session=False)
+        )
+        return int(result.rowcount or 0)
+
+    wanted = set(actions)
+    if not wanted:
+        return 0
+    rows = (await session.execute(
+        select(ScheduledTask.id, ScheduledTask.payload_json).where(*scope)
+    )).all()
+    ids: list[int] = []
+    for task_id, payload_json in rows:
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("action", "start") in wanted:
+            ids.append(task_id)
+    if not ids:
+        return 0
+    result = await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.id.in_(ids), ScheduledTask.status == "pending")
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
 
 
 async def cancel(session: AsyncSession, task_id: int, by_tg_id: int | None = None) -> bool:

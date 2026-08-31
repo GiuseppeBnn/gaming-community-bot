@@ -48,7 +48,7 @@ from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
 from handlers._privacy import redirect_to_private
 from handlers.callbacks import AdminCb, EventCb, PollCreateCb
-from handlers.event_types import edit_or_send
+from handlers.event_types import StartResult, edit_or_send
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, poll_service, schedule_service
 from utils.text import esc
@@ -190,12 +190,49 @@ _CONFIRM: dict[str, tuple[str, str, str]] = {
     "askstart": ("start", "avviare subito nel gruppo", "▶️ Sì, avvia"),
     "askclose": ("close", "chiudere ora", "🏁 Sì, chiudi"),
     "askdel": ("del", "eliminare <b>definitivamente</b>", "🗑️ Sì, elimina"),
+    "askarchive": ("archive", "archiviare/nascondere", "🗃️ Sì, archivia"),
     # «e premi» diceva il falso: i premi già pagati restano pagati, e alla chiusura
     # successiva il montepremi viene erogato di nuovo per intero. È voluto — una
     # riproposizione è un evento nuovo — quindi è il testo che va detto com'è.
     "askreset": ("reset", "riproporre (azzera le risposte e ripaga il montepremi intero)",
                  "🔁 Sì, riproponi"),
 }
+
+
+async def _commit_then_present(
+    callback: CallbackQuery,
+    db_session: AsyncSession,
+    res: StartResult,
+) -> bool:
+    """Own a generic mutation transaction, then run its optional presentation hook.
+
+    ``True`` means callers may redraw their normal screen. A failed commit has no
+    durable state to present, while a failed hook happens *after* that state is
+    durable and gets a recoverable message instead of a false rollback claim.
+    """
+    if not res.ok:
+        await db_session.rollback()
+        await callback.answer(res.message, show_alert=res.alert)
+        return True
+    try:
+        await db_session.commit()
+    except Exception as exc:  # noqa: BLE001 — caller owns this transaction boundary
+        await db_session.rollback()
+        log.warning("Event callback commit failed error=%s", type(exc).__name__)
+        await callback.answer("⚠️ Stato non salvato. Riprova.", show_alert=True)
+        return False
+    if res.post_commit is not None:
+        try:
+            await res.post_commit()
+        except Exception as exc:  # noqa: BLE001 — durable state is recoverable by republish
+            await db_session.rollback()
+            log.warning("Event post-commit hook failed error=%s", type(exc).__name__)
+            await callback.answer(
+                "⚠️ Stato salvato, ma la card va ripubblicata.", show_alert=True,
+            )
+            return True
+    await callback.answer(res.message, show_alert=res.alert)
+    return True
 
 
 @router.callback_query(EventCb.filter(F.action.in_(_CONFIRM)), IsAdminCallbackFilter())
@@ -241,10 +278,8 @@ async def cb_start_now(
         await callback.answer()
         return
     res = await et.start_now(callback.bot, db_session, item_id)
-    if res.ok:
-        await db_session.commit()  # spec mutated but never commits (STEERING §5)
-    await callback.answer(res.message, show_alert=res.alert)
-    await et.render_list(callback.message, db_session)
+    if await _commit_then_present(callback, db_session, res):
+        await et.render_list(callback.message, db_session)
 
 
 @router.callback_query(EventCb.filter(F.action == "close"), IsAdminCallbackFilter())
@@ -262,12 +297,11 @@ async def cb_close(
         return
     res = await et.close_now(callback.bot, db_session, item_id)
     if res is None:  # type has no close action
+        await db_session.rollback()
         await callback.answer()
         return
-    if res.ok:
-        await db_session.commit()
-    await callback.answer(res.message, show_alert=res.alert)
-    await et.render_list(callback.message, db_session)
+    if await _commit_then_present(callback, db_session, res):
+        await et.render_list(callback.message, db_session)
 
 
 @router.callback_query(EventCb.filter(F.action == "del"), IsAdminCallbackFilter())
@@ -280,15 +314,39 @@ async def cb_delete(
         await callback.answer()
         return
     et = event_types.get(task_type)
-    delete = getattr(et, "delete", None) if et is not None else None
+    if et is None:
+        await callback.answer()
+        return
+    delete = getattr(et, "delete", None)
     if delete is None:
         await callback.answer()
         return
     res = await delete(db_session, item_id)
-    if res.ok:
-        await db_session.commit()  # spec mutated but never commits (STEERING §5)
-    await callback.answer(res.message, show_alert=res.alert)
-    await et.render_list(callback.message, db_session)  # item is gone → back to list
+    if await _commit_then_present(callback, db_session, res):
+        await et.render_list(callback.message, db_session)  # item is gone → back to list
+
+
+@router.callback_query(EventCb.filter(F.action == "archive"), IsAdminCallbackFilter())
+async def cb_archive(
+    callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession
+) -> None:
+    """Run an optional non-destructive archive capability without type branching."""
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    archive = getattr(et, "archive", None)
+    if archive is None:
+        await callback.answer()
+        return
+    res = await archive(db_session, item_id)
+    if await _commit_then_present(callback, db_session, res):
+        await et.render_list(callback.message, db_session)
 
 
 @router.callback_query(EventCb.filter(F.action == "reset"), IsAdminCallbackFilter())
@@ -301,17 +359,20 @@ async def cb_reset(
         await callback.answer()
         return
     et = event_types.get(task_type)
-    reset = getattr(et, "reset", None) if et is not None else None
+    if et is None:
+        await callback.answer()
+        return
+    reset = getattr(et, "reset", None)
     if reset is None:
         await callback.answer()
         return
     res = await reset(db_session, item_id)
     if res is None:  # type isn't re-runnable
+        await db_session.rollback()
         await callback.answer()
         return
-    if res.ok:
-        await db_session.commit()
-    await callback.answer(res.message, show_alert=res.alert)
+    if not await _commit_then_present(callback, db_session, res):
+        return
     # Still exists (now `ready` again) → refresh its detail if the type has one.
     render_detail = getattr(et, "render_detail", None)
     if render_detail is not None:

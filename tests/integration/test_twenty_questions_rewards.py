@@ -16,6 +16,7 @@ from database.models import (
     AIGameSession,
     AIGameTurn,
     LedgerEntry,
+    ScheduledTask,
     TransactionType,
     TwentyQuestionsGame,
     User,
@@ -606,3 +607,129 @@ async def test_game_service_exposes_terminalization_facade(session, monkeypatch)
 
     assert result.transitioned
     assert result.finish_reason is FinishReason.expired
+
+
+@pytest.mark.parametrize(
+    ("reason", "winner_tg_id"),
+    [
+        (FinishReason.victory, 10),
+        (FinishReason.expired, None),
+        (FinishReason.admin_closed, None),
+    ],
+)
+async def test_terminalization_cancels_only_pending_tasks_for_its_game(
+    session, monkeypatch, reason, winner_tg_id,
+):
+    """Without this cancellation, stale start/close/expiry tasks can mutate a finished game."""
+    session_id = await _running_game(session, monkeypatch)
+    now = datetime(2026, 8, 23, 12, 0)
+    initial_expiry_id = (await session.execute(
+        select(ScheduledTask.id).where(
+            ScheduledTask.task_type == "twentyq",
+            ScheduledTask.ref_id == session_id,
+            ScheduledTask.status == "pending",
+        )
+    )).scalar_one()
+    own_expiry = ScheduledTask(
+        task_type="twentyq", ref_id=session_id, run_at=now, status="pending",
+        created_by_tg_id=9, payload_json='{"internal":true,"action":"expire"}',
+    )
+    own_close = ScheduledTask(
+        task_type="twentyq", ref_id=session_id, run_at=now, status="pending",
+        created_by_tg_id=9, payload_json='{"action":"close"}',
+    )
+    other_game = ScheduledTask(
+        task_type="twentyq", ref_id=session_id + 1, run_at=now, status="pending",
+        created_by_tg_id=9, payload_json='{"internal":true,"action":"expire"}',
+    )
+    other_type = ScheduledTask(
+        task_type="quiz", ref_id=session_id, run_at=now, status="pending",
+        created_by_tg_id=9, payload_json='{"action":"close"}',
+    )
+    session.add_all((own_expiry, own_close, other_game, other_type))
+    await session.flush()
+
+    result = await ai_game_service.terminalize(
+        session, session_id=session_id, reason=reason, winner_tg_id=winner_tg_id, now=now,
+    )
+    await session.commit()
+
+    own_ids = (initial_expiry_id, own_expiry.id, own_close.id, other_game.id, other_type.id)
+    statuses = dict((await session.execute(
+        select(ScheduledTask.id, ScheduledTask.status).where(ScheduledTask.id.in_(own_ids))
+    )).all())
+    assert result.transitioned
+    assert statuses == {
+        initial_expiry_id: "cancelled",
+        own_expiry.id: "cancelled",
+        own_close.id: "cancelled",
+        other_game.id: "pending",
+        other_type.id: "pending",
+    }
+
+
+async def test_terminalization_rollback_restores_pending_task_cancellation(session, monkeypatch):
+    """Task cancellation is part of settlement atomicity, not cleanup after a commit."""
+    rewards = _rewards()
+    session_id = await _running_game(session, monkeypatch)
+    expiry = ScheduledTask(
+        task_type="twentyq", ref_id=session_id, run_at=datetime(2026, 8, 23, 12, 0),
+        status="pending", created_by_tg_id=9,
+        payload_json='{"internal":true,"action":"expire"}',
+    )
+    session.add(expiry)
+    await session.commit()
+    expiry_id = expiry.id
+    cancellations = []
+    original_cancel = rewards.schedule_service.cancel_pending_for_ref
+
+    async def capture_cancel(*args, **kwargs):
+        cancelled = await original_cancel(*args, **kwargs)
+        cancellations.append(cancelled)
+        return cancelled
+
+    async def fail_credit(*args, **kwargs):
+        raise RuntimeError("credit fails after terminal claim")
+
+    monkeypatch.setattr(rewards.schedule_service, "cancel_pending_for_ref", capture_cancel)
+    monkeypatch.setattr(rewards.economy_service, "credit", fail_credit)
+    with pytest.raises(RuntimeError, match="credit fails"):
+        await ai_game_service.terminalize(
+            session, session_id=session_id, reason=FinishReason.victory, winner_tg_id=10,
+        )
+    await session.rollback()
+
+    stored = await session.get(ScheduledTask, expiry_id)
+    assert cancellations == [2]
+    assert stored is not None and stored.status == "pending"
+
+
+async def test_terminalization_replay_does_not_recancel_tasks(session, monkeypatch):
+    """A losing terminal CAS is an immutable replay, never a second cleanup pass."""
+    session_id = await _running_game(session, monkeypatch)
+    task = ScheduledTask(
+        task_type="twentyq", ref_id=session_id, run_at=datetime(2026, 8, 23, 12, 0),
+        status="pending", created_by_tg_id=9,
+        payload_json='{"internal":true,"action":"expire"}',
+    )
+    session.add(task)
+    await session.flush()
+    task_id = task.id
+    first = await ai_game_service.terminalize(
+        session, session_id=session_id, reason=FinishReason.expired,
+    )
+    await session.commit()
+    assert first.transitioned
+
+    await session.execute(
+        update(ScheduledTask).where(ScheduledTask.id == task_id).values(status="pending")
+    )
+    await session.commit()
+    replay = await ai_game_service.terminalize(
+        session, session_id=session_id, reason=FinishReason.expired,
+    )
+    await session.commit()
+
+    stored = await session.get(ScheduledTask, task_id)
+    assert not replay.transitioned
+    assert stored is not None and stored.status == "pending"

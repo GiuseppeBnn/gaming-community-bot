@@ -28,6 +28,7 @@ from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
 from handlers.callbacks import SchedCb
+from handlers.event_types.base import PostCommitHook
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, schedule_service
 from utils import cooldown
@@ -375,7 +376,7 @@ async def _confirm(message: Message, task, action: str = _ACTION_START) -> None:
 # Scheduler loop + executor (started from main.py)
 # ---------------------------------------------------------------------------
 
-async def execute_task(bot, session, task) -> None:
+async def execute_task(bot, session, task) -> PostCommitHook | None:
     """Execute a single due task by delegating to its event-type spec.
 
     Raises on failure (the caller marks the task failed). Dispatch goes through
@@ -390,18 +391,23 @@ async def execute_task(bot, session, task) -> None:
     et = event_types.get(task.task_type)
     if et is None:
         raise RuntimeError(f"Tipo task sconosciuto: {task.task_type}")
-    await et.execute_scheduled(bot, session, task, group_id)
+    return await et.execute_scheduled(bot, session, task, group_id)
 
 
-async def _notify_creator(bot, task, text: str) -> None:
+async def _notify_creator(
+    bot,
+    creator_tg_id: int | None,
+    task_id: int,
+    text: str,
+) -> None:
     """Best-effort DM to the admin who scheduled the task, so failures/skips are
     visible on Telegram and not only in the logs."""
-    if not getattr(task, "created_by_tg_id", None):
+    if not creator_tg_id:
         return
     try:
-        await bot.send_message(task.created_by_tg_id, text)
+        await bot.send_message(creator_tg_id, text)
     except Exception:  # noqa: BLE001 — the admin may have never opened the bot in private
-        log.warning("Avviso task #%s all'admin %s fallito", task.id, task.created_by_tg_id)
+        log.warning("Avviso task #%s all'admin %s fallito", task_id, creator_tg_id)
 
 
 async def _run_due_task(bot, session, task) -> None:
@@ -415,31 +421,87 @@ async def _run_due_task(bot, session, task) -> None:
     (illegal in async). Each task is its own unit: a failure never bleeds into the
     next one in the same tick.
     """
-    task_id = getattr(task, "id", "?")
-    task_type = getattr(task, "task_type", "?")
-    notice: str | None = None
+    task_id = int(task.id)
+    creator_tg_id = getattr(task, "created_by_tg_id", None)
+    retry_count = int(getattr(task, "retry_count", 0))
+    task_type = str(getattr(task, "task_type", "?"))
+    payload: dict = {}
+
     try:
-        try:
-            await execute_task(bot, session, task)
-            await schedule_service.mark_done(session, task)
-        except schedule_service.TaskSkip as e:
-            # Not an error: the task was an intentional no-op (e.g. quiz already running).
-            await session.rollback()
-            log.info("Task #%s saltato: %s", task_id, e)
-            await schedule_service.mark_done(session, task)
-            notice = f"ℹ️ Task #{task_id} ({task_type}) saltato: {e}"
-        except Exception as e:  # noqa: BLE001
-            await session.rollback()
-            log.exception("Task #%s fallito: %s", task_id, e)
-            await schedule_service.mark_failed(session, task, str(e))
-            notice = f"⚠️ Task #{task_id} ({task_type}) fallito: {e}"
+        # Persisted payload is untrusted state.  Decode it inside the same failure
+        # boundary as dispatch so corrupt JSON is rolled back and terminally
+        # recorded by scalar id instead of aborting the scheduler tick.
+        payload = dict(schedule_service.task_payload(task))
+        hook = await execute_task(bot, session, task)
+        await schedule_service.mark_done(session, task)
         await session.commit()
-    except Exception:  # noqa: BLE001 — persisting the outcome failed; retry next tick
-        log.exception("Task #%s: persistenza esito fallita", task_id)
+    except schedule_service.TaskSkip:
         await session.rollback()
+        try:
+            await schedule_service.mark_done_by_id(session, task_id)
+            await session.commit()
+        except Exception:  # noqa: BLE001 — preserve the pending row for a later tick
+            log.warning("Task #%s esito skip non persistito", task_id)
+            await session.rollback()
+            return
+        await _notify_creator(bot, creator_tg_id, task_id, f"ℹ️ Task #{task_id} saltato.")
         return
-    if notice:
-        await _notify_creator(bot, task, notice)
+    except Exception as exc:  # noqa: BLE001 — task errors are isolated per due row
+        await session.rollback()
+        internal_expiry = (
+            payload.get("internal") is True and payload.get("action") == "expire"
+        )
+        if internal_expiry:
+            try:
+                await schedule_service.mark_retry(
+                    session,
+                    task_id,
+                    retry_count=retry_count,
+                    error=str(exc),
+                    now=schedule_service.utcnow(),
+                )
+                await session.commit()
+            except Exception:  # noqa: BLE001 — leave the old pending row resumable
+                log.warning("Task #%s retry non persistito", task_id)
+                await session.rollback()
+                return
+            new_retry_count = retry_count + 1
+            if new_retry_count == 1 or new_retry_count % 6 == 0:
+                await _notify_creator(
+                    bot,
+                    creator_tg_id,
+                    task_id,
+                    f"⚠️ Scadenza task #{task_id}: verrà riprovata.",
+                )
+            else:
+                log.warning(
+                    "Task #%s retry=%s type=%s",
+                    task_id,
+                    new_retry_count,
+                    task_type,
+                )
+            return
+        try:
+            await schedule_service.mark_failed_by_id(session, task_id, str(exc))
+            await session.commit()
+        except Exception:  # noqa: BLE001 — preserve the pending row for a later tick
+            log.warning("Task #%s failure non persistita", task_id)
+            await session.rollback()
+            return
+        log.warning("Task #%s fallito type=%s", task_id, task_type)
+        await _notify_creator(bot, creator_tg_id, task_id, f"⚠️ Task #{task_id} fallito.")
+        return
+
+    if hook is not None:
+        try:
+            await hook()
+        except Exception as exc:  # noqa: BLE001 — the durable task stays done
+            log.warning(
+                "Task #%s post-commit hook failed type=%s error=%s",
+                task_id,
+                task_type,
+                type(exc).__name__,
+            )
 
 
 async def scheduler_loop(bot) -> None:

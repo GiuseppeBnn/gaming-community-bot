@@ -10,11 +10,14 @@ import weakref
 
 import pytest
 from aiogram.dispatcher.event.bases import SkipHandler
+from sqlalchemy import func, select
 
 from database.models import AIGameSession, ScheduledTask, TwentyQuestionsGame
+from handlers import schedule as scheduler
 from handlers import twenty_questions as handler
+from handlers.callbacks import EventCb
 from handlers.event_types.twenty_questions_type import TwentyQuestionsType
-from services import ai_game_service, group_registry
+from services import ai_game_service, group_registry, schedule_service
 from services.ai_game_types import (
     FinishReason,
     GameView,
@@ -24,6 +27,7 @@ from services.ai_game_types import (
     QuestionVerdict,
     RewardProjection,
     RewardSummary,
+    StartGameResult,
     TerminalResult,
     TurnOutcome,
     TurnRejectReason,
@@ -212,6 +216,25 @@ async def _ready(session, title="Serata"):
     return root.id
 
 
+async def _v2_ready(session, monkeypatch, title="V2"):
+    """Create one real v2 draft while keeping provider availability deterministic."""
+    monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
+    monkeypatch.setattr(
+        ai_game_service, "has_configured_twenty_questions_provider", lambda: True,
+    )
+    created = await ai_game_service.create_twenty_questions(
+        session,
+        creator_tg_id=9,
+        title=title,
+        duration_seconds=43_200,
+        expires_at=None,
+        max_coins_per_participant=100,
+        target=TARGET,
+    )
+    await session.commit()
+    return created.session_id
+
+
 async def _running(session, title="Serata", anchor=77):
     session_id = await _ready(session, title)
     assert await ai_game_service.start(
@@ -338,6 +361,289 @@ class TestEventLifecycle:
         task.ref_id = None
         with pytest.raises(RuntimeError, match="ref_id"):
             await spec.execute_scheduled(_Bot(), session, task, -1001)
+
+
+class TestV2EventLifecycle:
+    async def test_v2_start_commits_before_reread_and_never_passes_snapshot_to_publisher(
+        self, monkeypatch,
+    ):
+        """The initial card is post-commit and takes the v2 GameView-only path."""
+        events = []
+        db_session = _OrderedSession(events)
+        snapshot = SimpleNamespace(
+            session=SimpleNamespace(id=7, status="ready"),
+            game=SimpleNamespace(rules_version=2),
+        )
+
+        async def get_snapshot(*args, **kwargs):
+            db_session.pending = True
+            events.append("snapshot")
+            return snapshot
+
+        async def start(*args, **kwargs):
+            assert db_session.pending
+            events.append("start")
+            return StartGameResult(True, None, None)
+
+        async def get_game_view(*args, **kwargs):
+            assert not db_session.pending
+            events.append("view")
+            db_session.pending = True
+            return _v2_view(anchor=None)
+
+        async def refresh(bot, session, view):
+            assert not db_session.pending
+            assert isinstance(view, GameView)
+            events.append("refresh")
+
+        async def sent_before_commit(*args, **kwargs):
+            raise AssertionError("v2 start sent Telegram before its caller commit")
+
+        monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
+        monkeypatch.setattr(group_registry, "send_group_message", sent_before_commit)
+        monkeypatch.setattr(ai_game_service, "get_snapshot", get_snapshot)
+        monkeypatch.setattr(ai_game_service, "start", start)
+        monkeypatch.setattr(ai_game_service, "get_game_view", get_game_view)
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+
+        result = await TwentyQuestionsType().start_now(_Bot(), db_session, 7)
+
+        assert result.ok and result.post_commit is not None
+        assert events == ["snapshot", "start"]
+        await db_session.commit()
+        await result.post_commit()
+        assert events == ["snapshot", "start", "commit", "view", "commit", "refresh"]
+
+    async def test_v2_null_anchor_recovery_does_not_start_or_schedule_twice(
+        self, session, monkeypatch,
+    ):
+        """A committed start that lost Telegram can be repaired without a second expiry."""
+        spec = TwentyQuestionsType()
+        session_id = await _v2_ready(session, monkeypatch)
+        published = []
+
+        async def send(*args, **kwargs):
+            published.append(kwargs.get("text", ""))
+            return _Sent(message_id=88)
+
+        monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+
+        first = await spec.start_now(_Bot(), session, session_id)
+        assert first.ok and first.post_commit is not None
+        assert published == []
+        await session.commit()
+        initial_timers = (await session.execute(
+            select(func.count()).select_from(ScheduledTask).where(
+                ScheduledTask.task_type == "twentyq", ScheduledTask.ref_id == session_id,
+            )
+        )).scalar_one()
+        await session.commit()
+
+        recovery = await spec.start_now(_Bot(), session, session_id)
+        assert recovery.ok and recovery.post_commit is not None
+        assert published == []
+        duplicate_timers = (await session.execute(
+            select(func.count()).select_from(ScheduledTask).where(
+                ScheduledTask.task_type == "twentyq", ScheduledTask.ref_id == session_id,
+            )
+        )).scalar_one()
+        assert duplicate_timers == initial_timers == 1
+        await session.commit()
+
+        await recovery.post_commit()
+        assert len(published) == 1
+        assert (await session.execute(
+            select(AIGameSession.anchor_message_id).where(AIGameSession.id == session_id)
+        )).scalar_one() == 88
+
+    async def test_v2_close_terminalizes_before_its_post_commit_publisher(self, monkeypatch):
+        """`finish()` would skip settlement; terminal publication must wait for commit."""
+        events = []
+        db_session = _OrderedSession(events)
+        snapshot = SimpleNamespace(
+            session=SimpleNamespace(id=7, status="running"),
+            game=SimpleNamespace(rules_version=2),
+        )
+        terminal = _terminal()
+
+        async def get_snapshot(*args, **kwargs):
+            db_session.pending = True
+            events.append("snapshot")
+            return snapshot
+
+        async def terminalize(session, *, session_id, reason):
+            assert db_session.pending
+            assert session_id == 7 and reason is FinishReason.admin_closed
+            events.append("terminalize")
+            return terminal
+
+        async def finish(*args, **kwargs):
+            raise AssertionError("v2 close must never call legacy finish()")
+
+        async def publish(bot, session, result):
+            assert not db_session.pending
+            assert result is terminal
+            events.append("publish")
+
+        monkeypatch.setattr(ai_game_service, "get_snapshot", get_snapshot)
+        monkeypatch.setattr(ai_game_service, "terminalize", terminalize)
+        monkeypatch.setattr(ai_game_service, "finish", finish)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+
+        result = await TwentyQuestionsType().close_now(_Bot(), db_session, 7)
+
+        assert result is not None and result.ok and result.post_commit is not None
+        assert events == ["snapshot", "terminalize"]
+        await db_session.commit()
+        await result.post_commit()
+        assert events == ["snapshot", "terminalize", "commit", "publish"]
+
+    async def test_v2_scheduled_start_close_expire_return_hooks_and_skip_duplicates(
+        self, session, monkeypatch,
+    ):
+        """Every lifecycle action returns post-commit presentation; terminal replay is a skip."""
+        spec = TwentyQuestionsType()
+        session_id = await _v2_ready(session, monkeypatch, "Sched start")
+        calls = []
+
+        async def refresh(bot, db_session, view):
+            calls.append(("start", view.session_id))
+
+        async def publish(bot, db_session, terminal):
+            calls.append((terminal.finish_reason.value, terminal.session_id))
+
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+        monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
+
+        start_task = SimpleNamespace(ref_id=session_id, payload_json=None)
+        start_hook = await spec.execute_scheduled(_Bot(), session, start_task, -1001)
+        assert start_hook is not None
+        await session.commit()
+        await start_hook()
+        assert calls == [("start", session_id)]
+
+        close_id = await _v2_ready(session, monkeypatch, "Sched close")
+        started_close = await ai_game_service.start(session, close_id, group_id=-1001)
+        assert started_close.started
+        await session.commit()
+        close_task = SimpleNamespace(ref_id=close_id, payload_json='{"action":"close"}')
+        close_hook = await spec.execute_scheduled(_Bot(), session, close_task, -1001)
+        assert close_hook is not None
+        await session.commit()
+        await close_hook()
+        assert calls[-1] == (FinishReason.admin_closed.value, close_id)
+        with pytest.raises(schedule_service.TaskSkip):
+            await spec.execute_scheduled(_Bot(), session, close_task, -1001)
+        await session.rollback()
+
+        expire_id = await _v2_ready(session, monkeypatch, "Sched expire")
+        started_expire = await ai_game_service.start(session, expire_id, group_id=-1001)
+        assert started_expire.started
+        await session.commit()
+        expiry_task = SimpleNamespace(
+            ref_id=expire_id, payload_json='{"internal":true,"action":"expire"}',
+        )
+        expiry_hook = await spec.execute_scheduled(_Bot(), session, expiry_task, -1001)
+        assert expiry_hook is not None
+        await session.commit()
+        await expiry_hook()
+        assert calls[-1] == (FinishReason.expired.value, expire_id)
+        with pytest.raises(schedule_service.TaskSkip):
+            await spec.execute_scheduled(_Bot(), session, expiry_task, -1001)
+        await session.rollback()
+
+    async def test_current_expiry_cancelled_by_terminalize_finishes_done_in_scheduler(
+        self, session, monkeypatch,
+    ):
+        """Terminalization cancels every pending timer, including the executing one;
+        scheduler ownership must still leave that current row durably ``done``.
+        """
+        session_id = await _v2_ready(session, monkeypatch, "Current expiry")
+        started = await ai_game_service.start(session, session_id, group_id=-1001)
+        assert started.started
+        await session.commit()
+        task = (await session.execute(
+            select(ScheduledTask).where(
+                ScheduledTask.task_type == "twentyq",
+                ScheduledTask.ref_id == session_id,
+                ScheduledTask.status == "pending",
+            )
+        )).scalar_one()
+        task_id = task.id
+        await session.commit()
+        published: list[tuple[int, str]] = []
+
+        async def execute(bot, db_session, current_task):
+            return await TwentyQuestionsType().execute_scheduled(
+                bot, db_session, current_task, -1001,
+            )
+
+        async def publish(bot, db_session, terminal):
+            assert not db_session.in_transaction(), "terminal publisher ran before commit"
+            published.append((terminal.session_id, terminal.finish_reason.value))
+
+        async def notify(*args, **kwargs):
+            raise AssertionError("successful internal expiry must not notify its creator")
+
+        monkeypatch.setattr(scheduler, "execute_task", execute)
+        monkeypatch.setattr(scheduler, "_notify_creator", notify)
+        monkeypatch.setattr(handler, "publish_terminal", publish)
+
+        await scheduler._run_due_task(_Bot(), session, task)
+
+        stored_status = (await session.execute(
+            select(ScheduledTask.status).where(ScheduledTask.id == task_id)
+        )).scalar_one()
+        game_status = (await session.execute(
+            select(AIGameSession.status).where(AIGameSession.id == session_id)
+        )).scalar_one()
+        assert stored_status == "done"
+        assert game_status == "finished"
+        assert published == [(session_id, FinishReason.expired.value)]
+
+    async def test_v2_delete_archive_and_legacy_delete_contract(self, session, monkeypatch):
+        """Finished v2 history is hidden, never deleted; historical v1 stays deletable."""
+        spec, message = TwentyQuestionsType(), _Message()
+        ready_id = await _v2_ready(session, monkeypatch, "Ready v2")
+        assert (await spec.delete(session, ready_id)).ok
+        await session.commit()
+
+        running_id = await _v2_ready(session, monkeypatch, "Running v2")
+        started = await ai_game_service.start(session, running_id, group_id=-1001)
+        assert started.started
+        await session.commit()
+        assert not (await spec.delete(session, running_id)).ok
+        await session.rollback()
+
+        terminal = await ai_game_service.terminalize(
+            session, session_id=running_id, reason=FinishReason.admin_closed,
+        )
+        assert terminal.transitioned
+        await session.commit()
+        await spec.render_detail(message, session, running_id)
+        detail = message.said[-1].casefold()
+        assert "archivia" in detail or "nascondi" in detail
+        assert EventCb(action="askarchive", task_type="twentyq", item_id=running_id).pack() \
+            in str(message.markups[-1])
+        assert (await spec.archive(session, running_id)).ok
+        await session.commit()
+        assert (await session.execute(
+            select(AIGameSession.archived_at).where(AIGameSession.id == running_id)
+        )).scalar_one() is not None
+
+        legacy_id = await _ready(session, "Finished v1")
+        assert await ai_game_service.start(
+            session, legacy_id, group_id=-1001, anchor_message_id=77,
+        )
+        await session.commit()
+        assert await ai_game_service.finish(session, legacy_id)
+        await session.commit()
+        await spec.render_detail(message, session, legacy_id)
+        assert EventCb(action="askdel", task_type="twentyq", item_id=legacy_id).pack() \
+            in str(message.markups[-1])
+        assert (await spec.delete(session, legacy_id)).ok
 
 
 class _Provider:

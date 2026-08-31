@@ -14,20 +14,10 @@ undo, touching any attribute of the instance raises `MissingGreenlet`:
     task.status = "running"; await session.flush(); await session.rollback()
     task.created_by_tg_id   → MissingGreenlet
 
-Which raises an obvious suspicion, since `_run_due_task` then hands that same
-instance to `_notify_creator`, which reads `created_by_tg_id` **and** `id` off it.
-
-**The suspicion is wrong, and this test is why it stays wrong.** Between the rollback
-and the notification there are `mark_failed` (which only *assigns* attributes — an
-assignment never loads) and `await session.commit()`, whose flush loads the row to
-build the UPDATE, in greenlet context. The instance comes out of that fully loaded,
-so `_notify_creator` reads plain Python values.
-
-That makes it a real but *latent* hazard: it depends on an awaited SQLAlchemy call
-sitting between the rollback and the attribute access. Reorder those lines — move the
-notification before the commit, say, or drop the commit on the failure path — and the
-daemon starts raising `MissingGreenlet` out of `_run_due_task`, which aborts the whole
-tick and silently skips every task still due. This test fails if that happens.
+Task 13 closes that hazard instead of relying on an incidental ORM refresh:
+`_run_due_task` copies id, creator and payload before risk/rollback, persists its
+outcome with a scalar-ID update, then notifies with primitives. The live instance may
+remain expired forever; its readability is neither assumed nor needed.
 """
 
 from __future__ import annotations
@@ -132,25 +122,29 @@ class TestFailurePathOnARealSession:
         assert stored.status == "failed"
         assert bot.sent == []
 
-    async def test_the_instance_is_readable_after_the_rollback(
+    async def test_the_failure_path_uses_captured_primitives_not_the_expired_instance(
         self, session, monkeypatch
     ):
-        """The mechanism itself, asserted directly rather than left implicit.
-
-        If a future edit removes the awaited call between the rollback and the
-        notification, this is the test that names the cause instead of leaving a
-        `MissingGreenlet` in the logs at 3am.
-        """
+        """The post-rollback path stays safe even when SQLAlchemy expires the row."""
         task = await _pending_task(session)
+        task_id = task.id
+        notified: list[tuple[int | None, int, str]] = []
+
+        async def notify(bot, creator_tg_id, notified_task_id, text):
+            notified.append((creator_tg_id, notified_task_id, text))
+
         monkeypatch.setattr(
             schedule, "execute_task", _raising_execute(RuntimeError("boom"))
         )
+        monkeypatch.setattr(schedule, "_notify_creator", notify)
 
         await schedule._run_due_task(_FakeBot(), session, task)
 
-        # Plain attribute access, no await: this is exactly what _notify_creator does.
-        assert task.created_by_tg_id == 999
-        assert task.id is not None
+        stored = (await session.execute(
+            select(ScheduledTask).where(ScheduledTask.id == task_id)
+        )).scalar_one()
+        assert stored.status == "failed"
+        assert notified == [(999, task_id, f"⚠️ Task #{task_id} fallito.")]
 
 
 @pytest.mark.pg

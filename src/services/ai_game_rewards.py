@@ -20,7 +20,7 @@ from database.models import (
     User,
     Wallet,
 )
-from services import economy_service, xp_service
+from services import economy_service, schedule_service, xp_service
 from services.ai_game_types import (
     FinishReason,
     RewardSummary,
@@ -309,6 +309,15 @@ async def terminalize(
     )
     if claim.rowcount != 1:
         return await _load_terminal_result(session, session_id, transitioned=False)
+
+    # The terminal CAS and task cancellation are one caller-owned transaction:
+    # a stale expiry/close must never mutate this finished aggregate later, while
+    # a failed settlement rollback restores every pending task for a retry.
+    await schedule_service.cancel_pending_for_ref(
+        session,
+        task_type="twentyq",
+        ref_id=session_id,
+    )
 
     if typed_reason is FinishReason.victory:
         winner = await session.execute(

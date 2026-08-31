@@ -216,7 +216,8 @@ class EventCb(CallbackData, prefix="ev"):
     """
 
     #: "home" | "list" | "item" | "new"
-    #: | "ask{start,del,close,reset}" | "start" | "close" | "del" | "reset"
+    #: | "ask{start,del,archive,close,reset}" | "start" | "close" | "del"
+    #: | "archive" | "reset"
     #: | "sched" | "sched_close"
     action: str
     task_type: str | None = None

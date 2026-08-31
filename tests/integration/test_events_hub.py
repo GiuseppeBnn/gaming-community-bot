@@ -171,6 +171,28 @@ class _RichType(_FakeType):
         return self.reset_result
 
 
+class _ArchiveType(_FakeType):
+    """Optional archive capability: generic hub must not learn its registry key."""
+
+    key = "archive"
+
+    def __init__(self, *, archive_ok=True) -> None:
+        super().__init__()
+        self.archive_ok = archive_ok
+        self.archived: list[int] = []
+
+    async def archive(self, db_session, item_id) -> StartResult:
+        self.archived.append(item_id)
+        db_session.add(PollTemplate(question=f"archiviato {item_id}", options_json="[]",
+                                    creator_tg_id=ADMIN_ID, status="ready"))
+        await db_session.flush()
+        return StartResult(
+            self.archive_ok,
+            "archiviato" if self.archive_ok else "no",
+            alert=not self.archive_ok,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _restore_registry():
     """The registry is process-global and is only populated by `main` at startup, so
@@ -338,6 +360,7 @@ class TestConfirmationGate:
         ("askstart", "start"),
         ("askclose", "close"),
         ("askdel", "del"),
+        ("askarchive", "archive"),
         ("askreset", "reset"),
     ])
     async def test_each_action_asks_first_and_routes_yes_to_its_executor(
@@ -388,6 +411,162 @@ class TestConfirmationGate:
 # ---------------------------------------------------------------------------
 
 class TestStartAndClose:
+    async def test_start_commits_then_runs_hook_then_updates_ui(self):
+        """Reordering this sequence could advertise a card for rolled-back state."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "ok", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_close_uses_the_same_commit_hook_ui_seam(self):
+        """A second bespoke close path would inevitably drift from start's safety rule."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def close_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "ok", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_close(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_commit_failure_skips_hook_and_success_ui(self):
+        """A failed commit must not claim that the start was saved or published."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+                raise RuntimeError("database down")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "avviato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "rollback", "ui"]
+        assert callback.toasts != ["avviato"]
+
+    async def test_hook_failure_reports_recoverable_saved_state(self):
+        """After commit, a Telegram error is recovery work, not a fake rollback."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+                    raise RuntimeError("telegram down")
+
+                return StartResult(True, "avviato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "rollback", "ui", "list"]
+        assert "salvato" in callback.toasts[0].lower()
+
     async def test_a_successful_start_is_committed(self, session):
         event_types.clear()
         fake = _FakeType(seed_on_start=True)
@@ -477,6 +656,105 @@ class TestStartAndClose:
 
 
 class TestDeleteAndReset:
+    async def test_delete_uses_the_generic_commit_hook_ui_seam(self):
+        """Optional delete must not publish or answer before its mutation is durable."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _DeleteHookType(_FakeType):
+            key = "delete_hook"
+
+            async def delete(self, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "eliminato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_DeleteHookType())
+        cb = EventCb(action="del", task_type="delete_hook", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_delete(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_delete_commit_failure_rolls_back_without_success_ui(self):
+        """A failed delete commit cannot claim success or redraw stale state."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+                raise RuntimeError("database down")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _DeleteType(_FakeType):
+            key = "delete_fail"
+
+            async def delete(self, db_session, item_id):
+                events_seen.append("spec")
+                return StartResult(True, "eliminato")
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_DeleteType())
+        cb = EventCb(action="del", task_type="delete_fail", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_delete(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "rollback", "ui"]
+        assert callback.toasts != ["eliminato"]
+
+    async def test_archive_capability_is_generic_committed_and_returns_to_list(self, session):
+        """A finished audit record must be hidden without giving the hub a twentyq branch."""
+        event_types.clear()
+        archival = _ArchiveType()
+        event_types.register(archival)
+        cb = EventCb(action="archive", task_type="archive", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_archive(callback, cb, session)
+
+        assert archival.archived == [7] and archival.rendered_lists == 1
+        assert await _survived(session, "archiviato 7")
+
+    async def test_a_type_without_archive_ignores_the_button(self, session, only_fake):
+        cb = EventCb(action="archive", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_archive(callback, cb, session)
+
+        assert callback.said == "" and callback.toasts == []
+
     async def test_a_type_without_delete_ignores_the_button(self, session, only_fake):
         """`delete` is optional; probing it with getattr is what lets a type opt out
         without the hub knowing the type exists."""
@@ -508,6 +786,115 @@ class TestDeleteAndReset:
         await events.cb_delete(callback, cb, session)
 
         assert not await _survived(session, "eliminato 7")
+
+    async def test_reset_uses_the_generic_commit_hook_ui_seam(self):
+        """Reset returns StartResult too, so it shares the durable presentation seam."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _ResetHookType(_FakeType):
+            key = "reset_hook"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "riproposto", post_commit=hook)
+
+            async def render_detail(self, message, db_session, item_id):
+                events_seen.append("detail")
+
+        event_types.clear()
+        event_types.register(_ResetHookType())
+        cb = EventCb(action="reset", task_type="reset_hook", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "detail"]
+
+    async def test_failed_reset_rolls_back_before_ui(self):
+        """A typed non-ok result may follow reads/writes and must close that transaction."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _FailedResetType(_FakeType):
+            key = "reset_failed"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+                return StartResult(False, "non riproponibile", alert=True)
+
+            async def render_detail(self, message, db_session, item_id):
+                events_seen.append("detail")
+
+        event_types.clear()
+        event_types.register(_FailedResetType())
+        cb = EventCb(action="reset", task_type="reset_failed", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "rollback", "ui", "detail"]
+
+    async def test_non_rerunnable_reset_closes_read_transaction_before_ui(self):
+        """None can follow a database lookup, so it has the same rollback boundary."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _NoResetType(_FakeType):
+            key = "no_reset"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+                return None
+
+        event_types.clear()
+        event_types.register(_NoResetType())
+        cb = EventCb(action="reset", task_type="no_reset", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "rollback", "ui"]
 
     async def test_a_type_that_is_not_re_runnable_ignores_the_button(self, session):
         """`reset` returning None is different from a reset that failed: nothing is
