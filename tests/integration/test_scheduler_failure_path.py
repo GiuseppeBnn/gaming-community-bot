@@ -22,7 +22,7 @@ remain expired forever; its readability is neither assumed nor needed.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -166,3 +166,49 @@ class TestFailurePathOnPostgres:
             _ = task.created_by_tg_id
 
         assert "greenlet_spawn" in str(exc.value)
+
+    async def test_scalar_outcomes_and_retry_persist_on_postgres(self, pg_session):
+        """PostgreSQL must report exact rowcounts and persist scalar retry state."""
+        now = datetime(2026, 8, 23, 10, 0)
+        done = await schedule_service.schedule_task(
+            pg_session, "quiz", now, 9, -100, ref_id=1,
+        )
+        failed = await schedule_service.schedule_task(
+            pg_session, "poll", now, 9, -100, ref_id=2,
+        )
+        retry = await schedule_service.schedule_task(
+            pg_session,
+            "twentyq",
+            now,
+            9,
+            -100,
+            ref_id=3,
+            payload={"internal": True, "action": "expire"},
+        )
+        await pg_session.commit()
+
+        await schedule_service.mark_done_by_id(pg_session, done.id)
+        await schedule_service.mark_failed_by_id(pg_session, failed.id, "boom")
+        await schedule_service.mark_retry(
+            pg_session,
+            retry.id,
+            retry_count=0,
+            error="temporary",
+            now=now,
+        )
+        await pg_session.commit()
+
+        rows = dict((await pg_session.execute(
+            select(ScheduledTask.id, ScheduledTask)
+        )).all())
+        assert rows[done.id].status == "done"
+        assert rows[failed.id].status == "failed"
+        assert rows[failed.id].error == "boom"
+        assert rows[retry.id].status == "pending"
+        assert rows[retry.id].retry_count == 1
+        assert rows[retry.id].run_at == now + timedelta(minutes=1)
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await schedule_service.mark_done_by_id(pg_session, 999_001)
+        with pytest.raises(RuntimeError, match="not found"):
+            await schedule_service.mark_failed_by_id(pg_session, 999_002, "missing")

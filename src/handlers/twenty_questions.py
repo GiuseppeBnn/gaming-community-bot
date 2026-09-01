@@ -52,6 +52,10 @@ router = Router(name="twenty_questions")
 _card_publish_locks: WeakValueDictionary[int, Lock] = WeakValueDictionary()
 
 
+class CardPublicationError(RuntimeError):
+    """A strict post-commit publisher could not leave a recoverable card."""
+
+
 def _card_publish_lock(session_id: int) -> Lock:
     lock = _card_publish_locks.get(session_id)
     if lock is None:
@@ -196,15 +200,28 @@ def _presentation_now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 
 
-async def _delete_orphan(sent, *, session_id: int) -> None:
+async def _delete_orphan(sent, *, session_id: int) -> bool:
     try:
         await sent.delete()
+        return True
     except Exception as exc:  # noqa: BLE001 — cleanup must not affect the winner's anchor
         log.warning(
             "Card 20 domande orphan cleanup failed session=%s error=%s",
             session_id,
             type(exc).__name__,
         )
+        return False
+
+
+async def _has_winning_anchor(db_session: AsyncSession, *, session_id: int) -> bool:
+    """Confirm a CAS loser raced with another durable publisher, not with deletion."""
+    try:
+        current = await ai_game_service.get_game_view(db_session, session_id)
+        await db_session.commit()
+    except Exception as exc:
+        await db_session.rollback()
+        raise CardPublicationError("impossibile verificare la card concorrente") from exc
+    return current is not None and current.anchor_message_id is not None
 
 
 async def _move_sent_anchor(
@@ -213,6 +230,7 @@ async def _move_sent_anchor(
     session_id: int,
     expected_message_id: int | None,
     sent,
+    strict: bool = False,
 ) -> None:
     """CAS an already-sent card, then delete only our message if we lost."""
     try:
@@ -231,9 +249,20 @@ async def _move_sent_anchor(
             type(exc).__name__,
         )
         await _delete_orphan(sent, session_id=session_id)
+        if strict:
+            raise CardPublicationError("anchor della card non salvato") from exc
         return
     if not moved:
-        await _delete_orphan(sent, session_id=session_id)
+        cleaned = await _delete_orphan(sent, session_id=session_id)
+        if strict:
+            winner_exists = await _has_winning_anchor(
+                db_session,
+                session_id=session_id,
+            )
+            if not winner_exists:
+                raise CardPublicationError("nessuna card concorrente recuperabile")
+            if not cleaned:
+                raise CardPublicationError("card concorrente presente ma orphan non rimosso")
 
 
 async def _publish_rendered_card(
@@ -244,10 +273,14 @@ async def _publish_rendered_card(
     group_id: int | None,
     anchor_message_id: int | None,
     text: str,
+    strict: bool = False,
 ) -> None:
     """Edit a known card or publish-and-CAS a recovery card after a caller commit."""
     if group_id is None:
         log.warning("Card 20 domande skipped without group session=%s", session_id)
+        if strict:
+            await db_session.rollback()
+            raise CardPublicationError("gruppo della card non disponibile")
         return
     if anchor_message_id is not None:
         try:
@@ -277,17 +310,25 @@ async def _publish_rendered_card(
             session_id,
             type(exc).__name__,
         )
+        if strict:
+            await db_session.rollback()
+            raise CardPublicationError("invio della card fallito") from exc
         return
     await _move_sent_anchor(
         db_session,
         session_id=session_id,
         expected_message_id=anchor_message_id,
         sent=sent,
+        strict=strict,
     )
 
 
 async def refresh_group_card(
-    bot: Bot, db_session: AsyncSession, view: GameView | GameSnapshot,
+    bot: Bot,
+    db_session: AsyncSession,
+    view: GameView | GameSnapshot,
+    *,
+    strict: bool = False,
 ) -> None:
     """Refresh a v2 live card while retaining the isolated v1 event adapter."""
     if isinstance(view, GameSnapshot):
@@ -305,12 +346,20 @@ async def refresh_group_card(
                 view.session_id,
                 type(exc).__name__,
             )
+            if strict:
+                raise CardPublicationError("rilettura della card fallita") from exc
             return
         if current is None:
             log.warning("Card 20 domande skipped after missing view session=%s", view.session_id)
+            if strict:
+                await db_session.rollback()
+                raise CardPublicationError("stato della card non disponibile")
             return
         if current.status != "running":
             log.info("Card 20 domande skipped for terminal session=%s", view.session_id)
+            if strict:
+                await db_session.rollback()
+                raise CardPublicationError("stato della card non pubblicabile")
             return
         await _publish_rendered_card(
             bot,
@@ -319,11 +368,16 @@ async def refresh_group_card(
             group_id=current.group_id,
             anchor_message_id=current.anchor_message_id,
             text=render_live_card(current, now=_presentation_now()),
+            strict=strict,
         )
 
 
 async def publish_terminal(
-    bot: Bot, db_session: AsyncSession, result: TerminalResult,
+    bot: Bot,
+    db_session: AsyncSession,
+    result: TerminalResult,
+    *,
+    strict: bool = False,
 ) -> None:
     """Publish a committed terminal result without ever re-terminalizing it."""
     winner_html: str | None = None
@@ -367,6 +421,7 @@ async def publish_terminal(
             group_id=group_id,
             anchor_message_id=anchor_message_id,
             text=render_terminal_card(result, winner_html=winner_html),
+            strict=strict,
         )
 
 

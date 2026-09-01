@@ -289,8 +289,12 @@ async def cmd_programmati(message: Message, db_session) -> None:
         label = et.hub_label if et else t.task_type
         # An item can have both a start and a close pending: saying which is which
         # is the difference between cancelling the right one and the wrong one.
-        action = schedule_service.task_payload(t).get("action", _ACTION_START)
-        what = _ACTIONS[action][0] if action in _ACTIONS else ""
+        try:
+            action = schedule_service.task_payload(t).get("action", _ACTION_START)
+        except (TypeError, ValueError):
+            what = "⚠️ Dati non validi"
+        else:
+            what = _ACTIONS[action][0] if action in _ACTIONS else ""
         lines.append(f"• #{t.id} {label} {what} — {when}")
         b.button(
             text=f"❌ Annulla #{t.id}",
@@ -431,7 +435,7 @@ async def _run_due_task(bot, session, task) -> None:
         # Persisted payload is untrusted state.  Decode it inside the same failure
         # boundary as dispatch so corrupt JSON is rolled back and terminally
         # recorded by scalar id instead of aborting the scheduler tick.
-        payload = dict(schedule_service.task_payload(task))
+        payload = schedule_service.task_payload(task)
         hook = await execute_task(bot, session, task)
         await schedule_service.mark_done(session, task)
         await session.commit()

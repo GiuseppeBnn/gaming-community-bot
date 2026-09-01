@@ -58,11 +58,15 @@ class TwentyQuestionsType:
         b.button(text=self.create_label, callback_data=EventCb(action="new", task_type=self.key).pack())
         b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
-        await edit_or_send(message, "\n".join(lines), b.as_markup())
+        text = "\n".join(lines)
+        markup = b.as_markup()
+        await db_session.rollback()
+        await edit_or_send(message, text, markup)
 
     async def render_detail(self, message: Message, db_session: AsyncSession, item_id: int) -> None:
         snapshot = await ai_game_service.get_snapshot(db_session, item_id)
         if snapshot is None:
+            await db_session.rollback()
             await edit_or_send(message, "⚠️ Partita non trovata.")
             return
         root, game = snapshot.session, snapshot.game
@@ -94,7 +98,10 @@ class TwentyQuestionsType:
             b.button(text="🗑️ Elimina definitivamente", callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack())
         b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack())
         b.adjust(2, 1)
-        await edit_or_send(message, "\n".join(lines), b.as_markup())
+        text = "\n".join(lines)
+        markup = b.as_markup()
+        await db_session.rollback()
+        await edit_or_send(message, text, markup)
 
     async def delete(self, db_session: AsyncSession, item_id: int) -> StartResult:
         ok = await ai_game_service.delete_game(db_session, item_id)
@@ -128,13 +135,13 @@ class TwentyQuestionsType:
             if view is None or view.status != "running":
                 raise RuntimeError(f"20 domande #{item_id} non piu' pubblicabile")
             from handlers.twenty_questions import refresh_group_card
-            await refresh_group_card(bot, session, view)
+            await refresh_group_card(bot, session, view, strict=True)
         return publish
 
     def _terminal_hook(self, bot, session: AsyncSession, result) -> PostCommitHook:
         async def publish() -> None:
             from handlers.twenty_questions import publish_terminal
-            await publish_terminal(bot, session, result)
+            await publish_terminal(bot, session, result, strict=True)
         return publish
 
     def _legacy_refresh_hook(self, bot, session: AsyncSession, snapshot) -> PostCommitHook:

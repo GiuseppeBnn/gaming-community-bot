@@ -13,6 +13,7 @@ from aiogram.dispatcher.event.bases import SkipHandler
 from sqlalchemy import func, select
 
 from database.models import AIGameSession, ScheduledTask, TwentyQuestionsGame
+from handlers import events
 from handlers import schedule as scheduler
 from handlers import twenty_questions as handler
 from handlers.callbacks import EventCb
@@ -196,6 +197,18 @@ class _Callback:
         self.answers += 1
 
 
+class _EventCallback:
+    """Callback double for the real generic event hub/TQ adapter boundary."""
+
+    def __init__(self, bot=None):
+        self.message = _Message(bot=bot)
+        self.bot = self.message.bot
+        self.answers: list[tuple[str | None, bool]] = []
+
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append((text, show_alert))
+
+
 async def _ready(session, title="Serata"):
     root = AIGameSession(
         game_type="twentyq", title=title, creator_tg_id=9, status="ready",
@@ -292,6 +305,48 @@ class TestCreationAndScreens:
         await spec.render_detail(message, session, 99999)
         assert "non trovata" in message.said[-1]
 
+    async def test_tq_list_closes_its_read_transaction_before_telegram(
+        self, session, monkeypatch,
+    ):
+        await _v2_ready(session, monkeypatch, "Safe list")
+        message = _Message()
+        original_edit = message.edit_text
+        original_answer = message.answer
+
+        async def edit_text(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_edit(*args, **kwargs)
+
+        async def answer(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_answer(*args, **kwargs)
+
+        message.edit_text = edit_text
+        message.answer = answer
+        await TwentyQuestionsType().render_list(message, session)
+
+    async def test_tq_detail_closes_found_and_missing_reads_before_telegram(
+        self, session, monkeypatch,
+    ):
+        session_id = await _v2_ready(session, monkeypatch, "Safe detail")
+        message = _Message()
+        original_edit = message.edit_text
+        original_answer = message.answer
+
+        async def edit_text(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_edit(*args, **kwargs)
+
+        async def answer(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_answer(*args, **kwargs)
+
+        message.edit_text = edit_text
+        message.answer = answer
+        spec = TwentyQuestionsType()
+        await spec.render_detail(message, session, session_id)
+        await spec.render_detail(message, session, 999_999)
+
     async def test_empty_list_and_delete_contract(self, session):
         spec, message = TwentyQuestionsType(), _Message()
         await spec.render_list(message, session)
@@ -302,6 +357,22 @@ class TestCreationAndScreens:
 
 
 class TestEventLifecycle:
+    async def test_legacy_start_closes_snapshot_read_before_telegram(
+        self, session, monkeypatch,
+    ):
+        spec, session_id = TwentyQuestionsType(), await _ready(session, "Legacy tx")
+        monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
+
+        async def send(*args, **kwargs):
+            assert not session.in_transaction()
+            return _Sent()
+
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+
+        result = await spec.start_now(_Bot(), session, session_id)
+
+        assert result.ok
+
     async def test_open_requires_group_and_recovers_announcement_failure(
         self, session, monkeypatch,
     ):
@@ -364,6 +435,114 @@ class TestEventLifecycle:
 
 
 class TestV2EventLifecycle:
+    @staticmethod
+    def _wire_real_type(monkeypatch) -> TwentyQuestionsType:
+        spec = TwentyQuestionsType()
+        monkeypatch.setattr(
+            events.event_types,
+            "get",
+            lambda key: spec if key == "twentyq" else None,
+        )
+        monkeypatch.setattr(group_registry, "get_group_id", lambda: -1001)
+        return spec
+
+    async def test_real_v2_start_send_failure_reports_republish_after_durable_start(
+        self, session, monkeypatch,
+    ):
+        self._wire_real_type(monkeypatch)
+        session_id = await _v2_ready(session, monkeypatch, "Send fails")
+
+        async def fail_send(*args, **kwargs):
+            raise RuntimeError("telegram unavailable")
+
+        monkeypatch.setattr(group_registry, "send_group_message", fail_send)
+        callback = _EventCallback()
+        data = EventCb(action="start", task_type="twentyq", item_id=session_id)
+
+        await events.cb_start_now(callback, data, session)
+
+        status = (await session.execute(
+            select(AIGameSession.status).where(AIGameSession.id == session_id)
+        )).scalar_one()
+        assert status == "running"
+        assert callback.answers == [("⚠️ Stato salvato, ma la card va ripubblicata.", True)]
+
+    async def test_real_v2_start_reread_failure_reports_republish_after_durable_start(
+        self, session, monkeypatch,
+    ):
+        self._wire_real_type(monkeypatch)
+        session_id = await _v2_ready(session, monkeypatch, "Reread fails")
+
+        async def fail_reread(*args, **kwargs):
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(ai_game_service, "get_game_view", fail_reread)
+        callback = _EventCallback()
+        data = EventCb(action="start", task_type="twentyq", item_id=session_id)
+
+        await events.cb_start_now(callback, data, session)
+
+        status = (await session.execute(
+            select(AIGameSession.status).where(AIGameSession.id == session_id)
+        )).scalar_one()
+        assert status == "running"
+        assert callback.answers == [("⚠️ Stato salvato, ma la card va ripubblicata.", True)]
+
+    async def test_real_v2_start_cas_failure_cleans_orphan_and_reports_republish(
+        self, session, monkeypatch,
+    ):
+        self._wire_real_type(monkeypatch)
+        session_id = await _v2_ready(session, monkeypatch, "CAS fails")
+        sent = _Sent(message_id=88)
+
+        async def send(*args, **kwargs):
+            return sent
+
+        async def fail_cas(*args, **kwargs):
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "move_anchor_if_current", fail_cas)
+        callback = _EventCallback()
+        data = EventCb(action="start", task_type="twentyq", item_id=session_id)
+
+        await events.cb_start_now(callback, data, session)
+
+        stored = (await session.execute(
+            select(AIGameSession.status, AIGameSession.anchor_message_id).where(
+                AIGameSession.id == session_id,
+            )
+        )).one()
+        assert stored == ("running", None)
+        assert sent.deleted
+        assert callback.answers == [("⚠️ Stato salvato, ma la card va ripubblicata.", True)]
+
+    async def test_real_v2_close_send_failure_reports_republish_after_durable_settlement(
+        self, session, monkeypatch,
+    ):
+        self._wire_real_type(monkeypatch)
+        session_id = await _v2_ready(session, monkeypatch, "Close send fails")
+        started = await ai_game_service.start(session, session_id, group_id=-1001)
+        assert started.started
+        await session.commit()
+
+        async def fail_send(*args, **kwargs):
+            raise RuntimeError("telegram unavailable")
+
+        monkeypatch.setattr(group_registry, "send_group_message", fail_send)
+        callback = _EventCallback()
+        data = EventCb(action="close", task_type="twentyq", item_id=session_id)
+
+        await events.cb_close(callback, data, session)
+
+        stored = (await session.execute(
+            select(AIGameSession.status, AIGameSession.finish_reason).where(
+                AIGameSession.id == session_id,
+            )
+        )).one()
+        assert stored == ("finished", FinishReason.admin_closed.value)
+        assert callback.answers == [("⚠️ Stato salvato, ma la card va ripubblicata.", True)]
+
     async def test_v2_start_commits_before_reread_and_never_passes_snapshot_to_publisher(
         self, monkeypatch,
     ):
@@ -391,9 +570,10 @@ class TestV2EventLifecycle:
             db_session.pending = True
             return _v2_view(anchor=None)
 
-        async def refresh(bot, session, view):
+        async def refresh(bot, session, view, *, strict=False):
             assert not db_session.pending
             assert isinstance(view, GameView)
+            assert strict
             events.append("refresh")
 
         async def sent_before_commit(*args, **kwargs):
@@ -481,9 +661,10 @@ class TestV2EventLifecycle:
         async def finish(*args, **kwargs):
             raise AssertionError("v2 close must never call legacy finish()")
 
-        async def publish(bot, session, result):
+        async def publish(bot, session, result, *, strict=False):
             assert not db_session.pending
             assert result is terminal
+            assert strict
             events.append("publish")
 
         monkeypatch.setattr(ai_game_service, "get_snapshot", get_snapshot)
@@ -507,10 +688,12 @@ class TestV2EventLifecycle:
         session_id = await _v2_ready(session, monkeypatch, "Sched start")
         calls = []
 
-        async def refresh(bot, db_session, view):
+        async def refresh(bot, db_session, view, *, strict=False):
+            assert strict
             calls.append(("start", view.session_id))
 
-        async def publish(bot, db_session, terminal):
+        async def publish(bot, db_session, terminal, *, strict=False):
+            assert strict
             calls.append((terminal.finish_reason.value, terminal.session_id))
 
         monkeypatch.setattr(handler, "refresh_group_card", refresh)
@@ -580,7 +763,8 @@ class TestV2EventLifecycle:
                 bot, db_session, current_task, -1001,
             )
 
-        async def publish(bot, db_session, terminal):
+        async def publish(bot, db_session, terminal, *, strict=False):
+            assert strict
             assert not db_session.in_transaction(), "terminal publisher ran before commit"
             published.append((terminal.session_id, terminal.finish_reason.value))
 
@@ -718,6 +902,25 @@ class TestPlayHandler:
 
 
 class TestV2PostCommitPresentation:
+    async def test_strict_live_reread_rolls_back_before_propagating(self, monkeypatch):
+        events = []
+        db_session = _OrderedSession(events)
+
+        async def fail_reread(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(ai_game_service, "get_game_view", fail_reread)
+
+        with pytest.raises(handler.CardPublicationError, match="rilettura"):
+            await handler.refresh_group_card(
+                _PublisherBot(events), db_session, _v2_view(), strict=True,
+            )
+
+        assert events == ["view", "rollback"]
+        assert not db_session.pending
+
     async def test_v1_invalid_input_rolls_back_anchor_read_before_reply(self, monkeypatch):
         events = []
         db_session = _OrderedSession(events)
@@ -1275,6 +1478,43 @@ class TestV2PostCommitPresentation:
             "view", "commit", "edit", "send", "cas", "commit", "delete-orphan",
         ]
         assert sent.deleted
+
+    async def test_strict_cas_loser_accepts_an_existing_winning_anchor(
+        self, monkeypatch,
+    ):
+        """CAS loss is concurrent success when reread finds another durable anchor."""
+        events = []
+        db_session = _OrderedSession(events)
+        sent = _Sent(message_id=88)
+        views = iter((_v2_view(anchor=None), _v2_view(anchor=99)))
+
+        async def latest(*args, **kwargs):
+            db_session.pending = True
+            events.append("view")
+            return next(views)
+
+        async def send(*args, **kwargs):
+            assert not db_session.pending
+            events.append("send")
+            return sent
+
+        async def lose_cas(*args, **kwargs):
+            db_session.pending = True
+            events.append("cas")
+            return False
+
+        monkeypatch.setattr(ai_game_service, "get_game_view", latest)
+        monkeypatch.setattr(group_registry, "send_group_message", send)
+        monkeypatch.setattr(ai_game_service, "move_anchor_if_current", lose_cas)
+
+        await handler.refresh_group_card(
+            _PublisherBot(events), db_session, _v2_view(anchor=None), strict=True,
+        )
+
+        assert sent.deleted
+        assert events == [
+            "view", "commit", "send", "cas", "commit", "view", "commit",
+        ]
 
     async def test_refresh_send_failure_is_best_effort_after_a_committed_game_state(
         self, monkeypatch,

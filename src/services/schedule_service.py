@@ -145,7 +145,12 @@ async def schedule_task(
 
 
 def task_payload(task: ScheduledTask) -> dict:
-    return json.loads(task.payload_json) if task.payload_json else {}
+    if not task.payload_json:
+        return {}
+    payload = json.loads(task.payload_json)
+    if not isinstance(payload, dict):
+        raise ValueError("scheduled task payload must be a JSON object")
+    return payload
 
 
 async def due_tasks(session: AsyncSession, now: datetime) -> list[ScheduledTask]:
@@ -166,10 +171,18 @@ async def list_pending(session: AsyncSession) -> list[ScheduledTask]:
     # Internal lifecycle timers must remain durable but must not appear in
     # /programmati: cancelling one there could strand the owning feature with no
     # future transition.
-    return [
-        task for task in result.scalars().all()
-        if not task_payload(task).get("internal")
-    ]
+    visible: list[ScheduledTask] = []
+    for task in result.scalars().all():
+        try:
+            payload = task_payload(task)
+        except (TypeError, ValueError):
+            # Corrupt rows must remain visible/cancellable to admins.  They are
+            # hidden only when a valid object explicitly marks them internal.
+            visible.append(task)
+            continue
+        if not payload.get("internal"):
+            visible.append(task)
+    return visible
 
 
 async def mark_done(session: AsyncSession, task: ScheduledTask) -> None:
@@ -185,22 +198,26 @@ async def mark_failed(session: AsyncSession, task: ScheduledTask, error: str) ->
 
 async def mark_done_by_id(session: AsyncSession, task_id: int) -> None:
     """Durably complete a task without dereferencing an ORM row after rollback."""
-    await session.execute(
+    result = await session.execute(
         update(ScheduledTask)
         .where(ScheduledTask.id == task_id)
         .values(status="done", executed_at=utcnow())
         .execution_options(synchronize_session=False)
     )
+    if result.rowcount != 1:
+        raise RuntimeError(f"scheduled task {task_id} not found")
 
 
 async def mark_failed_by_id(session: AsyncSession, task_id: int, error: str) -> None:
     """Durably fail a task without dereferencing an ORM row after rollback."""
-    await session.execute(
+    result = await session.execute(
         update(ScheduledTask)
         .where(ScheduledTask.id == task_id)
         .values(status="failed", executed_at=utcnow(), error=error[:512])
         .execution_options(synchronize_session=False)
     )
+    if result.rowcount != 1:
+        raise RuntimeError(f"scheduled task {task_id} not found")
 
 
 async def mark_retry(

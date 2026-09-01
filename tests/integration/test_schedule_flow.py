@@ -533,6 +533,18 @@ class TestPendingList:
         assert "scomparso" in message.said
         assert SchedCb(action="del", item_id=task.id).pack() in _callbacks(message.markups[0])
 
+    async def test_malformed_payload_is_visible_and_cancellable(self, session, only_fake):
+        """A corrupt persisted row must not take down `/programmati` or become invisible."""
+        task = await self._task(session)
+        task.payload_json = '[["internal", true], ["action", "expire"]]'
+        await session.commit()
+        message = _FakeMessage()
+
+        await schedule.cmd_programmati(message, session)
+
+        assert "Dati non validi" in message.said
+        assert SchedCb(action="del", item_id=task.id).pack() in _callbacks(message.markups[0])
+
     async def test_cancelling_removes_it_from_the_list_for_good(
         self, session, only_fake, user_factory
     ):

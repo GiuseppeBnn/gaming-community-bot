@@ -27,6 +27,18 @@ async def test_schedule_and_due(session):
     assert sch.task_payload(due[0]) == {"q": "x"}
 
 
+@pytest.mark.parametrize(
+    "payload_json",
+    ("null", "0", '"text"', "[]", '[["internal", true], ["action", "expire"]]'),
+)
+def test_task_payload_rejects_valid_non_object_json(payload_json):
+    """Valid JSON is not enough: scheduler payload contract requires an object."""
+    task = ScheduledTask(payload_json=payload_json)
+
+    with pytest.raises(ValueError, match="JSON object"):
+        sch.task_payload(task)
+
+
 async def test_mark_done_excludes_from_due(session):
     past = sch.utcnow() - timedelta(minutes=1)
     t = await sch.schedule_task(session, "quiz", past, 9, -100, ref_id=5)
@@ -61,6 +73,16 @@ async def test_cancel(session):
     assert pending == []
 
 
+async def test_list_pending_keeps_malformed_payload_visible_for_admin_recovery(session):
+    task = await sch.schedule_task(
+        session, "quiz", sch.utcnow() + timedelta(hours=1), 9, -100,
+    )
+    task.payload_json = "null"
+    await session.commit()
+
+    assert [row.id for row in await sch.list_pending(session)] == [task.id]
+
+
 @pytest.mark.parametrize(
     ("retry_count", "minutes"),
     [(0, 1), (1, 2), (2, 4), (3, 8), (4, 16), (5, 32), (6, 60), (99, 60)],
@@ -92,6 +114,76 @@ async def test_mark_retry_persists_across_a_new_session_and_truncates_error(sess
             "pending", 6, now + timedelta(minutes=32), None,
         )
         assert stored.error == "x" * 512
+
+
+async def test_scalar_outcome_helpers_require_exactly_one_row(session):
+    """A stale/missing scalar id must be observable instead of silently succeeding."""
+    with pytest.raises(RuntimeError, match="not found"):
+        await sch.mark_done_by_id(session, 999_001)
+    with pytest.raises(RuntimeError, match="not found"):
+        await sch.mark_failed_by_id(session, 999_002, "boom")
+
+
+async def test_retry_save_failure_rolls_back_then_a_later_due_tick_recovers(
+    session, monkeypatch,
+):
+    """Exercise real SQL: a failed retry write remains due and the next tick persists backoff."""
+    initial_run_at = sch.utcnow() - timedelta(minutes=1)
+    task = await sch.schedule_task(
+        session,
+        "twentyq",
+        initial_run_at,
+        9,
+        -100,
+        ref_id=7,
+        payload={"internal": True, "action": "expire"},
+    )
+    await session.commit()
+    task_id = task.id
+
+    async def fail_dispatch(*args, **kwargs):
+        raise RuntimeError("temporary publisher failure")
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    original_mark_retry = sch.mark_retry
+
+    async def fail_after_retry_update(*args, **kwargs):
+        await original_mark_retry(*args, **kwargs)
+        raise ConnectionError("commit path interrupted")
+
+    monkeypatch.setattr(schedule, "execute_task", fail_dispatch)
+    monkeypatch.setattr(schedule, "_notify_creator", no_notify)
+    monkeypatch.setattr(schedule.schedule_service, "mark_retry", fail_after_retry_update)
+
+    await schedule._run_due_task(object(), session, task)
+
+    unchanged = (await session.execute(
+        select(
+            ScheduledTask.status,
+            ScheduledTask.retry_count,
+            ScheduledTask.run_at,
+        ).where(ScheduledTask.id == task_id)
+    )).one()
+    assert unchanged == ("pending", 0, initial_run_at)
+    due_again = await sch.due_tasks(session, sch.utcnow())
+    assert [row.id for row in due_again] == [task_id]
+
+    monkeypatch.setattr(schedule.schedule_service, "mark_retry", original_mark_retry)
+    await schedule._run_due_task(object(), session, due_again[0])
+
+    recovered = (await session.execute(
+        select(
+            ScheduledTask.status,
+            ScheduledTask.retry_count,
+            ScheduledTask.run_at,
+        ).where(ScheduledTask.id == task_id)
+    )).one()
+    assert recovered.status == "pending"
+    assert recovered.retry_count == 1
+    assert recovered.run_at > sch.utcnow()
+    assert await sch.due_tasks(session, sch.utcnow()) == []
 
 
 async def test_retry_is_not_due_again_until_its_persisted_backoff_elapsed(session):

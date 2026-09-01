@@ -368,14 +368,24 @@ class TestRunDueTask:
         assert session.events == ["rollback", "rollback"]
         assert silent_notify == []
 
-    async def test_malformed_payload_is_failed_instead_of_escaping_the_tick(
-        self, monkeypatch, marks, silent_notify,
+    @pytest.mark.parametrize(
+        "payload_json",
+        (
+            "{not-json",
+            "null",
+            "42",
+            '"expire"',
+            "[]",
+            '[["internal", true], ["action", "expire"]]',
+        ),
+    )
+    async def test_malformed_or_non_object_payload_is_failed_never_retried(
+        self, monkeypatch, marks, silent_notify, payload_json,
     ):
-        """Malformed persisted JSON is a task failure, not an exception outside the
-        executor boundary that strands the row pending and aborts the whole tick.
+        """Only a JSON object is schedulable; list-pairs must not forge retry markers.
         """
         task = _task()
-        task.payload_json = "{not-json"
+        task.payload_json = payload_json
 
         async def execute(*args, **kwargs):
             raise AssertionError("bad payload must fail before event dispatch")
@@ -385,7 +395,7 @@ class TestRunDueTask:
 
         await schedule._run_due_task(object(), session, task)
 
-        assert marks == [("failed", "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)")]
+        assert len(marks) == 1 and marks[0][0] == "failed"
         assert session.events == ["rollback", "commit"]
         assert silent_notify and "fallito" in silent_notify[0]
 
