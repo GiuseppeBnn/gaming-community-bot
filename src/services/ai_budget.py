@@ -349,3 +349,25 @@ async def feature_snapshot(
     return BudgetSnapshot(
         row.period, row.cap_microusd, row.spent_microusd, row.reserved_microusd,
     )
+
+
+async def feature_spend_microusd(feature: str, period: str | None = None) -> int:
+    """Read one request feature's finalized or conservatively reserved charge."""
+    criteria = [AIUsageLog.feature == feature]
+    if period is not None:
+        criteria.append(AIUsageLog.period == period)
+    try:
+        async with async_session_maker() as session:
+            rows = (await session.execute(
+                select(
+                    AIUsageLog.status,
+                    AIUsageLog.reserved_microusd,
+                    AIUsageLog.actual_microusd,
+                ).where(*criteria)
+            )).all()
+    except SQLAlchemyError as exc:
+        raise AIBudgetError("budget storage unavailable") from exc
+    return sum(
+        reserved if status == "reserved" or actual is None else actual
+        for status, reserved, actual in rows
+    )

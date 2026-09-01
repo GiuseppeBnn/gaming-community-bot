@@ -808,6 +808,11 @@ class OpenRouterStructuredProvider:
 
     name: ProviderName = "openrouter"
 
+    def __init__(self, *, budget_feature: str | None = None) -> None:
+        if budget_feature is not None and (not budget_feature or len(budget_feature) > 32):
+            raise ValueError("invalid budget_feature")
+        self._budget_feature = budget_feature
+
     @property
     def model(self) -> str:
         return settings.twentyq_openrouter_model
@@ -829,7 +834,7 @@ class OpenRouterStructuredProvider:
             )
         try:
             reservation = await ai_budget.reserve(
-                feature=request.operation,
+                feature=self._budget_feature or request.operation,
                 budget_lane="twentyq",
                 provider=self.name,
                 requested_model=self.model,

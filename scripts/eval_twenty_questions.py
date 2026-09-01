@@ -41,6 +41,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
         build_runtime_router,
         evaluate_case,
         load_cases,
+        new_budget_feature,
         provider_names,
         require_provider_keys,
         run_cases,
@@ -48,13 +49,14 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
 
     names = provider_names(args.provider, allow_paid_openrouter=args.allow_paid_openrouter)
     require_provider_keys(names)
+    budget_feature = new_budget_feature() if "openrouter" in names else None
     if "openrouter" in names:
         await create_tables()
-    router = build_runtime_router(names)
+    router = build_runtime_router(names, budget_feature=budget_feature)
     summary = await run_cases(
         load_cases(Path(args.dataset)),
         lambda case: evaluate_case(case, router),
-        paid="openrouter" in names,
+        budget_feature=budget_feature,
     )
     return asdict(summary)
 

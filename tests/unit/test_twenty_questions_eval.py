@@ -160,27 +160,22 @@ async def test_report_aggregates_failures_and_inconsistent_fallbacks():
     assert report.latency_ms == {"groq": 8, "unknown": 3}
 
 
-async def test_paid_report_uses_durable_twentyq_spend_delta_after_failed_call(monkeypatch):
-    """Hard-coding failed paid observations to zero would hide a conservatively settled charge."""
-    snapshots = iter((
-        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 100, 0),
-        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 119, 0),
-    ))
-
-    async def feature_snapshot(feature: str):
-        assert feature == "twentyq"
-        return next(snapshots)
+async def test_paid_report_uses_its_exact_feature_charge_after_failed_call(monkeypatch):
+    """Hard-coding failed paid observations to zero would hide a conservatively reserved charge."""
+    async def feature_spend(feature: str):
+        assert feature == "eval-twentyq-a1b2c3d4e5f6"
+        return 19
 
     async def failed_runner(_case: EvalCase) -> EvalObservation:
         return EvalObservation(
             None, False, False, "openrouter", 8, 0, "network", ai_budget.UsageMetrics(), 0,
         )
 
-    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    monkeypatch.setattr(ai_budget, "feature_spend_microusd", feature_spend)
     report = await twenty_questions_eval.run_cases(
         (EvalCase("paid-failure", "{}", (), "Q", QuestionVerdict.si),),
         failed_runner,
-        paid=True,
+        budget_feature="eval-twentyq-a1b2c3d4e5f6",
     )
 
     assert report.cost_microusd == 19
@@ -189,7 +184,7 @@ async def test_paid_report_uses_durable_twentyq_spend_delta_after_failed_call(mo
 
 async def test_free_report_never_reads_paid_budget(monkeypatch):
     """Querying budget during free calibration would unnecessarily couple it to paid storage."""
-    async def feature_snapshot(_feature: str):
+    async def feature_spend(_feature: str):
         raise AssertionError("free run must not read the paid budget")
 
     async def free_runner(case: EvalCase) -> EvalObservation:
@@ -197,7 +192,7 @@ async def test_free_report_never_reads_paid_budget(monkeypatch):
             case.expected, True, True, "gemini", 1, 0, None, ai_budget.UsageMetrics(), 0,
         )
 
-    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    monkeypatch.setattr(ai_budget, "feature_spend_microusd", feature_spend)
     report = await twenty_questions_eval.run_cases(
         (EvalCase("free", "{}", (), "Q", QuestionVerdict.si),), free_runner,
     )
@@ -205,15 +200,10 @@ async def test_free_report_never_reads_paid_budget(monkeypatch):
     assert report.cost_microusd == 0
 
 
-async def test_paid_report_replaces_success_attempt_cost_with_durable_delta(monkeypatch):
+async def test_paid_report_replaces_success_attempt_cost_with_exact_feature_charge(monkeypatch):
     """Adding both values would double-count a successful OpenRouter settlement."""
-    snapshots = iter((
-        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 100, 0),
-        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 119, 0),
-    ))
-
-    async def feature_snapshot(_feature: str):
-        return next(snapshots)
+    async def feature_spend(_feature: str):
+        return 19
 
     async def successful_runner(case: EvalCase) -> EvalObservation:
         return EvalObservation(
@@ -221,11 +211,11 @@ async def test_paid_report_replaces_success_attempt_cost_with_durable_delta(monk
             ai_budget.UsageMetrics(), 19,
         )
 
-    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    monkeypatch.setattr(ai_budget, "feature_spend_microusd", feature_spend)
     report = await twenty_questions_eval.run_cases(
         (EvalCase("paid-success", "{}", (), "Q", QuestionVerdict.si),),
         successful_runner,
-        paid=True,
+        budget_feature="eval-twentyq-a1b2c3d4e5f6",
     )
 
     assert report.cost_microusd == 19
@@ -298,8 +288,8 @@ def test_versioned_dataset_is_balanced_and_loadable():
     masked_title = next(case for case in cases if case.case_id == "masked-title-01")
     assert masked_title.expected is QuestionVerdict.usa_risposta
     assert "Archivio Nebula" not in masked_title.dossier_json
-    assert "mappe stellari" in masked_title.dossier_json
-    assert "osservatorio" in masked_title.dossier_json
+    assert "archivio" in masked_title.dossier_json
+    assert "nebulosa" in masked_title.dossier_json
     assert "Archivio Nebula" in masked_title.question
 
 
@@ -348,13 +338,14 @@ async def test_cli_initializes_budget_tables_before_a_paid_eval(monkeypatch):
     """Removing additive table setup would make a valid paid eval fail before reservation."""
     cli = _cli_module()
     calls: list[str] = []
+    features: list[str | None] = []
     fake_connection = ModuleType("database.connection")
 
     async def create_tables():
         calls.append("tables")
 
-    async def run_cases(_cases, _runner, *, paid):
-        assert paid is True
+    async def run_cases(_cases, _runner, *, budget_feature):
+        features.append(budget_feature)
         calls.append("eval")
         return twenty_questions_eval.EvalSummary(
             0, 0, 0, 0, {}, {}, {}, ai_budget.UsageMetrics(), 0,
@@ -363,7 +354,11 @@ async def test_cli_initializes_budget_tables_before_a_paid_eval(monkeypatch):
     fake_connection.create_tables = create_tables
     monkeypatch.setitem(sys.modules, "database.connection", fake_connection)
     monkeypatch.setattr(twenty_questions_eval, "require_provider_keys", lambda _names: None)
-    monkeypatch.setattr(twenty_questions_eval, "build_runtime_router", lambda _names: object())
+    def build_runtime_router(_names, *, budget_feature):
+        features.append(budget_feature)
+        return object()
+
+    monkeypatch.setattr(twenty_questions_eval, "build_runtime_router", build_runtime_router)
     monkeypatch.setattr(twenty_questions_eval, "load_cases", lambda _path: ())
     monkeypatch.setattr(twenty_questions_eval, "run_cases", run_cases)
 
@@ -372,6 +367,9 @@ async def test_cli_initializes_budget_tables_before_a_paid_eval(monkeypatch):
     ))
 
     assert calls == ["tables", "eval"]
+    assert len(features) == 2 and features[0] == features[1]
+    assert features[0] is not None and features[0].startswith("eval-twentyq-")
+    assert len(features[0]) <= 32
     assert result["total"] == 0
 
 

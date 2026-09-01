@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from time import monotonic
 from typing import Literal, cast
+from uuid import uuid4
 
 from config_data.config import settings
 from services import ai_budget
@@ -91,6 +92,11 @@ def provider_names(
             else ("gemini", "groq")
         )
     return (choice,)
+
+
+def new_budget_feature() -> str:
+    """Return a prompt-free, bounded identifier for one paid local eval run."""
+    return f"eval-twentyq-{uuid4().hex[:16]}"
 
 
 def _invalid(line_no: int, message: str) -> ValueError:
@@ -195,14 +201,9 @@ def _sum_usage(metrics: Sequence[ai_budget.UsageMetrics]) -> ai_budget.UsageMetr
 
 
 async def run_cases(
-    cases: Sequence[EvalCase], runner: EvalRunner, *, paid: bool = False,
+    cases: Sequence[EvalCase], runner: EvalRunner, *, budget_feature: str | None = None,
 ) -> EvalSummary:
-    """Run serially and retain only aggregate, prompt-free measurements.
-
-    A paid run replaces per-attempt cost with the durable ``twentyq`` spent delta.
-    This assumes the local eval is the only writer to that lane for its duration.
-    """
-    before = await ai_budget.feature_snapshot("twentyq") if paid else None
+    """Run serially and retain only aggregate, prompt-free measurements."""
     observations = [await runner(case) for case in cases]
     latency: Counter[str] = Counter()
     fallbacks: Counter[str] = Counter()
@@ -228,12 +229,12 @@ async def run_cases(
         usage=_sum_usage([observation.usage for observation in observations]),
         cost_microusd=sum(observation.cost_microusd for observation in observations),
     )
-    if not paid:
+    if budget_feature is None:
         return summary
-    after = await ai_budget.feature_snapshot("twentyq")
-    before_spent = before.spent_microusd if before is not None else 0
-    after_spent = after.spent_microusd if after is not None else before_spent
-    return replace(summary, cost_microusd=max(0, after_spent - before_spent))
+    return replace(
+        summary,
+        cost_microusd=await ai_budget.feature_spend_microusd(budget_feature),
+    )
 
 
 def _is_consistent(case: EvalCase, verdict: QuestionVerdict) -> bool:
@@ -291,12 +292,16 @@ def require_provider_keys(names: Sequence[ProviderName]) -> None:
             raise ValueError(variable)
 
 
-def build_runtime_router(names: Sequence[ProviderName]) -> StructuredAIRouter:
+def build_runtime_router(
+    names: Sequence[ProviderName], *, budget_feature: str | None = None,
+) -> StructuredAIRouter:
     """Reuse runtime adapters while limiting the eval to its approved provider list."""
     available: dict[ProviderName, StructuredAIProvider] = {
         "gemini": cast(StructuredAIProvider, GeminiStructuredProvider()),
         "groq": cast(StructuredAIProvider, GroqStructuredProvider()),
-        "openrouter": cast(StructuredAIProvider, OpenRouterStructuredProvider()),
+        "openrouter": cast(
+            StructuredAIProvider, OpenRouterStructuredProvider(budget_feature=budget_feature),
+        ),
     }
     return StructuredAIRouter(
         providers=tuple(available[name] for name in names),

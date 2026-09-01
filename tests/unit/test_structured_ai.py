@@ -114,6 +114,49 @@ def test_provider_neutral_contracts_are_immutable_and_complete(structured_reques
     )
 
 
+@pytest.mark.parametrize(
+    ("budget_feature", "expected_feature"),
+    [(None, "twentyq_question"), ("eval-twentyq-a1b2c3d4e5f6", "eval-twentyq-a1b2c3d4e5f6")],
+)
+async def test_openrouter_preserves_runtime_budget_feature_or_uses_eval_override(
+    monkeypatch, structured_request, budget_feature, expected_feature,
+):
+    """Ignoring the override loses per-run attribution; changing the default breaks live games."""
+    monkeypatch.setattr(structured_ai.settings, "openrouter_api_key", "test-key")
+    captured: dict[str, object] = {}
+
+    async def reserve(**kwargs):
+        captured.update(kwargs)
+        return ai_budget.Reservation("r" * 36, "2026-09", expected_feature, "twentyq", 10)
+
+    async def post_json_once(**_kwargs):
+        raise structured_ai.StructuredAIError(
+            "offline", kind=structured_ai.StructuredAIErrorKind.network, provider="openrouter",
+        )
+
+    async def settle(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(ai_budget, "reserve", reserve)
+    monkeypatch.setattr(structured_ai, "_post_json_once", post_json_once)
+    monkeypatch.setattr(structured_ai, "_settle_openrouter_authoritatively", settle)
+
+    with pytest.raises(structured_ai.StructuredAIError):
+        await structured_ai.OpenRouterStructuredProvider(
+            budget_feature=budget_feature,
+        ).generate_json(structured_request)
+
+    assert captured["feature"] == expected_feature
+    assert captured["budget_lane"] == "twentyq"
+
+
+@pytest.mark.parametrize("feature", ["", "x" * 33])
+def test_openrouter_rejects_unattributable_budget_feature_overrides(feature):
+    """Accepting an empty or truncated identifier would make paid eval cost silently disappear."""
+    with pytest.raises(ValueError, match="budget_feature"):
+        structured_ai.OpenRouterStructuredProvider(budget_feature=feature)
+
+
 def test_retry_after_parses_seconds_dates_and_rejects_invalid_values():
     assert structured_ai._retry_after_seconds(None) is None
     assert structured_ai._retry_after_seconds({"Retry-After": 3}) is None
