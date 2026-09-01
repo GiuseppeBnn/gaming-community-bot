@@ -77,6 +77,7 @@ Campi importanti:
 - `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
 - `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
 - **OpenRouter**: `openrouter_api_key`; fallback CSV ordinati `openrouter_chat_models` (solo DeepSeek ZDR) / `openrouter_fun_models` (Qwen→DeepSeek); `openrouter_max_prompt_price` / `_completion_price` rifiutano provider sopra soglia; `ai_monthly_budget_usd` (default 5 USD) è il cap persistente interno; `ai_entertainment_provider` sceglie `groq|openrouter`
+- **Gioco segreto v2**: `twentyq_v2_enabled` resta **false** fino al rollout; Gemini → Groq → OpenRouter usa timeout 8/8/12 s, deadline 25 s e storia bounded 24 turni / 12.000 caratteri. I lane cap 4 USD (`twentyq`) + 1 USD (altre richieste) vivono dentro il cap globale di 5 USD. Le regole 20 Domande sono **legacy v1**.
 - **Contesto Alduino**: `alduino_capture_group_context`, `alduino_group_context_messages` / `_chars` limitano ciò che esce, `alduino_group_memory_rows` limita il rolling transcript locale. La cattura completa richiede privacy mode Telegram disabilitata
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
@@ -168,6 +169,7 @@ BetStatus:       pending | won | lost | refunded
 - `User.xp` è una **metrica di merito separata dalle monete** e si muta **solo** via `xp_service` (§12.1). Lato display si mostra il **livello** (curva geometrica, §12.1), non l'XP grezzo. `xp_today`/`xp_today_date` sono il contatore del **tetto giornaliero** delle sorgenti capped; `rank_slug` è l'ultimo **tier** (nome rango) visto, per annunciare i tier-up; `cosmetic_tag` è il flair acquistato nel negozio (§11)
 - `warnings`/`admin_actions`/`quizzes`/`quiz_questions`/`quiz_answers`/`scheduled_tasks`/`game_podiums` sono tabelle **nuove**: create da `create_all`. Le **colonne premio per-rango** (`prize_first/second/third/consolation/min`), le colonne progressione di `users` (`cosmetic_tag`, `rank_slug`, `xp_today`, `xp_today_date`), `badges.rarity` e **`badges.condition_param`** sono invece state aggiunte a tabelle esistenti *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (idempotenti, solo Postgres; SQLite ricrea da `create_all`). Regola: colonne aggiunte a tabelle esistenti ⇒ voce in `_MIGRATIONS`; tabelle nuove ⇒ no.
 - `alduino_group_messages` è il transcript locale bounded; `ai_budget_periods` contiene cap/speso/prenotato del mese e `ai_usage_log` il ledger prompt-free per richiesta. Sono tabelle nuove create da `create_all`, quindi non richiedono `_MIGRATIONS`
+- `ai_game_sessions`/`ai_game_turns`/`twenty_questions_games` sono aggregate, ledger valido e strategia del gioco segreto v2; `ai_game_reward_settlements`/`_allocations` registrano policy e pagamenti, `ai_game_provider_attempts` audit prompt-free, `ai_game_catalog_entries`/`_draws` catalogo e rotazione. Sono tabelle nuove `create_all`; 20 Domande è **legacy v1**.
 - `poll_votes` è una tabella **nuova** (create_all, niente `_MIGRATIONS`). Le colonne premio/chiusura/handle di `poll_templates` (`description`, `prize_coins`, `prize_xp`, `closes_at`, `tg_poll_id`, `message_id`, `chat_id`) sono aggiunte a una **tabella esistente** *dopo* il primo deploy → hanno voci `ALTER TABLE … ADD COLUMN IF NOT EXISTS …` in `_MIGRATIONS` (regola sopra). La delete di un sondaggio rimuove i suoi `poll_votes` **esplicitamente** (`delete_poll`): l'`ON DELETE CASCADE` del FK non è applicato da SQLite senza pragma e non c'è relationship ORM da cui cascatare
 - `quiz_questions.options_json` è una lista di stringhe serializzata in JSON (helper `quiz_service.question_options`); `scheduled_tasks.payload_json` è il config JSON per poll/bet (helper `schedule_service.task_payload`); `poll_templates.options_json`/`poll_votes.option_ids_json` sono liste JSON (`poll_service.options_of`, voti dagli update `poll_answer`)
 - timestamp scheduler in **UTC naive** (`schedule_service.utcnow()`); `parse_run_at` converte l'orario locale (`scheduler_timezone`) in UTC naive
@@ -210,7 +212,8 @@ await db_session.commit()  # ← qui
 **Eccezioni:** `shop_service.record_purchase` / `mark_success` committano l'audit trail separato;
 `ai_budget.reserve` / `settle` usano sessioni tecniche proprie perché prenotazione e consuntivo devono
 chiudersi rispettivamente **prima** e **dopo** la rete, mai dentro la transazione Telegram. Non ricevono
-la sessione del handler e non memorizzano prompt/completion.
+la sessione del handler e non memorizzano prompt/completion: è l'eccezione esplicita e prompt-free
+all'owner normale handler.
 
 ---
 
@@ -724,6 +727,8 @@ mostrano accanto al livello (`⚡ Livello N · 🎖️ Tier`). Sito di display u
   scommessa (una volta per evento — `place_bet`); `xp_per_bet_won` extra ai **vincitori** (`resolve_event`).
 - `poll_vote` (evento, **non capped**, in `poll_service.pay_voters`): `poll_reward_xp` a **ogni
   votante** di un sondaggio con premio, pagato alla chiusura insieme a `poll_reward_coins` (§18.2).
+- `twentyq` (evento, **non capped**): 10 XP a ogni partecipante con almeno un turno valido del gioco
+  segreto v2, su vittoria, scadenza o chiusura admin; non dipende dalla vincita.
 - `daily` (**capped**) — `xp_per_daily_claim`.
 - `admin_grant` / `admin_airdrop` (**non capped**) — `/dai_xp`, `/set_xp`, Airdrop XP dashboard
 
@@ -1102,6 +1107,8 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   `if/elif` per tipo. Aggiungere un tipo = una nuova spec + una riga in `register_builtin`, **zero**
   modifiche a `events.py`/`schedule.py`. Le spec **non committano mai** (§5): committa il chiamante
   (callback su `start_now`/`close_now` ok; `scheduler_loop` su `execute_scheduled`).
+  `TwentyQuestionsType` è la spec del gioco segreto v2: start/close/expire restituiscono publisher
+  post-commit, non inviano Telegram prima della transazione.
 - **Factory e wire format** (≤64B): `handlers.callbacks.EventCb` dichiara
   `action: str`, `task_type: str | None = None`, `item_id: int | None = None`. Si costruisce sempre
   con `.pack()`, mai concatenando stringhe. I campi opzionali **mantengono i separatori vuoti**:
@@ -1679,7 +1686,7 @@ per tornarci, se non eliminare il round e rifarlo.
 
 ---
 
-## 20. Scheduling (quiz / sondaggio / scommessa)
+## 20. Scheduling (quiz / sondaggio / scommessa / gioco segreto)
 
 Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB-backed.
 
@@ -1715,7 +1722,9 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   `bet` → `activate_event` (o `create_event` da payload legacy) + annuncio gruppo, **oppure** auto-lock
   se `payload.action == "lock"` (chiude la finestra puntate → `locked`); `quiz` →
   `open_quiz` (annuncia + apre); `poll` → `bot.send_poll` nel gruppo. Le spec **non committano** (il
-  `scheduler_loop` committa dopo `mark_done`/`mark_failed`).
+  `scheduler_loop` committa dopo `mark_done`/`mark_failed`). `twentyq` usa `start`, `close` ed
+  `expire`: terminalizza in transazione, restituisce il publisher post-commit e rende i duplicati
+  o gli stati già terminali `TaskSkip`.
 - `parse_duration(text)` (30m/2h/1d → secondi): **durata** relativa (non un istante), usata dallo step
   finestra puntate. **Cappata a 365 giorni** insieme a `parse_run_at`, tramite l'unico helper
   condiviso `_rel_seconds` — entrambe alimentano aritmetica che va in overflow su input assurdo
@@ -2198,14 +2207,25 @@ rami per tipo dentro l'handler inline. Le task con payload `close`/`lock` non so
 
 I giochi AI persistenti condividono `AIGameSession` (aggregate e lifecycle) e
 `AIGameTurn` (ledger append-only), mentre ogni strategia possiede una tabella di
-stato (`TwentyQuestionsGame`; in futuro misteri). Una chiamata AI non deve
-mai tenere aperta una transazione: claim atomico con token → commit → rete →
-complete/release condizionale. Un errore del provider non consuma la risorsa.
+stato (`TwentyQuestionsGame`; in futuro misteri). Il tipo-evento `twentyq` pubblica
+**Il gioco segreto di Alduino**; 20 Domande è il comportamento **legacy v1**.
+La terminalizzazione è caller-owned: il caller committa, poi il publisher Telegram
+agisce post-commit. Avvio, chiusura e scadenza sono ritentabili e la scadenza viene
+ricontrollata dopo il lock, quindi un turno tardivo non entra nel ledger né paga premi.
+
+Una chiamata AI non deve mai tenere aperta una transazione: claim atomico con token →
+commit → rete → complete/release condizionale. Un errore del provider non consuma la
+quota. Il ledger è autorevole: partecipazione, contatori e settlement derivano dai turni
+validi persistiti. La policy v2 assegna 5 domande e 2 tentativi per persona, 10 XP uncapped
+a ogni partecipante valido alla chiusura e CoInn uguali solo su vittoria; il resto resta
+non distribuito. Crediti CoInn, XP, ledger e allocazioni condividono una transazione e un
+errore di un partecipante fa fallire il settlement, che resta ritentabile.
 
 Le decisioni AI usano `StructuredAIProvider`, JSON Schema e validazione di
 dominio successiva. Il prompt riceve input utente delimitato/non attendibile;
 nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
-restano locali e deterministici. La sorgente primaria di 20 Domande è IGDB, ma
+restano locali e deterministici. La sorgente primaria del gioco segreto v2 (20 Domande è
+legacy v1) è IGDB, ma
 **mai nel path di creazione/gioco**: `services.igdb_catalog` sincronizza al massimo
 ogni 24 ore un set qualificato dentro `AIGameCatalogEntry`, poi gli handler leggono
 solo PostgreSQL. OAuth e fetch avvengono prima della transazione; la pubblicazione
@@ -2223,7 +2243,11 @@ dentro la sessione, così una partita già creata non cambia dopo restart o sync
 sessione viene eliminata: si sceglie tra i titoli meno usati, senza ripetizione
 immediata, completando un giro prima di iniziarne un altro; un table lock
 PostgreSQL serializza le creazioni concorrenti per non estrarre dallo stesso
-stato del ledger. Le risposte di 20
-Domande sono solo `si`/`no`/`forse`, renderizzate localmente e senza frase libera;
+stato del ledger. Le risposte del gioco segreto v2 (20 Domande è legacy v1) sono solo
+`si`/`no`/`forse`, renderizzate localmente e senza frase libera;
 la strategia forza thinking `minimal`. I log del provider non devono mai includere
 content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.
+Gemini e Groq sono le corsie gratuite; OpenRouter è l'ultimo fallback, soggetto al cap
+globale e al lane cap. Budget e audit usano sessioni tecniche prompt-free: sono l'eccezione
+esplicita al normale owner handler. `scripts/eval_twenty_questions.py` è un harness opt-in
+separato dal runtime.

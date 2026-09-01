@@ -9,7 +9,8 @@ quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio cosmetici, suite a
 moderazione, backup. Stack: **Python 3.12** · aiogram 3.30.0 · SQLAlchemy 2.0 async ·
 PostgreSQL 16 (prod) / SQLite (dev-test) · OpenRouter/Groq/Gemini LLM (opzionali).
 
-Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), **2121 test**.
+Dimensioni e conteggi dei test cambiano con le feature: usa `pytest --collect-only -q` per il
+dato corrente, non questo indice come metrica verificabile.
 
 ---
 
@@ -24,7 +25,7 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
 | [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina» e di 20 Domande (2026-08-12) | Serve il *perché* dietro i motori di gioco |
+| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task degli stessi giochi | Ricostruire la sequenza di lavoro |
 
 ### Sezioni di STEERING.md
@@ -88,7 +89,7 @@ src/                                  # src-layout: i package restano top-level 
 | `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type`, `twenty_questions_type` |
 | `quiz/` | Quiz: creazione FSM, editor, lifecycle, gioco in privato, dry-run admin |
 | `guess/` | Guess The Game (immagine) e Sound Quest (audio): un motore, due giochi |
-| `twenty_questions.py` | UI collaborativa a reply di “Alduino ha scelto un gioco” |
+| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2; 20 Domande è legacy v1 |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
@@ -124,10 +125,15 @@ src/                                  # src-layout: i package restano top-level 
 | `ai_budget.py` | Prenotazione atomica, hard cap mensile e ledger costi senza prompt/completion |
 | `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
 | `group_context.py` | Rolling transcript locale, potatura e rendering senza Telegram ID |
-| `ai_game_service.py` | Aggregate persistente di 20 Domande, claim dei turni e rotazione catalogo |
-| `structured_ai.py` | Porta JSON Schema + adapter Gemini per i giochi AI persistenti |
+| `ai_game_service.py` | Aggregate, ledger, quote personali e lifecycle del gioco segreto v2 (20 Domande è legacy v1) |
+| `ai_game_rewards.py` | Terminalizzazione idempotente, quote CoInn uguali, XP e allocazioni in una transazione |
+| `ai_provider_audit.py` | Audit provider prompt-free per tentativo del gioco |
+| `twenty_questions_rules.py` | Policy v2, formula del pool e proiezioni di quota |
+| `twenty_questions_ai.py` | Prompt/schema strutturato, normalizzazione e cache duplicati |
+| `twenty_questions_eval.py` | Costruzione route eval/provider, separata dal runtime |
+| `structured_ai.py` | Porta JSON Schema + adapter Gemini/Groq/OpenRouter per i giochi AI persistenti |
 | `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
-| `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback di 20 Domande |
+| `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback del gioco segreto v2 (20 Domande è legacy v1) |
 | `backup/state_export.py` | Export/import logico dell'intero DB (streaming, atomico) |
 | `backup/chat_archive.py` | Archivio incrementale della chat via MTProto/Telethon (opt-in) |
 | `backup/loop.py` | Driver in background dei due precedenti — non blocca mai l'event loop |
@@ -144,6 +150,7 @@ src/                                  # src-layout: i package restano top-level 
 | `filters/admin_filter.py` | `is_admin` (ADMIN_IDS **o** admin Telegram del gruppo), fail-closed, guardia «tutti admin» |
 | `utils/text.py` | `esc` (escaping HTML **obbligatorio**), `chunk_blocks`, `format_duration` |
 | `utils/daytime.py` | Sorgente unica di «cos'è un giorno»: `local_day`, `next_local_midnight` |
+| `utils/twenty_questions_view.py` | Renderer comune della policy e delle card del gioco segreto v2 |
 | `utils/cooldown.py` | Cooldown anti-spam per (bucket, utente) |
 | `utils/static_reply.py` | Anti-flood dei comandi statici in gruppo |
 | `utils/atomic_io.py` | Scritture crash-safe (tmp+fsync+replace), sha256, membri gzip |
@@ -168,6 +175,10 @@ src/                                  # src-layout: i package restano top-level 
 | `warnings` / `admin_actions` | Moderazione e audit trail |
 | `scheduled_tasks` | Azioni future eseguite dallo scheduler in-process |
 | `bot_state` | Key-value di runtime (es. id gruppo effettivo) |
+| `ai_game_sessions` / `ai_game_turns` / `twenty_questions_games` | Aggregate, ledger valido e strategia del gioco segreto v2 |
+| `ai_game_reward_settlements` / `ai_game_reward_allocations` | Snapshot policy e ricompense terminali idempotenti |
+| `ai_game_provider_attempts` / `ai_budget_periods` / `ai_usage_log` | Telemetria provider e budget prompt-free |
+| `ai_game_catalog_entries` / `ai_game_catalog_draws` | Catalogo locale e rotazione bilanciata |
 
 Le migrazioni sono una lista di DDL **idempotente** in `database/connection.py` (`_MIGRATIONS`),
 eseguita solo su PostgreSQL. Non c'è Alembic.

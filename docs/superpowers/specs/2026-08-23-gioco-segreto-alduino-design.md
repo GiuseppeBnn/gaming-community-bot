@@ -1,7 +1,7 @@
 # Il gioco segreto di Alduino — design v2
 
-**Data:** 2026-08-23 · **Branch:** `test_giu` · **Stato:** approvato nel dialogo,
-in attesa di piano implementativo
+**Data:** 2026-08-23 · **Branch:** `test_giu` · **Stato:** implementato secondo il piano;
+`TWENTYQ_V2_ENABLED` resta `false` fino al rollout esplicito.
 
 Questa specifica sostituisce le regole di gioco, lifecycle, provider ed economia
 della prima versione descritta in
