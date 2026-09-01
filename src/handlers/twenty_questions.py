@@ -1,4 +1,4 @@
-"""Telegram adapter for the collaborative «Alduino ha scelto un gioco»."""
+"""Telegram adapter for Alduino's collaborative secret game."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from weakref import WeakValueDictionary
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.enums import ChatType, ParseMode
+from aiogram.filters.command import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -19,23 +20,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import _mentions
-from handlers.callbacks import EventCb
-from services import ai_game_service, group_registry
+from handlers.callbacks import TwentyQuestionsCreateCb
+from services import ai_game_service, group_registry, schedule_service
 from services.ai_game_types import (
     DEFAULT_DURATION_SECONDS,
     DEFAULT_MAX_COINS_PER_PARTICIPANT,
+    DURATION_PRESETS_SECONDS,
     GameCreationError,
     GameView,
+    PersonalQuota,
     TerminalResult,
     TurnOutcome,
     TurnRejectReason,
 )
 from services.ai_game_service import GameSnapshot
 from services.structured_ai import GeminiStructuredProvider, StructuredAIError
+from services.twenty_questions_rules import v2_policy
 from utils.text import esc
 from utils.twenty_questions_view import (
     render_live_card,
+    render_personal_status,
     render_personal_turn,
+    render_policy,
+    render_public_help,
     render_question_start,
     render_terminal_card,
 )
@@ -66,26 +73,87 @@ def _card_publish_lock(session_id: int) -> Lock:
 
 class TwentyQuestionsCreateStates(StatesGroup):
     title = State()
+    duration_choice = State()
+    absolute_expiry = State()
+    coins_choice = State()
+    custom_coins = State()
+
+
+def _creation_cancel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="❌ Annulla",
+            callback_data=TwentyQuestionsCreateCb(action="cancel").pack(),
+        )
+    ]])
+
+
+def _duration_choice_keyboard() -> InlineKeyboardMarkup:
+    buttons = []
+    for seconds in DURATION_PRESETS_SECONDS:
+        hours = seconds // 3_600
+        label = f"⏱️ {hours} ore"
+        if seconds == DEFAULT_DURATION_SECONDS:
+            label += " · consigliata"
+        buttons.append(InlineKeyboardButton(
+            text=label,
+            callback_data=TwentyQuestionsCreateCb(action="duration", value=seconds).pack(),
+        ))
+    buttons.extend((
+        InlineKeyboardButton(
+            text="🗓️ Data e ora assolute",
+            callback_data=TwentyQuestionsCreateCb(action="absolute").pack(),
+        ),
+        InlineKeyboardButton(
+            text="❌ Annulla",
+            callback_data=TwentyQuestionsCreateCb(action="cancel").pack(),
+        ),
+    ))
+    return InlineKeyboardMarkup(inline_keyboard=[buttons[:2], buttons[2:4], buttons[4:]])
+
+
+def _coins_choice_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=f"🪙 Default ({DEFAULT_MAX_COINS_PER_PARTICIPANT} CoInn max)",
+            callback_data=TwentyQuestionsCreateCb(action="coins_default").pack(),
+        )],
+        [InlineKeyboardButton(
+            text="✏️ Importo personalizzato",
+            callback_data=TwentyQuestionsCreateCb(action="coins_custom").pack(),
+        )],
+        [InlineKeyboardButton(
+            text="❌ Annulla",
+            callback_data=TwentyQuestionsCreateCb(action="cancel").pack(),
+        )],
+    ])
+
+
+async def _stop_creation_for_maintenance(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(
+        "⚠️ Le nuove partite di Alduino sono temporaneamente in manutenzione."
+    )
 
 
 async def start_creation(message: Message, state: FSMContext, creator_id: int) -> None:
     await state.clear()
+    if not settings.twentyq_v2_enabled:
+        await message.answer(
+            "⚠️ Le nuove partite di Alduino sono temporaneamente in manutenzione."
+        )
+        return
     await state.set_state(TwentyQuestionsCreateStates.title)
     await message.answer(
-        "🐲 <b>Nuova partita: Alduino ha scelto un gioco</b>\n\n"
+        "🐲 <b>Nuova partita: Il gioco segreto di Alduino</b>\n\n"
         "Scrivi il titolo pubblico della serata (massimo 120 caratteri). "
         "Il gioco segreto verrà estratto dal catalogo verificato.",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text="❌ Annulla",
-                callback_data=EventCb(action="cancelnew", task_type="twentyq").pack(),
-            )
-        ]]),
+        reply_markup=_creation_cancel_keyboard(),
     )
 
 
 @router.callback_query(
-    EventCb.filter(F.action == "cancelnew"),
+    TwentyQuestionsCreateCb.filter(F.action == "cancel"),
     IsAdminCallbackFilter(),
 )
 async def cancel_creation(callback: CallbackQuery, state: FSMContext) -> None:
@@ -101,37 +169,278 @@ async def cancel_creation(callback: CallbackQuery, state: FSMContext) -> None:
     ~F.text.startswith("/"),
 )
 async def create_from_title(
-    message: Message, state: FSMContext, db_session: AsyncSession,
+    message: Message, state: FSMContext,
 ) -> None:
-    title = message.text.strip()
+    title = (message.text or "").strip()
     if not title or len(title) > 120:
         await message.answer(
             f"⚠️ Serve un titolo da 1 a 120 caratteri (ora: {len(title)})."
         )
         return
     if not settings.twentyq_v2_enabled:
+        await _stop_creation_for_maintenance(message, state)
+        return
+    await state.update_data(title=title)
+    await state.set_state(TwentyQuestionsCreateStates.duration_choice)
+    await message.answer(
+        f"✅ Titolo: <b>{esc(title)}</b>\n\n"
+        "<b>Step 2/3</b> — Scegli la durata della partita:",
+        reply_markup=_duration_choice_keyboard(),
+    )
+
+
+@router.callback_query(
+    TwentyQuestionsCreateStates.duration_choice,
+    TwentyQuestionsCreateCb.filter(F.action == "duration"),
+    IsAdminCallbackFilter(),
+)
+async def choose_creation_duration(
+    callback: CallbackQuery,
+    callback_data: TwentyQuestionsCreateCb,
+    state: FSMContext,
+) -> None:
+    seconds = callback_data.value
+    if seconds not in DURATION_PRESETS_SECONDS:
+        await callback.answer("Durata non valida.", show_alert=True)
+        return
+    await state.update_data(duration_seconds=seconds, expires_at=None)
+    await state.set_state(TwentyQuestionsCreateStates.coins_choice)
+    await callback.message.edit_text(
+        "<b>Step 3/3</b> — Scegli il premio massimo per partecipante:",
+        reply_markup=_coins_choice_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    TwentyQuestionsCreateStates.duration_choice,
+    TwentyQuestionsCreateCb.filter(F.action == "absolute"),
+    IsAdminCallbackFilter(),
+)
+async def choose_creation_absolute_expiry(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    await state.set_state(TwentyQuestionsCreateStates.absolute_expiry)
+    await callback.message.edit_text(
+        "🗓️ Invia data e ora future in formato <code>AAAA-MM-GG HH:MM</code> "
+        f"({esc(settings.scheduler_timezone)}).",
+        reply_markup=_creation_cancel_keyboard(),
+    )
+    await callback.answer()
+
+
+@router.message(
+    TwentyQuestionsCreateStates.absolute_expiry,
+    IsAdminFilter(),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def receive_absolute_expiry(message: Message, state: FSMContext) -> None:
+    try:
+        expires_at = schedule_service.parse_absolute_run_at(message.text or "")
+    except ValueError as exc:
         await message.answer(
-            "⚠️ Le nuove partite di Alduino sono temporaneamente in manutenzione."
+            f"⚠️ {esc(str(exc))}. Riprova con <code>AAAA-MM-GG HH:MM</code>.",
+            reply_markup=_creation_cancel_keyboard(),
         )
+        return
+    await state.update_data(duration_seconds=None, expires_at=expires_at.isoformat())
+    await state.set_state(TwentyQuestionsCreateStates.coins_choice)
+    await message.answer(
+        "<b>Step 3/3</b> — Scegli il premio massimo per partecipante:",
+        reply_markup=_coins_choice_keyboard(),
+    )
+
+
+@router.callback_query(
+    TwentyQuestionsCreateStates.coins_choice,
+    TwentyQuestionsCreateCb.filter(F.action.in_({"coins_default", "coins_custom"})),
+    IsAdminCallbackFilter(),
+)
+async def choose_creation_coins(
+    callback: CallbackQuery,
+    callback_data: TwentyQuestionsCreateCb,
+    state: FSMContext,
+    db_session: AsyncSession,
+) -> None:
+    if callback_data.action == "coins_custom":
+        await state.set_state(TwentyQuestionsCreateStates.custom_coins)
+        await callback.message.edit_text(
+            "✏️ Invia il premio massimo per partecipante, da "
+            f"<b>1</b> a <b>{settings.twentyq_max_coins_per_participant}</b> CoInn.",
+            reply_markup=_creation_cancel_keyboard(),
+        )
+    else:
+        await _finish_creation(
+            callback.message,
+            state,
+            db_session,
+            creator_id=callback.from_user.id,
+            max_coins_per_participant=DEFAULT_MAX_COINS_PER_PARTICIPANT,
+        )
+    await callback.answer()
+
+
+@router.message(
+    TwentyQuestionsCreateStates.custom_coins,
+    IsAdminFilter(),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def receive_custom_coins(
+    message: Message,
+    state: FSMContext,
+    db_session: AsyncSession,
+) -> None:
+    try:
+        max_coins = int((message.text or "").strip())
+    except ValueError:
+        max_coins = 0
+    if not 1 <= max_coins <= settings.twentyq_max_coins_per_participant:
+        await message.answer(
+            "⚠️ Inserisci un numero intero da <b>1</b> a "
+            f"<b>{settings.twentyq_max_coins_per_participant}</b> CoInn.",
+            reply_markup=_creation_cancel_keyboard(),
+        )
+        return
+    await _finish_creation(
+        message,
+        state,
+        db_session,
+        creator_id=message.from_user.id,
+        max_coins_per_participant=max_coins,
+    )
+
+
+async def _finish_creation(
+    message: Message,
+    state: FSMContext,
+    db_session: AsyncSession,
+    *,
+    creator_id: int,
+    max_coins_per_participant: int,
+) -> None:
+    if not settings.twentyq_v2_enabled:
+        await _stop_creation_for_maintenance(message, state)
+        return
+    data = await state.get_data()
+    title = data.get("title")
+    duration_seconds = data.get("duration_seconds")
+    expires_text = data.get("expires_at")
+    expires_at = datetime.fromisoformat(expires_text) if isinstance(expires_text, str) else None
+    duration = duration_seconds if isinstance(duration_seconds, int) else None
+    if (
+        not isinstance(title, str)
+        or not title
+        or (duration is None) == (expires_at is None)
+    ):
+        await state.clear()
+        await message.answer("⚠️ I dati della creazione non sono più disponibili: ricomincia.")
         return
     try:
         game = await ai_game_service.create_twenty_questions(
             db_session,
-            creator_tg_id=message.from_user.id,
+            creator_tg_id=creator_id,
             title=title,
-            duration_seconds=DEFAULT_DURATION_SECONDS,
-            expires_at=None,
-            max_coins_per_participant=DEFAULT_MAX_COINS_PER_PARTICIPANT,
+            duration_seconds=duration,
+            expires_at=expires_at,
+            max_coins_per_participant=max_coins_per_participant,
         )
+        await db_session.commit()
     except GameCreationError:
-        await message.answer("⚠️ Impossibile creare la partita in questo momento.")
+        await db_session.rollback()
+        await message.answer(
+            "⚠️ Impossibile creare la partita in questo momento. Puoi riprovare."
+        )
         return
-    await db_session.commit()
+    except Exception:  # noqa: BLE001 — retain the FSM draft for a retry after persistence trouble
+        await db_session.rollback()
+        log.exception("Secret-game creation failed")
+        await message.answer(
+            "⚠️ Impossibile salvare la partita in questo momento. Puoi riprovare."
+        )
+        return
     await state.clear()
+    if duration is not None:
+        deadline = f"⏱️ Durata: <b>{duration // 3_600} ore</b>"
+    else:
+        assert expires_at is not None
+        deadline = f"🗓️ Scade: <b>{expires_at.strftime('%d/%m/%Y %H:%M UTC')}</b>"
     await message.answer(
-        f"✅ Partita <b>#{game.session_id} · {esc(game.title)}</b> pronta.\n"
+        f"✅ Partita <b>#{game.session_id} · {esc(game.title)}</b> pronta.\n{deadline}\n\n"
+        f"{render_policy(v2_policy(max_coins_per_participant))}\n\n"
         "Puoi avviarla o programmarla dall'hub /eventi. Il segreto resta nel dossier."
     )
+
+
+@router.message(Command("gioco_alduino"))
+async def cmd_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
+    """Explain the public rules privately, or show safe live status in a group."""
+    policy = v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)
+    if message.chat.type == ChatType.PRIVATE:
+        await message.answer(render_public_help(policy))
+        return
+
+    view, quota, alternatives = await _group_game_status(message, db_session)
+    if view is None or quota is None:
+        await message.answer(render_public_help(policy))
+        return
+    if view.anchor_message_id is None:
+        await refresh_group_card(message.bot, db_session, view)
+    alternatives_text = ""
+    if alternatives:
+        alternatives_text = (
+            f"\n\nℹ️ Ci sono anche <b>{alternatives}</b> altre partite in corso: "
+            "rispondi alla card desiderata con <code>/gioco_alduino</code> "
+            "per selezionarla."
+        )
+    await message.answer(
+        f"{render_personal_status(view, quota, now=_presentation_now())}{alternatives_text}"
+    )
+
+
+async def _group_game_status(
+    message: Message,
+    db_session: AsyncSession,
+) -> tuple[GameView | None, PersonalQuota | None, int]:
+    """Read only safe DTOs and close the transaction before command Telegram I/O."""
+    try:
+        rows = await ai_game_service.list_manageable(db_session)
+        running = [
+            row for row in rows
+            if row.status == "running" and row.group_id == message.chat.id
+        ]
+        running.sort(
+            key=lambda row: (row.started_at or datetime.min, row.id),
+            reverse=True,
+        )
+        reply_id = (
+            message.reply_to_message.message_id
+            if message.reply_to_message is not None else None
+        )
+        selected = next(
+            (row for row in running if row.anchor_message_id == reply_id),
+            running[0] if running else None,
+        )
+        if selected is None:
+            await db_session.rollback()
+            return None, None, 0
+        view = await ai_game_service.get_game_view(db_session, selected.id)
+        quota = await ai_game_service.get_personal_quota(
+            db_session,
+            selected.id,
+            message.from_user.id,
+        )
+        alternatives = max(0, len(running) - 1)
+        await db_session.rollback()
+    except Exception:  # noqa: BLE001 — a public rules page is safer than a failed command
+        await db_session.rollback()
+        log.exception("Secret-game public status lookup failed")
+        return None, None, 0
+    if view is None or view.status != "running":
+        return None, None, 0
+    return view, quota, alternatives
 
 
 def render_card(

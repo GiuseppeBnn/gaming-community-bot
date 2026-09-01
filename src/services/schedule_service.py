@@ -94,6 +94,37 @@ def parse_run_at(text: str, tz_name: str | None = None) -> datetime:
     return target_local.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
 
 
+def parse_absolute_run_at(
+    text: str,
+    tz_name: str | None = None,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    """Parse one future absolute wall time, rejecting DST gaps and folds.
+
+    Creation of the secret game deliberately does not accept a relative duration
+    in this branch: the preset branch owns those values.  The returned value is
+    naive UTC because that is the database convention used by the scheduler.
+    """
+    value = (text or "").strip()
+    if _rel_seconds(value) is not None:
+        raise ValueError("absolute date/time required")
+    match = _ABS_RE.match(value)
+    if match is None:
+        raise ValueError("absolute date/time required")
+    year, month, day, hour, minute = (int(part) for part in match.groups())
+    zone = ZoneInfo(tz_name or settings.scheduler_timezone)
+    wall_time = datetime(year, month, day, hour, minute)
+    first = wall_time.replace(tzinfo=zone, fold=0)
+    second = wall_time.replace(tzinfo=zone, fold=1)
+    if first.utcoffset() != second.utcoffset():
+        raise ValueError("ambiguous or nonexistent local time across DST")
+    target = first.astimezone(ZoneInfo("UTC")).replace(tzinfo=None)
+    if target <= (now or utcnow()):
+        raise ValueError("date/time must be in the future")
+    return target
+
+
 def parse_duration(text: str) -> int:
     """Parse a relative duration ('30m'/'2h'/'1d') into seconds.
 

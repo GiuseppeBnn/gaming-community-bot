@@ -17,6 +17,7 @@ from services.ai_game_types import (
     TurnView,
     TwentyQuestionsPolicy,
 )
+from services.twenty_questions_rules import compute_reward_projection
 from utils.text import esc, format_duration
 
 _CARD_TURN_INPUT_CHARS = 96
@@ -110,13 +111,28 @@ def render_policy(policy: TwentyQuestionsPolicy) -> str:
 
 def render_public_help(policy: TwentyQuestionsPolicy) -> str:
     """Render reusable public instructions from the same persisted policy."""
+    example = compute_reward_projection(
+        policy,
+        participants=5,
+        questions=0,
+        wrong_guesses=0,
+    )
     return "\n\n".join((
         "🐲 <b>Il gioco segreto di Alduino</b>",
         (
             "Rispondi alla card nel gruppo con una domanda. Per provare il titolo usa "
             "<code>RISPOSTA: titolo del gioco</code>."
         ),
+        (
+            "Le partite durano 2, 6, 12 o 24 ore, oppure fino a una data e ora futura. "
+            "Diventi partecipante registrando almeno un turno valido."
+        ),
         render_policy(policy),
+        (
+            "Esempio: con 5 partecipanti validi e nessuna penalità, la proiezione è "
+            f"<b>{example.share} CoInn</b> a persona "
+            f"({example.computed_pool} CoInn nel pool)."
+        ),
         (
             "Duplicati, problemi tecnici e titoli scritti senza <code>RISPOSTA:</code> "
             "non consumano nulla. La quota mostrata è una proiezione: può crescere "

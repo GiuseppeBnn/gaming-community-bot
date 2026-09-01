@@ -44,6 +44,7 @@ from handlers.callbacks import (
     RulesCb,
     SchedCb,
     ShopCb,
+    TwentyQuestionsCreateCb,
 )
 from handlers.events import _CONFIRM
 
@@ -86,6 +87,16 @@ def test_pack_shop_callbacks(cb, packed):
 def test_pack_rules_acceptance_callback():
     """The onboarding button keeps the deployed `rules:accept` payload."""
     assert RulesCb(action="accept").pack() == "rules:accept"
+
+
+def test_pack_twenty_questions_creation_callbacks():
+    assert TwentyQuestionsCreateCb(action="duration", value=43_200).pack() == "tqnew:duration:43200"
+    assert TwentyQuestionsCreateCb(action="absolute").pack() == "tqnew:absolute:"
+
+
+@pytest.mark.parametrize("data", ["tqnew:duration:1.0", "tqnew:duration:not-a-number"])
+async def test_twenty_questions_creation_value_is_typed_by_the_filter(data):
+    assert await TwentyQuestionsCreateCb.filter()(_query(data)) is False
 
 
 async def test_rules_callback_filter_rejects_a_different_prefix():

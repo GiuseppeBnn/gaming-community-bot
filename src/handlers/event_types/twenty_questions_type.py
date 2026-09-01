@@ -21,14 +21,14 @@ _STATUS = {"running": ("🟢", "in corso"), "ready": ("🟡", "pronta"), "finish
 
 class TwentyQuestionsType:
     key = ai_game_service.GAME_TYPE
-    hub_label = "🐲 20 Domande ad Alduino"
-    create_label = "➕ Crea 20 Domande"
+    hub_label = "🐲 Il gioco segreto di Alduino"
+    create_label = "➕ Crea il gioco segreto"
     closable = True
 
     async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
         return [PublicEvent(
             key=self.key, item_id=row.id, title=row.title,
-            summary="20 domande · 3 tentativi · gioca nel gruppo", emoji="🐲",
+            summary="Gioco segreto di Alduino · gioca nel gruppo", emoji="🐲",
         ) for row in await ai_game_service.list_manageable(db_session) if row.status == "running"]
 
     async def describe_scheduled(
@@ -39,13 +39,13 @@ class TwentyQuestionsType:
             return None
         return PublicEvent(
             key=self.key, item_id=item_id, title=snapshot.session.title,
-            summary="20 domande · 3 tentativi", emoji="🐲",
+            summary="Gioco segreto di Alduino", emoji="🐲",
         )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         rows = await ai_game_service.list_manageable(db_session)
         b = InlineKeyboardBuilder()
-        lines = ["🐲 <b>20 Domande ad Alduino</b>\n"]
+        lines = ["🐲 <b>Il gioco segreto di Alduino</b>\n"]
         for row in rows:
             dot, label = _STATUS.get(row.status, ("•", row.status))
             lines.append(f"{dot} #{row.id} {esc(row.title)} — <i>{label}</i>")
@@ -88,6 +88,11 @@ class TwentyQuestionsType:
             b.button(text="🗓️ Programma", callback_data=EventCb(action="sched", task_type=self.key, item_id=item_id).pack())
             b.button(text="🗑️ Elimina definitivamente", callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack())
         elif root.status == "running":
+            if game.rules_version == 2 and root.anchor_message_id is None:
+                b.button(
+                    text="🔄 Ripubblica card",
+                    callback_data=EventCb(action="start", task_type=self.key, item_id=item_id).pack(),
+                )
             b.button(text="🏁 Chiudi", callback_data=EventCb(action="askclose", task_type=self.key, item_id=item_id).pack())
         elif game.rules_version == 2:
             lines.append(

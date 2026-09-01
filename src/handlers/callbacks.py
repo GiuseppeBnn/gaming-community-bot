@@ -224,6 +224,19 @@ class EventCb(CallbackData, prefix="ev"):
     item_id: int | None = None
 
 
+class TwentyQuestionsCreateCb(CallbackData, prefix="tqnew"):
+    """Guided creation controls for Alduino's secret game."""
+
+    #: "duration" | "absolute" | "coins_default" | "coins_custom" | "cancel"
+    action: str
+    value: int | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
+
+
 class PollCreateCb(CallbackData, prefix="evpt"):
     """Cancelling poll creation — `handlers/events.py`, the `ev:pt:*` triangle.
 

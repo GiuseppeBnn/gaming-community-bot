@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 import weakref
 
@@ -16,7 +17,7 @@ from database.models import AIGameSession, ScheduledTask, TwentyQuestionsGame
 from handlers import events
 from handlers import schedule as scheduler
 from handlers import twenty_questions as handler
-from handlers.callbacks import EventCb
+from handlers.callbacks import EventCb, TwentyQuestionsCreateCb
 from handlers.event_types.twenty_questions_type import TwentyQuestionsType
 from services import ai_game_service, group_registry, schedule_service
 from services.ai_game_types import (
@@ -49,21 +50,40 @@ class _State:
     def __init__(self):
         self.value = None
         self.clears = 0
+        self.data = {}
 
     async def clear(self):
         self.value = None
         self.clears += 1
+        self.data = {}
 
     async def set_state(self, value):
         self.value = value
 
+    async def update_data(self, **values):
+        self.data.update(values)
+
+    async def get_data(self):
+        return dict(self.data)
+
 
 class _Message:
-    def __init__(self, text="", *, group=-1001, anchor=77, user=42, bot=None):
+    def __init__(
+        self,
+        text="",
+        *,
+        group=-1001,
+        anchor=77,
+        user=42,
+        bot=None,
+        chat_type="supergroup",
+    ):
         self.text = text
         self.from_user = SimpleNamespace(id=user)
-        self.chat = SimpleNamespace(id=group, type="supergroup")
-        self.reply_to_message = SimpleNamespace(message_id=anchor)
+        self.chat = SimpleNamespace(id=group, type=chat_type)
+        self.reply_to_message = (
+            SimpleNamespace(message_id=anchor) if anchor is not None else None
+        )
         self.bot = bot or _Bot()
         self.said = []
         self.markups = []
@@ -191,9 +211,10 @@ def _v1_anchor_snapshot():
 class _Callback:
     def __init__(self, message):
         self.message = message
+        self.from_user = message.from_user
         self.answers = 0
 
-    async def answer(self):
+    async def answer(self, *args, **kwargs):
         self.answers += 1
 
 
@@ -258,33 +279,94 @@ async def _running(session, title="Serata", anchor=77):
 
 
 class TestCreationAndScreens:
-    async def test_creation_prompt_validation_flag_and_save(self, session, monkeypatch):
+    async def test_creation_prompt_validation_flag_and_preset_save(self, session, monkeypatch):
         state, message = _State(), _Message()
+        monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", False)
+        await handler.start_creation(message, state, 9)
+        assert state.value is None
+        assert "manutenzione" in message.said[-1]
+
+        monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
         await handler.start_creation(message, state, 9)
         assert state.value == handler.TwentyQuestionsCreateStates.title
 
         message.text = "x" * 121
-        await handler.create_from_title(message, state, session)
+        await handler.create_from_title(message, state)
         assert "1 a 120" in message.said[-1]
 
         message.text = "Serata <epica>"
-        await handler.create_from_title(message, state, session)
-        assert "manutenzione" in message.said[-1]
-        assert state.value == handler.TwentyQuestionsCreateStates.title
+        await handler.create_from_title(message, state)
+        assert state.value == handler.TwentyQuestionsCreateStates.duration_choice
+        assert (await session.execute(select(func.count(AIGameSession.id)))).scalar_one() == 0
 
-        monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
-        await handler.create_from_title(message, state, session)
+        callback = _Callback(message)
+        await handler.choose_creation_duration(
+            callback,
+            TwentyQuestionsCreateCb(action="duration", value=43_200),
+            state,
+        )
+        assert state.value == handler.TwentyQuestionsCreateStates.coins_choice
+        await handler.choose_creation_coins(
+            callback,
+            TwentyQuestionsCreateCb(action="coins_default"),
+            state,
+            session,
+        )
         assert "Serata &lt;epica&gt;" in message.said[-1]
         assert state.value is None
+        assert callback.answers == 2
 
-    async def test_creation_can_be_cancelled(self):
+    async def test_creation_absolute_custom_value_retries_without_a_partial_draft(
+        self, session, monkeypatch,
+    ):
+        monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
         state, message = _State(), _Message()
         await handler.start_creation(message, state, 9)
+        message.text = "Scadenza assoluta"
+        await handler.create_from_title(message, state)
         callback = _Callback(message)
-        await handler.cancel_creation(callback, state)
+        await handler.choose_creation_absolute_expiry(callback, state)
+        assert state.value == handler.TwentyQuestionsCreateStates.absolute_expiry
+
+        message.text = "12h"
+        await handler.receive_absolute_expiry(message, state)
+        assert "absolute" in message.said[-1]
+        assert state.value == handler.TwentyQuestionsCreateStates.absolute_expiry
+        assert (await session.execute(select(func.count(AIGameSession.id)))).scalar_one() == 0
+
+        message.text = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+        await handler.receive_absolute_expiry(message, state)
+        await handler.choose_creation_coins(
+            callback,
+            TwentyQuestionsCreateCb(action="coins_custom"),
+            state,
+            session,
+        )
+        assert state.value == handler.TwentyQuestionsCreateStates.custom_coins
+
+        message.text = "0"
+        await handler.receive_custom_coins(message, state, session)
+        assert state.value == handler.TwentyQuestionsCreateStates.custom_coins
+        message.text = "37"
+        await handler.receive_custom_coins(message, state, session)
         assert state.value is None
+        assert "37 CoInn" in message.said[-1]
+
+    async def test_creation_can_be_cancelled_from_each_state(self):
+        state, message = _State(), _Message()
+        callback = _Callback(message)
+        for creation_state in (
+            handler.TwentyQuestionsCreateStates.title,
+            handler.TwentyQuestionsCreateStates.duration_choice,
+            handler.TwentyQuestionsCreateStates.absolute_expiry,
+            handler.TwentyQuestionsCreateStates.coins_choice,
+            handler.TwentyQuestionsCreateStates.custom_coins,
+        ):
+            await state.set_state(creation_state)
+            await handler.cancel_creation(callback, state)
+            assert state.value is None
         assert "annullata" in message.said[-1]
-        assert callback.answers == 1
+        assert callback.answers == 5
 
     async def test_registry_views_and_capabilities(self, session):
         spec, message = TwentyQuestionsType(), _Message()
@@ -354,6 +436,127 @@ class TestCreationAndScreens:
         session_id = await _ready(session)
         assert (await spec.delete(session, session_id)).ok
         assert not (await spec.delete(session, session_id)).ok
+
+    async def test_running_anchorless_v2_detail_offers_republish(self, session, monkeypatch):
+        session_id = await _v2_ready(session, monkeypatch, "Da ripubblicare")
+        assert (await ai_game_service.start(session, session_id, group_id=-1001)).started
+        await session.commit()
+
+        message = _Message()
+        await TwentyQuestionsType().render_detail(message, session, session_id)
+
+        assert "Ripubblica card" in str(message.markups[-1])
+        assert EventCb(action="start", task_type="twentyq", item_id=session_id).pack() \
+            in str(message.markups[-1])
+
+
+class TestPublicSecretGameCommand:
+    async def test_private_command_only_shows_public_rules(self, session):
+        message = _Message(group=42, anchor=None, chat_type="private")
+
+        await handler.cmd_gioco_alduino(message, session)
+
+        assert "Il gioco segreto di Alduino" in message.said[-1]
+        assert TARGET.title not in message.said[-1]
+
+    async def test_group_without_a_running_game_shows_only_rules(self, session):
+        message = _Message(anchor=None)
+        original_answer = message.answer
+
+        async def answer(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_answer(*args, **kwargs)
+
+        message.answer = answer
+        await handler.cmd_gioco_alduino(message, session)
+
+        assert "Il gioco segreto di Alduino" in message.said[-1]
+        assert "Per te" not in message.said[-1]
+        assert TARGET.title not in message.said[-1]
+
+    async def test_group_reply_selects_its_anchor_without_exposing_the_secret(
+        self, session, monkeypatch,
+    ):
+        older = await _v2_ready(session, monkeypatch, "Prima partita")
+        desired = await _v2_ready(session, monkeypatch, "Partita scelta")
+        assert (await ai_game_service.start(session, older, group_id=-1001)).started
+        assert await ai_game_service.move_anchor_if_current(
+            session, older, expected_message_id=None, new_message_id=66,
+        )
+        assert (await ai_game_service.start(session, desired, group_id=-1001)).started
+        assert await ai_game_service.move_anchor_if_current(
+            session, desired, expected_message_id=None, new_message_id=77,
+        )
+        await session.commit()
+        message = _Message(anchor=77)
+        original_answer = message.answer
+
+        async def answer(*args, **kwargs):
+            assert not session.in_transaction()
+            return await original_answer(*args, **kwargs)
+
+        message.answer = answer
+        await handler.cmd_gioco_alduino(message, session)
+
+        assert "Partita scelta" in message.said[-1]
+        assert "Prima partita" not in message.said[-1]
+        assert TARGET.title not in message.said[-1]
+        assert "Per te" in message.said[-1]
+        assert "anche <b>1</b> altre partite" in message.said[-1]
+
+    async def test_group_without_a_reply_uses_most_recently_started_game_and_counts_alternatives(
+        self, session, monkeypatch,
+    ):
+        created_first = await _v2_ready(session, monkeypatch, "Creata prima")
+        created_last = await _v2_ready(session, monkeypatch, "Creata dopo")
+        assert (await ai_game_service.start(
+            session,
+            created_last,
+            group_id=-1001,
+            now=datetime(2030, 1, 1, 10, 0),
+        )).started
+        assert await ai_game_service.move_anchor_if_current(
+            session, created_last, expected_message_id=None, new_message_id=66,
+        )
+        assert (await ai_game_service.start(
+            session,
+            created_first,
+            group_id=-1001,
+            now=datetime(2030, 1, 1, 11, 0),
+        )).started
+        assert await ai_game_service.move_anchor_if_current(
+            session, created_first, expected_message_id=None, new_message_id=77,
+        )
+        await session.commit()
+        message = _Message(anchor=None)
+
+        await handler.cmd_gioco_alduino(message, session)
+
+        assert "Creata prima" in message.said[-1]
+        assert "Creata dopo" not in message.said[-1]
+        assert "anche <b>1</b> altre partite" in message.said[-1]
+
+    async def test_anchorless_running_command_republishes_after_read_commit(self, session, monkeypatch):
+        session_id = await _v2_ready(session, monkeypatch, "Recupera card")
+        assert (await ai_game_service.start(session, session_id, group_id=-1001)).started
+        await session.commit()
+        message = _Message(anchor=None)
+        calls = []
+
+        async def refresh(bot, db_session, view, *, strict=False):
+            assert not db_session.in_transaction()
+            assert view.revealed_answer is None
+            calls.append((view.session_id, strict))
+
+        async def forbidden_start(*args, **kwargs):
+            raise AssertionError("public recovery must not start or extend a session")
+
+        monkeypatch.setattr(handler, "refresh_group_card", refresh)
+        monkeypatch.setattr(ai_game_service, "start", forbidden_start)
+        await handler.cmd_gioco_alduino(message, session)
+
+        assert calls == [(session_id, False)]
+        assert "Recupera card" in message.said[-1]
 
 
 class TestEventLifecycle:
