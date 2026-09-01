@@ -54,6 +54,7 @@ async def _run(args: argparse.Namespace) -> dict[str, object]:
     summary = await run_cases(
         load_cases(Path(args.dataset)),
         lambda case: evaluate_case(case, router),
+        paid="openrouter" in names,
     )
     return asdict(summary)
 

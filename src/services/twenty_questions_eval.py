@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from pathlib import Path
 from time import monotonic
@@ -194,8 +194,15 @@ def _sum_usage(metrics: Sequence[ai_budget.UsageMetrics]) -> ai_budget.UsageMetr
     )
 
 
-async def run_cases(cases: Sequence[EvalCase], runner: EvalRunner) -> EvalSummary:
-    """Run cases serially and retain only aggregate, prompt-free measurements."""
+async def run_cases(
+    cases: Sequence[EvalCase], runner: EvalRunner, *, paid: bool = False,
+) -> EvalSummary:
+    """Run serially and retain only aggregate, prompt-free measurements.
+
+    A paid run replaces per-attempt cost with the durable ``twentyq`` spent delta.
+    This assumes the local eval is the only writer to that lane for its duration.
+    """
+    before = await ai_budget.feature_snapshot("twentyq") if paid else None
     observations = [await runner(case) for case in cases]
     latency: Counter[str] = Counter()
     fallbacks: Counter[str] = Counter()
@@ -207,7 +214,7 @@ async def run_cases(cases: Sequence[EvalCase], runner: EvalRunner) -> EvalSummar
             fallbacks[key] += observation.fallback_count
         if observation.error_kind is not None:
             errors[observation.error_kind] += 1
-    return EvalSummary(
+    summary = EvalSummary(
         total=len(cases),
         schema_compliant=sum(observation.schema_compliant for observation in observations),
         correct=sum(
@@ -221,6 +228,12 @@ async def run_cases(cases: Sequence[EvalCase], runner: EvalRunner) -> EvalSummar
         usage=_sum_usage([observation.usage for observation in observations]),
         cost_microusd=sum(observation.cost_microusd for observation in observations),
     )
+    if not paid:
+        return summary
+    after = await ai_budget.feature_snapshot("twentyq")
+    before_spent = before.spent_microusd if before is not None else 0
+    after_spent = after.spent_microusd if after is not None else before_spent
+    return replace(summary, cost_microusd=max(0, after_spent - before_spent))
 
 
 def _is_consistent(case: EvalCase, verdict: QuestionVerdict) -> bool:

@@ -25,7 +25,7 @@
 {"case_id":"forse-07","dossier":{"facts":["Laguna Prisma ha immersioni subacquee","la fauna emette luce"]},"history":[],"question":"La fauna è pericolosa?","expected":"forse"}
 {"case_id":"forse-08","dossier":{"facts":["Bosco Elettrico contiene cervi meccanici","si seguono tracce luminose"]},"history":[{"turn_no":1,"normalized_hash":"tracce","question":"Le tracce brillano?","verdict":"si"}],"question":"Le tracce portano a un tesoro?","expected":"forse"}
 {"case_id":"forse-09","dossier":{"facts":["Museo Opale conserva statue parlanti","i corridoi cambiano forma"]},"history":[],"question":"Le statue dicono sempre la verità?","expected":"forse"}
-{"case_id":"risposta-01","dossier":{"facts":["Archivio Nebula usa mappe stellari","la nave ha un osservatorio"]},"history":[],"question":"La risposta è Archivio Nebula?","expected":"usa_risposta"}
+{"case_id":"masked-title-01","dossier":{"facts":["una nave conserva mappe stellari","un osservatorio guida il viaggio"]},"history":[],"question":"La risposta è Archivio Nebula?","expected":"usa_risposta"}
 {"case_id":"risposta-02","dossier":{"facts":["Officina Cobalto è un puzzle cooperativo","i giocatori riparano robot"]},"history":[],"question":"Potrebbe essere Officina Cobalto?","expected":"usa_risposta"}
 {"case_id":"risposta-03","dossier":{"facts":["Faro di Vetro ha un faro che cambia colore","si esplora una costa sintetica"]},"history":[],"question":"È Faro di Vetro, vero?","expected":"usa_risposta"}
 {"case_id":"risposta-04","dossier":{"facts":["Giardino Binario permette di coltivare piante digitali","ha stagioni simulate"]},"history":[],"question":"Dico Giardino Binario come soluzione.","expected":"usa_risposta"}

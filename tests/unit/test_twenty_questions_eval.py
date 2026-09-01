@@ -160,6 +160,77 @@ async def test_report_aggregates_failures_and_inconsistent_fallbacks():
     assert report.latency_ms == {"groq": 8, "unknown": 3}
 
 
+async def test_paid_report_uses_durable_twentyq_spend_delta_after_failed_call(monkeypatch):
+    """Hard-coding failed paid observations to zero would hide a conservatively settled charge."""
+    snapshots = iter((
+        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 100, 0),
+        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 119, 0),
+    ))
+
+    async def feature_snapshot(feature: str):
+        assert feature == "twentyq"
+        return next(snapshots)
+
+    async def failed_runner(_case: EvalCase) -> EvalObservation:
+        return EvalObservation(
+            None, False, False, "openrouter", 8, 0, "network", ai_budget.UsageMetrics(), 0,
+        )
+
+    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    report = await twenty_questions_eval.run_cases(
+        (EvalCase("paid-failure", "{}", (), "Q", QuestionVerdict.si),),
+        failed_runner,
+        paid=True,
+    )
+
+    assert report.cost_microusd == 19
+    assert report.errors == {"network": 1}
+
+
+async def test_free_report_never_reads_paid_budget(monkeypatch):
+    """Querying budget during free calibration would unnecessarily couple it to paid storage."""
+    async def feature_snapshot(_feature: str):
+        raise AssertionError("free run must not read the paid budget")
+
+    async def free_runner(case: EvalCase) -> EvalObservation:
+        return EvalObservation(
+            case.expected, True, True, "gemini", 1, 0, None, ai_budget.UsageMetrics(), 0,
+        )
+
+    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    report = await twenty_questions_eval.run_cases(
+        (EvalCase("free", "{}", (), "Q", QuestionVerdict.si),), free_runner,
+    )
+
+    assert report.cost_microusd == 0
+
+
+async def test_paid_report_replaces_success_attempt_cost_with_durable_delta(monkeypatch):
+    """Adding both values would double-count a successful OpenRouter settlement."""
+    snapshots = iter((
+        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 100, 0),
+        ai_budget.BudgetSnapshot("2026-09", 4_000_000, 119, 0),
+    ))
+
+    async def feature_snapshot(_feature: str):
+        return next(snapshots)
+
+    async def successful_runner(case: EvalCase) -> EvalObservation:
+        return EvalObservation(
+            case.expected, True, True, "openrouter", 1, 0, None,
+            ai_budget.UsageMetrics(), 19,
+        )
+
+    monkeypatch.setattr(ai_budget, "feature_snapshot", feature_snapshot)
+    report = await twenty_questions_eval.run_cases(
+        (EvalCase("paid-success", "{}", (), "Q", QuestionVerdict.si),),
+        successful_runner,
+        paid=True,
+    )
+
+    assert report.cost_microusd == 19
+
+
 def test_provider_without_key_names_only_its_environment_variable(monkeypatch):
     """An error that prints a key value would disclose a credential in local diagnostics."""
     monkeypatch.setattr(twenty_questions_eval.settings, "gemini_api_key", "secret-value")
@@ -224,6 +295,12 @@ def test_versioned_dataset_is_balanced_and_loadable():
         QuestionVerdict.forse: 9,
         QuestionVerdict.usa_risposta: 9,
     }
+    masked_title = next(case for case in cases if case.case_id == "masked-title-01")
+    assert masked_title.expected is QuestionVerdict.usa_risposta
+    assert "Archivio Nebula" not in masked_title.dossier_json
+    assert "mappe stellari" in masked_title.dossier_json
+    assert "osservatorio" in masked_title.dossier_json
+    assert "Archivio Nebula" in masked_title.question
 
 
 def test_cli_help_is_available_without_loading_a_provider():
@@ -276,7 +353,8 @@ async def test_cli_initializes_budget_tables_before_a_paid_eval(monkeypatch):
     async def create_tables():
         calls.append("tables")
 
-    async def run_cases(_cases, _runner):
+    async def run_cases(_cases, _runner, *, paid):
+        assert paid is True
         calls.append("eval")
         return twenty_questions_eval.EvalSummary(
             0, 0, 0, 0, {}, {}, {}, ai_budget.UsageMetrics(), 0,
