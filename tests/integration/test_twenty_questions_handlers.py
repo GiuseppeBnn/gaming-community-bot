@@ -2015,3 +2015,317 @@ class TestV2PostCommitPresentation:
         await handler.play_turn(message, session)
 
         assert message.said[-1] == "🐲 <b>SÌ</b>"
+
+
+async def test_tq_type_post_commit_hooks_commit_before_publish_and_roll_back_on_failure(monkeypatch):
+    """A hook must never publish from an open read transaction or hide a failed reread."""
+    event_log: list[str] = []
+    session = _OrderedSession(event_log)
+    event_type = TwentyQuestionsType()
+
+    async def missing_view(_session, _item_id):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", missing_view)
+    with pytest.raises(RuntimeError, match="non piu' pubblicabile"):
+        await event_type._start_hook(_Bot(), session, 7)()
+    assert event_log == ["commit"]
+
+    async def broken_refresh(_bot, _session, _snapshot):
+        raise RuntimeError("network")
+
+    monkeypatch.setattr(handler, "refresh_group_card", broken_refresh)
+    with pytest.raises(RuntimeError, match="network"):
+        await event_type._legacy_refresh_hook(_Bot(), session, _v1_anchor_snapshot())()
+    assert event_log == ["commit", "rollback"]
+
+
+async def test_tq_type_delegates_creation_and_rejects_unavailable_open_paths(monkeypatch):
+    """The registry adapter must preserve the handler entry point and fail closed."""
+    event_type = TwentyQuestionsType()
+    called: list[tuple[object, object, int]] = []
+
+    async def create(message, state, creator_id):
+        called.append((message, state, creator_id))
+
+    monkeypatch.setattr(handler, "start_creation", create)
+    message, state = _Message(), _State()
+    await event_type.start_creation(message, state, 42)
+    assert called == [(message, state, 42)]
+
+    async def no_snapshot(_session, _item_id):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", no_snapshot)
+    unavailable = await event_type._open(_Bot(), _OrderedSession([]), 7, group_id=-1001)
+    assert (unavailable.ok, unavailable.alert) == (False, True)
+
+
+async def test_tq_type_scheduled_unknown_and_stale_actions_are_distinguished(monkeypatch):
+    """A bad schedule fails loudly while a stale one becomes an idempotent skip."""
+    event_type = TwentyQuestionsType()
+    task = SimpleNamespace(ref_id=7)
+    session = _OrderedSession([])
+
+    monkeypatch.setattr(schedule_service, "task_payload", lambda _task: {"action": "other"})
+    with pytest.raises(RuntimeError, match="non supportata"):
+        await event_type.execute_scheduled(_Bot(), session, task, -1001)
+
+    monkeypatch.setattr(schedule_service, "task_payload", lambda _task: {"action": "expire"})
+
+    async def stale(_session, _item_id):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", stale)
+    with pytest.raises(schedule_service.TaskSkip, match="non piu' in corso"):
+        await event_type.execute_scheduled(_Bot(), session, task, -1001)
+
+
+async def test_tq_creation_guards_reject_disabled_invalid_duration_and_bad_coins(monkeypatch):
+    """FSM input errors must stop before any game service or transaction mutation."""
+    state = _State()
+    message = _Message("Titolo")
+    monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", False)
+    await handler.start_creation(message, state, 42)
+    assert "manutenzione" in message.said[-1]
+
+    await handler.create_from_title(message, state)
+    assert state.clears >= 2
+
+    monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
+    callback = _Callback(_Message())
+    await handler.choose_creation_duration(
+        callback, SimpleNamespace(value=-1), state,
+    )
+    assert callback.answers == 1
+
+    bad_coins = _Message("non un numero")
+    await handler.receive_custom_coins(bad_coins, state, _OrderedSession([]))
+    assert "numero intero" in bad_coins.said[-1]
+
+
+async def test_tq_creation_and_public_lookup_fail_closed_without_service_work(monkeypatch):
+    """Lost FSM data or a failed public read must leave the chat with a safe recovery message."""
+    state = _State()
+    message = _Message()
+    monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
+    await handler._finish_creation(
+        message, state, _OrderedSession([]), creator_id=42, max_coins_per_participant=100,
+    )
+    assert "non sono più disponibili" in message.said[-1]
+
+    async def broken_list(_session):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(ai_game_service, "list_manageable", broken_list)
+    session = _OrderedSession([])
+    assert await handler._group_game_status(_Message(), session) == (None, None, 0)
+    assert session.events == ["rollback"]
+
+
+async def test_tq_card_cleanup_and_strict_missing_group_are_explicit(monkeypatch):
+    """A publisher cannot hide an orphan cleanup failure or pretend an unknown group is valid."""
+    assert not await handler._delete_orphan(_Sent(fail_delete=True), session_id=7)
+
+    session = _OrderedSession([])
+    with pytest.raises(handler.CardPublicationError, match="gruppo"):
+        await handler._publish_rendered_card(
+            _Bot(), session, session_id=7, group_id=None, anchor_message_id=None,
+            text="card", strict=True,
+        )
+    assert session.events == ["rollback"]
+
+
+async def test_tq_type_v2_and_legacy_non_success_paths_are_explicit(monkeypatch):
+    """Registry callers need distinct outcomes for stale, misconfigured, and lost terminal races."""
+    event_type = TwentyQuestionsType()
+    session = _OrderedSession([])
+
+    def snapshot(status="ready", *, anchor=None, version=2):
+        return SimpleNamespace(
+            session=SimpleNamespace(status=status, anchor_message_id=anchor),
+            game=SimpleNamespace(rules_version=version),
+        )
+
+    async def get_running(*_args):
+        return snapshot("running", anchor=77)
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", get_running)
+    already = await event_type._open(_Bot(), session, 7, group_id=-1001)
+    assert (already.ok, already.alert) == (False, True)
+
+    async def get_finished(*_args):
+        return snapshot("finished")
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", get_finished)
+    unavailable = await event_type._open(_Bot(), session, 7, group_id=-1001)
+    assert (unavailable.ok, unavailable.alert) == (False, True)
+
+    async def get_ready(*_args):
+        return snapshot("ready")
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", get_ready)
+    missing_group = await event_type._open(_Bot(), session, 7, group_id=0)
+    assert "GROUP_ID" in missing_group.message
+
+    async def start_refused(*_args, **_kwargs):
+        return SimpleNamespace(started=False, reason=SimpleNamespace(value="providers_unavailable"))
+
+    monkeypatch.setattr(ai_game_service, "start", start_refused)
+    refused = await event_type._open(_Bot(), session, 7, group_id=-1001)
+    assert "Provider" in refused.message
+
+    task = SimpleNamespace(ref_id=7)
+    monkeypatch.setattr(schedule_service, "task_payload", lambda _task: {"action": "start"})
+    monkeypatch.setattr(ai_game_service, "get_snapshot", get_finished)
+    with pytest.raises(schedule_service.TaskSkip):
+        await event_type.execute_scheduled(_Bot(), session, task, -1001)
+
+    async def terminal_not_claimed(*_args, **_kwargs):
+        return SimpleNamespace(transitioned=False)
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", get_running)
+    monkeypatch.setattr(ai_game_service, "terminalize", terminal_not_claimed)
+    closed = await event_type.close_now(_Bot(), session, 7)
+    assert closed is not None and not closed.ok
+
+    async def legacy_running(*_args):
+        return snapshot("running", version=1)
+
+    async def cannot_finish(*_args):
+        return False
+
+    monkeypatch.setattr(ai_game_service, "get_snapshot", legacy_running)
+    monkeypatch.setattr(ai_game_service, "finish", cannot_finish)
+    legacy = await event_type.close_now(_Bot(), session, 7)
+    assert legacy is not None and not legacy.ok
+
+
+async def test_tq_finish_creation_preserves_or_clears_fsm_on_the_right_failures(monkeypatch):
+    """Maintenance clears stale FSM data; persistence failures preserve it for an explicit retry."""
+    data = {"title": "Serata", "duration_seconds": 3_600, "expires_at": None}
+    state = _State()
+    state.data = data.copy()
+    message = _Message()
+    monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", False)
+    await handler._finish_creation(message, state, _OrderedSession([]), creator_id=42, max_coins_per_participant=100)
+    assert state.clears == 1 and "manutenzione" in message.said[-1]
+
+    monkeypatch.setattr(handler.settings, "twentyq_v2_enabled", True)
+    state.data = data.copy()
+
+    async def domain_failure(*_args, **_kwargs):
+        raise handler.GameCreationError("policy")
+
+    monkeypatch.setattr(ai_game_service, "create_twenty_questions", domain_failure)
+    events: list[str] = []
+    await handler._finish_creation(message, state, _OrderedSession(events), creator_id=42, max_coins_per_participant=100)
+    assert events == ["rollback"] and state.data == data
+    assert "Puoi riprovare" in message.said[-1]
+
+    async def storage_failure(*_args, **_kwargs):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(ai_game_service, "create_twenty_questions", storage_failure)
+    events.clear()
+    await handler._finish_creation(message, state, _OrderedSession(events), creator_id=42, max_coins_per_participant=100)
+    assert events == ["rollback"] and state.data == data
+
+
+async def test_tq_card_recovery_failure_modes_are_not_silently_successful(monkeypatch):
+    """Failed rereads/CAS races must roll back and make strict publishers report the recovery failure."""
+    session = _OrderedSession([])
+
+    async def broken_view(*_args):
+        raise RuntimeError("db")
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", broken_view)
+    with pytest.raises(handler.CardPublicationError, match="card concorrente"):
+        await handler._has_winning_anchor(session, session_id=7)
+    assert session.events == ["rollback"]
+
+    async def broken_move(*_args, **_kwargs):
+        raise RuntimeError("cas")
+
+    monkeypatch.setattr(ai_game_service, "move_anchor_if_current", broken_move)
+    with pytest.raises(handler.CardPublicationError, match="anchor"):
+        await handler._move_sent_anchor(
+            session, session_id=7, expected_message_id=None, sent=_Sent(), strict=True,
+        )
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", broken_view)
+    with pytest.raises(handler.CardPublicationError, match="rilettura"):
+        await handler.refresh_group_card(_Bot(), session, _v2_view(), strict=True)
+
+    async def missing_view(*_args):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", missing_view)
+    with pytest.raises(handler.CardPublicationError, match="non disponibile"):
+        await handler.refresh_group_card(_Bot(), session, _v2_view(), strict=True)
+
+
+async def test_tq_non_strict_card_recovery_returns_cleanly_for_every_stale_state(monkeypatch):
+    """Best-effort refreshes must not leak an open transaction when their durable view vanished."""
+    session = _OrderedSession([])
+
+    async def missing(*_args):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", missing)
+    await handler._publish_rendered_card(
+        _Bot(), session, session_id=7, group_id=None, anchor_message_id=None, text="card",
+    )
+    await handler.refresh_group_card(_Bot(), session, _v2_view())
+
+    async def terminal(*_args):
+        return _v2_view(status="finished")
+
+    monkeypatch.setattr(ai_game_service, "get_game_view", terminal)
+    await handler.refresh_group_card(_Bot(), session, _v2_view())
+    assert session.events == ["commit", "commit"]
+
+
+async def test_tq_anchor_loser_requires_a_winner_and_cleans_its_orphan(monkeypatch):
+    """A CAS loser without a durable winner is a publication error, not a successful refresh."""
+    session = _OrderedSession([])
+
+    async def lost(*_args, **_kwargs):
+        return False
+
+    async def no_winner(*_args):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "move_anchor_if_current", lost)
+    monkeypatch.setattr(ai_game_service, "get_game_view", no_winner)
+    orphan = _Sent()
+    with pytest.raises(handler.CardPublicationError, match="nessuna card"):
+        await handler._move_sent_anchor(
+            session, session_id=7, expected_message_id=None, sent=orphan, strict=True,
+        )
+    assert orphan.deleted
+
+
+async def test_tq_v2_question_and_guess_missing_followup_paths_do_not_publish(monkeypatch):
+    """An impossible claimed-without-lease and a missing refreshed DTO are contained locally."""
+    session = _OrderedSession([])
+    message = _Message("Domanda")
+    quota = PersonalQuota(0, 5, 0, 2, False)
+
+    async def impossible_claim(*_args, **_kwargs):
+        return QuestionStartResult(7, TurnOutcome.claimed, None, quota, claim=None)
+
+    monkeypatch.setattr(ai_game_service, "begin_question", impossible_claim)
+    with pytest.raises(RuntimeError, match="claim missing"):
+        await handler._play_turn_v2(message, session, session_id=7)
+
+    async def recorded_guess(*_args, **_kwargs):
+        return TurnResult(7, TurnOutcome.recorded, None, quota, correct=False)
+
+    async def missing_view(*_args):
+        return None
+
+    monkeypatch.setattr(ai_game_service, "submit_guess", recorded_guess)
+    monkeypatch.setattr(ai_game_service, "get_game_view", missing_view)
+    await handler._play_v2_guess(message, session, session_id=7, answer="Portal")
+    assert session.events == ["commit", "commit"]

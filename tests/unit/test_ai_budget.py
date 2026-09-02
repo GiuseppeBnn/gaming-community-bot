@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
+from contextlib import asynccontextmanager
 
+import pytest
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from services import ai_budget
@@ -74,3 +77,55 @@ async def test_feature_spend_isolated_to_run_and_charges_reserved_rows(engine, m
 
     assert await ai_budget.feature_spend_microusd("eval-twentyq-a1b2c3d4e5f6") == 37
     assert await ai_budget.feature_spend_microusd("eval-twentyq-a1b2c3d4e5f6", "2026-09") == 32
+
+
+async def test_budget_storage_and_lane_guards_fail_closed(monkeypatch):
+    """Unknown lanes and unavailable storage must reject paid work rather than silently free spend."""
+    with pytest.raises(ai_budget.AIBudgetError, match="unsupported OpenRouter budget lane"):
+        ai_budget._configured_lane_cap("unknown")
+
+    class UnsupportedSession:
+        def get_bind(self):
+            return type("Bind", (), {"dialect": type("Dialect", (), {"name": "mysql"})()})()
+
+    with pytest.raises(ai_budget.AIBudgetError, match="unsupported budget storage dialect"):
+        await ai_budget._ensure_periods(UnsupportedSession(), "2026-09", 10, "twentyq", 5)
+
+    @asynccontextmanager
+    async def broken_session():
+        raise SQLAlchemyError("offline")
+        yield None
+
+    monkeypatch.setattr(ai_budget, "async_session_maker", lambda: broken_session())
+    for reader in (
+        lambda: ai_budget.snapshot(),
+        lambda: ai_budget.feature_snapshot("twentyq"),
+        lambda: ai_budget.feature_spend_microusd("eval"),
+    ):
+        with pytest.raises(ai_budget.AIBudgetError, match="storage unavailable"):
+            await reader()
+
+
+async def test_budget_reserve_and_settle_wrap_transaction_failures(monkeypatch):
+    """Both technical transactions must fail closed when the database disappears."""
+    @asynccontextmanager
+    async def broken_begin():
+        raise SQLAlchemyError("offline")
+        yield None
+
+    class BrokenFactory:
+        def begin(self):
+            return broken_begin()
+
+    monkeypatch.setattr(ai_budget, "async_session_maker", BrokenFactory())
+    with pytest.raises(ai_budget.AIBudgetError, match="budget storage unavailable"):
+        await ai_budget.reserve(
+            feature="eval", provider="openrouter", requested_model="model",
+            system_prompt="system", user_text="question", max_output_tokens=1,
+        )
+
+    with pytest.raises(ai_budget.AIBudgetError, match="budget settlement unavailable"):
+        await ai_budget.settle(
+            ai_budget.Reservation("request", "2026-09", "eval", "twentyq", 10),
+            status="network", actual_microusd=None,
+        )

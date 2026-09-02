@@ -367,3 +367,21 @@ def test_personal_turn_feedback_covers_typed_outcomes_without_raw_input(
     assert expected in text
     assert "5 domande" in text
     assert "2 tentativi" in text
+
+
+def test_view_fallback_copy_covers_absent_verdict_and_unclassified_terminal_state():
+    """Presentation must retain a truthful fallback if a persisted enum is absent or future-valued."""
+    quota = _quota()
+    claimed = render_question_start(QuestionStartResult(77, TurnOutcome.claimed, None, quota))
+    assert "sta ragionando" in claimed
+
+    recorded = render_personal_turn(TurnResult(77, TurnOutcome.recorded, None, quota))
+    rejected = render_personal_turn(TurnResult(77, TurnOutcome.rejected, None, quota))
+    reused = render_personal_turn(TurnResult(77, TurnOutcome.reused, None, quota))
+    assert "Turno registrato" in recorded
+    assert "Non riesco" in rejected
+    assert "VERDETTO NON DISPONIBILE" in reused
+
+    unknown = _terminal(FinishReason.expired, settlement_status="settled", winner_tg_id=None)
+    object.__setattr__(unknown, "finish_reason", "future")
+    assert "conclusa senza vincitore" in render_terminal_card(unknown)

@@ -49,6 +49,15 @@ class _FakeSession:
         self.events.append("rollback")
 
 
+class _FakeCallback:
+    def __init__(self) -> None:
+        self.answers: list[tuple[str | None, bool]] = []
+        self.message = SimpleNamespace()
+
+    async def answer(self, text=None, show_alert=False) -> None:
+        self.answers.append((text, show_alert))
+
+
 def _task(
     task_id: int = 7,
     created_by: int | None = 999,
@@ -133,6 +142,24 @@ class TestRunDueTask:
         assert [kind for kind, _ in marks] == ["done"]
         assert session.events == ["rollback", "commit"]
         assert silent_notify and "saltato" in silent_notify[0]
+
+    async def test_a_skip_with_unpersistable_outcome_stays_pending_for_the_next_tick(
+        self, monkeypatch, silent_notify,
+    ):
+        async def skip(bot, session, task):
+            raise schedule_service.TaskSkip("already closed")
+
+        async def unavailable(session, task_id):
+            raise ConnectionError("database unavailable")
+
+        monkeypatch.setattr(schedule, "execute_task", skip)
+        monkeypatch.setattr(schedule.schedule_service, "mark_done_by_id", unavailable)
+        session = _FakeSession()
+
+        await schedule._run_due_task(object(), session, _task())
+
+        assert session.events == ["rollback", "rollback"]
+        assert silent_notify == []
 
     async def test_a_failure_rolls_back_before_marking_failed(
         self, monkeypatch, silent_notify
@@ -416,6 +443,16 @@ class TestNotifyCreator:
                 raise AssertionError("messaged nobody's chat")
 
         await schedule._notify_creator(_Bot(), None, 7, "ciao")
+
+
+async def test_schedule_callbacks_ignore_stale_buttons_without_mutating_state():
+    callback = _FakeCallback()
+
+    await schedule.cb_type(callback, SimpleNamespace(key=None), object(), object())
+    await schedule.cb_pick_event(callback, SimpleNamespace(key=None, item_id=7), object())
+    await schedule.cb_sched_del(callback, SimpleNamespace(item_id=None), object())
+
+    assert callback.answers == [(None, False)] * 3
 
 
 class TestSchedulerLoop:

@@ -18,6 +18,7 @@ from services import ai_budget
 from services.ai_game_types import QuestionVerdict
 from services.twenty_questions_eval import EvalCase, EvalObservation
 import services.twenty_questions_eval as twenty_questions_eval
+from services.structured_ai import StructuredAIError, StructuredAIErrorKind
 
 
 def _record(*, case_id: str = "case-1", expected: str = "si") -> dict[str, object]:
@@ -99,6 +100,72 @@ def test_loader_rejects_invalid_records_loudly(tmp_path, records, match):
 
     with pytest.raises(ValueError, match=match):
         twenty_questions_eval.load_cases(path)
+
+
+@pytest.mark.parametrize(
+    ("record", "match"),
+    [
+        (_record() | {"history": "not-a-list"}, "history"),
+        (_record() | {"history": [{"turn_no": True, "normalized_hash": None, "question": "Q", "verdict": "si"}]}, "history"),
+        (_record() | {"history": [{"turn_no": 1, "normalized_hash": 3, "question": "Q", "verdict": "si"}]}, "history"),
+        (_record() | {"history": [{"turn_no": 1, "normalized_hash": None, "question": "Q", "verdict": "broken"}]}, "history"),
+        (_record() | {"history": [{"turn_no": 1, "normalized_hash": None, "question": "Q", "verdict": "si"}, {"turn_no": 1, "normalized_hash": None, "question": "Q2", "verdict": "no"}]}, "history"),
+        (_record() | {"dossier": []}, "dossier"),
+        (_record() | {"dossier": {"x": "z" * 17_000}}, "dossier"),
+    ],
+)
+def test_loader_rejects_each_bounded_history_and_dossier_contract(tmp_path, record, match):
+    """Permissive eval input would let malformed calibration data skew a run."""
+    with pytest.raises(ValueError, match=match):
+        twenty_questions_eval.load_cases(_write_jsonl(tmp_path / "bad.jsonl", [record]))
+
+
+def test_loader_rejects_syntax_extra_fields_and_empty_dataset(tmp_path):
+    """A malformed corpus must fail before any provider can be selected."""
+    malformed = tmp_path / "malformed.jsonl"
+    malformed.write_text("{not json}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="record"):
+        twenty_questions_eval.load_cases(malformed)
+
+    with pytest.raises(ValueError, match="record"):
+        twenty_questions_eval.load_cases(_write_jsonl(
+            tmp_path / "extra.jsonl", [_record() | {"unexpected": True}],
+        ))
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    with pytest.raises(ValueError, match="empty"):
+        twenty_questions_eval.load_cases(empty)
+
+
+async def test_eval_loader_bounds_and_provider_failure_are_reported_without_case_text(tmp_path):
+    """A blank/oversized corpus and provider failure must not become a partial successful eval."""
+    blank = tmp_path / "blank.jsonl"
+    blank.write_text("\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="record"):
+        twenty_questions_eval.load_cases(blank)
+
+    records = [_record(case_id=f"case-{index}") for index in range(10_001)]
+    with pytest.raises(ValueError, match="too many"):
+        twenty_questions_eval.load_cases(_write_jsonl(tmp_path / "many.jsonl", records))
+
+    class FailingRouter:
+        async def generate(self, *_args, **_kwargs):
+            raise StructuredAIError(
+                "provider unavailable", kind=StructuredAIErrorKind.network, provider="groq",
+            )
+
+    observation = await twenty_questions_eval.evaluate_case(
+        EvalCase("broken", "{}", (), "Q", QuestionVerdict.si), FailingRouter(),
+    )
+    assert (observation.error_kind, observation.provider, observation.schema_compliant) == (
+        "network", "groq", False,
+    )
+
+
+def test_unknown_provider_choice_stays_a_single_explicit_eval_route():
+    """The CLI parser is the authority for accepted choices; the helper preserves an explicit choice."""
+    assert twenty_questions_eval.provider_names("gemini", allow_paid_openrouter=False) == ("gemini",)
 
 
 async def test_report_contains_aggregates_not_case_material():
