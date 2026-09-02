@@ -351,6 +351,108 @@ class TestOnboardingGate:
 
 
 # ---------------------------------------------------------------------------
+# manage_quiz / manage_guess / manage_sound — the admin management lists
+# ---------------------------------------------------------------------------
+
+_MANAGE = [
+    ("manage_quiz", "handlers.event_types.quiz_type", "QuizType"),
+    ("manage_guess", "handlers.event_types.guess_type", "GuessType"),
+    ("manage_sound", "handlers.event_types.guess_type", "GuessType"),
+]
+
+
+def _spy_render_list(monkeypatch, module_name: str, cls_name: str, calls: list) -> None:
+    cls = getattr(importlib.import_module(module_name), cls_name)
+
+    async def fake(self, message, db_session):
+        calls.append(cls_name)
+
+    monkeypatch.setattr(cls, "render_list", fake)
+
+
+class TestManageDeepLinks:
+    """/quiz, /guessTheGame and /soundQuest send an admin from the group straight to
+    that type's own list — not the /admin dashboard (the bug this fixes)."""
+
+    @pytest.mark.parametrize("payload,module_name,cls_name", _MANAGE)
+    async def test_an_admin_reaches_the_type_list(
+        self, session, onboarded, monkeypatch, as_admin, payload, module_name, cls_name
+    ):
+        calls: list[str] = []
+        _spy_render_list(monkeypatch, module_name, cls_name, calls)
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command(payload), _state(), session)
+
+        assert calls == [cls_name] and "non autorizzato" not in message.said
+
+    @pytest.mark.parametrize("payload", ["manage_quiz", "manage_guess", "manage_sound"])
+    async def test_a_non_admin_is_refused(self, session, onboarded, monkeypatch, payload):
+        calls: list[str] = []
+        _spy_render_list(monkeypatch, "handlers.event_types.quiz_type", "QuizType", calls)
+        _spy_render_list(monkeypatch, "handlers.event_types.guess_type", "GuessType", calls)
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command(payload), _state(), session)
+
+        assert "non autorizzato" in message.said and not calls
+
+
+# ---------------------------------------------------------------------------
+# Welcome-trophy backfill (fix: an admin who bypassed the rules card can miss it)
+# ---------------------------------------------------------------------------
+
+class TestWelcomeTrophyBackfill:
+    async def _first_steps_count(self, session, tg_id: int) -> int:
+        from sqlalchemy import func, select
+
+        from database.models import Badge, UserBadge
+
+        return await session.scalar(
+            select(func.count())
+            .select_from(UserBadge)
+            .join(Badge, Badge.id == UserBadge.badge_id)
+            .where(UserBadge.user_tg_id == tg_id, Badge.slug == "first_steps")
+        )
+
+    async def test_an_admin_who_never_onboarded_gets_it_by_using_the_bot(
+        self, seeded_session, user_factory, monkeypatch, as_admin
+    ):
+        # A Telegram-recognized admin who bypassed the rules card: no first_steps yet.
+        await user_factory(tg_id=USER_ID, username="tizio", onboarding_completed=False)
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command(), _state(), seeded_session)
+
+        assert await self._first_steps_count(seeded_session, USER_ID) == 1
+
+    async def test_it_is_idempotent_for_someone_who_already_has_it(
+        self, seeded_session, user_factory, monkeypatch, as_admin
+    ):
+        from services import badge_service
+
+        await user_factory(tg_id=USER_ID, username="tizio", onboarding_completed=True)
+        await badge_service.award_badge(seeded_session, USER_ID, badge_service.BADGE_FIRST_STEPS)
+        await seeded_session.commit()
+
+        await common.cmd_start(_FakeMessage(), _command(), _state(), seeded_session)
+
+        assert await self._first_steps_count(seeded_session, USER_ID) == 1  # not doubled
+
+    async def test_a_gated_non_admin_does_not_get_it_before_accepting_the_rules(
+        self, seeded_session, user_factory
+    ):
+        # Not onboarded, not admin → the rules gate returns before the backfill runs.
+        await user_factory(tg_id=USER_ID, username="tizio", onboarding_completed=False)
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command(), _state(), seeded_session)
+
+        assert "regole" in message.said.lower()
+        assert await self._first_steps_count(seeded_session, USER_ID) == 0
+
+
+# ---------------------------------------------------------------------------
 # /profilo
 # ---------------------------------------------------------------------------
 

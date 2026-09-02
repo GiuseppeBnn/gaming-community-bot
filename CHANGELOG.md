@@ -3,6 +3,96 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.8] - 2026-08-30
+
+### Aggiunto
+- **Guess The Game / Sound Quest — descrizione** — in creazione si può aggiungere
+  una **descrizione** opzionale al round (un campo della scheda, come le grafie
+  alternative: si tocca per compilarlo, si manda «-» per saltarlo). Quando c'è,
+  viene mostrata **sotto il titolo** sia nell'annuncio nel gruppo sia all'avvio del
+  gioco in privato. Come il titolo la leggono tutti: non va messa la soluzione.
+
+### Modificato
+- **Manda premi — selezione dei destinatari dalla lista** — nella dashboard
+  `/admin` → 💰 Economia → «🎯 Manda premi», dopo aver scelto **XP** o **CoInn** e
+  l'importo non si incollano più gli @username a mano: si **spuntano i membri dalla
+  lista** (la stessa di 👥 Utenti, con scorrimento a pagine e **ricerca testuale**).
+  A ogni scelta il bot chiede se aggiungere un'altra persona; alla fine una
+  **schermata di riepilogo** mostra tutti i nomi selezionati e permette di
+  confermare l'invio, aggiungere o rimuovere qualcuno, oppure annullare tutto.
+  L'invio è possibile solo con almeno una persona selezionata. Premi, avvisi in
+  privato e registrazione nell'audit log restano invariati.
+
+## [1.7] - 2026-08-25
+
+### Modificato
+- **Guess The Game / Sound Quest — XP come il Trivia Nerd** — l'esperienza ora
+  segue lo stesso schema del trivia: **20 XP di base a ogni partecipante** +
+  **10 XP se si indovina** + il **bonus podio** (50 / 30 / 20 per 1°/2°/3°).
+  L'XP viene assegnato **sempre**, anche nei round senza premi. Le ricompense in
+  CoInn restano invariate (podio e consolazione a chi indovina; importo fisso a chi
+  non indovina, solo se il round ha premi).
+
+## [1.6] - 2026-08-24
+
+### Modificato
+- **Sondaggi — premio e chiusura nello stesso messaggio** — le righe
+  «🏆 Premio… / 🏁 Si chiude il…» ora compaiono **sotto il titolo, nello stesso
+  messaggio del sondaggio**, quando titolo + descrizione + queste righe stanno nel
+  limite di **300 caratteri** di Telegram. Se non ci stanno, restano in un
+  messaggio separato come prima.
+- **Guess The Game / Sound Quest — i comandi non contano come tentativi** — se
+  durante una partita si invia `/start` (capita ri-toccando «avvia» quando non ci
+  si accorge che l'attività è già partita) o un altro comando, non viene più
+  contato come tentativo: viene semplicemente ignorato e i tentativi restano
+  intatti.
+
+## [1.5] - 2026-08-24
+
+### Aggiunto
+- **Sondaggi — avviso del premio ai votanti** — alla chiusura di un sondaggio con
+  premio, ogni votante premiato riceve ora un **avviso in privato** (come quando è
+  un admin a mandare i premi a mano).
+
+### Modificato
+- **Guess The Game / Sound Quest — ricompense riviste** — chi **indovina** mantiene
+  la **classifica identica** (podio 1°/2°/3° e consolazione a scendere tra i soli
+  risolutori); chi **non indovina** riceve ora una **ricompensa fissa** di
+  **25 🪙 CoInn + 10 ⚡ XP**, ma **solo se il round ha premi assegnati** (un round
+  senza premi non dà nulla a chi non ha indovinato).
+- **Ricompensa minima garantita a 25 CoInn** — per Trivia Nerd, Guess The Game e
+  Sound Quest il minimo garantito dell'ultimo classificato è stato alzato da 1 a
+  **25 CoInn**.
+- **Sondaggi — descrizione** — ora si inserisce **subito dopo la domanda** e viene
+  mostrata **sotto il titolo, nello stesso messaggio del sondaggio** (non più in un
+  messaggio separato). Se domanda e descrizione insieme superano i **300 caratteri**
+  (limite di Telegram), il bot lo segnala e chiede una descrizione più corta.
+- **Comando `/daily`** — descrizione del comando semplificata nella guida.
+
+## [1.4] - 2026-08-18
+
+### Aggiunto
+- **Manda premi a più utenti** — nuovo pulsante «🎯 Manda premi» nella dashboard
+  `/admin` → 💰 Economia. Flusso guidato: scegli **XP** o **CoInn** → digita
+  l'importo → incolla la lista degli **@username** (uno per riga). Gli utenti
+  trovati vengono premiati e avvisati in privato; quelli non trovati sono
+  segnalati nel riepilogo. Registrato nell'audit log.
+- **Guess The Game / Sound Quest — premi a tutti i partecipanti** — anche chi
+  **non indovina** ora entra in classifica e riceve CoInn (oltre agli XP di
+  partecipazione che già prendeva). I CoInn seguono la stessa scala decrescente
+  dei quiz, estesa a tutti: chi indovina resta sopra (podio 1°/2°/3° riservato a
+  loro), i non-solver ricevono la consolazione a scendere. La classifica di
+  chiusura mostra tutti, con i CoInn ricevuti e un segno «non indovinato».
+
+### Corretto
+- **`/quiz`, `/guessTheGame`, `/soundQuest` (admin)** — dal gruppo, il pulsante
+  «gestisci in privato» ora porta **direttamente all'elenco** di quell'attività,
+  invece di aprire tutta la dashboard `/admin`.
+- **Trofeo «Ehi, ti sei svegliato finalmente!»** — ora viene assegnato
+  retroattivamente a chi usa il bot ma non l'aveva ancora ricevuto (tipicamente un
+  admin che aveva saltato la schermata delle regole). Nessun effetto per chi lo ha
+  già.
+
 ## [1.3] - 2026-08-18
 
 ### Aggiunto

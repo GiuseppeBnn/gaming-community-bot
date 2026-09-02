@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 import html
 import re
 
-from config_data.config import settings
 from services.ai_game_types import DEFAULT_MAX_COINS_PER_PARTICIPANT
 from services.twenty_questions_rules import v2_policy
 from utils.text import esc
@@ -83,10 +82,9 @@ _COMMANDS: list[CommandDoc] = [
         "daily", "Premio giornaliero (si azzera a mezzanotte)", "👤 Profilo & Economia",
         usage="/daily",
         details="Riscuoti il premio in CoInn: <b>uno al giorno</b>, e il giorno si azzera a "
-                "<b>mezzanotte</b>. Se hai riscosso a tarda notte devono comunque passare almeno "
-                f"<b>{settings.daily_min_hours} ore</b> dall'ultima volta. Se riprovi prima, il "
-                "bot ti dice quanto manca. Riscuoterlo in giorni consecutivi aumenta la tua "
-                "<i>streak</i>: <b>saltare un giorno la azzera</b>.",
+                "<b>mezzanotte</b>. Se riprovi prima, il bot ti dice quanto manca. "
+                "Riscuoterlo in giorni consecutivi aumenta la tua <i>streak</i>: "
+                "<b>saltare un giorno la azzera</b>.",
     ),
     CommandDoc(
         "trasferisci", "Manda CoInn a un altro utente", "👤 Profilo & Economia",

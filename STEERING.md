@@ -82,7 +82,7 @@ Campi importanti:
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
-- **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (1) → minimo garantito = `max(floor_min, round(consolation*ratio))`
+- **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (25) → minimo garantito = `max(floor_min, round(consolation*ratio))` (limitato alla consolazione), condiviso da quiz e guess/sound
 - **XP & cataloghi** (§12.1/§12.2): `catalog_dir: str` (default `"data"`, dir dei CSV trofei/ranghi/cosmetici); `xp_daily_participation_cap: int` (default 50, tetto XP *capped*/giorno); `xp_per_daily_claim: int` (default 10); **XP scommesse** (evento, uncapped) `xp_per_bet_placed` (10, per puntata) + `xp_per_bet_won` (25, extra se vince); **curva livelli** `xp_level_base: int` (default 100, XP per il Lv 1→2) + `xp_level_growth: float` (default 1.15, +15%/livello)
 - **Premi sondaggio** (evento, uncapped, §18.2): `poll_reward_coins: int` (default 25), `poll_reward_xp: int` (default 10) — default suggeriti in creazione, pagati a **ogni votante** alla chiusura; 0 in un campo ne spegne quella metà
 - `scheduler_timezone: str` (default `"Europe/Rome"`), `scheduler_poll_interval: int` (default 20) — scheduler eventi
@@ -434,6 +434,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
+| `manage_quiz` / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/quiz`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
@@ -849,7 +850,7 @@ aggiungere altro rumore (la risposta fresca è già lì).
 
 > La Locanda non usa una FSM: cosmetici e consumabili si applicano al volo (§11), nessun `ShopState`.
 | `ScheduleStates.*` | `handlers/schedule.py` | programmazione eventi: per i tipi `closable` prima **cosa** (`SchedCb(action="act", key="start"\|"close")`, packed `sched:act:start:` / `sched:act:close:`), poi l'orario run-at |
-| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio: domanda → opzioni → **descrizione** (opz.) → **premio** (default/custom/nessuno, `PollCreateCb`) → **chiusura** (nessuna/data assoluta) → crea. Riusata da 🎬 Eventi **e** da `/sondaggio` |
+| `PollTemplateStates.*` | `handlers/events.py` | creazione sondaggio: domanda → **descrizione** (opz., concatenata nella domanda, ≤300 con reinserimento) → opzioni → **premio** (default/custom/nessuno, `PollCreateCb`) → **chiusura** (nessuna/data assoluta) → crea. Riusata da 🎬 Eventi **e** da `/sondaggio` |
 
 ---
 
@@ -863,6 +864,15 @@ Il solo bottone del prompt regole in chat privata usa `RulesCb(action: str)`: l'
 rifiuta prima dell'handler callback di altri prefissi o non conformi. Restano invariati la difesa
 in profondità sulla chat privata, l'identità da `callback.from_user`, l'assegnazione del trofeo e
 i commit dell'handler.
+
+> **Backfill del trofeo di benvenuto (`first_steps`, «Ehi, ti sei svegliato finalmente!»).**
+> Il trofeo si assegna in `cb_accept_rules`, ma gli **admin bypassano il gate onboarding**
+> (riconosciuti via Telegram, §9), quindi un admin che usa il bot senza passare dalle regole non
+> avrebbe mai `onboarding_completed=True` e non lo otterrebbe. `common.cmd_start`, **dopo il gate**,
+> chiama `_ensure_welcome_trophy`: `award_badge(first_steps)` **idempotente** (assegna solo se
+> manca, `is_new=False` altrimenti) + annuncio. Nessun effetto per chi già ce l'ha; un utente nuovo
+> non-admin resta gated e lo prende comunque via `cb_accept_rules`. È la landing di ogni deep-link
+> admin, quindi copre di fatto ogni admin attivo.
 
 ### Privato
 `/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
@@ -1068,6 +1078,7 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
   **⚡ Dai XP / Set XP** (via `xp_service` + audit `xp_grant`/`xp_set`), ban/kick/sban, mute/unmute, warn/unwarn.
   Input (importo/XP/durata/motivo) via FSM `AdminPanelStates`; ban/kick passano da una conferma (`ask` → `do`).
 - **Economia**: `💰 Economia` → `🎁 Airdrop monete` (`airdrop`) e **`⚡ Airdrop XP`** (`xpairdrop`, `xp_service.airdrop_xp` + audit `xp_airdrop`).
+- **Manda premi a più utenti** (`💰 Economia` → `🎯 Manda premi`, `AdminCb(action="massreward")`): scelta tipo (`key="xp"|"coins"`) → FSM `waiting_mass_amount` (importo) → **selettore membri a bottoni** (la stessa lista paginata di 👥 Utenti + 🔍 ricerca testuale via `waiting_mass_search`), **non** più una lista @username digitata. La selezione vive nello stato FSM come `mass_selected` (lista di `tg_id`, dedup, cap `_MAX_RECIPIENTS=100`): `mrpick` aggiunge un membro e chiede se selezionarne un altro (`mrmore key=yes|no`), `mrlist` naviga/torna alla lista, `mrsearch`/`fsm_mass_search` filtrano, `mrconfirm` mostra il riepilogo con tutti i nomi, `mrremlist`/`mrunpick` rimuovono, `mrsend` paga. `mrsend` con selezione vuota **non paga** (alert). Accredita a ogni membro selezionato (`economy_service.credit`/`xp_service.grant_xp admin_grant`), **un solo** `log_action` (`mass_credit`/`mass_xp`, detail «N destinatari»), DM best-effort. Utenti caricati per id esatto via `admin_service.get_users_by_ids` — mai fuzzy: è un percorso che paga.
 - **Classifica**: `lead` con switcher `lead_board` (riusa `handlers.leaderboard.render_board` + `lead_kb`).
 - **Gating**: ogni callback `AdminCb` con `IsAdminCallbackFilter` + **catch-all deny** con prefisso derivato da `AdminCb.__prefix__` in fondo al router;
   azioni di moderazione disattivate se `group_id == 0`; guard self/target. `admin_dashboard.router` incluso
@@ -1075,7 +1086,10 @@ UI completa a bottoni in `handlers/admin_dashboard.py`: gli admin fanno **tutto 
 - **Callback tipizzata** (≤ 64 byte): `AdminCb(action: str, key: str | None = None, item_id: int | None = None)`,
   prefisso `adm`. Le azioni semplici sono `home|stats|lead|audit|help|close|bets|econ|airdrop|xpairdrop|search`;
   `lead_board` usa `key=<coins|xp|trofei>`, `users` usa `item_id=<pagina>`, `user` usa `item_id=<tg>`,
-  mentre `act|ask|do` usano `key=<verbo>, item_id=<tg>`. I campi opzionali mantengono il separatore vuoto:
+  mentre `act|ask|do` usano `key=<verbo>, item_id=<tg>`. Il flusso «Manda premi» aggiunge
+  `massreward` (`key=<xp|coins>`), `mrlist` (`item_id=<pagina>`), `mrpick`/`mrunpick`
+  (`item_id=<tg>`), `mrmore` (`key=<yes|no>`), `mrsearch`, `mrconfirm`, `mrremlist`, `mrsend`.
+  I campi opzionali mantengono il separatore vuoto:
   `AdminCb(action="home").pack()` è `adm:home::`, `AdminCb(action="lead_board", key="coins").pack()` è
   `adm:lead_board:coins:`, `AdminCb(action="users", item_id=2).pack()` è `adm:users::2`. Il deny deriva il
   prefisso dalla classe (`f"{AdminCb.__prefix__}:"`) per non poter divergere se il namespace cambia.
@@ -1146,9 +1160,13 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
   `start_bet_creation(as_draft=True)` e `bet_service.activate_event` fa `draft→open`).
   `get_open_events`/`get_all_active_events` escludono i draft.
 - **Sondaggi: due forme, discriminate da `closes_at`** (`PollType`, `poll_service`, `handlers/poll_vote.py`).
-  La creazione (FSM in `events.py`) chiede, dopo domanda e opzioni, una **descrizione** opzionale, i
-  **premi** (⚡ default `poll_reward_coins`+`poll_reward_xp` / ✏️ personalizza / 🚫 nessuno — a **ogni
-  votante**, non c'è risposta giusta) e la **chiusura**. **Regola di prodotto**: un premio si paga *alla
+  La creazione (FSM in `events.py`) chiede, **subito dopo la domanda**, una **descrizione** opzionale
+  (poi le opzioni), i **premi** (⚡ default `poll_reward_coins`+`poll_reward_xp` / ✏️ personalizza /
+  🚫 nessuno — a **ogni votante**, non c'è risposta giusta) e la **chiusura**. La descrizione **non** è
+  un messaggio a parte: è **concatenata dentro la domanda** del sondaggio (sotto il titolo,
+  `poll_service.render_question`), perché un poll nativo non ha un campo descrizione. Domanda +
+  descrizione devono stare nei **300 caratteri** del limite Telegram: lo step descrizione **valida e
+  fa reinserire** finché non rientrano (come il controllo lunghezza delle domande trivia). **Regola di prodotto**: un premio si paga *alla
   chiusura*, quindi **scegliere un premio obbliga a una data** (lo step chiusura salta il «nessuna» e va
   dritto alla data); una **data senza premio** è ammessa (alla chiusura annuncia solo l'opzione vincente,
   non paga); **né premio né data** ⇒ **sondaggio normale spara-e-dimentica**. La data è **assoluta**
@@ -1158,13 +1176,23 @@ si **avvia subito** nel gruppo *oppure* si **programma** — come già facevano 
     (unico modo per ricevere gli update `poll_answer` e sapere chi premiare), salva
     `tg_poll_id`/`message_id`/`chat_id`, e arma un auto-close riusando `task_type="poll"` +
     `payload={"action":"close"}` (nessun nuovo task type).
+  - **Blocco info (premio + chiusura) nel messaggio del sondaggio.** La descrizione è già dentro
+    la domanda (sotto il titolo). Il blocco `🏆 Premio… / 🏁 Si chiude…` viene **ripiegato nella
+    domanda** (sotto titolo+descrizione, testo plain — i poll non sono HTML-parsed) **se** il totale
+    sta nei **300 caratteri**, misurati in **unità UTF-16** (`poll_service.question_length`, come
+    conta Telegram — le emoji del premio contano doppio, `len()` sotto-stimerebbe e farebbe rifiutare
+    l'invio); **altrimenti** va come **messaggio separato** (forma HTML, col grassetto). Il controllo
+    è a **pubblicazione**, non a creazione, così vale sia per «Avvia ora» sia per l'avvio programmato.
   - L'handler `poll_answer` (`handlers/poll_vote.py`, router **pubblico** in `ROUTERS`, non gated: i
     votanti sono utenti normali) registra i voti dei soli sondaggi *managed* in corso in `poll_votes`.
   - La chiusura (`close_poll`, manuale dalla scheda o programmata): `claim_close` **prima** (UPDATE
     condizionale `running→finished`, guardia anti-doppio-pagamento e freeze dei voti), poi `stopPoll`
     (best-effort) per l'**opzione vincente** dai conteggi finali, `pay_voters` (CoInn+XP mintati a **ogni
     votante**, `TransactionType.poll_reward`/`XpSource.poll_vote`, no-commit; soldi committati **prima**
-    dell'annuncio), infine annuncio nel gruppo. La scheda (`render_detail`) offre
+    dell'annuncio; ritorna gli **id dei votanti pagati**), infine annuncio nel gruppo. Dopo il commit,
+    ogni votante pagato riceve una **notifica privata** best-effort (`format_reward_dm`, come un
+    accredito manuale admin): post-commit e best-effort, così un DM fallito non annulla mai un payout.
+    La scheda (`render_detail`) offre
     avvia/chiudi/programma-chiusura/**elimina** come per quiz e guess.
 - **Quiz persistenti**: l'hub quiz elenca via `quiz_service.list_manageable` **tutti** i quiz non-`draft`
   (running → ready → **finished** come archivio, cap sugli ultimi N) — un quiz avviato/concluso **non
@@ -1452,10 +1480,15 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
 
 - Il tentativo si **spende all'invio**, prima che il verdetto sia noto: è l'unica contabilità
   con cui un brute-forcer non può discutere.
-- **L'ordine delle guardie è portante**: cooldown → già risolto → scadenza → tentativi →
-  **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non deve costare
-  quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la mutazione che
-  sposta il controllo tentativi dopo il giudice era passata verde prima che ci fossero.
+- **L'ordine delle guardie è portante**: **comando** → cooldown → già risolto → scadenza →
+  tentativi → **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non
+  deve costare quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la
+  mutazione che sposta il controllo tentativi dopo il giudice era passata verde prima che ci
+  fossero.
+- **Un comando (testo che inizia con `/`) non è mai un tentativo**: `fsm_answer` lo **ignora**
+  in cima, prima di cooldown/giudice/registrazione. Serve al caso reale in cui un giocatore non
+  si accorge che il round è partito e ri-tocca «avvia», che rimanda `/start <deeplink>` in chat:
+  senza la guardia veniva giudicato e bruciava un tentativo.
 - **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
   Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
   azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
@@ -1496,7 +1529,10 @@ Ogni campo opzionale vive in `creation.FIELDS` con la sua etichetta, il suo prom
 parser e il suo renderer. **Un solo handler di edit li serve tutti**: aggiungere un campo è una
 voce di dizionario, mai uno stato nuovo e mai un handler nuovo. I quattro premi sono **un campo
 solo** — quattro step per quattro numeri dello stesso tipo erano quattro occasioni di sbagliare
-senza poter tornare al primo.
+senza poter tornare al primo. La **descrizione** (`description`, colonna nullable, max 512) è uno
+di questi campi opzionali: player-facing come il titolo (mostrata nell'annuncio nel gruppo e
+all'avvio del gioco in privato), quindi non deve contenere la soluzione; «-» la salta o la
+azzera, come le grafie alternative.
 
 Costo strutturale: 12 stati FSM → **5**, 17 handler → **10**, 453 → **424** righe di codice
 effettivo. La scheda doveva togliere codice, non aggiungerne.
@@ -1630,10 +1666,30 @@ claim del solve (`WHERE solved_at IS NULL`). Entrambe verificate per mutazione.
 > dalla identity map, quindi senza refresh l'admin chiude e la schermata continua a dire «in
 > corso».
 
-Classifica: **solo i risolutori**, ordinati per `(tentativi, tempo, arrivo)`. Qui «finisher»
-vuol dire «ha indovinato» — è ciò che dà senso a «meno tentativi, meglio è» — quindi chi
-esaurisce i tentativi prende **XP ma non monete**. Premi: 1°/2°/3° più consolazione lineare
-fino a `prize_min`, dalla scala condivisa `services/prizes.py` (la stessa del quiz). Ledger:
+Classifica competitiva (`standings`): **solo i risolutori**, ordinati per `(tentativi, tempo,
+arrivo)` — usata per **trofei** (podio/last/sub30) e il conteggio «indovinati». Ma il **payout**
+e l'**annuncio** usano `full_standings` = **tutti i partecipanti** (chi ha ≥1 tentativo): i
+risolutori davanti, poi i non-risolutori (per sforzo: più tentativi avanti, poi arrivo).
+
+**XP (`_grant_xp`) — incondizionato, identico al trivia** (`quiz_service._grant_xp`): non dipende
+dai premi in monete. `guess_xp_participation` (**20**) a **ogni partecipante** (≥1 tentativo) +
+`guess_xp_solved` (**10**) a chi indovina + **bonus podio** `guess_xp_podium_*` (**50/30/20**, gli
+stessi valori del quiz) ai top-3 risolutori. Anche un round senza premi in monete concede l'XP.
+
+**Monete (`award_prizes`) — gated sui premi configurati**:
+- **Risolutori — classifica invariata.** Il **podio 1°/2°/3° è riservato ai risolutori**
+  (`podium_n = min(3, n_solver)`, un non-solver non lo raggiunge mai), e la **consolazione a
+  scendere** (scala condivisa `services/prizes.py`, la stessa del quiz) da `prize_consolation` fino
+  a `prize_min` copre i **soli risolutori** oltre il podio.
+- **Non-risolutori — importo fisso, solo se il round ha premi.** Ognuno riceve `guess_nonsolver_coins`
+  (default **25 🪙**, kind `participation`), pagato **solo** quando `has_prize(round_)` è vero: un
+  round senza premi (`0 0 0 0`) **non** dà monete a chi non ha indovinato (ma l'XP sopra sì). Così
+  «chi indovina è sempre più in alto», e chi non indovina prende un riconoscimento fisso col montepremi.
+
+Il **minimo garantito** (`prize_min`, floor) è **derivato** (`services.prizes.participation_floor`)
+dallo shared `quiz_participation_floor_*` (`floor_min` default **25**): vale per quiz **e**
+guess/sound. L'annuncio (`_podium_text`) mostra l'intera classifica, con i CoInn e il segno «non
+indovinato» per chi non ha risolto (🏆 podio, 🎖️ tutto il resto). Ledger:
 `TransactionType.quiz_reward`, riusato apposta — è già «premio di un gioco della community».
 
 La **scheda admin mostra la risposta e le ultime risposte scartate**: è l'unico modo per

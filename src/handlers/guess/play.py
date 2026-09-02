@@ -7,9 +7,10 @@ needs asyncio timers because its clock is per question; here it is per session,
 and the simpler shape is the safer one. The player is told the deadline as a wall
 clock time up front, so nobody waits for a "time's up!" that no timer will send.
 
-**The guard order below is load-bearing**: cooldown → already solved → deadline →
-attempts → judge. A throttled, late or budget-exhausted message must never cost
-an attempt and must never reach the model.
+**The guard order below is load-bearing**: command → cooldown → already solved →
+deadline → attempts → judge. A command (``/start`` from re-tapping «avvia»), a
+throttled, late or budget-exhausted message must never cost an attempt and must
+never reach the model.
 
 A wrong answer never echoes the correct one, and the model's own words never
 reach the player — only the boolean it produced.
@@ -186,10 +187,12 @@ async def start_guess_session(
 
     await state.set_state(GuessPlayStates.answering)
     await state.update_data(round_id=round_id)
+    desc_txt = f"<i>{esc(round_.description)}</i>\n\n" if round_.description else ""
     await _reply(
         message,
         state,
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
+        f"{desc_txt}"
         "Scrivimi il <b>titolo del gioco</b>.\n"
         f"{_status_line(round_, sess, left)}\n"
         "<i>Meno tentativi usi, più in alto finisci nel podio!</i>",
@@ -202,6 +205,11 @@ async def fsm_answer(message: Message, db_session: AsyncSession, state: FSMConte
     raw = (message.text or "").strip()
     if not raw:
         return  # a sticker or a photo is not an attempt
+    if raw.startswith("/"):
+        # A command typed mid-round — typically /start, from re-tapping «avvia» on
+        # the deep-link when a player hasn't realised the round already began — must
+        # never cost an attempt. It is simply ignored while answering.
+        return
 
     round_id = (await state.get_data()).get("round_id")
     round_ = await guess_service.get_round(db_session, round_id) if round_id else None

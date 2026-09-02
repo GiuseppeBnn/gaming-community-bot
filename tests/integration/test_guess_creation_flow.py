@@ -997,6 +997,52 @@ class TestPublish:
         assert "creato" in bot.screen.lower()
 
 
+class TestDescription:
+    """The optional player-facing description: set it, skip it, refuse it too long,
+    and persist it. It is a card field like the aliases — never a mandatory step."""
+
+    async def test_editing_sets_it_and_the_card_shows_it(self, state):
+        await _to_card(state)
+
+        screen = await _edit(state, "description", "Un classico FPS del 1993")
+
+        assert (await state.get_data())["description"] == "Un classico FPS del 1993"
+        assert "Un classico FPS del 1993" in screen
+
+    async def test_a_skip_word_clears_it(self, state):
+        await _to_card(state)
+        await _edit(state, "description", "Qualcosa")
+
+        await _edit(state, "description", "-")
+
+        assert (await state.get_data())["description"] == ""
+
+    async def test_an_over_long_description_is_refused(self, state):
+        await _to_card(state)
+
+        screen = await _edit(state, "description", "x" * (cr._MAX_DESC + 1))
+
+        assert "⚠️" in screen
+        assert (await state.get_data())["description"] == ""
+
+    async def test_publishing_persists_the_description(self, state, session):
+        await _to_card(state)
+        await _edit(state, "description", "Sparatutto leggendario")
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        r = (await session.execute(select(GuessRound))).scalar_one()
+        assert r.description == "Sparatutto leggendario"
+
+    async def test_publishing_untouched_leaves_no_description(self, state, session):
+        await _to_card(state)
+
+        await cr.cb_publish(_Cb("guess_new:publish"), state, session)
+
+        r = (await session.execute(select(GuessRound))).scalar_one()
+        assert r.description is None
+
+
 class TestCancel:
     async def test_cancelling_asks_first(self, state, bot):
         await _to_card(state)

@@ -494,6 +494,11 @@ class GuessRound(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Optional flavour text shown in the group announcement and the private play
+    # screen. Player-facing like the title, so it must never contain the answer;
+    # the creation prompt says so. Added after the first deploy → has a
+    # `_MIGRATIONS` entry.
+    description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
     group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)

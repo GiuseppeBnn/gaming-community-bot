@@ -91,9 +91,11 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
     # one nobody knows about. The medium is NOT posted — see the module docstring.
     try:
         bot_info = await bot.get_me()
+        desc_txt = f"<i>{esc(round_.description)}</i>\n" if round_.description else ""
         await group_registry.send_group_message(
             bot, db_session,
             f"{spec.emoji} <b>{esc(spec.label.upper())}: {esc(round_.title)}</b>\n"
+            f"{desc_txt}"
             f"🎯 {round_.max_attempts} tentativi · {time_txt} · "
             f"🏆 {guess_service.format_prize_summary(round_)}{closes_txt}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ci arriva in <b>meno "
@@ -218,7 +220,10 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
     for uid, earned in trophy_notes.items():
         await announce_trophies(bot, db_session, uid, earned)
 
-    text = await _podium_text(db_session, round_, ranked, awards)
+    # The announcement shows the FULL ranking (solvers + non-solvers, each with the
+    # coins they got), not just the solver podium `ranked` used for the trophies above.
+    full_ranking = await guess_service.full_standings(db_session, round_id)
+    text = await _podium_text(db_session, round_, full_ranking, awards)
     group_id = group_registry.get_group_id()
     if group_id != 0:
         # Two separate `try`s, and the split is the point. The medium is a bonus;
@@ -286,7 +291,7 @@ async def _cmd_guess_list(message: Message, db_session: AsyncSession, kind: str)
         await _show_play_view(message, db_session, kind)
         return
     if await redirect_to_private(
-        message, "admin", "🛠️ Apri il pannello", notice=_GUESS_PRIVATE_NOTICE
+        message, f"manage_{kind}", "🎮 Gestisci gli eventi", notice=_GUESS_PRIVATE_NOTICE
     ):
         return
     from handlers.event_types.guess_type import GuessType
@@ -305,26 +310,37 @@ async def cmd_sound_quest(message: Message, db_session: AsyncSession) -> None:
 
 
 async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:
+    """Render the full closing ranking.
+
+    ``ranked`` is the full participant list (``guess_service.RankedPlayer``): solvers
+    first, with medals and their attempts/time, then non-solvers marked «non
+    indovinato». Both show the CoInn they received — solvers keep the podium +
+    consolation ranking, non-solvers a single fixed reward (only on a prized round).
+    """
     spec = kind_of(round_.kind)
     header = (
         f"🏁 <b>{esc(round_.title)}</b> — chiuso!\n"
         f"✅ Era: <b>{esc(round_.answer)}</b>\n"
     )
     if not ranked:
-        return header + "\n<i>Nessuno ci è arrivato. Alla prossima!</i>"
+        return header + "\n<i>Nessuno ci ha giocato. Alla prossima!</i>"
 
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
-    lines = [f"{spec.emoji} {header}", f"<b>PODIO {esc(spec.label.upper())}</b>\n"]
+    lines = [f"{spec.emoji} {header}", f"<b>CLASSIFICA {esc(spec.label.upper())}</b>\n"]
     for i, row in enumerate(ranked[:10]):
-        rank = medals[i] if i < 3 else f"{i + 1}."
+        # Medals only for solvers on the actual podium; everyone else is numbered.
+        rank = medals[i] if (row.solved and i < 3) else f"{i + 1}."
         who = await mention(db_session, row.user_tg_id)
-        tries = "1 tentativo" if row.attempts == 1 else f"{row.attempts} tentativi"
-        time_txt = f" · ⏱️ {format_seconds_short(round(row.solve_ms / 1000))}"
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:
-            icon = "🎖️" if award.kind == "consolation" else "🏆"
+            icon = "🏆" if award.kind == "podium" else "🎖️"
             prize_txt = f" — {icon} <b>+{award.coins} 🪙 CoInn</b>"
-        lines.append(f"{rank} {who} — {tries}{time_txt}{prize_txt}")
+        if row.solved:
+            tries = "1 tentativo" if row.attempts == 1 else f"{row.attempts} tentativi"
+            time_txt = f" · ⏱️ {format_seconds_short(round((row.solve_ms or 0) / 1000))}"
+            lines.append(f"{rank} {who} — {tries}{time_txt}{prize_txt}")
+        else:
+            lines.append(f"{rank} {who} — ❌ non indovinato{prize_txt}")
     return "\n".join(lines)

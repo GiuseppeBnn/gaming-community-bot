@@ -4,6 +4,7 @@ General-purpose handlers: /start (with deep-link dispatch), /profilo, /help.
 Deep-link payloads routed through /start:
   create_bet            → opens the bet-creation FSM in private chat
   create_poll           → opens the poll-creation FSM in private chat (admin only)
+  manage_quiz/guess/sound → admin management list of that event type (from /quiz etc.)
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   guess_<id> / sound_<id> → plays a Guess The Game / Sound Quest round in private
@@ -56,6 +57,30 @@ async def _show_help(message: Message, is_admin: bool) -> None:
     await message.answer(render_legend(is_admin))
 
 
+async def _ensure_welcome_trophy(message: Message, db_session: AsyncSession) -> None:
+    """Grant the «first_steps» welcome trophy if the caller is using the bot but
+    somehow never got it (see cmd_start for why an admin can miss it). Idempotent:
+    ``award_badge`` returns ``is_new=False`` for anyone who already owns it, so this
+    only ever affects the few users who slipped through. Announced like every trophy."""
+    from database.models import Badge
+    from handlers._trophy_announce import announce_trophies
+    from services import badge_service
+
+    _ub, is_new = await badge_service.award_badge(
+        db_session, message.from_user.id, badge_service.BADGE_FIRST_STEPS
+    )
+    if not is_new:
+        return
+    await db_session.commit()
+    badge = (
+        await db_session.execute(
+            select(Badge).where(Badge.slug == badge_service.BADGE_FIRST_STEPS)
+        )
+    ).scalar_one_or_none()
+    if badge is not None:
+        await announce_trophies(message.bot, db_session, message.from_user.id, [badge])
+
+
 @router.message(CommandStart())
 async def cmd_start(
     message: Message,
@@ -92,6 +117,13 @@ async def cmd_start(
                 await show_rules_prompt(message)
             return
 
+    # Welcome-trophy backfill (idempotent): reaching here means the caller is using
+    # the bot and has cleared the onboarding gate — either they completed onboarding
+    # (and normally already have the trophy) or they are a Telegram-recognized admin
+    # who bypasses the rules-acceptance flow, which is the only place «first_steps» is
+    # granted. Without this, such an admin never gets it. No-op for anyone who has it.
+    await _ensure_welcome_trophy(message, db_session)
+
     payload = command.args or ""
 
     # Deep-link: admin (admin tools dashboard)
@@ -108,6 +140,24 @@ async def cmd_start(
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.events import show_hub
             await show_hub(message)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
+    # Deep-link: manage_quiz / manage_guess / manage_sound — the admin management
+    # list of that event type. This is where /quiz, /guessTheGame and /soundQuest
+    # send an admin from the group: straight to the type's own list, not the whole
+    # /admin dashboard.
+    if payload in ("manage_quiz", "manage_guess", "manage_sound"):
+        if await is_bot_admin(message.bot, message.from_user.id):
+            if payload == "manage_quiz":
+                from handlers.event_types.quiz_type import QuizType
+                await QuizType().render_list(message, db_session)
+            else:
+                from handlers.event_types.guess_type import GuessType
+                await GuessType("guess" if payload == "manage_guess" else "sound").render_list(
+                    message, db_session
+                )
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return

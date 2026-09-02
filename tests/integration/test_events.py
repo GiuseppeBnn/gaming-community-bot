@@ -190,12 +190,12 @@ class TestPollCreationFlow:
         )
 
         state = _fresh_state()
-        await state.set_state(PollTemplateStates.options)
+        await state.set_state(PollTemplateStates.description)
         await state.update_data(pt_question="Best game?", pt_creator=1)
         bot = _FakeBot()
 
-        await fsm_pt_options(_FakeMessage("A\nB\nC", bot), state)
         await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await fsm_pt_options(_FakeMessage("A\nB\nC", bot), state)
         await cb_pt_prize_none(_FakeCallback(bot), state)
         cb = _FakeCallback(bot)
         await cb_pt_close_none(cb, state, session)
@@ -232,12 +232,12 @@ class TestPollCreationFlow:
         )
 
         state = _fresh_state()
-        await state.set_state(PollTemplateStates.options)
+        await state.set_state(PollTemplateStates.description)
         await state.update_data(pt_question="Best game?", pt_creator=1)
         bot = _FakeBot()
 
-        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await fsm_pt_description(_FakeMessage("Vota il migliore!", bot), state)
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await cb_pt_prize_default(_FakeCallback(bot), state)
         # An absolute future date for the auto-close.
         when = (datetime.now(tz=timezone.utc) + timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
@@ -249,6 +249,34 @@ class TestPollCreationFlow:
         assert poll.prize_xp == settings.poll_reward_xp
         assert poll.closes_at is not None
         assert await state.get_state() is None
+
+    async def test_a_description_that_overflows_the_question_is_reprompted(self, session):
+        """Question + description are folded into one native poll question (max 300),
+        so an over-long description is refused and re-asked (like the trivia question
+        length check) until it fits; a shorter one then advances to the options."""
+        from handlers.events import (
+            PollTemplateStates,
+            _poll_length_overflow,
+            fsm_pt_description,
+        )
+
+        # An empty description always fits, whatever the question length.
+        assert _poll_length_overflow("Q" * 300, "") == 0
+
+        state = _fresh_state()
+        await state.set_state(PollTemplateStates.description)
+        await state.update_data(pt_question="Q" * 280, pt_creator=1)
+        bot = _FakeBot()
+
+        too_long = _FakeMessage("D" * 100, bot)  # 280 + 2 + 100 = 382 > 300
+        await fsm_pt_description(too_long, state)
+        assert await state.get_state() == PollTemplateStates.description.state
+        assert "300" in too_long.replies[-1][0]
+
+        ok = _FakeMessage("D" * 10, bot)  # 280 + 2 + 10 = 292 ≤ 300
+        await fsm_pt_description(ok, state)
+        assert await state.get_state() == PollTemplateStates.options.state
+        assert (await state.get_data())["pt_description"] == "D" * 10
 
     async def test_custom_prize_forces_a_close_date(self, session):
         """Custom-prize branch (with an invalid-entry reprompt on each amount). A
@@ -267,12 +295,12 @@ class TestPollCreationFlow:
         )
 
         state = _fresh_state()
-        await state.set_state(PollTemplateStates.options)
+        await state.set_state(PollTemplateStates.description)
         await state.update_data(pt_question="Best game?", pt_creator=1)
         bot = _FakeBot()
 
-        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await cb_pt_prize_custom(_FakeCallback(bot), state)
         assert await state.get_state() == PollTemplateStates.prize_coins.state
 
@@ -312,12 +340,12 @@ class TestPollCreationFlow:
         )
 
         state = _fresh_state()
-        await state.set_state(PollTemplateStates.options)
+        await state.set_state(PollTemplateStates.description)
         await state.update_data(pt_question="Best game?", pt_creator=1)
         bot = _FakeBot()
 
-        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await cb_pt_desc_skip(_FakeCallback(bot), state)
+        await fsm_pt_options(_FakeMessage("A\nB", bot), state)
         await cb_pt_prize_none(_FakeCallback(bot), state)
         # No prize → the close is a menu (none / schedule); pick «schedule».
         assert await state.get_state() == PollTemplateStates.close_choice.state

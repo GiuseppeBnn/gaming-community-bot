@@ -57,6 +57,7 @@ from handlers.guess._shared import (
     _MAX_ALIASES,
     _MAX_ANSWER,
     _MAX_ATTEMPTS_ALLOWED,
+    _MAX_DESC,
     _MAX_HINT,
     _MAX_HINTS,
     _MAX_ROUND_DURATION,
@@ -96,6 +97,16 @@ def _parse_title(raw: str, _data: dict) -> tuple[str | None, str | None]:
     if len(raw) < 3:
         return None, "⚠️ Il titolo deve avere almeno 3 caratteri."
     if err := too_long(raw, _MAX_TITLE, "Il titolo è troppo lungo"):
+        return None, err
+    return raw, None
+
+
+def _parse_description(raw: str, _data: dict) -> tuple[str | None, str | None]:
+    """The optional flavour text. «-» (and the other skip words) clears it, so a
+    description set by mistake can be removed the same way it is skipped."""
+    if raw.lower() in _SKIP_WORDS:
+        return "", None
+    if err := too_long(raw, _MAX_DESC, "La descrizione è troppo lunga"):
         return None, err
     return raw, None
 
@@ -303,6 +314,16 @@ FIELDS: dict[str, Field] = {
         parse=_parse_title,
         show=lambda d: f"<b>{esc(d['title'])}</b>",
     ),
+    "description": Field(
+        label="📝 Descrizione",
+        prompt=(
+            f"Invia una breve <b>descrizione</b> (max {_MAX_DESC} caratteri).\n"
+            "<i>La vedono tutti nel gruppo e all'avvio del gioco: non metterci la "
+            "soluzione.</i>\nManda «-» per non averne."
+        ),
+        parse=_parse_description,
+        show=lambda d: esc(d["description"]) if d["description"] else "<i>nessuna</i>",
+    ),
     "answer": Field(
         label="✅ Risposta",
         prompt=(
@@ -401,6 +422,7 @@ def _defaults() -> dict:
     """Everything the three mandatory questions do not ask. The card opens on
     these, so the short path still produces a playable round."""
     return {
+        "description": "",
         "aliases": [],
         "hints": [],
         "max_attempts": settings.guess_default_attempts,
@@ -432,7 +454,8 @@ def _card_kb() -> InlineKeyboardMarkup:
     b.button(text="✏️ 🖼️ Media", callback_data=GuessNewCb(action="edit", key=_MEDIA_FIELD).pack())
     b.button(text="✅ Pubblica", callback_data=GuessNewCb(action="publish").pack())
     b.button(text="❌ Annulla", callback_data=GuessNewCb(action="cancel").pack())
-    b.adjust(2, 2, 2, 2, 1, 1, 1)
+    # 9 fields + the media button pair two per row; publish and cancel get a row each.
+    b.adjust(2, 2, 2, 2, 2, 1, 1)
     return b.as_markup()
 
 
@@ -930,6 +953,7 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: Asy
         kind=data["kind"],
         creator_tg_id=data["creator_id"],
         title=data["title"],
+        description=data.get("description") or None,
         media_file_id=data["media_file_id"],
         media_kind=data["media_kind"],
         answer=data["answer"],

@@ -141,6 +141,43 @@ async def search_users(session: AsyncSession, query: str, limit: int = 15) -> li
     return list(result.scalars().all())
 
 
+async def resolve_usernames(
+    session: AsyncSession, names: list[str]
+) -> tuple[list[User], list[str]]:
+    """Resolve a list of @usernames to users by **exact** (case-insensitive) match.
+
+    Returns ``(found, missing)``: the ``User`` rows that matched, and the input
+    tokens (as typed) that matched nothing. The leading ``@`` is optional and
+    stripped; blanks and duplicates are removed while preserving first-seen order.
+    Exact match only — this pays out coins/XP, so a fuzzy match to the wrong person
+    is not acceptable (unlike the ``search_users`` picker, which the admin confirms).
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in names:
+        token = raw.strip().lstrip("@").strip()
+        if token and token.lower() not in seen:
+            seen.add(token.lower())
+            cleaned.append(token)
+    if not cleaned:
+        return [], []
+    rows = (
+        await session.execute(
+            select(User).where(func.lower(User.username).in_([t.lower() for t in cleaned]))
+        )
+    ).scalars().all()
+    by_lower = {u.username.lower(): u for u in rows if u.username}
+    found: list[User] = []
+    missing: list[str] = []
+    for token in cleaned:
+        user = by_lower.get(token.lower())
+        if user is not None:
+            found.append(user)
+        else:
+            missing.append(token)
+    return found, missing
+
+
 async def list_users(
     session: AsyncSession, offset: int = 0, limit: int = 8
 ) -> list[tuple[User, int]]:
@@ -153,6 +190,19 @@ async def list_users(
         .limit(limit)
     )
     return [(row[0], row[1]) for row in result.all()]
+
+
+async def get_users_by_ids(session: AsyncSession, tg_ids: list[int]) -> list[User]:
+    """Users for a set of tg_ids, returned in the order of ``tg_ids`` (ids that
+    match nothing are dropped). Used by the multi-recipient reward picker to render
+    and pay the current selection — an exact-id lookup, no fuzzy matching."""
+    if not tg_ids:
+        return []
+    rows = (
+        await session.execute(select(User).where(User.tg_id.in_(tg_ids)))
+    ).scalars().all()
+    by_id = {u.tg_id: u for u in rows}
+    return [by_id[i] for i in tg_ids if i in by_id]
 
 
 async def count_users(session: AsyncSession) -> int:

@@ -35,9 +35,25 @@ log = logging.getLogger(__name__)
 
 POLL_MISSING = "missing"
 
+#: Telegram's hard cap on a native poll question. The description is folded into
+#: the question (a native poll has no description field), so the combined text is
+#: capped here as a defensive backstop — the creation flow already validates it.
+POLL_QUESTION_MAX = 300
+#: Separator between the question and the folded-in description.
+_DESC_SEP = "\n\n"
+
 
 def _now() -> datetime:
     return datetime.now(tz=timezone.utc).replace(tzinfo=None)
+
+
+def question_length(text: str) -> int:
+    """Length of a poll question the way Telegram counts it: **UTF-16 code units**,
+    not Python code points. An emoji like 🪙 is one code point but two UTF-16 units,
+    so counting code points would under-count and let an over-limit question through
+    to a rejected ``sendPoll``. Used to decide whether the prize/close info block
+    still fits inside the poll question (STEERING §18.2)."""
+    return len(text.encode("utf-16-le")) // 2
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +86,28 @@ async def create_template(
     session.add(poll)
     await session.flush()
     return poll
+
+
+def render_question(poll: PollTemplate) -> str:
+    """The text sent as the native poll's question: the question and, when set, the
+    description on the lines below it (a native poll has no separate description
+    field, so it lives *inside* the question — STEERING §18.2). Capped at Telegram's
+    300-char limit as a backstop; the creation flow validates the combined length."""
+    if poll.description:
+        return f"{poll.question}{_DESC_SEP}{poll.description}"[:POLL_QUESTION_MAX]
+    return poll.question[:POLL_QUESTION_MAX]
+
+
+def format_reward_dm(poll: PollTemplate) -> str:
+    """The private notification each voter gets when a rewarded poll closes,
+    mirroring the admin manual-grant DM. Only called for a poll with a prize, so
+    at least one half is non-empty."""
+    parts: list[str] = []
+    if poll.prize_coins > 0:
+        parts.append(f"<b>{poll.prize_coins:,} CoInn</b> 🪙")
+    if poll.prize_xp > 0:
+        parts.append(f"<b>{poll.prize_xp:,} XP</b> ⚡")
+    return "🏆 Hai ricevuto " + " + ".join(parts) + " per aver votato al sondaggio!"
 
 
 def options_of(poll: PollTemplate) -> list[str]:
@@ -271,9 +309,9 @@ def _active_voter_ids(rows: Iterable[tuple[int, str]]) -> tuple[int, ...]:
     return tuple(sorted({uid for uid, opts_json in rows if _nonempty(opts_json)}))
 
 
-async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
-    """Pay the participation prize to every current voter. Returns how many were
-    paid. No-commit (STEERING §5).
+async def pay_voters(session: AsyncSession, poll: PollTemplate) -> list[int]:
+    """Pay the participation prize to every current voter. Returns the tg ids that
+    were actually paid (so the caller can notify each one). No-commit (STEERING §5).
 
     A voter with a retracted (empty) choice is not a participant. Each user's
     payment is isolated: a missing wallet on one row (should not happen — voters
@@ -283,7 +321,7 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
     coins = poll.prize_coins
     xp = poll.prize_xp
     if coins <= 0 and xp <= 0:
-        return 0
+        return []
     # The close claim normally already owns this root row. Re-lock it here so
     # direct callers follow the same root → Users → Wallets order before payout.
     await session.execute(
@@ -302,7 +340,7 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
     # Do not prevalidate: a missing wallet is deliberately handled per voter in
     # the loop below, so it cannot abort another voter's prize.
     await economy_service.lock_users_then_wallets(session, participants)
-    paid = 0
+    paid: list[int] = []
     for uid in participants:
         try:
             if coins > 0:
@@ -317,5 +355,5 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> int:
         except WalletNotFoundError:
             log.warning("Votante %s del sondaggio %s senza wallet, premio saltato.", uid, poll.id)
             continue
-        paid += 1
+        paid.append(uid)
     return paid
