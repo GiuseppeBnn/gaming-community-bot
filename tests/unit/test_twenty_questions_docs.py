@@ -29,6 +29,9 @@ def test_public_docs_and_env_describe_the_v2_contract():
         "10 XP",
         "RISPOSTA: nome del gioco",
         "/gioco_alduino",
+        "pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)",
+        "CoInn vengono accreditati solo in caso di vittoria.",
+        "CoInn: 0 su scadenza o chiusura admin.",
         "Il resto della divisione non viene assegnato a nessuno.",
         "12 ore",
     ):
@@ -79,3 +82,22 @@ def test_templates_document_only_safe_configuration_examples():
     assert "TEST_PG_URL" in readme
     assert "sk-or-v1-" not in env_example
     assert "gsk_" not in env_example
+
+
+def test_index_navigates_the_complete_v2_implementation_set():
+    """New source, eval, and SDD artifacts must remain discoverable from the map."""
+    index = _read("INDEX.md")
+
+    for path in (
+        "ai_game_types.py",
+        "structured_ai_router.py",
+        "scripts/eval_twenty_questions.py",
+        "evals/twentyq/v1.jsonl",
+        "docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md",
+        "docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md",
+        "tests/unit/test_twenty_questions_docs.py",
+    ):
+        assert path in index
+
+    assert "§0–§27" in index
+    assert "~2250 righe" in index

@@ -19,14 +19,15 @@ dato corrente, non questo indice come metrica verificabile.
 | File | Cosa contiene | Leggilo quando |
 | --- | --- | --- |
 | [README.md](README.md) | Setup, avvio locale/Docker, comandi del bot, CI/CD, FAQ | Devi **far girare** il bot |
-| [STEERING.md](STEERING.md) | Documento **normativo** (§0–§25, ~1800 righe): architettura, invarianti, ogni sottosistema in dettaglio | Devi **modificare** il codice |
+| [STEERING.md](STEERING.md) | Documento **normativo** (§0–§27, ~2250 righe): architettura, invarianti, ogni sottosistema in dettaglio | Devi **modificare** il codice |
 | [CLAUDE.md](CLAUDE.md) | Regole operative condensate + ricette per agenti/nuovi contributor | Prima di scrivere codice, come riassunto di STEERING |
 | [INDEX.md](INDEX.md) | Questo file: mappa dei file | Non sai **dove** sta una cosa |
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
 | [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
 | [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
-| [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task degli stessi giochi | Ricostruire la sequenza di lavoro |
+| [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |
+| [tests/unit/test_twenty_questions_docs.py](tests/unit/test_twenty_questions_docs.py) | Gate del contratto pubblico, template e navigazione v2 | Modifichi documentazione o configurazione del gioco segreto |
 
 ### Sezioni di STEERING.md
 
@@ -126,8 +127,10 @@ src/                                  # src-layout: i package restano top-level 
 | `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
 | `group_context.py` | Rolling transcript locale, potatura e rendering senza Telegram ID |
 | `ai_game_service.py` | Aggregate, ledger, quote personali e lifecycle del gioco segreto v2 (20 Domande è legacy v1) |
+| `ai_game_types.py` | Tipi immutabili del dominio: policy, quote, turni, outcome e risultati terminali |
 | `ai_game_rewards.py` | Terminalizzazione idempotente, quote CoInn uguali, XP e allocazioni in una transazione |
 | `ai_provider_audit.py` | Audit provider prompt-free per tentativo del gioco |
+| `structured_ai_router.py` | Catena provider strutturata, deadline totale e tentativi auditabili |
 | `twenty_questions_rules.py` | Policy v2, formula del pool e proiezioni di quota |
 | `twenty_questions_ai.py` | Prompt/schema strutturato, normalizzazione e cache duplicati |
 | `twenty_questions_eval.py` | Costruzione route eval/provider, separata dal runtime |
@@ -215,6 +218,8 @@ eseguita solo su PostgreSQL. Non c'è Alembic.
 | `scripts/export_state.py` | Snapshot totale del DB (`state-*.jsonl.gz`) |
 | `scripts/import_state.py` | Ripristino post-migrazione (`--mode empty\|replace`) |
 | `scripts/login_telethon.py` | Login MTProto una tantum → `TELEGRAM_SESSION` (**credenziale sensibile**) |
+| `scripts/eval_twenty_questions.py` | CLI opt-in per valutare il gioco segreto senza percorso runtime |
+| `evals/twentyq/v1.jsonl` | Dataset sintetico versionato dell'eval del gioco segreto |
 | `catalogs/*.example.csv` | Template dei cataloghi: copiali in `data/` senza `.example` |
 
 ---

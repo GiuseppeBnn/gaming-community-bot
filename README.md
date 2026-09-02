@@ -281,6 +281,7 @@ duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano n
 
 Chi registra almeno un turno valido riceve 10 XP alla chiusura, anche se il gioco scade o viene
 chiuso da un admin. Se il gruppo indovina, tutti i partecipanti ricevono la stessa quota CoInn.
+I CoInn vengono accreditati solo in caso di vittoria. CoInn: 0 su scadenza o chiusura admin.
 Con il default di 100 CoInn massimi a persona:
 
 `pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)`
