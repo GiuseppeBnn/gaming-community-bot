@@ -14,7 +14,7 @@ and user prompts.
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal, InvalidOperation, ROUND_CEILING
+from decimal import Decimal, DecimalException, ROUND_CEILING
 import json
 import logging
 import re
@@ -34,6 +34,8 @@ AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
 _TEMPERATURE = 0.9
 _DEFAULT_MAX_TOKENS = 300
+_MAX_DB_INTEGER = 2_147_483_647
+_MAX_DB_BIGINT = 9_223_372_036_854_775_807
 
 #: A hybrid-reasoning model writes its chain of thought INSIDE `content` when the
 #: reasoning switch is off — unlike `openai/gpt-oss-*`, which puts it in a field
@@ -57,7 +59,15 @@ def parse_model_list(raw: str) -> tuple[str, ...]:
 
 
 def _usage_int(value: Any) -> int | None:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+    return (
+        value
+        if (
+            isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= _MAX_DB_INTEGER
+        )
+        else None
+    )
 
 
 def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
@@ -85,11 +95,32 @@ def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
     try:
         cost = Decimal(str(usage["cost"]))
         if not cost.is_finite() or cost < 0:
-            raise InvalidOperation
-    except (KeyError, InvalidOperation, ValueError):
+            return metrics, None
+        microusd = int(
+            (cost * Decimal("1000000")).to_integral_value(rounding=ROUND_CEILING),
+        )
+    except (KeyError, DecimalException, OverflowError, ValueError):
         return metrics, None
-    microusd = int((cost * Decimal("1000000")).to_integral_value(rounding=ROUND_CEILING))
-    return metrics, microusd
+    return metrics, microusd if microusd <= _MAX_DB_BIGINT else None
+
+
+def _openrouter_provider_policy(
+    *, require_zdr: bool, allow_fallbacks: bool,
+) -> dict[str, Any]:
+    """Build the shared privacy, routing and price ceiling policy."""
+    provider: dict[str, Any] = {
+        "allow_fallbacks": allow_fallbacks,
+        "require_parameters": True,
+        "data_collection": "deny",
+        "sort": "price",
+        "max_price": {
+            "prompt": float(settings.openrouter_max_prompt_price),
+            "completion": float(settings.openrouter_max_completion_price),
+        },
+    }
+    if require_zdr:
+        provider["zdr"] = True
+    return provider
 
 
 async def _settle_openrouter(
@@ -144,18 +175,6 @@ async def generate_openrouter_completion(
         logger.exception("Budget AI non verificabile: chiamata paid bloccata.")
         raise AIServiceError("budget unavailable") from exc
 
-    provider: dict[str, Any] = {
-        "allow_fallbacks": True,
-        "require_parameters": True,
-        "data_collection": "deny",
-        "sort": "price",
-        "max_price": {
-            "prompt": float(settings.openrouter_max_prompt_price),
-            "completion": float(settings.openrouter_max_completion_price),
-        },
-    }
-    if require_zdr:
-        provider["zdr"] = True
     payload: dict[str, Any] = {
         "models": list(models),
         "messages": [
@@ -165,7 +184,9 @@ async def generate_openrouter_completion(
         "temperature": _TEMPERATURE if temperature is None else temperature,
         "max_tokens": max_tokens,
         "reasoning": {"effort": "none", "exclude": True},
-        "provider": provider,
+        "provider": _openrouter_provider_policy(
+            require_zdr=require_zdr, allow_fallbacks=True,
+        ),
         "usage": {"include": True},
     }
     headers = {
@@ -180,13 +201,13 @@ async def generate_openrouter_completion(
                 settings.openrouter_url, headers=headers, json=payload,
             ) as response:
                 if response.status != 200:
-                    body = await response.text()
+                    await response.read()
                     await _settle_openrouter(
                         reservation, status="failed", actual_microusd=0,
                     )
                     logger.warning(
-                        "OpenRouter %s: status %s (error body: %s caratteri).",
-                        feature, response.status, len(body),
+                        "OpenRouter %s: status %s (model=%s).",
+                        feature, response.status, models[0],
                     )
                     raise AIServiceError(f"status {response.status}")
                 data = await response.json()
@@ -277,9 +298,11 @@ async def generate_groq_completion(
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
             async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
                 if resp.status != 200:
-                    body = await resp.text()
+                    await resp.read()
                     logger.error(
-                        "Groq ha risposto con status %s: %s", resp.status, body[:500]
+                        "Groq ha risposto con status %s (model=%s).",
+                        resp.status,
+                        settings.groq_model,
                     )
                     raise AIServiceError(f"status {resp.status}")
                 data = await resp.json()
@@ -287,14 +310,14 @@ async def generate_groq_completion(
         logger.warning("Timeout nella chiamata a Groq.")
         raise AIServiceError("timeout") from exc
     except aiohttp.ClientError as exc:
-        logger.warning("Errore di rete nella chiamata a Groq: %s", exc)
+        logger.warning("Errore di rete nella chiamata a Groq (model=%s).", settings.groq_model)
         raise AIServiceError("network error") from exc
 
     try:
         content = data["choices"][0]["message"]["content"]
         text = _THINK_BLOCK.sub("", content).strip()
     except (KeyError, IndexError, TypeError, AttributeError) as exc:
-        logger.error("Risposta Groq malformata: %s", data)
+        logger.error("Risposta Groq malformata (model=%s).", settings.groq_model)
         raise AIServiceError("malformed response") from exc
 
     # Everything the model produced was reasoning. An empty reply in the group
@@ -392,7 +415,7 @@ def _log_judge_http_failure(status: int, body: str) -> None:
             settings.groq_judge_model, _JUDGE_MAX_TOKENS,
         )
         return
-    logger.warning("Giudice: status %s — %s", status, body[:300])
+    logger.warning("Giudice: status %s (model=%s).", status, settings.groq_judge_model)
 
 
 async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
@@ -446,7 +469,10 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
             if attempt == 2:
                 raise AIServiceError("timeout") from exc
         except aiohttp.ClientError as exc:
-            logger.warning("Errore di rete verso il giudice: %s", exc)
+            logger.warning(
+                "Errore di rete verso il giudice (model=%s).",
+                settings.groq_judge_model,
+            )
             if attempt == 2:
                 raise AIServiceError("network error") from exc
         await asyncio.sleep(_JUDGE_RETRY_DELAY)
@@ -455,11 +481,17 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
         content = data["choices"][0]["message"]["content"]  # type: ignore[index]
         verdict = json.loads(content)["corretta"]
     except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
-        logger.error("Verdetto del giudice illeggibile: %s", data)
+        logger.error(
+            "Verdetto del giudice illeggibile (model=%s).",
+            settings.groq_judge_model,
+        )
         raise AIServiceError("malformed verdict") from exc
     # `isinstance(True, int)` is True in Python, so an int would slip past a
     # bool() cast. Only a real boolean counts as a verdict.
     if not isinstance(verdict, bool):
-        logger.error("Verdetto del giudice non booleano: %r", verdict)
+        logger.error(
+            "Verdetto del giudice non booleano (model=%s).",
+            settings.groq_judge_model,
+        )
         raise AIServiceError("non-boolean verdict")
     return verdict

@@ -54,6 +54,29 @@ async def test_execute_task_delegates_to_spec():
     assert got_group == 123  # resolved from task.group_id
 
 
+async def test_execute_task_returns_the_spec_post_commit_hook_unchanged():
+    """The registry adapter must not know which event type needs post-commit I/O."""
+    events: list[str] = []
+
+    async def hook():
+        events.append("hook")
+
+    class _Demo:
+        key = "demo"
+        hub_label = "🎮 Demo"
+        create_label = "➕ Demo"
+
+        async def execute_scheduled(self, bot, session, task, group_id):
+            return hook
+
+    event_types.register(_Demo())
+    returned = await schedule.execute_task(object(), object(), _task())
+
+    assert returned is hook
+    await returned()
+    assert events == ["hook"]
+
+
 async def test_execute_task_unknown_type_raises():
     task = _task(task_type="ghost")  # not registered
     with pytest.raises(RuntimeError, match="Tipo task sconosciuto"):

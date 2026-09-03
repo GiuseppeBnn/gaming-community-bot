@@ -46,6 +46,7 @@ _TX_LABELS = {
     TransactionType.shop_purchase.value: "🛒 Acquisto negozio",
     TransactionType.quiz_reward.value: "🧠 Premio quiz",
     TransactionType.poll_reward.value: "📊 Premio sondaggio",
+    TransactionType.ai_game_reward.value: "🐲 Premio gioco di Alduino",
 }
 
 

@@ -6,7 +6,13 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from services.schedule_service import parse_duration, parse_run_at, to_local, utcnow
+from services.schedule_service import (
+    parse_absolute_run_at,
+    parse_duration,
+    parse_run_at,
+    to_local,
+    utcnow,
+)
 
 
 class TestParseRunAt:
@@ -75,6 +81,26 @@ class TestParseDuration:
 
     def test_cap_boundary_is_accepted(self):
         assert parse_duration("365d") == 365 * 86400
+
+
+class TestParseAbsoluteRunAt:
+    def test_rejects_relative_and_past_values(self):
+        now = datetime(2026, 8, 23, 10, 0)
+        with pytest.raises(ValueError, match="absolute"):
+            parse_absolute_run_at("12h", "Europe/Rome", now=now)
+        with pytest.raises(ValueError, match="future"):
+            parse_absolute_run_at("2026-08-23 11:00", "Europe/Rome", now=now)
+
+    def test_converts_an_absolute_rome_time_to_naive_utc(self):
+        now = datetime(2026, 8, 23, 10, 0)
+        assert parse_absolute_run_at("2026-08-24 12:00", "Europe/Rome", now=now) == datetime(
+            2026, 8, 24, 10, 0,
+        )
+
+    @pytest.mark.parametrize("text", ["2026-03-29 02:30", "2026-10-25 02:30"])
+    def test_rejects_nonexistent_and_ambiguous_dst_wall_times(self, text):
+        with pytest.raises(ValueError, match="DST"):
+            parse_absolute_run_at(text, "Europe/Rome", now=datetime(2026, 1, 1))
 
 
 class TestToLocal:

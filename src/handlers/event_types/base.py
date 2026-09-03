@@ -16,6 +16,7 @@ returns ``ok``; the scheduler loop commits after ``execute_scheduled``.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -26,7 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import ScheduledTask
 
 
-@dataclass(frozen=True)
+PostCommitHook = Callable[[], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
 class StartResult:
     """Outcome of starting/closing an item, rendered back on the callback.
 
@@ -37,6 +41,7 @@ class StartResult:
     ok: bool
     message: str
     alert: bool = False
+    post_commit: PostCommitHook | None = None
 
 
 @runtime_checkable
@@ -69,8 +74,8 @@ class EventType(Protocol):
 
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
-    ) -> None:
-        """Run a due scheduled task. Raises on failure; the loop commits."""
+    ) -> PostCommitHook | None:
+        """Run a due task and optionally defer presentation until the loop commits."""
         ...
 
     async def close_now(
@@ -92,6 +97,9 @@ class EventType(Protocol):
     #
     #   async def delete(self, db_session, item_id) -> StartResult
     #       Permanently delete the item (mutates, never commits).
+    #
+    #   async def archive(self, db_session, item_id) -> StartResult
+    #       Hide durable completed history (mutates, never commits).
     #
     #   async def reset(self, db_session, item_id) -> StartResult | None
     #       Re-arm a finished item so it can run again ("Riproponi"); ``None`` when

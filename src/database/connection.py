@@ -111,6 +111,27 @@ _MIGRATIONS: list[str] = [
     "finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), "
     "pending_token = NULL, pending_since = NULL "
     "WHERE game_type = 'raid' AND status IN ('ready', 'running')",
+    # Alduino v2: additive fields leave legacy sessions inert and unexpired.
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS duration_seconds BIGINT",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(32)",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS pending_user_tg_id BIGINT",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS pending_kind VARCHAR(16)",
+    "ALTER TABLE ai_game_turns ADD COLUMN IF NOT EXISTS normalized_input_hash CHAR(64)",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS rules_version "
+    "INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS questions_per_user INTEGER",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS guesses_per_user INTEGER",
+    "ALTER TABLE twenty_questions_games ALTER COLUMN question_limit DROP NOT NULL",
+    "ALTER TABLE twenty_questions_games ALTER COLUMN guess_limit DROP NOT NULL",
+    "ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS ix_ai_game_turn_quota "
+    "ON ai_game_turns (session_id, user_tg_id, kind)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_game_turn_normalized "
+    "ON ai_game_turns (session_id, kind, normalized_input_hash)",
+    "UPDATE ai_game_sessions SET finish_reason = 'legacy' "
+    "WHERE game_type = 'twentyq' AND status = 'finished' AND finish_reason IS NULL",
 ]
 
 

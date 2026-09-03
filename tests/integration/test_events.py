@@ -144,6 +144,36 @@ class TestPollTemplates:
         assert await poll_service.list_ready(session) == []
 
 
+@pytest.mark.parametrize(
+    "callback_data",
+    (
+        SimpleNamespace(task_type=None, item_id=None, action="askstart"),
+        SimpleNamespace(task_type="gone", item_id=7, action="askstart"),
+    ),
+)
+async def test_event_hub_callbacks_refuse_incomplete_or_unknown_targets(
+    monkeypatch, callback_data,
+):
+    """Stale Event-hub buttons must stop before touching an event type or transaction."""
+    from handlers import events
+
+    callback = _FakeCallback(_FakeBot())
+    if callback_data.task_type is not None:
+        monkeypatch.setattr(events.event_types, "get", lambda _key: None)
+
+    await events.cb_list(callback, callback_data, object())
+    await events.cb_item(callback, callback_data, object())
+    await events.cb_confirm(callback, callback_data)
+    await events.cb_start_now(callback, callback_data, object())
+    await events.cb_close(callback, callback_data, object())
+    await events.cb_delete(callback, callback_data, object())
+    await events.cb_archive(callback, callback_data, object())
+    await events.cb_reset(callback, callback_data, object())
+    await events.cb_schedule(callback, callback_data, object())
+
+    assert callback.answers == [None] * 9
+
+
 class TestPollCreationFlow:
     """A poll must be created → stored → and only then started/scheduled by an
     explicit admin choice — never auto-published on creation (like quiz/scommesse)."""

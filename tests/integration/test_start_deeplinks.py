@@ -283,6 +283,13 @@ class TestPublicDeepLinks:
 
         assert "daily" in message.said.lower()
 
+    async def test_the_secret_game_spiega_payload_uses_the_public_manual(self, session, onboarded):
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+
+        assert "Il gioco segreto di Alduino" in message.said
+
     async def test_no_payload_shows_the_menu(self, session, onboarded):
         message = _FakeMessage()
 

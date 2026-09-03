@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterable
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select, update
@@ -303,6 +304,11 @@ def _nonempty(option_ids_json: str) -> bool:
         return False
 
 
+def _active_voter_ids(rows: Iterable[tuple[int, str]]) -> tuple[int, ...]:
+    """Project active vote rows to one deterministic payout candidate per user."""
+    return tuple(sorted({uid for uid, opts_json in rows if _nonempty(opts_json)}))
+
+
 async def pay_voters(session: AsyncSession, poll: PollTemplate) -> list[int]:
     """Pay the participation prize to every current voter. Returns the tg ids that
     were actually paid (so the caller can notify each one). No-commit (STEERING §5).
@@ -316,6 +322,11 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> list[int]:
     xp = poll.prize_xp
     if coins <= 0 and xp <= 0:
         return []
+    # The close claim normally already owns this root row. Re-lock it here so
+    # direct callers follow the same root → Users → Wallets order before payout.
+    await session.execute(
+        select(PollTemplate.id).where(PollTemplate.id == poll.id).with_for_update()
+    )
     rows = (
         await session.execute(
             select(PollVote.user_tg_id, PollVote.option_ids_json).where(
@@ -323,10 +334,14 @@ async def pay_voters(session: AsyncSession, poll: PollTemplate) -> list[int]:
             )
         )
     ).all()
+    participants = _active_voter_ids(
+        (uid, opts_json) for uid, opts_json in rows
+    )
+    # Do not prevalidate: a missing wallet is deliberately handled per voter in
+    # the loop below, so it cannot abort another voter's prize.
+    await economy_service.lock_users_then_wallets(session, participants)
     paid: list[int] = []
-    for uid, opts_json in rows:
-        if not _nonempty(opts_json):
-            continue
+    for uid in participants:
         try:
             if coins > 0:
                 await economy_service.credit(

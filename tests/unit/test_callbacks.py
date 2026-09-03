@@ -44,6 +44,7 @@ from handlers.callbacks import (
     RulesCb,
     SchedCb,
     ShopCb,
+    TwentyQuestionsCreateCb,
 )
 from handlers.events import _CONFIRM
 
@@ -86,6 +87,16 @@ def test_pack_shop_callbacks(cb, packed):
 def test_pack_rules_acceptance_callback():
     """The onboarding button keeps the deployed `rules:accept` payload."""
     assert RulesCb(action="accept").pack() == "rules:accept"
+
+
+def test_pack_twenty_questions_creation_callbacks():
+    assert TwentyQuestionsCreateCb(action="duration", value=43_200).pack() == "tqnew:duration:43200"
+    assert TwentyQuestionsCreateCb(action="absolute").pack() == "tqnew:absolute:"
+
+
+@pytest.mark.parametrize("data", ["tqnew:duration:1.0", "tqnew:duration:not-a-number"])
+async def test_twenty_questions_creation_value_is_typed_by_the_filter(data):
+    assert await TwentyQuestionsCreateCb.filter()(_query(data)) is False
 
 
 async def test_rules_callback_filter_rejects_a_different_prefix():
@@ -506,6 +517,7 @@ def test_the_64_byte_ceiling_shows_up_in_tests_not_in_chat():
         (EventCb(action="item", task_type="quiz", item_id=7), "ev:item:quiz:7"),
         # byte-for-byte the payload we ship today
         (EventCb(action="askstart", task_type="quiz", item_id=7), "ev:askstart:quiz:7"),
+        (EventCb(action="askarchive", task_type="twentyq", item_id=7), "ev:askarchive:twentyq:7"),
         # today's optional 5th segment becomes an action of its own, same length
         (EventCb(action="sched", task_type="quiz", item_id=7), "ev:sched:quiz:7"),
         (EventCb(action="sched_close", task_type="quiz", item_id=7), "ev:sched_close:quiz:7"),
@@ -525,6 +537,11 @@ async def test_the_poll_triangle_does_not_answer_to_the_hub_prefix():
 def test_the_longest_real_event_payload_fits():
     """The ceiling is 64 bytes, and event-type keys are chosen by whoever writes the code."""
     packed = EventCb(action="sched_close", task_type="guess_sound", item_id=999_999).pack()
+    assert len(packed.encode()) <= 64, packed
+
+
+def test_archive_confirmation_payload_stays_inside_telegram_limit():
+    packed = EventCb(action="askarchive", task_type="twentyq", item_id=999_999).pack()
     assert len(packed.encode()) <= 64, packed
 
 

@@ -64,8 +64,11 @@ class Settings(BaseSettings):
     openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
     openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
     # Calendar-month application cap, in addition to the limit on the OpenRouter
-    # key itself. Zero is an explicit emergency/development opt-out.
+    # key itself. Its two paid lanes may partition less than the global cap, but
+    # never more. Setting all three to zero is an explicit emergency shutdown.
     ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+    twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
+    openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
     ai_entertainment_provider: Literal["groq", "openrouter"] = "groq"
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
@@ -76,13 +79,26 @@ class Settings(BaseSettings):
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
     guess_judge_timeout_seconds: int = Field(default=12, ge=1)
-    # Structured provider for persistent AI games. Gemini 3.5 Flash supports
-    # JSON Schema and level-based thinking; a separate key keeps the existing
-    # Groq entertainment commands independently deployable.
+    # Structured providers for persistent AI games. Their model and timeout
+    # settings are deliberately independent from entertainment, judge and
+    # conversational traffic: changing one workload must not move another.
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.5-flash"
-    gemini_thinking_level: Literal["minimal", "low", "medium", "high"] = "medium"
-    gemini_timeout_seconds: int = Field(default=20, ge=1)
+    twentyq_gemini_model: str = "gemini-3.5-flash"
+    twentyq_groq_model: str = "openai/gpt-oss-20b"
+    twentyq_openrouter_model: str = "deepseek/deepseek-v4-flash-0731"
+    twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
+    twentyq_provider_order: str = "gemini,groq,openrouter"
+    twentyq_provider_deadline_seconds: int = Field(default=25, ge=1)
+    # Bounded, local history sent with one secret-game question. These limits cap
+    # both the number of projected turns and the serialized UTF-8 context size.
+    twentyq_context_turns: int = Field(default=24, ge=1, le=96)
+    twentyq_context_chars: int = Field(default=12_000, ge=1_000, le=30_000)
+    # Reward-bearing secret games remain off until the rollout is explicitly
+    # enabled. Existing version-one games intentionally ignore this switch.
+    twentyq_v2_enabled: bool = False
+    twentyq_max_coins_per_participant: int = Field(default=1_000, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"
@@ -250,10 +266,44 @@ class Settings(BaseSettings):
             return [int(i) for i in v]
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
 
+    @field_validator("twentyq_provider_order", mode="before")
+    @classmethod
+    def normalize_twentyq_provider_order(cls, value: object) -> str:
+        providers = [part.strip().lower() for part in str(value).split(",")]
+        allowed = {"gemini", "groq", "openrouter"}
+        if not providers or any(not provider for provider in providers):
+            raise ValueError("twentyq provider order cannot be empty")
+        if any(provider not in allowed for provider in providers):
+            raise ValueError("twentyq provider order contains an unknown provider")
+        if len(set(providers)) != len(providers):
+            raise ValueError("twentyq provider order contains duplicates")
+        return ",".join(providers)
+
+    @model_validator(mode="after")
+    def validate_twentyq_provider_models(self) -> Self:
+        model_fields = {
+            "gemini": "twentyq_gemini_model",
+            "groq": "twentyq_groq_model",
+            "openrouter": "twentyq_openrouter_model",
+        }
+        for provider in self.twentyq_provider_order.split(","):
+            if not getattr(self, model_fields[provider]).strip():
+                raise ValueError(f"{provider} model cannot be empty")
+        return self
+
     @model_validator(mode="after")
     def validate_igdb_catalog_bounds(self) -> Self:
         if self.igdb_min_catalog_entries > self.igdb_catalog_size:
             raise ValueError("igdb_min_catalog_entries cannot exceed igdb_catalog_size")
+        return self
+
+    @model_validator(mode="after")
+    def validate_openrouter_budget_lanes(self) -> Self:
+        lane_total = (
+            self.twentyq_openrouter_budget_usd + self.openrouter_other_budget_usd
+        )
+        if lane_total > self.ai_monthly_budget_usd:
+            raise ValueError("OpenRouter lane budgets cannot exceed the global AI budget")
         return self
 
 

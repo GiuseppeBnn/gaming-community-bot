@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 import html
 import re
 
+from services.ai_game_types import DEFAULT_MAX_COINS_PER_PARTICIPANT
+from services.twenty_questions_rules import v2_policy
 from utils.text import esc
+from utils.twenty_questions_view import render_public_help
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,13 @@ _COMMANDS: list[CommandDoc] = [
         usage="/classifiche",
         details="Le classifiche della community con uno switcher tra ricchezza, XP e trofei. "
                 "Si aprono in chat privata.",
+    ),
+    CommandDoc(
+        "gioco_alduino",
+        "Regole e stato del gioco segreto di Alduino",
+        "🏆 Progressione",
+        usage="/gioco_alduino",
+        details=render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
     ),
     # --- 🍺 Locanda ---
     CommandDoc(

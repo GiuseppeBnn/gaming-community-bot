@@ -12,19 +12,24 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import logging
+from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from database.connection import async_session_maker
-from database.models import AIBudgetPeriod, AIUsageLog
+from database.models import AIBudgetPeriod, AIFeatureBudgetPeriod, AIUsageLog
 
 log = logging.getLogger(__name__)
 
 _MICRO_USD = Decimal("1000000")
 _TOKEN_OVERHEAD = 512
+BudgetLane = Literal["twentyq", "openrouter_other"]
 
 
 class AIBudgetError(RuntimeError):
@@ -39,8 +44,15 @@ class AIBudgetExceeded(AIBudgetError):
 class Reservation:
     request_id: str
     period: str
-    estimated_microusd: int
-    tracked: bool = True
+    feature: str = ""
+    budget_lane: BudgetLane = "openrouter_other"
+    estimated_microusd: int = 0
+
+    def __post_init__(self) -> None:
+        """Accept the former three-positional-field constructor during rollout."""
+        if isinstance(self.feature, int):
+            object.__setattr__(self, "estimated_microusd", self.feature)
+            object.__setattr__(self, "feature", "")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,24 +104,54 @@ def estimate_cost_microusd(
     return max(1, int(value.to_integral_value(rounding=ROUND_CEILING)))
 
 
-async def _ensure_period(period: str, cap_microusd: int) -> None:
-    """Create the month row once; a concurrent creator is harmless."""
-    async with async_session_maker() as session:
-        if await session.get(AIBudgetPeriod, period) is not None:
-            return
-        session.add(AIBudgetPeriod(period=period, cap_microusd=cap_microusd))
-        try:
-            await session.commit()
-        except IntegrityError:
-            await session.rollback()
-        except SQLAlchemyError as exc:
-            await session.rollback()
-            raise AIBudgetError("budget storage unavailable") from exc
+async def _ensure_periods(
+    session: AsyncSession,
+    period: str,
+    global_cap: int,
+    budget_lane: BudgetLane,
+    lane_cap: int,
+) -> None:
+    """Create global then lane period rows inside the reservation transaction."""
+    dialect = session.get_bind().dialect.name
+    if dialect == "sqlite":
+        await session.execute(
+            sqlite_insert(AIBudgetPeriod)
+            .values(period=period, cap_microusd=global_cap)
+            .on_conflict_do_nothing()
+        )
+        await session.execute(
+            sqlite_insert(AIFeatureBudgetPeriod)
+            .values(period=period, feature=budget_lane, cap_microusd=lane_cap)
+            .on_conflict_do_nothing()
+        )
+        return
+    if dialect == "postgresql":
+        await session.execute(
+            postgresql_insert(AIBudgetPeriod)
+            .values(period=period, cap_microusd=global_cap)
+            .on_conflict_do_nothing()
+        )
+        await session.execute(
+            postgresql_insert(AIFeatureBudgetPeriod)
+            .values(period=period, feature=budget_lane, cap_microusd=lane_cap)
+            .on_conflict_do_nothing()
+        )
+        return
+    raise AIBudgetError(f"unsupported budget storage dialect: {dialect}")
+
+
+def _configured_lane_cap(budget_lane: BudgetLane) -> int:
+    if budget_lane == "twentyq":
+        return usd_to_microusd(settings.twentyq_openrouter_budget_usd)
+    if budget_lane == "openrouter_other":
+        return usd_to_microusd(settings.openrouter_other_budget_usd)
+    raise AIBudgetError(f"unsupported OpenRouter budget lane: {budget_lane}")
 
 
 async def reserve(
     *,
     feature: str,
+    budget_lane: BudgetLane = "openrouter_other",
     provider: str,
     requested_model: str,
     system_prompt: str,
@@ -117,9 +159,10 @@ async def reserve(
     max_output_tokens: int,
 ) -> Reservation:
     """Atomically reserve the worst-case cost before a paid network call."""
-    cap = usd_to_microusd(settings.ai_monthly_budget_usd)
-    if cap == 0:
-        return Reservation("", "", 0, tracked=False)
+    global_cap = usd_to_microusd(settings.ai_monthly_budget_usd)
+    lane_cap = _configured_lane_cap(budget_lane)
+    if global_cap == 0 or lane_cap == 0:
+        raise AIBudgetExceeded("OpenRouter budget exhausted")
 
     period = current_period()
     estimate = estimate_cost_microusd(
@@ -128,29 +171,48 @@ async def reserve(
         max_prompt_price=settings.openrouter_max_prompt_price,
         max_completion_price=settings.openrouter_max_completion_price,
     )
-    await _ensure_period(period, cap)
     request_id = str(uuid4())
+    now = datetime.now(UTC).replace(tzinfo=None)
 
     try:
-        async with async_session_maker() as session:
-            result = await session.execute(
+        async with async_session_maker.begin() as session:
+            await _ensure_periods(session, period, global_cap, budget_lane, lane_cap)
+            global_result = await session.execute(
                 update(AIBudgetPeriod)
                 .where(
                     AIBudgetPeriod.period == period,
                     AIBudgetPeriod.spent_microusd
                     + AIBudgetPeriod.reserved_microusd
                     + estimate
-                    <= cap,
+                    <= global_cap,
                 )
                 .values(
-                    cap_microusd=cap,
+                    cap_microusd=global_cap,
                     reserved_microusd=AIBudgetPeriod.reserved_microusd + estimate,
-                    updated_at=datetime.now(UTC).replace(tzinfo=None),
+                    updated_at=now,
                 )
             )
-            if getattr(result, "rowcount", 0) != 1:
-                await session.rollback()
-                raise AIBudgetExceeded("monthly AI budget exhausted")
+            lane_result = await session.execute(
+                update(AIFeatureBudgetPeriod)
+                .where(
+                    AIFeatureBudgetPeriod.period == period,
+                    AIFeatureBudgetPeriod.feature == budget_lane,
+                    AIFeatureBudgetPeriod.spent_microusd
+                    + AIFeatureBudgetPeriod.reserved_microusd
+                    + estimate
+                    <= lane_cap,
+                )
+                .values(
+                    cap_microusd=lane_cap,
+                    reserved_microusd=AIFeatureBudgetPeriod.reserved_microusd + estimate,
+                    updated_at=now,
+                )
+            )
+            if (
+                getattr(global_result, "rowcount", 0) != 1
+                or getattr(lane_result, "rowcount", 0) != 1
+            ):
+                raise AIBudgetExceeded("OpenRouter budget exhausted")
             session.add(AIUsageLog(
                 request_id=request_id,
                 period=period,
@@ -160,13 +222,18 @@ async def reserve(
                 status="reserved",
                 reserved_microusd=estimate,
             ))
-            await session.commit()
     except AIBudgetExceeded:
         raise
     except SQLAlchemyError as exc:
         raise AIBudgetError("budget storage unavailable") from exc
 
-    return Reservation(request_id, period, estimate)
+    return Reservation(
+        request_id=request_id,
+        period=period,
+        feature=feature,
+        budget_lane=budget_lane,
+        estimated_microusd=estimate,
+    )
 
 
 async def settle(
@@ -182,14 +249,12 @@ async def settle(
     whole reservation is charged conservatively because the provider may have
     completed the request after the client disconnected.
     """
-    if not reservation.tracked:
-        return
     metrics = metrics or UsageMetrics()
     charge = reservation.estimated_microusd if actual_microusd is None else max(0, actual_microusd)
     final_status = status[:16]
     now = datetime.now(UTC).replace(tzinfo=None)
     try:
-        async with async_session_maker() as session:
+        async with async_session_maker.begin() as session:
             result = await session.execute(
                 update(AIUsageLog)
                 .where(
@@ -208,9 +273,8 @@ async def settle(
                 )
             )
             if getattr(result, "rowcount", 0) != 1:
-                await session.rollback()
                 return
-            await session.execute(
+            global_result = await session.execute(
                 update(AIBudgetPeriod)
                 .where(AIBudgetPeriod.period == reservation.period)
                 .values(
@@ -221,7 +285,26 @@ async def settle(
                     updated_at=now,
                 )
             )
-            await session.commit()
+            lane_result = await session.execute(
+                update(AIFeatureBudgetPeriod)
+                .where(
+                    AIFeatureBudgetPeriod.period == reservation.period,
+                    AIFeatureBudgetPeriod.feature == reservation.budget_lane,
+                )
+                .values(
+                    reserved_microusd=(
+                        AIFeatureBudgetPeriod.reserved_microusd
+                        - reservation.estimated_microusd
+                    ),
+                    spent_microusd=AIFeatureBudgetPeriod.spent_microusd + charge,
+                    updated_at=now,
+                )
+            )
+            if (
+                getattr(global_result, "rowcount", 0) != 1
+                or getattr(lane_result, "rowcount", 0) != 1
+            ):
+                raise AIBudgetError("budget settlement unavailable")
     except SQLAlchemyError as exc:
         # The reservation remains charged against the cap until repaired. That
         # is safer than silently freeing money after an accounting failure.
@@ -243,4 +326,48 @@ async def snapshot(period: str | None = None) -> BudgetSnapshot | None:
         return None
     return BudgetSnapshot(
         row.period, row.cap_microusd, row.spent_microusd, row.reserved_microusd,
+    )
+
+
+async def feature_snapshot(
+    feature: str, period: str | None = None,
+) -> BudgetSnapshot | None:
+    """Read one configured budget lane without conflating it with request features."""
+    target = period or current_period()
+    try:
+        async with async_session_maker() as session:
+            row = (await session.execute(
+                select(AIFeatureBudgetPeriod).where(
+                    AIFeatureBudgetPeriod.period == target,
+                    AIFeatureBudgetPeriod.feature == feature,
+                )
+            )).scalar_one_or_none()
+    except SQLAlchemyError as exc:
+        raise AIBudgetError("budget storage unavailable") from exc
+    if row is None:
+        return None
+    return BudgetSnapshot(
+        row.period, row.cap_microusd, row.spent_microusd, row.reserved_microusd,
+    )
+
+
+async def feature_spend_microusd(feature: str, period: str | None = None) -> int:
+    """Read one request feature's finalized or conservatively reserved charge."""
+    criteria = [AIUsageLog.feature == feature]
+    if period is not None:
+        criteria.append(AIUsageLog.period == period)
+    try:
+        async with async_session_maker() as session:
+            rows = (await session.execute(
+                select(
+                    AIUsageLog.status,
+                    AIUsageLog.reserved_microusd,
+                    AIUsageLog.actual_microusd,
+                ).where(*criteria)
+            )).all()
+    except SQLAlchemyError as exc:
+        raise AIBudgetError("budget storage unavailable") from exc
+    return sum(
+        reserved if status == "reserved" or actual is None else actual
+        for status, reserved, actual in rows
     )

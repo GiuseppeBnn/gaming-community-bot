@@ -273,6 +273,23 @@ Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te 
 tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
 ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto.
 
+### Il gioco segreto di Alduino
+
+Rispondi alla card nel gruppo con una domanda; per tentare il titolo usa
+`RISPOSTA: nome del gioco`. Ogni persona ha 5 domande valide e 2 tentativi validi:
+duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano nulla.
+
+Chi registra almeno un turno valido riceve 10 XP alla chiusura, anche se il gioco scade o viene
+chiuso da un admin. Se il gruppo indovina, tutti i partecipanti ricevono la stessa quota CoInn.
+I CoInn vengono accreditati solo in caso di vittoria. CoInn: 0 su scadenza o chiusura admin.
+Con il default di 100 CoInn massimi a persona:
+
+`pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)`
+
+Il resto della divisione non viene assegnato a nessuno. Usa `/gioco_alduino` per regole, stato e
+quota personale; la durata raccomandata per una nuova partita è 12 ore. Per il dettaglio di
+prodotto e architettura, vedi la [specifica v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md).
+
 ### Scommesse (stile Twitch)
 
 Payout **proporzionale** al pool (stile Twitch) e una sola scommessa per utente per evento.
@@ -381,8 +398,11 @@ gaming-community-bot/
 | `OPENROUTER_CHAT_MODELS` | DeepSeek V4 Flash 0731 → V4 Flash | fallback ordinato ZDR della chat |
 | `OPENROUTER_FUN_MODELS` | Qwen 3.7 Flash → DeepSeek V4 Flash | fallback ordinato one-shot, senza memoria |
 | `GEMINI_API_KEY` | — | giochi AI persistenti e chat legacy opzionale di Alduino |
-| `GEMINI_MODEL` | `gemini-3.5-flash` | modello di 20 Domande |
-| `GEMINI_THINKING_LEVEL` | `medium` | default Gemini; 20 Domande forza `minimal` per il verdetto ternario |
+| `TWENTYQ_V2_ENABLED` | `false` | mantiene disabilitate le nuove partite premianti finché il rollout non è approvato |
+| `TWENTYQ_PROVIDER_ORDER` | `gemini,groq,openrouter` | fallback gratuito → paid, deadline assoluta 25 s |
+| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / DeepSeek V4 Flash | modelli strutturati del gioco segreto v2 |
+| `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
+| `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
 | `ALDUINO_PROVIDER` | `gemini` | provider della sola chat: `openrouter`, `gemini` o `groq` |
 | `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
 | `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
@@ -392,7 +412,7 @@ gaming-community-bot/
 | `ALDUINO_GROUP_CONTEXT_MESSAGES` / `_CHARS` | `80` / `24000` | finestra ambientale inviata al modello |
 | `ALDUINO_GROUP_MEMORY_ROWS` | `3000` | rolling transcript locale; richiede privacy mode Telegram disabilitata |
 | `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | — | abilita il catalogo IGDB in cache; app Twitch confidential |
-| `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache di 20 Domande |
+| `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache del gioco segreto v2 (20 Domande è legacy v1) |
 | `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |
 | `IGDB_SYNC_INTERVAL_HOURS` | `24` | frequenza massima di aggiornamento del catalogo IGDB |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 
@@ -81,6 +83,22 @@ class TestDefaults:
 
         s = Settings(bot_token="x", fsm_storage="redis")  # type: ignore[call-arg]
         assert s.fsm_storage == "redis"
+
+    def test_twenty_questions_v2_is_opt_in_and_caps_each_participant_reward(self):
+        """A deploy must not create reward-bearing games until an admin opts in."""
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert getattr(configured, "twentyq_v2_enabled", None) is False
+        assert getattr(configured, "twentyq_max_coins_per_participant", None) == 1_000
+
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None, twentyq_max_coins_per_participant=0,
+            )
 
 
 class TestBoundsThatPreventRealDamage:
@@ -176,3 +194,189 @@ class TestBoundsThatPreventRealDamage:
             Settings(  # type: ignore[call-arg]
                 bot_token="x", igdb_catalog_size=50, igdb_min_catalog_entries=51,
             )
+
+
+class TestOpenRouterBudgetLanes:
+    def test_documented_defaults_partition_the_global_cap(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.ai_monthly_budget_usd == Decimal("5.00")
+        assert configured.twentyq_openrouter_budget_usd == Decimal("4.00")
+        assert configured.openrouter_other_budget_usd == Decimal("1.00")
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("twentyq_openrouter_budget_usd", Decimal("-0.01")),
+            ("openrouter_other_budget_usd", Decimal("-0.01")),
+        ],
+    )
+    def test_lane_caps_cannot_be_negative(self, field, value):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(bot_token="x", **{field: value})  # type: ignore[call-arg]
+        assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+    def test_lane_caps_cannot_exceed_the_global_cap_in_sum(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError, match="lane budgets cannot exceed"):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x",
+                ai_monthly_budget_usd=Decimal("5.00"),
+                twentyq_openrouter_budget_usd=Decimal("4.01"),
+                openrouter_other_budget_usd=Decimal("1.00"),
+            )
+
+    def test_all_zero_caps_are_a_valid_shutdown_configuration(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            ai_monthly_budget_usd=Decimal("0"),
+            twentyq_openrouter_budget_usd=Decimal("0"),
+            openrouter_other_budget_usd=Decimal("0"),
+        )
+
+        assert configured.ai_monthly_budget_usd == 0
+        assert configured.twentyq_openrouter_budget_usd == 0
+        assert configured.openrouter_other_budget_usd == 0
+
+
+class TestTwentyQuestionsProviderSettings:
+    def test_provider_defaults_are_dedicated_and_legacy_gemini_fields_are_gone(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.twentyq_gemini_model == "gemini-3.5-flash"
+        assert configured.twentyq_groq_model == "openai/gpt-oss-20b"
+        assert configured.twentyq_openrouter_model == "deepseek/deepseek-v4-flash-0731"
+        assert configured.twentyq_gemini_timeout_seconds == 8
+        assert configured.twentyq_groq_timeout_seconds == 8
+        assert configured.twentyq_openrouter_timeout_seconds == 12
+        assert "gemini_model" not in Settings.model_fields
+        assert "gemini_thinking_level" not in Settings.model_fields
+        assert "gemini_timeout_seconds" not in Settings.model_fields
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "twentyq_gemini_timeout_seconds",
+            "twentyq_groq_timeout_seconds",
+            "twentyq_openrouter_timeout_seconds",
+        ],
+    )
+    def test_provider_timeouts_reject_zero(self, field):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(bot_token="x", _env_file=None, **{field: 0})  # type: ignore[call-arg]
+        assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+    def test_router_defaults_have_free_first_order_and_one_total_deadline(self):
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+
+        assert configured.twentyq_provider_order == "gemini,groq,openrouter"
+        assert configured.twentyq_provider_deadline_seconds == 25
+
+    def test_provider_order_is_normalized_once(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            _env_file=None,
+            twentyq_provider_order=" GROQ, gemini , OPENROUTER ",
+        )
+
+        assert configured.twentyq_provider_order == "groq,gemini,openrouter"
+
+    @pytest.mark.parametrize(
+        "order",
+        ["", "  ", ",", "gemini,,groq", "gemini,gemini", "gemini,unknown"],
+    )
+    def test_provider_order_rejects_empty_duplicate_and_unknown_entries(self, order):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None, twentyq_provider_order=order,
+            )
+
+    @pytest.mark.parametrize(
+        ("order", "field"),
+        [
+            ("gemini", "twentyq_gemini_model"),
+            ("groq", "twentyq_groq_model"),
+            ("openrouter", "twentyq_openrouter_model"),
+        ],
+    )
+    def test_every_present_provider_requires_a_nonempty_model(self, order, field):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError, match="model cannot be empty"):
+            Settings(  # type: ignore[call-arg]
+                bot_token="x",
+                _env_file=None,
+                twentyq_provider_order=order,
+                **{field: "  "},
+            )
+
+    def test_model_for_absent_provider_may_be_empty(self):
+        from config_data.config import Settings
+
+        configured = Settings(  # type: ignore[call-arg]
+            bot_token="x",
+            _env_file=None,
+            twentyq_provider_order="groq",
+            twentyq_gemini_model="",
+        )
+
+        assert configured.twentyq_provider_order == "groq"
+
+    def test_total_provider_deadline_rejects_zero(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        with pytest.raises(ValidationError) as error:
+            Settings(  # type: ignore[call-arg]
+                bot_token="x", _env_file=None,
+                twentyq_provider_deadline_seconds=0,
+            )
+        assert error.value.errors()[0]["type"] == "greater_than_equal"
+
+
+class TestTwentyQuestionsContextSettings:
+    def test_context_limits_have_safe_defaults_and_reject_out_of_range_values(self):
+        from pydantic import ValidationError
+
+        from config_data.config import Settings
+
+        configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
+        assert configured.twentyq_context_turns == 24
+        assert configured.twentyq_context_chars == 12_000
+
+        for field, value in (
+            ("twentyq_context_turns", 0),
+            ("twentyq_context_turns", 97),
+            ("twentyq_context_chars", 999),
+            ("twentyq_context_chars", 30_001),
+        ):
+            with pytest.raises(ValidationError):
+                Settings(bot_token="x", _env_file=None, **{field: value})  # type: ignore[call-arg]

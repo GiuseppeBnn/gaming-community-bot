@@ -216,11 +216,25 @@ class EventCb(CallbackData, prefix="ev"):
     """
 
     #: "home" | "list" | "item" | "new"
-    #: | "ask{start,del,close,reset}" | "start" | "close" | "del" | "reset"
+    #: | "ask{start,del,archive,close,reset}" | "start" | "close" | "del"
+    #: | "archive" | "reset"
     #: | "sched" | "sched_close"
     action: str
     task_type: str | None = None
     item_id: int | None = None
+
+
+class TwentyQuestionsCreateCb(CallbackData, prefix="tqnew"):
+    """Guided creation controls for Alduino's secret game."""
+
+    #: "duration" | "absolute" | "coins_default" | "coins_custom" | "cancel"
+    action: str
+    value: int | None = None
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_matches_legacy_int(cls, value: object) -> object:
+        return _legacy_int_text(value)
 
 
 class PollCreateCb(CallbackData, prefix="evpt"):

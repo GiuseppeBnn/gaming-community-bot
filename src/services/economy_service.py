@@ -68,6 +68,33 @@ async def lock_balance(session: AsyncSession, tg_id: int) -> int:
     return await _balance(session, tg_id, lock=True)
 
 
+async def lock_users_then_wallets(
+    session: AsyncSession, tg_ids: tuple[int, ...],
+) -> None:
+    """Lock existing account rows in the shared User → Wallet order.
+
+    Callers that combine money and uncapped XP must invoke this only after their
+    event/root lock, before either effect.  This intentionally does *not*
+    validate that every requested row exists: individual flows keep their own
+    missing-account semantics (for example a poll skips a missing wallet).
+    """
+    ids = tuple(sorted(set(tg_ids)))
+    if not ids:
+        return
+    await session.execute(
+        select(User.tg_id)
+        .where(User.tg_id.in_(ids))
+        .order_by(User.tg_id.asc())
+        .with_for_update()
+    )
+    await session.execute(
+        select(Wallet.tg_id)
+        .where(Wallet.tg_id.in_(ids))
+        .order_by(Wallet.tg_id.asc())
+        .with_for_update()
+    )
+
+
 async def _add_coins(session: AsyncSession, tg_id: int, delta: int) -> int:
     """Apply `delta` with SQL-side arithmetic. Returns the number of rows changed.
 

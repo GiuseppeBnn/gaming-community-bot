@@ -7,7 +7,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from database.models import AlduinoTurn, Base, LedgerEntry, User, Wallet
+from database.models import (
+    AIFeatureBudgetPeriod,
+    AIGameProviderAttempt,
+    AIGameRewardAllocation,
+    AIGameRewardSettlement,
+    AIGameSession,
+    AlduinoTurn,
+    Base,
+    LedgerEntry,
+    User,
+    Wallet,
+)
 from services.backup import state_export
 from services.backup.state_export import StateExportError
 
@@ -89,6 +100,97 @@ async def test_roundtrip_preserves_alduino_reply_branches(tmp_path, session):
         assert restored[1].parent_turn_id == restored[0].id == 10
         assert restored[0].provider_interaction_id == "interaction-root"
         assert restored[1].provider == "groq"
+    finally:
+        await engine2.dispose()
+
+
+async def test_roundtrip_preserves_v2_reward_and_provider_audits(tmp_path, session, user_factory):
+    await user_factory(111, username="alice", coins=0)
+    game = AIGameSession(game_type="twentyq", title="Reward audit", creator_tg_id=111)
+    session.add(game)
+    await session.flush()
+    settlement = AIGameRewardSettlement(
+        session_id=game.id,
+        policy_version=2,
+        max_coins_per_participant=100,
+        minimum_bps=3000,
+        question_penalty_bps=600,
+        wrong_guess_penalty_bps=2000,
+        xp_per_participant=10,
+        status="settled",
+        finish_reason="victory",
+        participant_count=1,
+        question_count=3,
+        wrong_guess_count=1,
+        base_amount=100,
+        penalty_amount=38,
+        computed_pool=62,
+        paid_pool=62,
+        share=62,
+        remainder=0,
+    )
+    session.add_all(
+        (
+            settlement,
+            AIGameRewardAllocation(session_id=game.id, user_tg_id=111, coins=62, xp=10),
+            AIGameProviderAttempt(
+                session_id=game.id,
+                operation="answer_question",
+                provider="openrouter",
+                model="openai/gpt-5",
+                prompt_version="twentyq-v2",
+                schema_version="1",
+                outcome="success",
+                error_class=None,
+                latency_ms=250,
+                prompt_tokens=100,
+                completion_tokens=20,
+                reasoning_tokens=5,
+                cached_tokens=0,
+                cost_microusd=321,
+            ),
+            AIFeatureBudgetPeriod(
+                period="2026-08",
+                feature="twentyq",
+                cap_microusd=1_000_000,
+                spent_microusd=321,
+                reserved_microusd=0,
+            ),
+        )
+    )
+    await session.commit()
+
+    snapshot = await state_export.export_state(session, tmp_path)
+    ordered_tables = [table.name for table in Base.metadata.sorted_tables]
+    assert ordered_tables.index("ai_game_sessions") < ordered_tables.index(
+        "ai_game_reward_settlements"
+    ) < ordered_tables.index("ai_game_reward_allocations")
+
+    engine2, factory2 = await _fresh_db()
+    try:
+        async with factory2() as target:
+            report = await state_export.import_state(target, snapshot)
+            await target.commit()
+            restored = await target.get(AIGameRewardSettlement, game.id)
+            allocation = (await target.execute(select(AIGameRewardAllocation))).scalar_one()
+            attempt = (await target.execute(select(AIGameProviderAttempt))).scalar_one()
+            budget = await target.get(AIFeatureBudgetPeriod, ("2026-08", "twentyq"))
+
+        assert report.tables["ai_game_reward_settlements"] == 1
+        assert report.tables["ai_game_reward_allocations"] == 1
+        assert report.tables["ai_game_provider_attempts"] == 1
+        assert report.tables["ai_feature_budget_periods"] == 1
+        assert (restored.computed_pool, restored.paid_pool, allocation.coins, allocation.xp) == (
+            62,
+            62,
+            62,
+            10,
+        )
+        assert (attempt.provider, attempt.cost_microusd, budget.spent_microusd) == (
+            "openrouter",
+            321,
+            321,
+        )
     finally:
         await engine2.dispose()
 

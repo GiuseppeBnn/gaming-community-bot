@@ -13,6 +13,7 @@ from handlers.help_content import (
     render_alduino_reference,
     render_command,
     render_command_or_hint,
+    render_legend,
 )
 
 
@@ -96,6 +97,21 @@ def test_d20_is_a_public_bare_roll_command():
     page = render_command("d20", is_admin=False)
     assert page is not None
     assert "/d20" in page and "1" in page and "20" in page
+
+
+def test_secret_game_public_manual_comes_from_the_shared_policy_renderer():
+    page = render_command("gioco_alduino", is_admin=False)
+    assert page is not None
+    assert "Regole e stato del gioco segreto di Alduino" in page
+    assert "Il gioco segreto di Alduino" in page
+    assert "10 XP" in page
+    assert "RISPOSTA:" in page
+
+
+def test_secret_game_is_discoverable_from_the_legend_and_shared_reference():
+    assert "/gioco_alduino" in render_legend(is_admin=False)
+    assert "/gioco_alduino" in render_command_or_hint("gioco_alduino")
+    assert "/gioco_alduino" in render_alduino_reference()
 
 
 class TestAlduinoReference:

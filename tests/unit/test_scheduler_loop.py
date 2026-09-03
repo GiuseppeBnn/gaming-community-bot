@@ -15,6 +15,7 @@ of ticks by making the patched ``asyncio.sleep`` raise, which is the only way ou
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -48,10 +49,26 @@ class _FakeSession:
         self.events.append("rollback")
 
 
-def _task(task_id: int = 7, created_by: int | None = 999):
+class _FakeCallback:
+    def __init__(self) -> None:
+        self.answers: list[tuple[str | None, bool]] = []
+        self.message = SimpleNamespace()
+
+    async def answer(self, text=None, show_alert=False) -> None:
+        self.answers.append((text, show_alert))
+
+
+def _task(
+    task_id: int = 7,
+    created_by: int | None = 999,
+    *,
+    payload: dict | None = None,
+    retry_count: int = 0,
+):
     return SimpleNamespace(
         id=task_id, task_type="demo", ref_id=1, group_id=123,
-        payload_json=None, created_by_tg_id=created_by,
+        payload_json=json.dumps(payload) if payload is not None else None,
+        created_by_tg_id=created_by, retry_count=retry_count,
     )
 
 
@@ -66,8 +83,16 @@ def marks(monkeypatch):
     async def mark_failed(session, task, reason):
         recorded.append(("failed", reason))
 
+    async def mark_done_by_id(session, task_id):
+        recorded.append(("done", str(task_id)))
+
+    async def mark_failed_by_id(session, task_id, reason):
+        recorded.append(("failed", reason))
+
     monkeypatch.setattr(schedule.schedule_service, "mark_done", mark_done)
     monkeypatch.setattr(schedule.schedule_service, "mark_failed", mark_failed)
+    monkeypatch.setattr(schedule.schedule_service, "mark_done_by_id", mark_done_by_id)
+    monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
     return recorded
 
 
@@ -76,7 +101,7 @@ def silent_notify(monkeypatch):
     """Swallow the creator DM by default; tests that care patch it themselves."""
     sent: list[str] = []
 
-    async def notify(bot, task, text):
+    async def notify(bot, creator_tg_id, task_id, text):
         sent.append(text)
 
     monkeypatch.setattr(schedule, "_notify_creator", notify)
@@ -118,6 +143,24 @@ class TestRunDueTask:
         assert session.events == ["rollback", "commit"]
         assert silent_notify and "saltato" in silent_notify[0]
 
+    async def test_a_skip_with_unpersistable_outcome_stays_pending_for_the_next_tick(
+        self, monkeypatch, silent_notify,
+    ):
+        async def skip(bot, session, task):
+            raise schedule_service.TaskSkip("already closed")
+
+        async def unavailable(session, task_id):
+            raise ConnectionError("database unavailable")
+
+        monkeypatch.setattr(schedule, "execute_task", skip)
+        monkeypatch.setattr(schedule.schedule_service, "mark_done_by_id", unavailable)
+        session = _FakeSession()
+
+        await schedule._run_due_task(object(), session, _task())
+
+        assert session.events == ["rollback", "rollback"]
+        assert silent_notify == []
+
     async def test_a_failure_rolls_back_before_marking_failed(
         self, monkeypatch, silent_notify
     ):
@@ -135,14 +178,14 @@ class TestRunDueTask:
         async def boom(bot, session_, task):
             raise RuntimeError("spec exploded")
 
-        async def mark_failed(session_, task, reason):
+        async def mark_failed_by_id(session_, task_id, reason):
             order.append("mark_failed")
 
         async def mark_done(session_, task):
             order.append("mark_done")
 
         monkeypatch.setattr(schedule, "execute_task", boom)
-        monkeypatch.setattr(schedule.schedule_service, "mark_failed", mark_failed)
+        monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
         monkeypatch.setattr(schedule.schedule_service, "mark_done", mark_done)
 
         await schedule._run_due_task(object(), session, _task())
@@ -161,17 +204,227 @@ class TestRunDueTask:
         async def boom(bot, session, task):
             raise RuntimeError("spec exploded")
 
-        async def mark_failed(session, task, reason):
+        async def mark_failed_by_id(session, task_id, reason):
             raise ConnectionError("database unreachable")
 
         monkeypatch.setattr(schedule, "execute_task", boom)
-        monkeypatch.setattr(schedule.schedule_service, "mark_failed", mark_failed)
+        monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
         session = _FakeSession()
 
         await schedule._run_due_task(object(), session, _task())  # must simply return
 
         assert session.events[-1] == "rollback"
         assert silent_notify == []
+
+    async def test_success_commits_before_running_a_generic_post_commit_hook(
+        self, monkeypatch, silent_notify,
+    ):
+        """Moving the hook before commit would publish a card for rolled-back state."""
+        events: list[str] = []
+        session = _FakeSession()
+        session.events = events
+
+        async def hook():
+            events.append("hook")
+
+        async def execute(bot, session_, task):
+            events.append("spec")
+            return hook
+
+        async def mark_done(session_, task):
+            events.append("done")
+
+        monkeypatch.setattr(schedule, "execute_task", execute)
+        monkeypatch.setattr(schedule.schedule_service, "mark_done", mark_done)
+
+        await schedule._run_due_task(object(), session, _task())
+
+        assert events == ["spec", "done", "commit", "hook"]
+        assert silent_notify == []
+
+    async def test_commit_failure_never_runs_the_post_commit_hook(self, monkeypatch, silent_notify):
+        """A failed commit has no state the hook is allowed to present as saved."""
+        events: list[str] = []
+
+        class _CommitFailsOnce(_FakeSession):
+            def __init__(self):
+                super().__init__()
+                self.events = events
+                self.commits = 0
+
+            async def commit(self):
+                self.events.append("commit")
+                self.commits += 1
+                if self.commits == 1:
+                    raise RuntimeError("commit unavailable")
+
+        async def hook():
+            events.append("hook")
+
+        async def execute(bot, session_, task):
+            return hook
+
+        async def mark_done(session_, task):
+            events.append("done")
+
+        async def mark_failed_by_id(session_, task_id, error):
+            events.append("failed")
+
+        monkeypatch.setattr(schedule, "execute_task", execute)
+        monkeypatch.setattr(schedule.schedule_service, "mark_done", mark_done)
+        monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
+
+        await schedule._run_due_task(object(), _CommitFailsOnce(), _task())
+
+        assert "hook" not in events
+        assert events == ["done", "commit", "rollback", "failed", "commit"]
+        assert silent_notify and "fallito" in silent_notify[0]
+
+    async def test_post_commit_hook_failure_keeps_the_task_done(self, monkeypatch, silent_notify):
+        """A Telegram failure after commit cannot reopen a durable scheduled task."""
+        events: list[str] = []
+        session = _FakeSession()
+        session.events = events
+
+        async def hook():
+            events.append("hook")
+            raise RuntimeError("telegram unavailable")
+
+        async def execute(bot, session_, task):
+            return hook
+
+        async def mark_done(session_, task):
+            events.append("done")
+
+        async def retry(*args, **kwargs):
+            raise AssertionError("hook errors must not retry a completed task")
+
+        monkeypatch.setattr(schedule, "execute_task", execute)
+        monkeypatch.setattr(schedule.schedule_service, "mark_done", mark_done)
+        monkeypatch.setattr(schedule.schedule_service, "mark_retry", retry)
+
+        await schedule._run_due_task(object(), session, _task(payload={"internal": True, "action": "expire"}))
+
+        assert events == ["done", "commit", "hook"]
+        assert silent_notify == []
+
+    @pytest.mark.parametrize(
+        ("prior_retry_count", "should_notify"),
+        [(0, True), (1, False), (5, True), (6, False), (11, True)],
+    )
+    async def test_only_internal_expiry_retries_and_notifies_on_first_then_each_sixth(
+        self, monkeypatch, silent_notify, prior_retry_count, should_notify,
+    ):
+        """Changing payload predicate would retry ordinary tasks forever or hide expiry trouble."""
+        retried: list[tuple[int, int, str]] = []
+
+        async def boom(bot, session, task):
+            raise RuntimeError("provider exploded")
+
+        async def mark_retry(session, task_id, *, retry_count, error, now):
+            retried.append((task_id, retry_count, error))
+
+        async def mark_failed_by_id(*args, **kwargs):
+            raise AssertionError("internal expiry must not become failed")
+
+        monkeypatch.setattr(schedule, "execute_task", boom)
+        monkeypatch.setattr(schedule.schedule_service, "mark_retry", mark_retry)
+        monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
+
+        await schedule._run_due_task(
+            object(), _FakeSession(),
+            _task(payload={"internal": True, "action": "expire"}, retry_count=prior_retry_count),
+        )
+
+        assert retried == [(7, prior_retry_count, "provider exploded")]
+        assert bool(silent_notify) is should_notify
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            {"internal": True, "action": "start"},
+            {"action": "expire"},
+            {"internal": False, "action": "expire"},
+        ),
+    )
+    async def test_non_internal_failure_is_marked_failed_not_retried(
+        self, monkeypatch, silent_notify, payload,
+    ):
+        """The retry exception is payload-based, never a task-type special case."""
+        failed: list[tuple[int, str]] = []
+
+        async def boom(bot, session, task):
+            raise RuntimeError("ordinary failure")
+
+        async def mark_failed_by_id(session, task_id, error):
+            failed.append((task_id, error))
+
+        async def mark_retry(*args, **kwargs):
+            raise AssertionError("non-expiry task retried")
+
+        monkeypatch.setattr(schedule, "execute_task", boom)
+        monkeypatch.setattr(schedule.schedule_service, "mark_failed_by_id", mark_failed_by_id)
+        monkeypatch.setattr(schedule.schedule_service, "mark_retry", mark_retry)
+
+        await schedule._run_due_task(
+            object(), _FakeSession(), _task(payload=payload),
+        )
+
+        assert failed == [(7, "ordinary failure")]
+        assert silent_notify and "fallito" in silent_notify[0]
+
+    async def test_retry_persistence_failure_rolls_back_again_without_notification(
+        self, monkeypatch, silent_notify,
+    ):
+        """A failed retry write must leave its original pending row for a later tick."""
+        session = _FakeSession()
+
+        async def boom(bot, session_, task):
+            raise RuntimeError("expiry failed")
+
+        async def mark_retry(*args, **kwargs):
+            raise ConnectionError("database unavailable")
+
+        monkeypatch.setattr(schedule, "execute_task", boom)
+        monkeypatch.setattr(schedule.schedule_service, "mark_retry", mark_retry)
+
+        await schedule._run_due_task(
+            object(), session, _task(payload={"internal": True, "action": "expire"}),
+        )
+
+        assert session.events == ["rollback", "rollback"]
+        assert silent_notify == []
+
+    @pytest.mark.parametrize(
+        "payload_json",
+        (
+            "{not-json",
+            "null",
+            "42",
+            '"expire"',
+            "[]",
+            '[["internal", true], ["action", "expire"]]',
+        ),
+    )
+    async def test_malformed_or_non_object_payload_is_failed_never_retried(
+        self, monkeypatch, marks, silent_notify, payload_json,
+    ):
+        """Only a JSON object is schedulable; list-pairs must not forge retry markers.
+        """
+        task = _task()
+        task.payload_json = payload_json
+
+        async def execute(*args, **kwargs):
+            raise AssertionError("bad payload must fail before event dispatch")
+
+        monkeypatch.setattr(schedule, "execute_task", execute)
+        session = _FakeSession()
+
+        await schedule._run_due_task(object(), session, task)
+
+        assert len(marks) == 1 and marks[0][0] == "failed"
+        assert session.events == ["rollback", "commit"]
+        assert silent_notify and "fallito" in silent_notify[0]
 
 
 class TestNotifyCreator:
@@ -182,14 +435,24 @@ class TestNotifyCreator:
             async def send_message(self, chat_id, text):
                 raise RuntimeError("bot was blocked by the user")
 
-        await schedule._notify_creator(_Bot(), _task(), "ciao")  # must not raise
+        await schedule._notify_creator(_Bot(), 999, 7, "ciao")  # must not raise
 
     async def test_nothing_is_sent_without_a_creator(self):
         class _Bot:
             async def send_message(self, chat_id, text):
                 raise AssertionError("messaged nobody's chat")
 
-        await schedule._notify_creator(_Bot(), _task(created_by=None), "ciao")
+        await schedule._notify_creator(_Bot(), None, 7, "ciao")
+
+
+async def test_schedule_callbacks_ignore_stale_buttons_without_mutating_state():
+    callback = _FakeCallback()
+
+    await schedule.cb_type(callback, SimpleNamespace(key=None), object(), object())
+    await schedule.cb_pick_event(callback, SimpleNamespace(key=None, item_id=7), object())
+    await schedule.cb_sched_del(callback, SimpleNamespace(item_id=None), object())
+
+    assert callback.answers == [(None, False)] * 3
 
 
 class TestSchedulerLoop:

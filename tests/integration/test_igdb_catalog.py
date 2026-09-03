@@ -53,7 +53,8 @@ async def test_quality_gate_preserves_previous_catalog(session, monkeypatch):
     assert not list((await session.execute(select(AIGameCatalogEntry))).scalars())
 
 
-async def test_game_creation_prefers_active_external_cache_and_snapshots_it(session):
+async def test_game_creation_prefers_active_external_cache_and_snapshots_it(session, monkeypatch):
+    monkeypatch.setattr(settings, "twentyq_v2_enabled", True)
     await igdb_catalog.replace_catalog(session, (
         _record("1", "Uno"), _record("2", "Due"),
     ))
@@ -62,9 +63,14 @@ async def test_game_creation_prefers_active_external_cache_and_snapshots_it(sess
     selected = []
     for index in range(2):
         root = await ai_game_service.create_twenty_questions(
-            session, creator_tg_id=9, title=f"Partita {index}",
+            session,
+            creator_tg_id=9,
+            title=f"Partita {index}",
+            duration_seconds=43_200,
+            expires_at=None,
+            max_coins_per_participant=100,
         )
-        snapshot = await ai_game_service.get_snapshot(session, root.id)
+        snapshot = await ai_game_service.get_snapshot(session, root.session_id)
         selected.append(snapshot.game.catalog_key)
         assert "Dossier verificato" in snapshot.game.dossier_json
         await session.commit()
@@ -72,7 +78,8 @@ async def test_game_creation_prefers_active_external_cache_and_snapshots_it(sess
     assert set(selected) == {"igdb:1", "igdb:2"}
 
 
-async def test_corrupt_active_cache_fails_closed_instead_of_leaking_bad_context(session):
+async def test_corrupt_active_cache_fails_closed_instead_of_leaking_bad_context(session, monkeypatch):
+    monkeypatch.setattr(settings, "twentyq_v2_enabled", True)
     session.add(AIGameCatalogEntry(
         game_type="twentyq", source="igdb", external_id="1", catalog_key="igdb:1",
         title="Rotto", aliases_json="not-json", dossier_json="{}",
@@ -82,7 +89,12 @@ async def test_corrupt_active_cache_fails_closed_instead_of_leaking_bad_context(
 
     with pytest.raises(RuntimeError, match="corrupt cached"):
         await ai_game_service.create_twenty_questions(
-            session, creator_tg_id=9, title="Partita",
+            session,
+            creator_tg_id=9,
+            title="Partita",
+            duration_seconds=43_200,
+            expires_at=None,
+            max_coins_per_participant=100,
         )
 
 

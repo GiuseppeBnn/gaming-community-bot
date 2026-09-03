@@ -59,12 +59,14 @@ class _FakeMessage:
         self.from_user = SimpleNamespace(id=user_id)
         self.chat = SimpleNamespace(id=user_id, type="private")
         self.answers: list[str] = []
+        self.markups: list[object] = []
 
     async def answer(self, text, reply_markup=None):
         self.answers.append(text)
 
     async def edit_text(self, text, reply_markup=None, **kw):
         self.answers.append(text)
+        self.markups.append(reply_markup)
 
 
 class _FakeCallback:
@@ -431,6 +433,30 @@ class TestMassReward:
         cb = _FakeCallback(AdminCb(action="mrconfirm").pack())
         await ad.cb_mass_confirm(cb, state, session)
         assert any("nessuno" in a for a in cb.message.answers)
+
+    async def test_remove_list_shows_only_the_selected_members(
+        self, session, user_factory
+    ):
+        await user_factory(tg_id=10, username="alice")
+        await user_factory(tg_id=11, username="bob")
+        state = await self._armed_picker("coins", 100, [11])
+        cb = _FakeCallback(AdminCb(action="mrremlist").pack())
+
+        await ad.cb_mass_remove_list(cb, state, session)
+
+        assert cb.message.answers == ["➖ Tocca chi vuoi togliere dalla lista:"]
+        buttons = [button for row in cb.message.markups[0].inline_keyboard for button in row]
+        assert any("bob" in button.text for button in buttons)
+        assert all("alice" not in button.text for button in buttons)
+        assert cb.answers == [(None, False)]
+
+    async def test_remove_list_without_selection_returns_to_the_picker(self, session):
+        state = await self._armed_picker("coins", 100, [])
+        cb = _FakeCallback(AdminCb(action="mrremlist").pack())
+
+        await ad.cb_mass_remove_list(cb, state, session)
+
+        assert any("nessuno" in text for text in cb.message.answers)
 
     async def test_removing_a_member_takes_it_off_before_sending(self, session, user_factory):
         await user_factory(tg_id=10, username="alice", coins=0)
