@@ -82,9 +82,14 @@ def mass_picker_kb(
             text=f"{mark}{_picker_name(user)} · {coins:,}🪙",
             callback_data=AdminCb(action="mrpick", item_id=user.tg_id).pack(),
         )
-    tools: list[tuple[str, str]] = [("🔍 Cerca", AdminCb(action="mrsearch").pack())]
-    if is_search:
-        tools.append(("📋 Lista completa", AdminCb(action="mrlist", item_id=0).pack()))
+    # In search mode we are already on the search screen (its prompt/results), so a
+    # second "Cerca" only re-renders an identical message and errors — offer the way
+    # back to the full list instead. Outside search, "Cerca" is the way in.
+    tools: list[tuple[str, str]] = (
+        [("📋 Lista completa", AdminCb(action="mrlist", item_id=0).pack())]
+        if is_search
+        else [("🔍 Cerca", AdminCb(action="mrsearch").pack())]
+    )
     for text, cb in tools:
         b.button(text=text, callback_data=cb)
     nav: list[tuple[str, str]] = []

@@ -170,6 +170,30 @@ async def cb_list(callback: CallbackQuery, callback_data: EventCb, db_session: A
     await callback.answer()
 
 
+@router.callback_query(EventCb.filter(F.action == "info"), IsAdminCallbackFilter())
+async def cb_info(callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession) -> None:
+    """Read-only recap of an item, for types that provide one (e.g. guess/sound).
+
+    Generic dispatch through the registry — no per-type branching. Reachable from
+    the item detail («👁 Info») and from the /programmati per-task screen.
+    """
+    task_type = callback_data.task_type
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    render_info = getattr(et, "render_info", None)
+    if render_info is None:
+        await callback.answer()
+        return
+    await render_info(callback.message, db_session, item_id)
+    await callback.answer()
+
+
 @router.callback_query(EventCb.filter(F.action == "item"), IsAdminCallbackFilter())
 async def cb_item(callback: CallbackQuery, callback_data: EventCb, db_session: AsyncSession) -> None:
     task_type = callback_data.task_type

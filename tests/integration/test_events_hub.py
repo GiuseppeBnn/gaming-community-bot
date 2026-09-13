@@ -351,6 +351,51 @@ class TestItemScreen:
     # tests/unit/test_callbacks.py::test_a_non_numeric_event_id_never_reaches_the_handler.
 
 
+class TestInfoScreen:
+    """Generic dispatch of the optional read-only recap (`render_info`)."""
+
+    async def test_it_dispatches_to_the_types_readonly_recap(self, session):
+        class _InfoType(_FakeType):
+            key = "info_t"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.infos: list[int] = []
+
+            async def render_info(self, message, db_session, item_id) -> None:
+                self.infos.append(item_id)
+                await message.answer(f"recap #{item_id}")
+
+        event_types.clear()
+        t = _InfoType()
+        event_types.register(t)
+        cb = EventCb(action="info", task_type="info_t", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
+
+        assert t.infos == [7]
+        assert "recap #7" in callback.said
+
+    async def test_a_type_without_a_recap_is_ignored_quietly(self, session, only_fake):
+        # _FakeType exposes no render_info → nothing rendered, spinner still stopped.
+        cb = EventCb(action="info", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
+
+        assert callback.said == ""
+        assert callback.answers
+
+    async def test_an_unknown_type_is_ignored_quietly(self, session):
+        cb = EventCb(action="info", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
+
+        assert callback.said == ""
+
+
 # ---------------------------------------------------------------------------
 # The confirmation gate
 # ---------------------------------------------------------------------------

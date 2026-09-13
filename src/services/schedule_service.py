@@ -216,6 +216,14 @@ async def list_pending(session: AsyncSession) -> list[ScheduledTask]:
     return visible
 
 
+async def get_task(session: AsyncSession, task_id: int) -> ScheduledTask | None:
+    """Load a single scheduled task by id. Read-only (no commit): used by the
+    /programmati per-task screen to render its actions."""
+    return (
+        await session.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
+    ).scalar_one_or_none()
+
+
 async def mark_done(session: AsyncSession, task: ScheduledTask) -> None:
     task.status = "done"
     task.executed_at = utcnow()

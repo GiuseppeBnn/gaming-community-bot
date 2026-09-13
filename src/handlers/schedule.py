@@ -27,7 +27,7 @@ from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
-from handlers.callbacks import SchedCb
+from handlers.callbacks import EventCb, SchedCb
 from handlers.event_types.base import PostCommitHook
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, schedule_service
@@ -275,33 +275,89 @@ async def fsm_event_runat(message: Message, state: FSMContext, db_session) -> No
 # /programmati — list & cancel
 # ---------------------------------------------------------------------------
 
-@router.message(Command("programmati"), IsAdminFilter())
-async def cmd_programmati(message: Message, db_session) -> None:
+def _task_what(t) -> str:
+    """The «▶️ Avvio»/«🏁 Chiusura» label for a task — which one is pending is the
+    difference between cancelling the right timer and the wrong one."""
+    try:
+        action = schedule_service.task_payload(t).get("action", _ACTION_START)
+    except (TypeError, ValueError):
+        return "⚠️ Dati non validi"
+    return _ACTIONS[action][0] if action in _ACTIONS else ""
+
+
+def _task_label(t) -> str:
+    et = event_types.get(t.task_type)
+    return et.hub_label if et else t.task_type
+
+
+async def _programmati_view(db_session) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the /programmati list: one tappable button per task (opens its
+    per-task screen). Empty state has no keyboard."""
     tasks = await schedule_service.list_pending(db_session)
     if not tasks:
-        await message.reply("🗓️ Nessun evento programmato.")
-        return
+        return "🗓️ Nessun evento programmato.", InlineKeyboardMarkup(inline_keyboard=[])
     b = InlineKeyboardBuilder()
     lines = ["🗓️ <b>Eventi programmati</b>\n"]
     for t in tasks:
         when = schedule_service.to_local(t.run_at).strftime("%d/%m %H:%M")
-        et = event_types.get(t.task_type)
-        label = et.hub_label if et else t.task_type
-        # An item can have both a start and a close pending: saying which is which
-        # is the difference between cancelling the right one and the wrong one.
-        try:
-            action = schedule_service.task_payload(t).get("action", _ACTION_START)
-        except (TypeError, ValueError):
-            what = "⚠️ Dati non validi"
-        else:
-            what = _ACTIONS[action][0] if action in _ACTIONS else ""
+        label, what = _task_label(t), _task_what(t)
         lines.append(f"• #{t.id} {label} {what} — {when}")
         b.button(
-            text=f"❌ Annulla #{t.id}",
-            callback_data=SchedCb(action="del", item_id=t.id).pack(),
+            text=f"#{t.id} {label} {what}"[:60],
+            callback_data=SchedCb(action="view", item_id=t.id).pack(),
         )
     b.adjust(1)
-    await message.reply("\n".join(lines), reply_markup=b.as_markup())
+    return "\n".join(lines), b.as_markup()
+
+
+@router.message(Command("programmati"), IsAdminFilter())
+async def cmd_programmati(message: Message, db_session) -> None:
+    text, kb = await _programmati_view(db_session)
+    await message.reply(text, reply_markup=kb)
+
+
+@router.callback_query(SchedCb.filter(F.action == "list"))
+async def cb_sched_list(callback: CallbackQuery, db_session) -> None:
+    text, kb = await _programmati_view(db_session)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(SchedCb.filter(F.action == "view"))
+async def cb_sched_view(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
+    """Per-task screen: view its read-only info (where the type offers one) or
+    cancel it. Cancelling used to sit directly in the list; it moved here."""
+    task_id = callback_data.item_id
+    if task_id is None:
+        await callback.answer()
+        return
+    task = await schedule_service.get_task(db_session, task_id)
+    if task is None or task.status != "pending":
+        # Executed/cancelled in the meantime → back to a fresh list.
+        text, kb = await _programmati_view(db_session)
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer("Non più programmato.", show_alert=True)
+        return
+    when = schedule_service.to_local(task.run_at).strftime("%d/%m %H:%M")
+    label, what = _task_label(task), _task_what(task)
+    b = InlineKeyboardBuilder()
+    # «Guarda info» only for types that expose a read-only recap (guess/sound).
+    et = event_types.get(task.task_type)
+    if getattr(et, "render_info", None) is not None:
+        b.button(
+            text="👁 Guarda info",
+            callback_data=EventCb(
+                action="info", task_type=task.task_type, item_id=task.ref_id
+            ).pack(),
+        )
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="del", item_id=task_id).pack())
+    b.button(text="⬅️ Indietro", callback_data=SchedCb(action="list").pack())
+    b.adjust(1)
+    await callback.message.edit_text(
+        f"🗓️ <b>{esc(label)}</b> {what}\n🕒 Esecuzione: <b>{when}</b>",
+        reply_markup=b.as_markup(),
+    )
+    await callback.answer()
 
 
 @router.callback_query(SchedCb.filter(F.action == "del"))

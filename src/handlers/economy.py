@@ -7,7 +7,7 @@ import logging
 from aiogram import Router
 from aiogram.filters.command import Command
 from aiogram.types import Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -192,14 +192,17 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ L'importo deve essere positivo.")
         return
 
-    # Resolve target by username or tg_id
+    # Resolve target by username or tg_id. Telegram usernames are case-insensitive
+    # (@Mario == @mario), so match on lower() — otherwise a hand-typed casing that
+    # differs from the stored one (common in private chat, where there is no member
+    # autocomplete) misses and looks like the user never interacted.
     if target_ref.isdigit():
         result = await db_session.execute(
             select(User).where(User.tg_id == int(target_ref))
         )
     else:
         result = await db_session.execute(
-            select(User).where(User.username == target_ref)
+            select(User).where(func.lower(User.username) == target_ref.lower())
         )
     target = result.scalar_one_or_none()
     if target is None:
@@ -265,7 +268,10 @@ async def cmd_credita(message: Message, db_session: AsyncSession) -> None:
     if target_ref.isdigit():
         result = await db_session.execute(select(User).where(User.tg_id == int(target_ref)))
     else:
-        result = await db_session.execute(select(User).where(User.username == target_ref))
+        # Case-insensitive: Telegram usernames ignore case (see cmd_trasferisci).
+        result = await db_session.execute(
+            select(User).where(func.lower(User.username) == target_ref.lower())
+        )
     target = result.scalar_one_or_none()
     if target is None:
         await message.answer(

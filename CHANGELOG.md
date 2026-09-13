@@ -3,6 +3,31 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [1.9] - 2026-09-13
+
+### Aggiunto
+- **Guess The Game / Sound Quest — scheda informazioni (sola lettura)** — nuova
+  vista che mostra il **recap completo** di un round senza poterlo modificare:
+  risposta, tentativi, limite di tempo, chiusura, premi e **tutti gli indizi con
+  il loro testo** (prima, nella scheda di gestione, degli indizi si vedeva solo
+  «dopo N tentativi», non cosa dicevano). Serve a ricordarsi cosa si è preparato
+  dopo aver programmato o pubblicato l'attività. Si apre da due punti: dagli
+  **Eventi**, aprendo il round, con il pulsante **👁 Info**; e da **`/programmati`**,
+  dove ora si **tocca l'attività** per aprire una schermata con «👁 Guarda info»,
+  «❌ Annulla» e «⬅️ Indietro» (il tasto per annullare è stato spostato lì dentro).
+
+### Corretto
+- **`/trasferisci` non funzionava in chat privata** — digitando l'`@username` con
+  maiuscole/minuscole diverse da quelle salvate (frequente in privato, dove non
+  c'è il completamento automatico dei membri del gruppo) il bot rispondeva «utente
+  non trovato». Ora la ricerca per username **ignora maiuscole/minuscole** (come già
+  altrove nel bot). Stessa correzione applicata a **`/credita`** e alla risoluzione
+  dei destinatari via `@username` dei comandi admin (es. `/ban`, `/addebita`, `/warn`).
+- **Manda premi — pulsante «Cerca» doppio** — nella dashboard `/admin` → 💰 Economia
+  → «🎯 Manda premi», dopo aver premuto «🔍 Cerca» compariva un **secondo** pulsante
+  «🔍 Cerca» che, se premuto, dava errore. È stato rimosso: nella schermata di
+  ricerca resta solo «📋 Lista completa» per tornare all'elenco.
+
 ## [1.8] - 2026-08-30
 
 ### Aggiunto

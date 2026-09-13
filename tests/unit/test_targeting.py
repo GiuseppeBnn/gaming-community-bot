@@ -153,6 +153,17 @@ class TestByUsernameOrId:
         assert target.tg_id == 7
         assert target.remainder == "100 motivo lungo"
 
+    async def test_a_username_match_ignores_case(self, session, user_factory):
+        """Telegram usernames are case-insensitive: @Mario and @mario are the same
+        person, so a differently-cased token must still resolve to the stored row."""
+        await user_factory(tg_id=7, username="Mario")
+        message = _message("/addebita @mario 100")
+
+        target = await resolve_target(message, session, "@mario 100")
+
+        assert target.tg_id == 7
+        assert target.user is not None and target.user.username == "Mario"
+
     async def test_an_unknown_username_yields_no_id(self, session):
         """Nothing to act on, but the shape is still returned so the caller can say
         «utente non trovato» instead of «specifica un utente»."""

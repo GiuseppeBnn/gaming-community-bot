@@ -129,6 +129,19 @@ class TestTransfer:
 
         assert await _coins(session, TARGET) == 100
 
+    async def test_the_username_match_ignores_case(self, session, user_factory):
+        """Telegram usernames are case-insensitive. Typing a different casing than
+        the one stored (common in private chat, no member autocomplete) used to
+        report «utente non trovato» — it must resolve to the same person."""
+        await user_factory(tg_id=SENDER, username="mittente", coins=500)
+        await user_factory(tg_id=TARGET, username="Mario", coins=0)
+        message = _FakeMessage("/trasferisci @mario 100", username="mittente")
+
+        await economy.cmd_trasferisci(message, session)
+
+        assert await _coins(session, TARGET) == 100
+        assert "non trovato" not in message.said.lower()
+
     async def test_every_malformed_command_moves_nothing(self, session, user_factory):
         """The parser is the whole risk surface of this command. Each of these used to
         be one `int()` away from moving a number nobody typed."""
@@ -456,6 +469,16 @@ class TestAdminCredit:
         await economy.cmd_credita(message, session)
 
         assert await _coins(session, TARGET) == 250
+
+    async def test_the_username_match_ignores_case(self, session, user_factory):
+        await user_factory(tg_id=SENDER, username="admin")
+        await user_factory(tg_id=TARGET, username="Mario", coins=0)
+        message = _FakeMessage("/credita @mario 250")
+
+        await economy.cmd_credita(message, session)
+
+        assert await _coins(session, TARGET) == 250
+        assert "non trovato" not in message.said.lower()
 
     async def test_a_failure_is_reported_rather_than_raised(
         self, session, user_factory, monkeypatch

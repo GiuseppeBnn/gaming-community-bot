@@ -129,7 +129,18 @@ class TestMassPicker:
                                   is_search=True))
         assert AdminCb(action="mrlist", item_id=2).pack() not in cbs  # no next
         assert AdminCb(action="mrlist", item_id=0).pack() in cbs      # back to full list
+
+    def test_search_mode_drops_the_duplicate_search_button(self):
+        # On the search screen a second "Cerca" only re-renders an identical
+        # message and errors — it must not be offered there.
+        cbs = _cbs(mass_picker_kb(self._users(2), selected_ids=[], page=0, has_next=False,
+                                  is_search=True))
+        assert AdminCb(action="mrsearch").pack() not in cbs
+
+    def test_list_mode_offers_search(self):
+        cbs = _cbs(mass_picker_kb(self._users(2), selected_ids=[], page=0, has_next=False))
         assert AdminCb(action="mrsearch").pack() in cbs
+        assert AdminCb(action="mrlist", item_id=0).pack() not in cbs  # no "full list" here
 
     def test_more_kb_offers_yes_and_no(self):
         cbs = _cbs(mass_more_kb())

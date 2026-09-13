@@ -31,7 +31,7 @@ from sqlalchemy import select
 
 from database.models import ScheduledTask
 from handlers import event_types, schedule
-from handlers.callbacks import SchedCb
+from handlers.callbacks import EventCb, SchedCb
 from handlers.event_types import StartResult
 from services import schedule_service
 from utils import cooldown
@@ -496,15 +496,79 @@ class TestPendingList:
 
         assert "Nessun evento programmato" in message.said
 
-    async def test_each_pending_task_gets_a_cancel_button(self, session, only_fake, user_factory):
+    async def test_each_pending_task_is_tappable_and_cancellable(
+        self, session, only_fake, user_factory
+    ):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         task = await self._task(session)
         message = _FakeMessage()
 
         await schedule.cmd_programmati(message, session)
 
-        assert SchedCb(action="del", item_id=task.id).pack() in _callbacks(message.markups[0])
+        # The list now offers a per-task screen; the cancel moved inside it.
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
         assert "🧪 Finto" in message.said
+
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+        await schedule.cb_sched_view(callback, cb, session)
+        view_cbs = _callbacks(callback.message.markups[0])
+        assert SchedCb(action="del", item_id=task.id).pack() in view_cbs
+        assert SchedCb(action="list").pack() in view_cbs
+        # The fake type exposes no read-only recap → no «Guarda info».
+        assert not any(c.startswith("ev:info") for c in view_cbs)
+
+    async def test_a_type_with_a_recap_offers_guarda_info(self, session, user_factory):
+        """A guess/sound task (its type exposes render_info) gets «Guarda info»,
+        pointing at the read-only recap of the round it will open."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await schedule_service.schedule_task(
+            session, "guess", schedule_service.utcnow() + timedelta(hours=1),
+            ADMIN_ID, GROUP_CHAT, ref_id=42,
+        )
+        await session.commit()
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        view_cbs = _callbacks(callback.message.markups[0])
+        assert EventCb(action="info", task_type="guess", item_id=42).pack() in view_cbs
+
+    async def test_viewing_with_no_task_id_is_ignored(self, session):
+        cb = SchedCb(action="view")
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        assert callback.message.texts == []
+
+    async def test_the_back_button_re_renders_the_list(self, session, only_fake, user_factory):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await self._task(session)
+        cb = SchedCb(action="list")
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_list(callback, session)
+
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(
+            callback.message.markups[0]
+        )
+
+    async def test_viewing_a_task_that_is_gone_falls_back_to_the_list(
+        self, session, only_fake, user_factory
+    ):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await self._task(session)
+        await schedule_service.mark_done(session, task)
+        await session.commit()
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        assert "Nessun evento programmato" in callback.message.said
+        assert callback.alerts and "Non più programmato" in callback.alerts[0]
 
     async def test_the_list_says_which_tasks_are_closes(self, session, only_fake, user_factory):
         """An item can have a start and a close pending at once: telling them apart
@@ -531,7 +595,7 @@ class TestPendingList:
         await schedule.cmd_programmati(message, session)
 
         assert "scomparso" in message.said
-        assert SchedCb(action="del", item_id=task.id).pack() in _callbacks(message.markups[0])
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
 
     async def test_malformed_payload_is_visible_and_cancellable(self, session, only_fake):
         """A corrupt persisted row must not take down `/programmati` or become invisible."""
@@ -543,7 +607,7 @@ class TestPendingList:
         await schedule.cmd_programmati(message, session)
 
         assert "Dati non validi" in message.said
-        assert SchedCb(action="del", item_id=task.id).pack() in _callbacks(message.markups[0])
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
 
     async def test_cancelling_removes_it_from_the_list_for_good(
         self, session, only_fake, user_factory

@@ -49,6 +49,28 @@ def _fmt_dt(dt) -> str:
     return schedule_service.to_local(dt).strftime("%d/%m %H:%M")
 
 
+def _recap_lines(round_) -> list[str]:
+    """The facts shared by the management detail and the read-only recap: header,
+    answer, attempts/limit, close and prize. Both screens start from these and then
+    append what is specific to each (thresholds + play stats vs. full hint texts)."""
+    dot, label = _STATUS.get(round_.status, ("•", round_.status))
+    limit = round_.time_limit_seconds
+    return [
+        f"{dot} <b>{esc(round_.title)}</b> — <i>{label}</i>",
+        f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
+        f"🎯 {round_.max_attempts} tentativi · "
+        + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
+        "⏳ Chiusura: " + (
+            f"automatica il {schedule_service.to_local(round_.closes_at):%d/%m %H:%M}"
+            if round_.closes_at is not None
+            else f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
+            if round_.round_duration_seconds
+            else "manuale"
+        ),
+        f"🏆 {guess_service.format_prize_summary(round_)}",
+    ]
+
+
 class GuessType:
     """One instance per game; ``key`` is the ``kind``."""
 
@@ -136,22 +158,7 @@ class GuessType:
             await edit_or_send(message, "⚠️ Round non trovato (eliminato?).", b.as_markup())
             return
 
-        dot, label = _STATUS.get(round_.status, ("•", round_.status))
-        limit = round_.time_limit_seconds
-        lines = [
-            f"{dot} <b>{esc(round_.title)}</b> — <i>{label}</i>",
-            f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
-            f"🎯 {round_.max_attempts} tentativi · "
-            + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
-            "⏳ Chiusura: " + (
-                f"automatica il {schedule_service.to_local(round_.closes_at):%d/%m %H:%M}"
-                if round_.closes_at is not None
-                else f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
-                if round_.round_duration_seconds
-                else "manuale"
-            ),
-            f"🏆 {guess_service.format_prize_summary(round_)}",
-        ]
+        lines = _recap_lines(round_)
         hints = guess_service.hints_of(round_)
         if hints:
             lines.append("💡 " + " · ".join(f"dopo {a}" for a, _ in hints))
@@ -229,8 +236,57 @@ class GuessType:
                 text="🗑️ Elimina",
                 callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack(),
             )
+        # Read-only recap (answer + full hint texts, no edit buttons): the one way
+        # to remember what was built without risking a mistap on a live round.
+        b.button(
+            text="👁 Info",
+            callback_data=EventCb(action="info", task_type=self.key, item_id=item_id).pack(),
+        )
         b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack())
-        b.adjust(2, 1, 1)
+        # Action buttons go two per row; «Info» + «Indietro» share the last row.
+        action_rows = [2] * (1 if round_.status == "finished" else 2)
+        b.adjust(*action_rows, 2)
+        await edit_or_send(message, "\n".join(lines), b.as_markup())
+
+    async def render_info(self, message: Message, db_session: AsyncSession, item_id: int) -> None:
+        """Read-only recap of a round: same facts as the detail screen, plus the
+        full hint texts, and **no action buttons** (only a way back).
+
+        This is what an admin opens to remember what they built — the answer, the
+        prize, and the exact hints they wrote — after the round has been scheduled
+        or published, without any risk of changing it by mistap. Reachable from the
+        Events hub detail and from the /programmati per-task screen.
+        """
+        round_ = await guess_service.get_round(db_session, item_id)
+        if round_ is None or round_.kind != self.kind:
+            b = InlineKeyboardBuilder()
+            b.button(
+                text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack()
+            )
+            await edit_or_send(message, "⚠️ Round non trovato (eliminato?).", b.as_markup())
+            return
+
+        lines = _recap_lines(round_)
+        hints = guess_service.hints_of(round_)
+        if hints:
+            # Full text here (the detail screen only lists the thresholds): this is
+            # the one place that answers «che indizi avevo messo?».
+            lines.append("\n💡 <b>Suggerimenti</b>")
+            lines += [
+                f"• dopo <b>{after}</b> tentativi: {esc(text)}" for after, text in hints
+            ]
+        else:
+            lines.append("\n💡 Nessun suggerimento")
+        if round_.started_at:
+            lines.append(f"\n▶️ Avviato: {_fmt_dt(round_.started_at)}")
+        if round_.finished_at:
+            lines.append(f"🏁 Concluso: {_fmt_dt(round_.finished_at)}")
+
+        b = InlineKeyboardBuilder()
+        b.button(
+            text="⬅️ Indietro",
+            callback_data=EventCb(action="item", task_type=self.key, item_id=item_id).pack(),
+        )
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
     # ------------------------------------------------------------------
