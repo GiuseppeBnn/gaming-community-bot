@@ -32,7 +32,7 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per tutte le chiamate LLM — **mai** librerie HTTP bloccanti |
-| LLM | OpenRouter + Groq + Gemini | Gratuiti prima: chat Gemini→Groq→GLM, one-shot Groq→GLM; GLM 5.3 Flash paid ZDR; giudice invariato su `GROQ_JUDGE_MODEL` strict |
+| LLM | OpenRouter + Groq + Gemini | Gratuiti prima: chat Groq→Gemini→GLM, one-shot Groq→GLM; GLM 5.3 Flash paid ZDR; giudice invariato su `GROQ_JUDGE_MODEL` strict |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -938,7 +938,8 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   prova Groq gratuito → OpenRouter paid (GLM 5.3 Flash). `groq` e `openrouter` espliciti
   selezionano direttamente l'adapter per A/B. Il giudice **non passa mai** da questo router.
 - `services/ai_routing.py` contiene la failover policy riutilizzata da chat e one-shot:
-  timeout free 6 s, deadline assoluta 30 s, circuit breaker 60 s per workload/provider/modello.
+  timeout free 10 s per chat e one-shot, deadline assoluta 30 s,
+  circuit breaker 60 s per workload/provider/modello.
   Cancellazioni ed errori di programmazione propagano senza attivare una seconda richiesta paid.
   Una risposta free valida termina la route anche con budget paid spento/esaurito.
 - `generate_openrouter_completion(...)` riceve una policy esplicita per feature/modelli/privacy:
@@ -946,8 +947,9 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - la chat Alduino forza anche `zdr=true`; la sua lista contiene soltanto modelli con endpoint ZDR;
   - `provider.max_price` deriva dai due tetti USD/1M della config: se i prezzi promozionali cambiano,
     la richiesta viene rifiutata invece di diventare silenziosamente costosa;
-  - le route GLM usano `provider.sort=latency` entro gli stessi tetti di prezzo;
-    le route legacy mantengono `price`. Non si cambia provider fisso, non si
+  - le route GLM non inviano `provider.sort`: il bilanciamento predefinito di OpenRouter
+    combina prezzo e outage recenti. Forzare `price` disabiliterebbe quel bilanciamento;
+    `max_price` resta un hard cap. Non si cambia provider fisso, non si
     allentano ZDR/schema strict e lo structured conserva `allow_fallbacks=false`;
   - cache implicita del provider, senza sessioni/affinità forzate né memoizzazione
     delle risposte. ZDR/prezzi rimangono vincolanti; ogni chiamata conserva prenotazione
@@ -986,10 +988,20 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   gruppo, ramo dei reply persistito in `alduino_turns`, eventuale messaggio bot citato. Il messaggio
   corrente è escluso dal transcript perché arriva nella sezione dedicata. I blocchi sono tutti
   delimitati e dichiarati dati inerti. Al provider non escono Telegram ID.
+- Il reply naturale accetta solo output registrato in `alduino_turns` nello stesso gruppo:
+  risposte conversazionali e risposte riuscite dei sette comandi fun. Il marker provider
+  logico `fun` conserva uno snapshot bounded senza upstream interaction ID; il primo
+  seguito passa dalla normale route conversazionale. La registrazione riutilizza
+  `record_turn` e avviene dal handler dopo l'invio Telegram, con commit/rollback separati
+  dalla chiamata LLM. Errori AI, fallback e messaggi di servizio non vengono registrati.
+  La verifica ID precede cooldown/typing/rete; un target sconosciuto, DB assente o
+  errore SQL causa `SkipHandler`, senza intercettare reply destinati agli eventi.
+  Nessuna euristica sul testo o nuova cache/tabella. Fun legacy non registrato richiede
+  `/alduino` esplicito; il comando può discutere eventi/notifiche con la citazione visibile.
 - `GroupContextMiddleware` cattura prima del handler solo messaggi umani non-command nel gruppo
   effettivo e pota a `ALDUINO_GROUP_MEMORY_ROWS`; senza BotFather privacy mode disabilitata Telegram
   non consegna il traffico ordinario, quindi il sistema degrada al solo contesto visibile al bot.
-- Routing privacy: default `ALDUINO_PROVIDER=auto` prova Gemini → Groq (se abilitato) → GLM paid.
+- Routing privacy: default `ALDUINO_PROVIDER=auto` prova Groq (se abilitato) → Gemini → GLM paid.
   Ogni adapter riceve il ramo locale e i dati live; il transcript ambientale va soltanto alla
   route OpenRouter ZDR. I provider espliciti conservano il comportamento legacy per A/B.
   La risposta della chat resta ≤500 caratteri; la corsia paid one-shot resta ≤600 caratteri.

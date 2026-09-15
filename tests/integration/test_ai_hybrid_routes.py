@@ -64,7 +64,7 @@ async def test_glm_fallback_keeps_branch_zdr_and_persistent_cost_accounting(hybr
     assert sent["models"] == ["z-ai/glm-5.3-flash"]
     assert sent["reasoning"]["effort"] == "low"
     assert sent["provider"]["zdr"] and sent["provider"]["data_collection"] == "deny"
-    assert sent["provider"]["sort"] == "latency"
+    assert "sort" not in sent["provider"]
     assert "Mario: Doom" in sent["messages"][1]["content"]
     assert "UTENTE: Mario gioca a Doom" in sent["messages"][1]["content"]
     snapshot = await ai_budget.snapshot()

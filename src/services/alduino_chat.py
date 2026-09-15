@@ -419,14 +419,14 @@ async def generate_reply(
             )
 
         attempts: list[ProviderAttempt[GeneratedReply]] = []
-        if settings.gemini_api_key:
-            attempts.append(ProviderAttempt(
-                "gemini", settings.alduino_gemini_model, gemini,
-                settings.alduino_free_timeout_seconds,
-            ))
         if settings.alduino_fallback_to_groq:
             attempts.append(ProviderAttempt(
                 "groq", settings.groq_model, groq,
+                settings.alduino_free_timeout_seconds,
+            ))
+        if settings.gemini_api_key:
+            attempts.append(ProviderAttempt(
+                "gemini", settings.alduino_gemini_model, gemini,
                 settings.alduino_free_timeout_seconds,
             ))
         if settings.openrouter_api_key:

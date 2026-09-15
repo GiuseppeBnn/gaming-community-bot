@@ -628,7 +628,7 @@ class ScheduledTask(Base):
 
 
 class AlduinoTurn(Base):
-    """One completed branch-aware conversation turn with the community mascot.
+    """One completed chat turn or replyable fun output with the community mascot.
 
     ``bot_message_id`` is the durable bridge between Telegram's reply tree and
     local conversational state.  ``history_json`` is a bounded snapshot: a

@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
     openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
     ai_entertainment_provider: Literal["auto", "groq", "openrouter"] = "auto"
-    ai_entertainment_free_timeout_seconds: int = Field(default=6, ge=1)
+    ai_entertainment_free_timeout_seconds: int = Field(default=10, ge=1)
     ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
     alduino_fallback_to_groq: bool = True
     alduino_timeout_seconds: int = Field(default=15, ge=1)
-    alduino_free_timeout_seconds: int = Field(default=6, ge=1)
+    alduino_free_timeout_seconds: int = Field(default=10, ge=1)
     alduino_provider_deadline_seconds: int = Field(default=30, ge=1)
     alduino_history_turns: int = Field(default=10, ge=1, le=30)
     alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)

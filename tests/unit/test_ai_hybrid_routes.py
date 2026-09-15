@@ -46,8 +46,12 @@ async def test_chat_free_first_and_group_context_only_on_zdr(hybrid, monkeypatch
             assert sent["live_context"] == "evento"
             assert sent["quoted_bot_text"] == "citato"
             assert sent["group_context"] == ("ambientale" if name == "openrouter" else "")
-    if winner == "gemini":
-        mocks["groq"].assert_not_awaited()
+    if winner == "groq":
+        mocks["gemini"].assert_not_awaited()
+    else:
+        mocks["groq"].assert_awaited_once()
+    if winner in {"gemini", "openrouter"}:
+        mocks["gemini"].assert_awaited_once()
     if winner != "openrouter":
         mocks["openrouter"].assert_not_awaited()
 
@@ -63,6 +67,33 @@ async def test_chat_can_skip_groq_and_paid_without_key(hybrid, monkeypatch):
         await alduino_chat.generate_reply(system_prompt="s", current="u")
     groq.assert_not_awaited()
     paid.assert_not_awaited()
+
+
+async def test_chat_auto_route_uses_requested_order_and_time_budget(hybrid, monkeypatch):
+    seen = {}
+
+    async def inspect(attempts, *, workload, deadline_seconds):
+        seen.update(
+            names=[attempt.name for attempt in attempts],
+            timeouts=[attempt.timeout_seconds for attempt in attempts],
+            workload=workload,
+            deadline=deadline_seconds,
+        )
+        return GeneratedReply("ok", "groq")
+
+    monkeypatch.setattr(alduino_chat.text_router, "generate", inspect)
+    monkeypatch.setattr(alduino_chat.settings, "alduino_free_timeout_seconds", 10)
+    monkeypatch.setattr(alduino_chat.settings, "alduino_provider_deadline_seconds", 30)
+
+    assert await alduino_chat.generate_reply(system_prompt="s", current="u") == GeneratedReply(
+        "ok", "groq",
+    )
+    assert seen == {
+        "names": ["groq", "gemini", "openrouter"],
+        "timeouts": [10, 10, alduino_chat.settings.openrouter_timeout_seconds],
+        "workload": "alduino_chat",
+        "deadline": 30,
+    }
 
 
 @pytest.mark.parametrize("free_ok", [True, False])
@@ -142,7 +173,7 @@ async def test_glm_chat_reserves_reasoning_and_sends_low(hybrid, monkeypatch):
     assert sent["max_tokens"] == reserve.call_args.kwargs["max_output_tokens"] == 1304
     assert sent["reasoning"] == {"effort": "low", "exclude": True}
     assert sent["provider"]["zdr"] is True
-    assert sent["provider"]["sort"] == "latency"
+    assert "sort" not in sent["provider"]
     assert sent["provider"]["max_price"] == {"prompt": .25, "completion": .6}
     assert settle.call_args.kwargs["metrics"].reasoning_tokens == 90
     assert settle.call_args.kwargs["actual_microusd"] == 100

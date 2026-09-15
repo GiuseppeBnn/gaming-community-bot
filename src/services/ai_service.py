@@ -121,16 +121,15 @@ def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
 
 
 def _openrouter_provider_policy(
-    *, require_zdr: bool, allow_fallbacks: bool, models: tuple[str, ...] = (),
+    *, require_zdr: bool, allow_fallbacks: bool,
 ) -> dict[str, Any]:
     """Build the shared privacy, routing and price ceiling policy."""
     provider: dict[str, Any] = {
         "allow_fallbacks": allow_fallbacks,
         "require_parameters": True,
         "data_collection": "deny",
-        # Interactive GLM calls prefer latency within the same hard price caps.
-        # Legacy routes retain their existing price-oriented policy.
-        "sort": "latency" if "z-ai/glm-5.3-flash" in models else "price",
+        # Keep OpenRouter's adaptive price/uptime load balancing. An explicit
+        # sort would disable it; max_price below remains a hard ceiling.
         "max_price": {
             "prompt": float(settings.openrouter_max_prompt_price),
             "completion": float(settings.openrouter_max_completion_price),
@@ -204,7 +203,7 @@ async def generate_openrouter_completion(
         "max_tokens": total_tokens,
         "reasoning": reasoning,
         "provider": _openrouter_provider_policy(
-            require_zdr=require_zdr, allow_fallbacks=True, models=models,
+            require_zdr=require_zdr, allow_fallbacks=True,
         ),
         "usage": {"include": True},
     }

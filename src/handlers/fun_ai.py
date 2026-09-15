@@ -29,6 +29,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
+from database.models import AlduinoTurn
 from filters.admin_filter import is_admin
 from handlers import event_types
 from handlers.help_content import render_alduino_reference
@@ -248,6 +249,7 @@ async def _generate_and_reply(
     max_tokens: int,
     *,
     temperature: float | None = None,
+    db_session: AsyncSession | None = None,
 ) -> None:
     """Send the typing action, call Groq, and reply (fallback on error).
 
@@ -267,7 +269,10 @@ async def _generate_and_reply(
         await message.reply(ai_service.AI_FALLBACK_MESSAGE)
         return
     # parse_mode=None: the model output is untrusted, never render it as HTML.
-    await message.reply(result, parse_mode=None)
+    sent = await message.reply(result, parse_mode=None)
+    await _record_sent_reply(
+        message, sent, source, alduino_chat.GeneratedReply(result, "fun"), db_session,
+    )
 
 
 async def _require_group(message: Message) -> bool:
@@ -286,6 +291,7 @@ async def _run_ai_command(
     max_tokens: int,
     *,
     temperature: float | None = None,
+    db_session: AsyncSession | None = None,
 ) -> None:
     """Reply-based flow: guards (group + reply + has text) → typing → AI → reply."""
     if not await _require_group(message):
@@ -309,45 +315,49 @@ async def _run_ai_command(
         return
 
     await _generate_and_reply(
-        message, system_prompt, source, max_tokens, temperature=temperature
+        message, system_prompt, source, max_tokens, temperature=temperature,
+        db_session=db_session,
     )
 
 
 @router.message(Command("maestro"))
-async def cmd_maestro(message: Message) -> None:
-    await _run_ai_command(message, _PROMPT_MAESTRO, max_tokens=160)
+async def cmd_maestro(message: Message, db_session: AsyncSession | None = None) -> None:
+    await _run_ai_command(message, _PROMPT_MAESTRO, max_tokens=160, db_session=db_session)
 
 
 @router.message(Command("complotto"))
-async def cmd_complotto(message: Message) -> None:
-    await _run_ai_command(message, _PROMPT_COMPLOTTO, max_tokens=200)
+async def cmd_complotto(message: Message, db_session: AsyncSession | None = None) -> None:
+    await _run_ai_command(message, _PROMPT_COMPLOTTO, max_tokens=200, db_session=db_session)
 
 
 @router.message(Command("difendi"))
-async def cmd_difendi(message: Message) -> None:
-    await _run_ai_command(message, _PROMPT_DIFENDI, max_tokens=220)
+async def cmd_difendi(message: Message, db_session: AsyncSession | None = None) -> None:
+    await _run_ai_command(message, _PROMPT_DIFENDI, max_tokens=220, db_session=db_session)
 
 
 @router.message(Command("accusa"))
-async def cmd_accusa(message: Message) -> None:
-    await _run_ai_command(message, _PROMPT_ACCUSA, max_tokens=170)
+async def cmd_accusa(message: Message, db_session: AsyncSession | None = None) -> None:
+    await _run_ai_command(message, _PROMPT_ACCUSA, max_tokens=170, db_session=db_session)
 
 
 @router.message(Command("drama"))
-async def cmd_drama(message: Message) -> None:
-    await _run_ai_command(message, _PROMPT_DRAMA, max_tokens=260)
+async def cmd_drama(message: Message, db_session: AsyncSession | None = None) -> None:
+    await _run_ai_command(message, _PROMPT_DRAMA, max_tokens=260, db_session=db_session)
 
 
 @router.message(Command("dialetto"))
-async def cmd_dialetto(message: Message) -> None:
+async def cmd_dialetto(message: Message, db_session: AsyncSession | None = None) -> None:
     # Lower temperature: keeps the Catanese authentic (fewer invented words).
     await _run_ai_command(
-        message, _PROMPT_DIALETTO, max_tokens=240, temperature=_DIALETTO_TEMPERATURE
+        message, _PROMPT_DIALETTO, max_tokens=240, temperature=_DIALETTO_TEMPERATURE,
+        db_session=db_session,
     )
 
 
 @router.message(Command("insulta"))
-async def cmd_insulta(message: Message, command: CommandObject) -> None:
+async def cmd_insulta(
+    message: Message, command: CommandObject, db_session: AsyncSession | None = None,
+) -> None:
     """Blast a tagged user (or the author of the replied-to message)."""
     if not await _require_group(message):
         return
@@ -368,7 +378,9 @@ async def cmd_insulta(message: Message, command: CommandObject) -> None:
     if not await _check_cooldown(message):
         return
 
-    await _generate_and_reply(message, _PROMPT_INSULTA, target, max_tokens=120)
+    await _generate_and_reply(
+        message, _PROMPT_INSULTA, target, max_tokens=120, db_session=db_session,
+    )
 
 
 @router.message(Command("alduino"))
@@ -399,7 +411,9 @@ async def cmd_alduino(
     if not await _check_cooldown(message):
         return
 
-    await _generate_alduino_reply(message, source, db_session)
+    target = message.reply_to_message
+    quote = (target.text or target.caption or "") if target is not None else ""
+    await _generate_alduino_reply(message, source, db_session, quoted_bot_text=quote)
 
 
 async def _live_context(session: AsyncSession) -> str:
@@ -415,6 +429,7 @@ async def _generate_alduino_reply(
     db_session: AsyncSession | None,
     *,
     quoted_bot_text: str = "",
+    known_parent: AlduinoTurn | None = None,
 ) -> None:
     """Resolve context, call the provider, send, then persist the completed turn.
 
@@ -425,14 +440,15 @@ async def _generate_alduino_reply(
     _mark_used(message)
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
-    parent = None
+    parent = known_parent
     live_context = ""
     ambient_context = ""
     target = message.reply_to_message
     target_id = getattr(target, "message_id", None)
     if db_session is not None:
         try:
-            parent = await alduino_chat.find_parent(db_session, message.chat.id, target_id)
+            if parent is None:
+                parent = await alduino_chat.find_parent(db_session, message.chat.id, target_id)
             live_context = await _live_context(db_session)
             ambient_context = group_context.render_context(await group_context.recent_messages(
                 db_session,
@@ -465,6 +481,23 @@ async def _generate_alduino_reply(
         return
 
     sent = await message.reply(result.text, parse_mode=None)
+    await _record_sent_reply(message, sent, source, result, db_session, parent=parent)
+
+
+async def _record_sent_reply(
+    message: Message,
+    sent: Message,
+    source: str,
+    result: alduino_chat.GeneratedReply,
+    db_session: AsyncSession | None,
+    *,
+    parent: AlduinoTurn | None = None,
+) -> None:
+    """Register only successful chat/fun output, after Telegram supplied its ID.
+
+    The logical ``fun`` lane has no upstream interaction ID; its bounded text
+    snapshot is sufficient to start a conversational reply on any chat provider.
+    """
     if db_session is None:
         return
     user_message_id = getattr(message, "message_id", None)
@@ -499,11 +532,11 @@ async def _generate_alduino_reply(
 async def reply_to_alduino(
     message: Message, db_session: AsyncSession | None = None,
 ) -> None:
-    """Continue naturally when a person replies directly to any bot message.
+    """Continue only replies to registered conversational or fun output.
 
     Specific routers and FSM handlers run before this catch-all, so replies used
     by 20 Domande or an active creation flow keep their original meaning.  All
-    non-bot targets are skipped instead of being swallowed here.
+    other messages, including event cards/results, are skipped without AI work.
     """
     author = message.from_user
     target = message.reply_to_message
@@ -522,10 +555,27 @@ async def reply_to_alduino(
     if not current or current.startswith("/"):
         raise SkipHandler()
 
+    # Eligibility is based on durable chat + message IDs, never text heuristics.
+    # Unknown output and failed reads must not trigger AI or spend cooldown.
+    if db_session is None:
+        raise SkipHandler()
+    try:
+        parent = await alduino_chat.find_parent(
+            db_session, message.chat.id, getattr(target, "message_id", None),
+        )
+        await db_session.commit()
+    except SQLAlchemyError:
+        await db_session.rollback()
+        logger.exception("Tipo di messaggio Alduino non verificabile: ignoro il reply automatico.")
+        raise SkipHandler() from None
+    if parent is None:
+        raise SkipHandler()
+
     if not await _check_cooldown(message):
         return
 
     previous = (target.text or target.caption or "").strip()
     await _generate_alduino_reply(
         message, alduino_chat.clip_text(current), db_session, quoted_bot_text=previous,
+        known_parent=parent,
     )

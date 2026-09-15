@@ -6,7 +6,13 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Modificato
-- **AI gratuita prima, GLM 5.3 Flash come fallback paid** — chat Gemini → Groq → GLM,
+- **Reply Alduino selettivi** — conversazioni e risposte fun riconosciute tramite
+  ID persistiti; eventi, risultati e notifiche non attivano la chat automatica.
+  `/alduino` esplicito conserva il messaggio citato. Verifica fail-closed prima
+  di cooldown/typing/AI, senza nuove tabelle o modifiche al budget/provider.
+- **Alduino privilegia i gratuiti** — Groq → Gemini → OpenRouter, con 10 s per
+  ciascun tentativo gratuito e deadline totale invariata a 30 s.
+- **AI gratuita prima, GLM 5.3 Flash come fallback paid** — chat Groq → Gemini → GLM,
   comandi comici Groq → GLM; il router del gioco segreto conserva Gemini → Groq →
   OpenRouter con GLM e JSON schema strict. Giudice Guess/Sound invariato.
 - **Failover text bounded** — timeout free, deadline totale e circuit breaker condiviso
@@ -16,7 +22,9 @@ Modifiche rilevanti al bot. Formato ispirato a
   prenotazione; transcript ambientale soltanto su ZDR e risposte pubbliche brevi.
   Cap globale 5 USD e partizioni giochi 4 USD / altro 1 USD invariati. I `.env`
   esistenti richiedono aggiornamento esplicito delle route e dei modelli.
-- **Routing GLM orientato alla latenza** — preferenza per endpoint rapidi dello stesso modello;
+- **Routing GLM costo/affidabilità** — rimossa la preferenza esplicita per la latenza;
+  il routing adattivo OpenRouter privilegia prezzo ed endpoint senza outage recenti,
+  mantenendo il tetto prezzo hard;
   prezzi massimi, ZDR, schema strict e singolo tentativo structured invariati.
 - **Prefissi cache-friendly** — dati stabili prima dei campi variabili, senza
   affinità forzate, cache di risposte o contesto rimosso; budget conservativo e

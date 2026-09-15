@@ -211,10 +211,18 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 ### Alduino conversazionale
 
 `/alduino` ha una corsia provider indipendente. Il default `ALDUINO_PROVIDER=auto`
-prova Gemini gratuito, poi Groq gratuito, infine GLM 5.3 Flash via OpenRouter.
+prova Groq gratuito, poi Gemini gratuito, infine GLM 5.3 Flash via OpenRouter.
 Una risposta gratuita valida termina la route senza prenotare o spendere budget paid.
 Dopo la prima risposta non serve ripetere il comando:
-una normale risposta Telegram a un messaggio del bot continua il ramo corretto.
+una normale risposta Telegram a una risposta conversazionale di Alduino continua
+il ramo corretto. Anche le risposte riuscite ai comandi fun (`/drama`, `/maestro`,
+`/complotto`, `/difendi`, `/accusa`, `/dialetto`, `/insulta`) possono iniziare una chat.
+Risultati quiz, schede evento, classifiche e notifiche non attivano Alduino: per
+parlarne con lui usa `/alduino` in reply. Il riconoscimento usa gli ID salvati nel
+DB, non il contenuto del testo. In assenza di registrazione o con DB non disponibile
+il reply automatico è ignorato senza consumare cooldown né chiamare l'AI; il comando
+esplicito resta disponibile. Le risposte fun anteriori a questo aggiornamento non
+sono registrate: per quelle serve `/alduino`.
 
 Alduino ora capisce anche ciò che si stava dicendo nel gruppo: combina il ramo dei
 reply, gli ultimi messaggi ordinari, il catalogo dei comandi e gli eventi realmente
@@ -228,8 +236,8 @@ ambientale del gruppo esce soltanto sulla corsia OpenRouter che forza `zdr=true`
 e `data_collection=deny`: Gemini/Groq conservano il loro contesto conversazionale
 bounded, ma non ricevono questi messaggi ambientali. GLM è il fallback paid anche
 per i comandi comici (`AI_ENTERTAINMENT_PROVIDER=auto`: Groq → GLM).
-I tentativi gratuiti della chat hanno un timeout di 6 s ciascuno; la route intera
-ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
+I tentativi gratuiti della chat e dei comandi fun hanno un timeout di 10 s ciascuno;
+ogni route ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
 di riprovare per 60 s un provider appena fallito. Il ledger costi salva modello, token e costo, mai prompt o
 risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
 limite e dal prezzo massimo del provider.
@@ -238,8 +246,9 @@ GLM 5.3 Flash ha thinking obbligatorio: usiamo `low`, nascondiamo il ragionament
 e aggiungiamo 1024 token al limite della risposta. Il totale è prenotato nel budget
 prima della rete, inclusi i token di thinking; l'output pubblico rimane corto.
 Non mescolare GLM e modelli non-thinking nella stessa lista OpenRouter.
-Per GLM preferiamo endpoint a bassa latenza anziché il solo prezzo minimo, sempre
-entro gli stessi tetti di prezzo, budget e privacy. La corsia JSON resta su un
+Per GLM usiamo il routing adattivo costo/uptime di OpenRouter, senza preferenza
+esplicita per la latenza e sempre entro gli stessi tetti di prezzo, budget e
+privacy. La corsia JSON resta su un
 solo modello e senza retry nascosti tra provider.
 Cronologia e dossier vengono prima dei dati più variabili, senza ridurre le
 finestre di contesto, per favorire la cache implicita dei prefissi degli endpoint
@@ -440,8 +449,8 @@ gaming-community-bot/
 | `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
 | `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
 | `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
-| `ALDUINO_PROVIDER` | `auto` | Gemini gratuito → Groq gratuito → GLM paid; provider espliciti per A/B |
-| `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `6` / `30` | timeout per tentativo free / deadline totale chat |
+| `ALDUINO_PROVIDER` | `auto` | Groq gratuito → Gemini gratuito → GLM paid; provider espliciti per A/B |
+| `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `10` / `30` | timeout per tentativo free / deadline totale chat |
 | `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
 | `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
 | `ALDUINO_FALLBACK_TO_GROQ` | `true` | include Groq gratuito dopo Gemini in auto; fallback legacy nei modi espliciti |

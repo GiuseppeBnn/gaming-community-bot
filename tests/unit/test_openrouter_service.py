@@ -68,7 +68,6 @@ async def test_openrouter_route_is_private_price_bounded_and_accounted(openroute
         "allow_fallbacks": True,
         "require_parameters": True,
         "data_collection": "deny",
-        "sort": "price",
         "max_price": {"prompt": 0.25, "completion": 0.6},
         "zdr": True,
     }

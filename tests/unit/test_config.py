@@ -84,6 +84,13 @@ class TestDefaults:
         s = Settings(bot_token="x", fsm_storage="redis")  # type: ignore[call-arg]
         assert s.fsm_storage == "redis"
 
+    def test_alduino_free_timeout_favors_free_providers(self):
+        from config_data.config import Settings
+
+        s = Settings(bot_token="x", _env_file=None)
+        assert s.alduino_free_timeout_seconds == 10
+        assert s.ai_entertainment_free_timeout_seconds == 10
+
     def test_twenty_questions_v2_is_opt_in_and_caps_each_participant_reward(self):
         """A deploy must not create reward-bearing games until an admin opts in."""
         from config_data.config import Settings

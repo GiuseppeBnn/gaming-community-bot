@@ -98,7 +98,7 @@ async def test_glm_structured_keeps_strict_schema_and_reserves_thinking(
     assert openrouter.reserve_kwargs["max_output_tokens"] == sent["max_tokens"]
     assert sent["response_format"]["json_schema"]["strict"] is True
     assert sent["provider"]["zdr"] and not sent["provider"]["allow_fallbacks"]
-    assert sent["provider"]["sort"] == "latency"
+    assert "sort" not in sent["provider"]
     assert sent["provider"]["max_price"] == {"prompt": .25, "completion": .6}
 
 
@@ -135,7 +135,6 @@ async def test_openrouter_structured_is_single_model_strict_zdr_and_accounted(
         "allow_fallbacks": False,
         "require_parameters": True,
         "data_collection": "deny",
-        "sort": "price",
         "max_price": {"prompt": 0.25, "completion": 0.6},
         "zdr": True,
     }

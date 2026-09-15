@@ -19,6 +19,7 @@ be invisible in production — the bot would simply answer slightly wrong, forev
 from __future__ import annotations
 
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -311,26 +312,41 @@ class TestAlduino:
 
 
 class TestNaturalAlduinoReplies:
-    async def test_reply_to_bot_continues_without_command_and_includes_context(self, llm):
+    @pytest.fixture
+    def eligible_session(self, monkeypatch):
+        from services import alduino_chat
+
+        parent = types.SimpleNamespace(
+            history_json=alduino_chat.encode_history((
+                alduino_chat.DialogueTurn("un consiglio?", "Ti consiglio Hades."),
+            )), provider="fun", provider_interaction_id=None,
+        )
+        monkeypatch.setattr(alduino_chat, "find_parent", AsyncMock(return_value=parent))
+        monkeypatch.setattr(alduino_chat, "record_turn", AsyncMock())
+        monkeypatch.setattr(fun_ai, "_live_context", AsyncMock(return_value=""))
+        monkeypatch.setattr(fun_ai.group_context, "recent_messages", AsyncMock(return_value=()))
+        return types.SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    async def test_reply_to_bot_continues_without_command_and_includes_context(self, llm, eligible_session):
         message = _StubMessage(
             text="perché?",
             reply_to=_replied("Ti consiglio Hades.", author_id=_StubBot.id),
         )
 
-        await fun_ai.reply_to_alduino(message)
+        await fun_ai.reply_to_alduino(message, eligible_session)
 
         assert len(llm) == 1
         assert "Ti consiglio Hades." in llm[0]["text"]
         assert "perché?" in llm[0]["text"]
-        assert "MESSAGGIO DEL BOT A CUI RISPONDE" in llm[0]["text"]
+        assert "CONVERSAZIONE RECENTE" in llm[0]["text"]
 
-    async def test_caption_is_valid_user_text(self, llm):
+    async def test_caption_is_valid_user_text(self, llm, eligible_session):
         message = _StubMessage(
             caption="che ne pensi?",
             reply_to=_replied("Mandami pure la foto.", author_id=_StubBot.id),
         )
 
-        await fun_ai.reply_to_alduino(message)
+        await fun_ai.reply_to_alduino(message, eligible_session)
 
         assert len(llm) == 1 and "che ne pensi?" in llm[0]["text"]
 
@@ -355,11 +371,18 @@ class TestNaturalAlduinoReplies:
 
         assert llm == []
 
-    async def test_natural_replies_share_the_ai_cooldown(self, llm):
+    async def test_natural_replies_share_the_ai_cooldown(self, llm, eligible_session):
         target = _replied("Ciao.", author_id=_StubBot.id)
-        await fun_ai.reply_to_alduino(_StubMessage(text="uno", reply_to=target))
+        await fun_ai.reply_to_alduino(_StubMessage(text="uno", reply_to=target), eligible_session)
         second = _StubMessage(text="due", reply_to=target)
 
-        await fun_ai.reply_to_alduino(second)
+        await fun_ai.reply_to_alduino(second, eligible_session)
 
         assert len(llm) == 1 and "Aspetta" in second.said
+
+    async def test_unknown_bot_reply_without_database_is_silently_skipped(self, llm):
+        message = _StubMessage(text="bella partita", reply_to=_replied("Risultati quiz", author_id=_StubBot.id))
+        with pytest.raises(fun_ai.SkipHandler):
+            await fun_ai.reply_to_alduino(message)
+        assert llm == [] and message.replies == [] and message.bot.actions == []
+        assert cooldown.remaining("ai", USER_ID, fun_ai.settings.ai_cooldown_seconds) == 0
