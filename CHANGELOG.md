@@ -24,7 +24,9 @@ Modifiche rilevanti al bot. Formato ispirato a
   esistenti richiedono aggiornamento esplicito delle route e dei modelli.
 - **Routing GLM costo/affidabilità** — rimossa la preferenza esplicita per la latenza;
   il routing adattivo OpenRouter privilegia prezzo ed endpoint senza outage recenti,
-  mantenendo il tetto prezzo hard;
+  mantenendo il tetto prezzo hard. Il gioco strutturato consente ora il failover
+  tra endpoint dello stesso modello quando quello selezionato è saturo, conservando
+  ZDR, schema strict, parametri richiesti e limiti di prezzo;
   prezzi massimi, ZDR, schema strict e singolo tentativo structured invariati.
 - **Prefissi cache-friendly** — dati stabili prima dei campi variabili, senza
   affinità forzate, cache di risposte o contesto rimosso; budget conservativo e

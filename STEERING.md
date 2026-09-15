@@ -950,7 +950,9 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - le route GLM non inviano `provider.sort`: il bilanciamento predefinito di OpenRouter
     combina prezzo e outage recenti. Forzare `price` disabiliterebbe quel bilanciamento;
     `max_price` resta un hard cap. Non si cambia provider fisso, non si
-    allentano ZDR/schema strict e lo structured conserva `allow_fallbacks=false`;
+    allentano ZDR/schema strict. Anche lo structured usa `allow_fallbacks=true`:
+    se un endpoint è saturo OpenRouter può provarne un altro per lo stesso modello,
+    senza cambiare modello né superare i vincoli di privacy, parametri e prezzo;
   - cache implicita del provider, senza sessioni/affinità forzate né memoizzazione
     delle risposte. ZDR/prezzi rimangono vincolanti; ogni chiamata conserva prenotazione
     completa e settlement su usage reale, inclusi cached_tokens;

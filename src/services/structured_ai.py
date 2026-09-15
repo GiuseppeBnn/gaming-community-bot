@@ -874,7 +874,7 @@ class OpenRouterStructuredProvider:
             },
             "provider": ai_service._openrouter_provider_policy(
                 require_zdr=True,
-                allow_fallbacks=False,
+                allow_fallbacks=True,
             ),
             "reasoning": reasoning,
             "temperature": request.temperature,
