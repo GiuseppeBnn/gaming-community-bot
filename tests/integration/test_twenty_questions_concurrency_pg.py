@@ -191,6 +191,36 @@ async def test_pg_root_lock_cleanup_surfaces_unawaited_locker_failure(pg_session
             await asyncio.wait_for(root_locked.wait(), timeout=3)
 
 
+async def test_two_different_games_cannot_start_together_in_one_group(pg_sessions, monkeypatch):
+    monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    ids = []
+    async with pg_sessions() as setup:
+        for title in ("Prima", "Seconda"):
+            created = await ai_game_service.create_twenty_questions(
+                setup, creator_tg_id=9, title=title,
+                duration_seconds=43_200, expires_at=None,
+                max_coins_per_participant=100, target=TARGET,
+            )
+            ids.append(created.session_id)
+        await setup.commit()
+
+    async def attempt(session_id):
+        async with pg_sessions() as session:
+            result = await ai_game_service.start(session, session_id, group_id=-1001)
+            await session.commit()
+            return result
+
+    results = await asyncio.wait_for(asyncio.gather(*(attempt(i) for i in ids)), timeout=10)
+    assert sum(result.started for result in results) == 1
+    assert [result.reason.value for result in results if not result.started] == ["active_game"]
+    async with pg_sessions() as session:
+        running_ids = (await session.execute(select(AIGameSession.id).where(
+            AIGameSession.status == "running", AIGameSession.group_id == -1001,
+        ))).scalars().all()
+        assert len(running_ids) == 1
+
+
 async def _setup_running(
     pg_sessions,
     monkeypatch,
@@ -202,6 +232,7 @@ async def _setup_running(
     duration_seconds: int = 43_200,
     max_coins_per_participant: int = 100,
     title: str = "Concorrenza",
+    group_id: int = -1001,
 ) -> int:
     monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
     monkeypatch.setattr(
@@ -222,7 +253,7 @@ async def _setup_running(
             target=TARGET,
         )
         started = await ai_game_service.start(
-            setup, created.session_id, group_id=-1001, now=now,
+            setup, created.session_id, group_id=group_id, now=now,
         )
         assert started.started
         setup.add_all([
@@ -901,6 +932,7 @@ async def test_pg_overlapping_game_settlements_with_reversed_participants_do_not
         pg_sessions,
         monkeypatch,
         title="Seconda gara",
+        group_id=-1002,  # Shared accounts across groups still exercise the same lock race.
         seed_accounts=False,
         turns=(
             (20, TurnKind.question.value, "Domanda 20?", '{"verdetto":"si"}'),

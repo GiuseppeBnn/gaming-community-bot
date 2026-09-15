@@ -2304,6 +2304,21 @@ La terminalizzazione è caller-owned: il caller committa, poi il publisher Teleg
 agisce post-commit. Avvio, chiusura e scadenza sono ritentabili e la scadenza viene
 ricontrollata dopo il lock, quindi un turno tardivo non entra nel ledger né paga premi.
 
+Una sola sessione `twentyq` può essere avviata per gruppo: il service serializza
+avvii manuali e programmati con advisory lock transazionale PostgreSQL sul gruppo,
+poi controlla le sessioni running (v1 e v2). Non chiude né modifica eventuali
+partite parallele preesistenti; `/gioco` ne segnala l'ambiguità senza sceglierne una.
+`/gioco` e `/gioco_alduino` accettano domande o `RISPOSTA: titolo`, usando gli stessi
+service, quote e deduplicazione dei reply. Senza argomenti mostrano stato e quota.
+`AIGameMessage` associa esclusivamente `(group_id, message_id)` alla sessione:
+verdetti e riepiloghi v2 vengono registrati dopo l'invio Telegram, in una nuova
+transazione, e restano reply target dopo restart. Un errore nella registrazione
+non annulla il turno né duplica l'invio; `/gioco` permette di riprendere. Un reply
+a una partita conclusa non passa alla nuova e non attiva la chat normale.
+La tabella `ai_game_messages` viene creata da `Base.metadata.create_all()` allo
+startup ed è inclusa nell'export basato sui metadata; nessun backfill dei vecchi
+verdetti per euristiche sul testo. Nessuna nuova dipendenza da Redis.
+
 Una chiamata AI non deve mai tenere aperta una transazione: claim atomico con token →
 commit → rete → complete/release condizionale. Un errore del provider non consuma la
 quota. Il ledger è autorevole: partecipazione, contatori e settlement derivano dai turni
@@ -2334,10 +2349,25 @@ dentro la sessione, così una partita già creata non cambia dopo restart o sync
 sessione viene eliminata: si sceglie tra i titoli meno usati, senza ripetizione
 immediata, completando un giro prima di iniziarne un altro; un table lock
 PostgreSQL serializza le creazioni concorrenti per non estrarre dallo stesso
-stato del ledger. Le risposte del gioco segreto v2 (20 Domande è legacy v1) sono solo
-`si`/`no`/`forse`, renderizzate localmente e senza frase libera;
+stato del ledger. Le risposte del gioco segreto v2 (20 Domande è legacy v1) sono
+`si`/`no`, oppure `non_lo_so` quando i dati non bastano, renderizzate localmente;
+`usa_risposta` resta il segnale interno per le proposte di titolo. `non_lo_so`
+rilascia il claim senza ledger, quota, partecipazione o penalità: non è un errore
+provider e non attiva fallback. `forse` resta nell'enum soltanto per leggere i dati
+storici, viene mostrato come NON LO SO e non è ammesso nel nuovo schema. Nessun
+rimborso retroattivo né riscrittura dei turni già registrati. Prompt v3 e schema
+`twentyq-verdict-v2` distinguono assenza di informazioni da negazione; il dataset
+v2 dà prove negative esplicite ai casi NO, conservando v1 per confronti storici.
+L'astensione riduce risposte speculative ma non certifica la correttezza dell'AI;
 la strategia forza thinking `minimal`. I log del provider non devono mai includere
 content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.
+Dal prompt `twentyq-question-v2` la cronologia da quattro turni è codificata come
+colonne/righe, conservando ogni domanda e verdetto; sotto questa soglia mantiene
+gli oggetti originali. Groq structured aggiunge 512 token di margine al limite
+di risposta perché GPT-OSS conta il reasoning nello stesso tetto. Il codice
+esatto `json_validate_failed` su HTTP 400 è `invalid_schema`, così un errore di
+generazione non apre il breaker di configurazione per 15 minuti. Gli altri 400
+restano `configuration`. Vedi `docs/ai-token-audit-2026-09-15.md` per misure e fonti.
 Gemini e Groq sono le corsie gratuite; OpenRouter è l'ultimo fallback, soggetto al cap
 globale e al lane cap. Budget e audit usano sessioni tecniche prompt-free: sono l'eccezione
 esplicita al normale owner handler. `scripts/eval_twenty_questions.py` è un harness opt-in

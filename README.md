@@ -320,9 +320,20 @@ ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto
 
 ### Il gioco segreto di Alduino
 
-Rispondi alla card nel gruppo con una domanda; per tentare il titolo usa
-`RISPOSTA: nome del gioco`. Ogni persona ha 5 domande valide e 2 tentativi validi:
+Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
+o al riepilogo di `/gioco`, senza tornare al messaggio iniziale. In alternativa:
+
+- `/gioco` mostra stato e quota personale;
+- `/gioco È multiplayer?` fa una domanda;
+- `/gioco RISPOSTA: Portal 2` tenta il titolo.
+
+Resta disponibile anche `/gioco_alduino`, con gli stessi argomenti. Nei reply,
+per tentare il titolo usa `RISPOSTA: nome del gioco`.
+Ogni persona ha 5 domande valide e 2 tentativi validi:
 duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano nulla.
+Se il dossier non basta, Alduino risponde **NON LO SO**, senza consumare la domanda,
+ridurre il premio o registrare una partecipazione. Non è una garanzia contro ogni
+errore dell'AI: il prompt chiede di astenersi quando non può concludere con affidabilità.
 
 Chi registra almeno un turno valido riceve 10 XP alla chiusura, anche se il gioco scade o viene
 chiuso da un admin. Se il gruppo indovina, tutti i partecipanti ricevono la stessa quota CoInn.
@@ -331,8 +342,11 @@ Con il default di 100 CoInn massimi a persona:
 
 `pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)`
 
-Il resto della divisione non viene assegnato a nessuno. Usa `/gioco_alduino` per regole, stato e
-quota personale; la durata raccomandata per una nuova partita è 12 ore. Per il dettaglio di
+Il resto della divisione non viene assegnato a nessuno. Può essere attiva una sola
+partita per gruppo, anche con avvii programmati. Le risposte a messaggi di una partita
+conclusa non vengono inoltrate a quella nuova. Dopo l'aggiornamento, i vecchi verdetti
+non sono riconosciuti retroattivamente: usa `/gioco` per un riepilogo a cui rispondere.
+La chiusura amministrativa resta in `/eventi`; la durata raccomandata è 12 ore. Per il dettaglio di
 prodotto e architettura, vedi la [specifica v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md).
 
 ### Scommesse (stile Twitch)

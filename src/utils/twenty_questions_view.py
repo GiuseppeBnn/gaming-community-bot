@@ -53,7 +53,8 @@ def _verdict_label(verdict: QuestionVerdict | None) -> str:
     return {
         QuestionVerdict.si: "SÌ",
         QuestionVerdict.no: "NO",
-        QuestionVerdict.forse: "FORSE",
+        QuestionVerdict.forse: "NON LO SO",
+        QuestionVerdict.non_lo_so: "NON LO SO",
         QuestionVerdict.usa_risposta: "PROVA A INDOVINARE",
     }.get(verdict, "VERDETTO NON DISPONIBILE")
 
@@ -67,6 +68,7 @@ def _turn_line(turn: TurnView) -> str:
             QuestionVerdict.si: "✅",
             QuestionVerdict.no: "❌",
             QuestionVerdict.forse: "🤔",
+            QuestionVerdict.non_lo_so: "🤔",
             QuestionVerdict.usa_risposta: "🎯",
         }
         icon = icons.get(turn.verdict, "➖") if turn.verdict is not None else "➖"
@@ -120,9 +122,15 @@ def render_public_help(policy: TwentyQuestionsPolicy) -> str:
     return "\n\n".join((
         "🐲 <b>Il gioco segreto di Alduino</b>",
         (
-            "Rispondi alla card nel gruppo con una domanda. Per provare il titolo usa "
-            "<code>RISPOSTA: titolo del gioco</code>."
+            "Rispondi alla card o a un verdetto del gioco con una domanda. "
+            "Per provare il titolo usa <code>RISPOSTA: titolo del gioco</code>. "
+            "Puoi anche scrivere <code>/gioco domanda</code> oppure "
+            "<code>/gioco RISPOSTA: titolo del gioco</code>. "
+            "<code>/gioco</code> mostra lo stato qui, senza cercare la card iniziale. "
+            "Può esserci una sola partita attiva per gruppo."
         ),
+        "Alduino risponde SÌ o NO; se non ha elementi sufficienti, NON LO SO: "
+        "la domanda non viene consumata e il premio non diminuisce.",
         (
             "Le partite durano 2, 6, 12 o 24 ore, oppure fino a una data e ora futura. "
             "Diventi partecipante registrando almeno un turno valido."
@@ -199,6 +207,8 @@ def render_live_card(
             "",
             "Rispondi <b>a questo messaggio</b> con una domanda.",
             "Per tentare: <code>RISPOSTA: titolo del gioco</code>",
+            "Puoi rispondere anche ai verdetti del gioco, oppure usare "
+            "<code>/gioco domanda</code> · <code>/gioco RISPOSTA: titolo</code>.",
         ))
     return "\n".join(lines)
 
@@ -289,6 +299,9 @@ def _reject_message(reason: TurnRejectReason | None) -> str:
         TurnRejectReason.lost_claim: "🐲 Il turno non è più disponibile: riprova.",
         TurnRejectReason.answer_confirmation_required: (
             "🐲 Per tentare il titolo reinvia <code>RISPOSTA: titolo del gioco</code>."
+        ),
+        TurnRejectReason.insufficient_information: (
+            "🐲 <b>NON LO SO</b> — domanda non consumata."
         ),
     }.get(reason, "🐲 Non riesco a registrare questo turno: riprova.")
 

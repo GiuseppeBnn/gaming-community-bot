@@ -794,6 +794,34 @@ async def test_v2_direct_title_and_ai_answer_confirmation_release_without_a_turn
     assert await _pending_fields(session, session_id) == (None, None, None, None)
 
 
+@pytest.mark.parametrize("verdict", [QuestionVerdict.non_lo_so, QuestionVerdict.forse])
+async def test_uncertain_answer_releases_claim_without_quota_reward_or_ledger(session, monkeypatch, verdict):
+    session_id = await _running_v2(session, monkeypatch)
+    before = await ai_game_service.get_game_view(session, session_id)
+    started = await ai_game_service.begin_question(
+        session, session_id=session_id, user_tg_id=10, question="È difficile da finire?",
+    )
+    await session.commit()
+    result = await ai_game_service.complete_question(session, claim=started.claim, verdict=verdict)
+    await session.commit()
+    assert result.reason is TurnRejectReason.insufficient_information
+    assert result.outcome is TurnOutcome.rejected
+    assert result.quota.questions_used == 0 and not result.quota.participant
+    assert await _turn_count(session, session_id) == 0
+    assert await _pending_fields(session, session_id) == (None, None, None, None)
+    after = await ai_game_service.get_game_view(session, session_id)
+    assert after.projection == before.projection
+    again = await ai_game_service.begin_question(
+        session, session_id=session_id, user_tg_id=10, question="È difficile da finire?",
+    )
+    assert again.outcome is TurnOutcome.claimed  # Uncertain answers do not poison the verdict cache.
+    stale = await ai_game_service.complete_question(
+        session, claim=started.claim, verdict=QuestionVerdict.non_lo_so,
+    )
+    assert stale.reason is TurnRejectReason.lost_claim
+    assert (await _pending_fields(session, session_id))[0] == again.claim.token
+
+
 async def test_v2_question_lease_is_owned_by_token_user_and_kind_and_recovers_after_timeout(
     session, monkeypatch,
 ):

@@ -27,6 +27,10 @@ ProviderName = Literal["gemini", "groq", "openrouter"]
 _DEFAULT_GEMINI_THINKING_LEVEL: ThinkingLevel = "medium"
 _SETTLEMENT_CANCELLATION_GRACE_SECONDS = 1.0
 _PENDING_OPENROUTER_SETTLEMENTS: set[asyncio.Task[None]] = set()
+# GPT-OSS shares max_completion_tokens between reasoning and visible JSON.
+# A tiny verdict still needs headroom; an exhausted free attempt can otherwise
+# send the same prompt to the paid fallback. This is a ceiling, not a target.
+_GROQ_REASONING_TOKEN_ALLOWANCE = 512
 _SAFE_MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+\-]{0,127}\Z")
 _SAFE_FINISH_REASONS = frozenset({
     "BLOCKLIST",
@@ -171,19 +175,32 @@ async def _post_json_once(
         async with aiohttp.ClientSession(timeout=timeout) as client:
             async with client.post(url, headers=headers, json=payload) as response:
                 if response.status != 200:
-                    await response.read()
+                    body = await response.read()
+                    kind = _status_kind(response.status)
+                    if provider == "groq" and response.status == 400:
+                        # A generation/schema failure is not a broken model config.
+                        # Keep all provider-controlled text out of logs/exceptions;
+                        # only this known code affects classification and breakers.
+                        try:
+                            error_data = json.loads(body)
+                        except (ValueError, UnicodeError):
+                            error_data = None
+                        error = error_data.get("error") if isinstance(error_data, dict) else None
+                        if isinstance(error, dict) and error.get("code") == "json_validate_failed":
+                            kind = StructuredAIErrorKind.invalid_schema
                     retry_after = _retry_after_seconds(response.headers)
                     log.warning(
                         "Structured AI HTTP failure provider=%s model=%s status=%s "
-                        "retry_after=%s",
+                        "retry_after=%s kind=%s",
                         provider,
                         model,
                         response.status,
                         retry_after,
+                        kind.value,
                     )
                     raise StructuredAIError(
                         f"{provider} status {response.status}",
-                        kind=_status_kind(response.status),
+                        kind=kind,
                         provider=provider,
                         status=response.status,
                         retry_after_seconds=retry_after,
@@ -662,7 +679,9 @@ class GroqStructuredProvider:
             },
             "reasoning_effort": "low",
             "temperature": request.temperature,
-            "max_completion_tokens": request.max_output_tokens,
+            "max_completion_tokens": (
+                request.max_output_tokens + _GROQ_REASONING_TOKEN_ALLOWANCE
+            ),
         }
         data = await _post_json_once(
             provider=self.name,

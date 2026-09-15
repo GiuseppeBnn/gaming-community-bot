@@ -5,7 +5,26 @@ Modifiche rilevanti al bot. Formato ispirato a
 
 ## [Unreleased]
 
+### Aggiunto
+- **Gioco di Alduino senza scroll** — `/gioco` (alias di `/gioco_alduino`) mostra
+  stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
+  verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
+  partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
+- **Una partita per gruppo** — avvii manuali e programmati serializzati su
+  PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
+  segnala l'ambiguità finché un admin non chiude quelle in eccesso.
+
 ### Modificato
+- **Verdetti prudenti** — niente nuovi FORSE: SÌ/NO solo con elementi sufficienti,
+  altrimenti NON LO SO, senza quota consumata, penalità sul premio o turno valido.
+  Nessun secondo giudice né fallback paid per la sola incertezza. Dati storici
+  conservati; schema e prompt versionati, dataset sintetico aggiornato a v2.
+- **Token AI fuori dalla chat** — cronologia del gioco in colonne/righe da quattro
+  turni, senza rimuovere dati; prefissi condivisi per regole del giudice e comandi
+  comici. Groq structured ha margine separato per il reasoning; gli errori
+  `json_validate_failed` non disabilitano il provider per 15 minuti. Modelli,
+  contesto e output della chat normale invariati. Dettagli e limiti della verifica
+  in `docs/ai-token-audit-2026-09-15.md`.
 - **Reply Alduino selettivi** — conversazioni e risposte fun riconosciute tramite
   ID persistiti; eventi, risultati e notifiche non attivano la chat automatica.
   `/alduino` esplicito conserva il messaggio citato. Verifica fail-closed prima

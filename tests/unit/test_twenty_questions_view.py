@@ -317,7 +317,7 @@ def test_question_start_feedback_covers_cached_busy_and_personal_quota(
     (
         (
             TurnResult(77, TurnOutcome.recorded, None, _quota(), verdict=QuestionVerdict.forse),
-            "FORSE",
+            "NON LO SO",
         ),
         (
             TurnResult(77, TurnOutcome.recorded, None, _quota(), correct=True),

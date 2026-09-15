@@ -240,12 +240,12 @@ class TestStructuredStrategy:
         assert "Aperture" in call.user_prompt
         assert "non attendibile" in call.system_prompt
 
-    async def test_maybe_is_a_valid_dry_answer(self, session):
+    async def test_unknown_is_a_valid_dry_answer(self, session):
         snapshot = await ai_game_service.get_snapshot(session, await _running(session))
         verdict = await ai_game_service.classify_question(
-            snapshot, "Il dossier basta?", _Provider({"verdetto": "forse"}),
+            snapshot, "Il dossier basta?", _Provider({"verdetto": "non_lo_so"}),
         )
-        assert verdict == QuestionVerdict.forse
+        assert verdict == QuestionVerdict.non_lo_so
 
     @pytest.mark.parametrize("value", [
         {"verdetto": "irrilevante"},

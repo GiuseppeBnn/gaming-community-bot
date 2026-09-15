@@ -196,14 +196,14 @@ def _terminal(*, anchor=77, winner=42):
 
 def _v2_anchor_snapshot():
     return SimpleNamespace(
-        session=SimpleNamespace(id=7),
+        session=SimpleNamespace(id=7, status="running"),
         game=SimpleNamespace(rules_version=2),
     )
 
 
 def _v1_anchor_snapshot():
     return SimpleNamespace(
-        session=SimpleNamespace(id=7),
+        session=SimpleNamespace(id=7, status="running"),
         game=SimpleNamespace(rules_version=1),
     )
 
@@ -474,7 +474,7 @@ class TestPublicSecretGameCommand:
         assert "Per te" not in message.said[-1]
         assert TARGET.title not in message.said[-1]
 
-    async def test_group_reply_selects_its_anchor_without_exposing_the_secret(
+    async def test_group_reply_reports_preexisting_multiple_games_without_exposing_secrets(
         self, session, monkeypatch,
     ):
         older = await _v2_ready(session, monkeypatch, "Prima partita")
@@ -483,7 +483,10 @@ class TestPublicSecretGameCommand:
         assert await ai_game_service.move_anchor_if_current(
             session, older, expected_message_id=None, new_message_id=66,
         )
-        assert (await ai_game_service.start(session, desired, group_id=-1001)).started
+        # Simulate games already running before the single-active rollout.
+        assert (await ai_game_service.start(session, desired, group_id=-1002)).started
+        (await session.get(AIGameSession, desired)).group_id = -1001
+        await session.flush()
         assert await ai_game_service.move_anchor_if_current(
             session, desired, expected_message_id=None, new_message_id=77,
         )
@@ -498,13 +501,11 @@ class TestPublicSecretGameCommand:
         message.answer = answer
         await handler.cmd_gioco_alduino(message, session)
 
-        assert "Partita scelta" in message.said[-1]
+        assert "più partite precedenti" in message.said[-1]
         assert "Prima partita" not in message.said[-1]
         assert TARGET.title not in message.said[-1]
-        assert "Per te" in message.said[-1]
-        assert "anche <b>1</b> altre partite" in message.said[-1]
 
-    async def test_group_without_a_reply_uses_most_recently_started_game_and_counts_alternatives(
+    async def test_group_without_reply_refuses_to_guess_between_preexisting_games(
         self, session, monkeypatch,
     ):
         created_first = await _v2_ready(session, monkeypatch, "Creata prima")
@@ -521,9 +522,11 @@ class TestPublicSecretGameCommand:
         assert (await ai_game_service.start(
             session,
             created_first,
-            group_id=-1001,
+            group_id=-1002,
             now=datetime(2030, 1, 1, 11, 0),
         )).started
+        (await session.get(AIGameSession, created_first)).group_id = -1001
+        await session.flush()
         assert await ai_game_service.move_anchor_if_current(
             session, created_first, expected_message_id=None, new_message_id=77,
         )
@@ -532,9 +535,8 @@ class TestPublicSecretGameCommand:
 
         await handler.cmd_gioco_alduino(message, session)
 
-        assert "Creata prima" in message.said[-1]
+        assert "più partite precedenti" in message.said[-1]
         assert "Creata dopo" not in message.said[-1]
-        assert "anche <b>1</b> altre partite" in message.said[-1]
 
     async def test_anchorless_running_command_republishes_after_read_commit(self, session, monkeypatch):
         session_id = await _v2_ready(session, monkeypatch, "Recupera card")
@@ -910,6 +912,9 @@ class TestV2EventLifecycle:
         await start_hook()
         assert calls == [("start", session_id)]
 
+        await spec.close_now(_Bot(), session, session_id)
+        await session.commit()
+
         close_id = await _v2_ready(session, monkeypatch, "Sched close")
         started_close = await ai_game_service.start(session, close_id, group_id=-1001)
         assert started_close.started
@@ -1056,12 +1061,15 @@ class TestPlayHandler:
         assert "dopo" in empty_guess.said[-1]
 
     async def test_question_success_and_provider_failure(self, session, monkeypatch):
-        await _running(session)
+        first_id = await _running(session)
         monkeypatch.setattr(handler, "GeminiStructuredProvider", _Provider)
         message = _Message("È in prima persona?")
         await handler.play_turn(message, session)
         assert message.said[-1] == "🐲 <b>SÌ</b>"
         assert message.bot.edits
+
+        await ai_game_service.finish(session, first_id)
+        await session.commit()
 
         second_id = await _running(session, "Seconda", anchor=78)
         second = await ai_game_service.get_snapshot(session, second_id)
@@ -1136,7 +1144,7 @@ class TestV2PostCommitPresentation:
         async def claim(*args, **kwargs):
             raise AssertionError("invalid input must not claim a v1 turn")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "claim_turn", claim)
         message = _Message(" ")
 
@@ -1162,7 +1170,7 @@ class TestV2PostCommitPresentation:
         async def claim(*args, **kwargs):
             raise AssertionError("an empty answer must not claim a v1 turn")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "claim_turn", claim)
         message = _Message("RISPOSTA:")
 
@@ -1190,7 +1198,7 @@ class TestV2PostCommitPresentation:
             events.append("claim")
             return None
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "claim_turn", claim)
         message = _Message("RISPOSTA: Portal 2")
 
@@ -1280,7 +1288,7 @@ class TestV2PostCommitPresentation:
         async def legacy_claim(*args, **kwargs):
             raise AssertionError("v2 invoked legacy claim_turn")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "begin_question", begin)
         monkeypatch.setattr(ai_game_service, "classify_question", classify)
         monkeypatch.setattr(ai_game_service, "complete_question", complete)
@@ -1325,7 +1333,7 @@ class TestV2PostCommitPresentation:
         async def refresh(*args, **kwargs):
             raise AssertionError("reused question must not refresh the public card")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "begin_question", begin)
         monkeypatch.setattr(handler, "refresh_group_card", refresh)
         message = _Message("La domanda già fatta?")
@@ -1362,7 +1370,7 @@ class TestV2PostCommitPresentation:
             assert not db_session.pending
             events.append("publish")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "begin_question", begin)
         monkeypatch.setattr(handler, "publish_terminal", publish)
         message = _Message(" ")
@@ -1417,7 +1425,7 @@ class TestV2PostCommitPresentation:
         async def legacy_claim(*args, **kwargs):
             raise AssertionError("v2 invoked legacy claim_turn")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "begin_question", begin)
         monkeypatch.setattr(ai_game_service, "classify_question", classify)
         monkeypatch.setattr(ai_game_service, "abandon_claim", abandon)
@@ -1461,7 +1469,7 @@ class TestV2PostCommitPresentation:
         async def legacy_claim(*args, **kwargs):
             raise AssertionError("v2 invoked legacy claim_turn")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "submit_guess", submit)
         monkeypatch.setattr(ai_game_service, "claim_turn", legacy_claim)
         monkeypatch.setattr(handler, "publish_terminal", publish)
@@ -1505,7 +1513,7 @@ class TestV2PostCommitPresentation:
             assert not db_session.pending
             events.append("refresh")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "submit_guess", submit)
         monkeypatch.setattr(ai_game_service, "get_game_view", latest)
         monkeypatch.setattr(handler, "refresh_group_card", refresh)
@@ -1543,7 +1551,7 @@ class TestV2PostCommitPresentation:
         async def publish(*args, **kwargs):
             events.append("publish")
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "submit_guess", submit)
         monkeypatch.setattr(handler, "publish_terminal", publish)
         message = _Message("RISPOSTA: Portal 2")
@@ -1908,7 +1916,7 @@ class TestV2PostCommitPresentation:
                 events.append("send")
                 return _Sent()
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "claim_turn", claim)
         monkeypatch.setattr(ai_game_service, "record_guess", record)
         monkeypatch.setattr(ai_game_service, "guess_is_correct", lambda *args: False)
@@ -1987,7 +1995,7 @@ class TestV2PostCommitPresentation:
                 events.append("send")
                 return _Sent(message_id=88)
 
-        monkeypatch.setattr(ai_game_service, "find_by_anchor", find)
+        monkeypatch.setattr(ai_game_service, "find_by_game_message", find)
         monkeypatch.setattr(ai_game_service, "claim_turn", claim)
         monkeypatch.setattr(ai_game_service, "record_guess", record)
         monkeypatch.setattr(ai_game_service, "guess_is_correct", lambda *args: False)
@@ -2114,10 +2122,10 @@ async def test_tq_creation_and_public_lookup_fail_closed_without_service_work(mo
     )
     assert "non sono più disponibili" in message.said[-1]
 
-    async def broken_list(_session):
+    async def broken_list(_session, _group_id):
         raise RuntimeError("db")
 
-    monkeypatch.setattr(ai_game_service, "list_manageable", broken_list)
+    monkeypatch.setattr(ai_game_service, "list_running_in_group", broken_list)
     session = _OrderedSession([])
     assert await handler._group_game_status(_Message(), session) == (None, None, 0)
     assert session.events == ["rollback"]

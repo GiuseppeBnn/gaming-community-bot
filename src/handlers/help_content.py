@@ -148,7 +148,8 @@ _COMMANDS: list[CommandDoc] = [
         "gioco_alduino",
         "Regole e stato del gioco segreto di Alduino",
         "🏆 Progressione",
-        usage="/gioco_alduino",
+        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
+        aliases=("gioco",),
         details=render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
     ),
     # --- 🍺 Locanda ---

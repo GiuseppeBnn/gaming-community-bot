@@ -42,8 +42,9 @@ class TurnOutcome(str, Enum):
 class QuestionVerdict(str, Enum):
     si = "si"
     no = "no"
-    forse = "forse"
+    forse = "forse"  # Read compatibility for historical turns, never a new AI verdict.
     usa_risposta = "usa_risposta"
+    non_lo_so = "non_lo_so"
 
 
 class TurnRejectReason(str, Enum):
@@ -57,11 +58,13 @@ class TurnRejectReason(str, Enum):
     invalid_input = "invalid_input"
     providers_unavailable = "providers_unavailable"
     answer_confirmation_required = "answer_confirmation_required"
+    insufficient_information = "insufficient_information"
     hash_collision = "hash_collision"
 
 
 class StartRejectReason(str, Enum):
     not_ready = "not_ready"
+    active_game = "active_game"
     absolute_expiry_elapsed = "absolute_expiry_elapsed"
     providers_unavailable = "providers_unavailable"
 

@@ -343,13 +343,13 @@ async def test_openrouter_runner_uses_runtime_lane_and_disables_audit(monkeypatc
 def test_versioned_dataset_is_balanced_and_loadable():
     """Removing a verdict class would make accuracy look better on a biased corpus."""
     root = Path(__file__).resolve().parents[2]
-    cases = twenty_questions_eval.load_cases(root / "evals/twentyq/v1.jsonl")
+    cases = twenty_questions_eval.load_cases(root / "evals/twentyq/v2.jsonl")
 
     assert len(cases) >= 36
     assert Counter(case.expected for case in cases) == {
         QuestionVerdict.si: 9,
         QuestionVerdict.no: 9,
-        QuestionVerdict.forse: 9,
+        QuestionVerdict.non_lo_so: 9,
         QuestionVerdict.usa_risposta: 9,
     }
     masked_title = next(case for case in cases if case.case_id == "masked-title-01")

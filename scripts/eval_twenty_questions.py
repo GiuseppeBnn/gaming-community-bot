@@ -18,8 +18,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Valuta i verdetti del gioco segreto di Alduino.")
     parser.add_argument(
         "--dataset",
-        default="evals/twentyq/v1.jsonl",
-        help="dataset JSONL sintetico (default: evals/twentyq/v1.jsonl)",
+        default="evals/twentyq/v2.jsonl",
+        help="dataset JSONL sintetico (default: evals/twentyq/v2.jsonl)",
     )
     parser.add_argument(
         "--provider",

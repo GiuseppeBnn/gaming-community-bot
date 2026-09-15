@@ -92,7 +92,7 @@ def test_index_navigates_the_complete_v2_implementation_set():
         "ai_game_types.py",
         "structured_ai_router.py",
         "scripts/eval_twenty_questions.py",
-        "evals/twentyq/v1.jsonl",
+        "evals/twentyq/v2.jsonl",
         "docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md",
         "docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md",
         "tests/unit/test_twenty_questions_docs.py",

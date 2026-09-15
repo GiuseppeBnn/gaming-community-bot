@@ -753,6 +753,18 @@ class AIGameSession(Base):
     finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 
+class AIGameMessage(Base):
+    """Bot messages that accept replies for one specific game, across restarts."""
+
+    __tablename__ = "ai_game_messages"
+
+    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), index=True,
+    )
+
+
 class AIGameTurn(Base):
     """Append-only, numbered audit ledger shared by every AI game strategy."""
 

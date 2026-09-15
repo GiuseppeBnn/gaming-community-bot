@@ -198,6 +198,20 @@ async def test_configured_order_skips_unconfigured_and_attempts_each_provider_on
     assert got.attempts[0].error_kind == "refusal"
 
 
+async def test_unknown_is_a_success_and_never_triggers_paid_fallback(structured_request):
+    from services.ai_game_types import QuestionVerdict
+    from services.twenty_questions_ai import parse_question_verdict
+
+    free = FakeProvider("gemini", {"verdetto": "non_lo_so"})
+    paid = FakeProvider("openrouter", {"verdetto": "si"})
+    got = await _module().StructuredAIRouter(
+        providers=(free, paid), deadline_seconds=25,
+    ).generate(structured_request, session_id=None, validate=parse_question_verdict, audit=False)
+    assert got.value is QuestionVerdict.non_lo_so
+    assert free.calls == 1 and paid.calls == 0
+    assert [attempt.outcome for attempt in got.attempts] == ["success"]
+
+
 async def test_type_error_from_domain_validation_falls_through(structured_request):
     module = _module()
     first = FakeProvider("gemini", {"unexpected": True})
@@ -584,6 +598,28 @@ async def test_asyncio_timeout_uses_8_8_9_budget_and_deadline_is_typed(
     assert timeouts == [8, 8, 9]
     assert [attempt.error_kind for attempt in recorded] == ["timeout"] * 2
     assert [attempt.latency_ms for attempt in recorded] == [8000, 8000]
+
+
+async def test_schema_generation_failure_keeps_free_lane_available_next_turn(structured_request):
+    free = FakeProvider(
+        "groq",
+        structured_ai.StructuredAIError(
+            "invalid generation", kind=structured_ai.StructuredAIErrorKind.invalid_schema,
+            provider="groq", status=400,
+        ),
+        {"verdetto": "si"},
+    )
+    paid = FakeProvider("openrouter", {"verdetto": "no"})
+    router = _module().StructuredAIRouter(providers=(free, paid), deadline_seconds=25)
+    first = await router.generate(
+        structured_request, session_id=None, validate=parse_verdict, audit=False,
+    )
+    second = await router.generate(
+        structured_request, session_id=None, validate=parse_verdict, audit=False,
+    )
+    assert first.provider == "openrouter"
+    assert second.provider == "groq"
+    assert free.calls == 2 and paid.calls == 1
 
 
 async def test_absolute_deadline_stops_before_next_provider(structured_request):

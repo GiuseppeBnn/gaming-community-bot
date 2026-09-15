@@ -130,6 +130,7 @@ async def _running_game(
     users: tuple[int, ...] = (10, 20),
     turns: tuple[tuple[int, str, str, str], ...] = _BASE_TURNS + (_WINNING_TURN,),
     max_coins_per_participant: int = 100,
+    group_id: int = -1001,
 ) -> int:
     monkeypatch.setattr(ai_game_service.settings, "twentyq_v2_enabled", True)
     monkeypatch.setattr(
@@ -147,7 +148,7 @@ async def _running_game(
         max_coins_per_participant=max_coins_per_participant,
         target=TARGET,
     )
-    started = await ai_game_service.start(session, created.session_id, group_id=-1001)
+    started = await ai_game_service.start(session, created.session_id, group_id=group_id)
     assert started.started
     session.add_all([
         AIGameTurn(
@@ -258,6 +259,7 @@ async def test_victory_pays_equal_coins_and_uncapped_xp_once(session, monkeypatc
         session,
         monkeypatch,
         users=(30,),
+        group_id=-1002,
         turns=(
             (30, "question", "Domanda estranea?", '{"verdetto":"si"}'),
             (30, "guess", "Half-Life 2", '{"correct":false}'),

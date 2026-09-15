@@ -30,6 +30,19 @@ def test_clip_source_custom_limit():
     assert fun_ai.clip_source("abcdef", limit=3) == "abc"
 
 
+def test_comedy_personas_share_full_rules_prefix_and_keep_character_limits():
+    personas = (
+        (fun_ai._PROMPT_MAESTRO, 320), (fun_ai._PROMPT_COMPLOTTO, 420),
+        (fun_ai._PROMPT_DIFENDI, 520), (fun_ai._PROMPT_ACCUSA, 380),
+        (fun_ai._PROMPT_DRAMA, 560), (fun_ai._PROMPT_DIALETTO, 500),
+        (fun_ai._PROMPT_INSULTA, 240),
+    )
+    for prompt, limit in personas:
+        assert prompt.startswith(fun_ai._STYLE + "\n")
+        assert prompt.count(fun_ai._STYLE) == 1
+        assert prompt.endswith(f"LUNGHEZZA MASSIMA TASSATIVA: {limit} caratteri.")
+
+
 # ---------------------------------------------------------------------------
 # _generate_and_reply — output is plain text, input is wrapped as content
 # ---------------------------------------------------------------------------

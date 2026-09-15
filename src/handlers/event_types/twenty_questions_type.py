@@ -196,6 +196,8 @@ class TwentyQuestionsType:
                     message = "Provider IA non disponibili: riprova piu' tardi."
                 elif started.reason is not None and started.reason.value == "absolute_expiry_elapsed":
                     message = "La scadenza della partita e' gia' trascorsa."
+                elif started.reason is not None and started.reason.value == "active_game":
+                    message = "C'è già una partita di Alduino attiva nel gruppo: chiudila prima."
                 else:
                     message = "Partita non disponibile."
                 return StartResult(False, message, alert=True)

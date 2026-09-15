@@ -11,7 +11,7 @@ from weakref import WeakValueDictionary
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.enums import ChatType, ParseMode
-from aiogram.filters.command import Command
+from aiogram.filters.command import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -29,6 +29,7 @@ from services.ai_game_types import (
     GameCreationError,
     GameView,
     PersonalQuota,
+    QuestionVerdict,
     TerminalResult,
     TurnOutcome,
     TurnRejectReason,
@@ -374,8 +375,10 @@ async def _finish_creation(
     )
 
 
-@router.message(Command("gioco_alduino"))
-async def cmd_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
+@router.message(Command("gioco_alduino", "gioco"))
+async def cmd_gioco_alduino(
+    message: Message, db_session: AsyncSession, command: CommandObject | None = None,
+) -> None:
     """Explain the public rules privately, or show safe live status in a group."""
     policy = v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)
     if message.chat.type == ChatType.PRIVATE:
@@ -383,20 +386,26 @@ async def cmd_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
         return
 
     view, quota, alternatives = await _group_game_status(message, db_session)
+    if alternatives:
+        await message.answer(
+            "⚠️ Sono ancora aperte più partite precedenti. Un admin deve chiudere "
+            "quelle in eccesso da /eventi; nel frattempo rispondi alla card desiderata."
+        )
+        return
     if view is None or quota is None:
         await message.answer(render_public_help(policy))
         return
+    if command is not None and command.args:
+        await _play_turn_v2(
+            message, db_session, session_id=view.session_id, raw_text=command.args,
+        )
+        return
     if view.anchor_message_id is None:
         await refresh_group_card(message.bot, db_session, view)
-    alternatives_text = ""
-    if alternatives:
-        alternatives_text = (
-            f"\n\nℹ️ Ci sono anche <b>{alternatives}</b> altre partite in corso: "
-            "rispondi alla card desiderata con <code>/gioco_alduino</code> "
-            "per selezionarla."
-        )
-    await message.answer(
-        f"{render_personal_status(view, quota, now=_presentation_now())}{alternatives_text}"
+    await _send_game_reply(
+        message, db_session, session_id=view.session_id,
+        text=render_personal_status(view, quota, now=_presentation_now()),
+        answer=True,
     )
 
 
@@ -406,23 +415,11 @@ async def _group_game_status(
 ) -> tuple[GameView | None, PersonalQuota | None, int]:
     """Read only safe DTOs and close the transaction before command Telegram I/O."""
     try:
-        rows = await ai_game_service.list_manageable(db_session)
-        running = [
-            row for row in rows
-            if row.status == "running" and row.group_id == message.chat.id
-        ]
-        running.sort(
-            key=lambda row: (row.started_at or datetime.min, row.id),
-            reverse=True,
-        )
-        reply_id = (
-            message.reply_to_message.message_id
-            if message.reply_to_message is not None else None
-        )
-        selected = next(
-            (row for row in running if row.anchor_message_id == reply_id),
-            running[0] if running else None,
-        )
+        running = await ai_game_service.list_running_in_group(db_session, message.chat.id)
+        if len(running) > 1:
+            await db_session.rollback()
+            return None, None, len(running) - 1
+        selected = running[0] if running else None
         if selected is None:
             await db_session.rollback()
             return None, None, 0
@@ -432,7 +429,6 @@ async def _group_game_status(
             selected.id,
             message.from_user.id,
         )
-        alternatives = max(0, len(running) - 1)
         await db_session.rollback()
     except Exception:  # noqa: BLE001 — a public rules page is safer than a failed command
         await db_session.rollback()
@@ -440,7 +436,7 @@ async def _group_game_status(
         return None, None, 0
     if view is None or view.status != "running":
         return None, None, 0
-    return view, quota, alternatives
+    return view, quota, 0
 
 
 def render_card(
@@ -749,11 +745,15 @@ def _guess(text: str) -> str | None:
     ~F.text.startswith("/"),
 )
 async def play_turn(message: Message, db_session: AsyncSession) -> None:
-    snapshot = await ai_game_service.find_by_anchor(
+    snapshot = await ai_game_service.find_by_game_message(
         db_session, message.chat.id, message.reply_to_message.message_id,
     )
     if snapshot is None:
         raise SkipHandler()
+    if snapshot.session.status != "running":
+        await db_session.rollback()
+        await message.reply("🐲 Questa partita è conclusa. Usa /gioco per quella attuale.")
+        return
     if snapshot.game.rules_version == 1:
         await _play_turn_v1(message, db_session, snapshot)
         return
@@ -768,11 +768,37 @@ async def _commit_or_rollback(db_session: AsyncSession) -> None:
         raise
 
 
+async def _send_game_reply(
+    message: Message, db_session: AsyncSession, *, session_id: int, text: str,
+    answer: bool = False,
+) -> None:
+    """Deliver the result, then persist a reply target independently of the turn.
+
+    Telegram delivery and a DB commit cannot be atomic. A mapping failure must
+    never roll back a completed turn or send the result twice; /gioco remains
+    available for recovery. No text or user identity is stored in the mapping.
+    """
+    sent = await (message.answer(text) if answer else message.reply(text))
+    if sent is None:  # Historical test/adapter senders may not return a Message.
+        return
+    try:
+        await ai_game_service.remember_game_message(
+            db_session, session_id=session_id, group_id=message.chat.id,
+            message_id=sent.message_id,
+        )
+        await _commit_or_rollback(db_session)
+    except Exception as exc:
+        await db_session.rollback()
+        log.warning(
+            "Game reply mapping failed session=%s error=%s", session_id, type(exc).__name__,
+        )
+
+
 async def _play_turn_v2(
-    message: Message, db_session: AsyncSession, *, session_id: int,
+    message: Message, db_session: AsyncSession, *, session_id: int, raw_text: str | None = None,
 ) -> None:
     """Drive typed v2 turns with DB/AI/DB boundaries and post-commit Telegram I/O."""
-    raw_text = message.text
+    raw_text = message.text if raw_text is None else raw_text
     guess = _guess(raw_text)
     if guess is not None:
         await _play_v2_guess(message, db_session, session_id=session_id, answer=guess)
@@ -788,7 +814,9 @@ async def _play_turn_v2(
         await _commit_or_rollback(db_session)
         if started.terminal is not None:
             await publish_terminal(message.bot, db_session, started.terminal)
-        await message.reply(render_question_start(started))
+        await _send_game_reply(
+            message, db_session, session_id=session_id, text=render_question_start(started),
+        )
         return
     if started.claim is None:
         raise RuntimeError(f"v2 question claim missing session={session_id}")
@@ -806,7 +834,9 @@ async def _play_turn_v2(
             reason=TurnRejectReason.providers_unavailable,
         )
         await _commit_or_rollback(db_session)
-        await message.reply(render_personal_turn(failed))
+        await _send_game_reply(
+            message, db_session, session_id=session_id, text=render_personal_turn(failed),
+        )
         return
 
     completed = await ai_game_service.complete_question(
@@ -815,7 +845,9 @@ async def _play_turn_v2(
         verdict=routed.value,
     )
     await _commit_or_rollback(db_session)
-    await message.reply(render_personal_turn(completed))
+    await _send_game_reply(
+        message, db_session, session_id=session_id, text=render_personal_turn(completed),
+    )
     if completed.terminal is not None:
         await publish_terminal(message.bot, db_session, completed.terminal)
     elif completed.outcome is TurnOutcome.recorded:
@@ -843,7 +875,9 @@ async def _play_v2_guess(
         answer=answer,
     )
     await _commit_or_rollback(db_session)
-    await message.reply(render_personal_turn(result))
+    await _send_game_reply(
+        message, db_session, session_id=session_id, text=render_personal_turn(result),
+    )
     if result.terminal is not None:
         await publish_terminal(message.bot, db_session, result.terminal)
     elif result.outcome is TurnOutcome.recorded:
@@ -911,12 +945,25 @@ async def _play_turn_v1(
             user_tg_id=message.from_user.id, question=text, verdict=verdict,
         )
         if not recorded:
+            if verdict in (
+                QuestionVerdict.non_lo_so,
+                QuestionVerdict.forse,
+                QuestionVerdict.usa_risposta,
+            ):
+                await _commit_or_rollback(db_session)
+                text = (
+                    "🐲 Per tentare il titolo usa <code>RISPOSTA: titolo del gioco</code>."
+                    if verdict is QuestionVerdict.usa_risposta
+                    else "🐲 <b>NON LO SO</b> — domanda non consumata."
+                )
+                await message.reply(text)
+                return
             await db_session.rollback()
             await message.reply("🐲 Le domande disponibili sono finite.")
             return
         await db_session.commit()
         label = {
-            "si": "SÌ", "no": "NO", "forse": "FORSE", "usa_risposta": "PROVA A INDOVINARE",
+            "si": "SÌ", "no": "NO",
         }[verdict.value]
         await message.reply(f"🐲 <b>{label}</b>")
 

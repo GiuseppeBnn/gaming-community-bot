@@ -266,14 +266,14 @@ async def test_gemini_legacy_service_path_returns_verdict_and_is_single_attempt(
         turns=(),
     )
     with aioresponses() as mocked:
-        mocked.post(_url(), payload=_response('{"verdetto":"forse"}'))
+        mocked.post(_url(), payload=_response('{"verdetto":"non_lo_so"}'))
         verdict = await ai_game_service.classify_question(
             snapshot,  # type: ignore[arg-type]
             "È in prima persona?",
             gemini,  # type: ignore[arg-type]
         )
 
-    assert verdict == ai_game_service.QuestionVerdict("forse")
+    assert verdict == ai_game_service.QuestionVerdict("non_lo_so")
     assert _request_count(mocked) == 1
 
 

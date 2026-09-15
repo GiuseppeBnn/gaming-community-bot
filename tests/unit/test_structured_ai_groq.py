@@ -84,7 +84,7 @@ async def test_groq_is_strict_single_attempt_and_parses_usage(groq, structured_r
         },
         "reasoning_effort": "low",
         "temperature": 0.1,
-        "max_completion_tokens": 64,
+        "max_completion_tokens": 576,
     }
     assert groq.name == "groq"
     assert groq.model == "groq-test"
@@ -100,6 +100,42 @@ async def test_groq_missing_key_fails_before_network(monkeypatch, structured_req
         await provider.generate_json(structured_request)
     assert raised.value.kind is structured_ai.StructuredAIErrorKind.missing_key
     assert raised.value.provider == "groq"
+
+
+async def test_game_verdict_has_reasoning_headroom_without_changing_answer_schema(groq):
+    from services.twenty_questions_ai import build_question_request
+
+    request = build_question_request(
+        dossier_json='{"facts":["puzzle cooperativo"]}',
+        current_question="Si gioca insieme?", context=(),
+    )
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.GROQ_URL, payload=_response())
+        await groq.generate_json(request)
+    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
+    assert request.max_output_tokens == 32
+    assert sent["max_completion_tokens"] == 544
+    assert sent["response_format"]["json_schema"]["schema"] == request.schema
+    assert sent["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("body,kind", [
+    ({"error": {"code": "json_validate_failed", "failed_generation": "private-text"}}, "invalid_schema"),
+    ({"error": {"code": "unknown", "message": "json_validate_failed private-text"}}, "configuration"),
+    ({"error": "private-text"}, "configuration"),
+    ([], "configuration"),
+])
+async def test_generation_failure_is_not_model_misconfiguration(
+    groq, structured_request, body, kind, caplog,
+):
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.GROQ_URL, status=400, payload=body)
+        with pytest.raises(structured_ai.StructuredAIError) as raised:
+            await groq.generate_json(structured_request)
+    assert raised.value.kind.value == kind
+    assert _request_count(mocked) == 1
+    assert "private-text" not in caplog.text
+    assert "private-text" not in str(raised.value)
 
 
 @pytest.mark.parametrize(

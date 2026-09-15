@@ -24,6 +24,7 @@ from database.models import (
     AIGameCatalogEntry,
     AIGameRewardSettlement,
     AIGameSession,
+    AIGameMessage,
     AIGameTurn,
     ScheduledTask,
     TwentyQuestionsGame,
@@ -324,6 +325,66 @@ async def find_by_anchor(
     return await get_snapshot(session, root_id) if root_id is not None else None
 
 
+async def list_running_in_group(session: AsyncSession, group_id: int) -> list[AIGameSession]:
+    """Two rows suffice to distinguish no game, one game and legacy ambiguity."""
+    return list((await session.execute(
+        select(AIGameSession).where(
+            AIGameSession.game_type == GAME_TYPE,
+            AIGameSession.group_id == group_id,
+            AIGameSession.status == "running",
+        ).order_by(AIGameSession.started_at.desc(), AIGameSession.id.desc()).limit(2)
+    )).scalars().all())
+
+
+async def remember_game_message(
+    session: AsyncSession, *, session_id: int, group_id: int, message_id: int,
+) -> None:
+    """Record only IDs after Telegram delivery; caller owns the transaction."""
+    session.add(AIGameMessage(
+        session_id=session_id, group_id=group_id, message_id=message_id,
+    ))
+    await session.flush()
+
+
+async def find_by_game_message(
+    session: AsyncSession, group_id: int, message_id: int,
+) -> GameSnapshot | None:
+    # Check the immutable mapping first: an old game's message must never be
+    # redirected to a newer game. Include closed games so replies explain closure.
+    mapped = await session.get(AIGameMessage, (group_id, message_id))
+    if mapped is not None:
+        snapshot = await get_snapshot(session, mapped.session_id)
+        if snapshot is not None and snapshot.session.group_id == group_id:
+            return snapshot
+        return None
+    return await find_by_anchor(session, group_id, message_id)
+
+
+async def _group_start_available(
+    session: AsyncSession, group_id: int, session_id: int,
+) -> bool:
+    """Serialize all manual/scheduled v1/v2 starts until their caller commits.
+
+    An advisory transaction lock also covers the empty-group case, where a row
+    lock would protect nothing. Existing parallel games are preserved, but block
+    further starts until closed. SQLite retains its single-writer semantics.
+    """
+    if session.get_bind().dialect.name == "postgresql":
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"{GAME_TYPE}:start:{group_id}"},
+        )
+    active = (await session.execute(
+        select(AIGameSession.id).where(
+            AIGameSession.game_type == GAME_TYPE,
+            AIGameSession.id != session_id,
+            AIGameSession.group_id == group_id,
+            AIGameSession.status == "running",
+        ).limit(1)
+    )).scalar_one_or_none()
+    return active is None
+
+
 async def _legacy_start(
     session: AsyncSession, session_id: int, *, group_id: int, anchor_message_id: int,
 ) -> bool:
@@ -381,6 +442,8 @@ async def start(
     before publishing and installs the resulting anchor with a separate CAS.
     """
     if anchor_message_id is not None:
+        if not await _group_start_available(session, group_id, session_id):
+            return False
         return await _legacy_start(
             session, session_id, group_id=group_id, anchor_message_id=anchor_message_id,
         )
@@ -388,6 +451,9 @@ async def start(
     started_at = _naive_utc(now) or _now()
     if not has_configured_twenty_questions_provider():
         return StartGameResult(False, StartRejectReason.providers_unavailable, None)
+
+    if not await _group_start_available(session, group_id, session_id):
+        return StartGameResult(False, StartRejectReason.active_game, None)
 
     lifecycle = (await session.execute(
         select(
@@ -1354,15 +1420,17 @@ async def complete_question(
             await get_personal_quota(session, claim.session_id, claim.user_tg_id),
             terminal=terminal,
         )
-    if verdict is QuestionVerdict.usa_risposta:
+    if verdict in (QuestionVerdict.usa_risposta, QuestionVerdict.non_lo_so, QuestionVerdict.forse):
         released = await _release_v2_claim(session, claim)
+        reason = (
+            TurnRejectReason.answer_confirmation_required
+            if verdict is QuestionVerdict.usa_risposta
+            else TurnRejectReason.insufficient_information
+        )
         return TurnResult(
             claim.session_id,
             TurnOutcome.rejected,
-            (
-                TurnRejectReason.answer_confirmation_required
-                if released else TurnRejectReason.lost_claim
-            ),
+            reason if released else TurnRejectReason.lost_claim,
             await get_personal_quota(session, claim.session_id, claim.user_tg_id),
         )
     appended = await _append_v2_turn(
@@ -1738,6 +1806,9 @@ async def record_question(
     session: AsyncSession, *, session_id: int, token: str,
     user_tg_id: int, question: str, verdict: QuestionVerdict,
 ) -> bool:
+    if verdict in (QuestionVerdict.non_lo_so, QuestionVerdict.forse, QuestionVerdict.usa_risposta):
+        await release_turn(session, session_id, token)
+        return False
     turn_no = await _turn_no_for_token(session, session_id, token)
     if turn_no is None:
         return False

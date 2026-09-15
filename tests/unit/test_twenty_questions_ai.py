@@ -38,6 +38,32 @@ def test_question_cache_prefix_keeps_dossier_history_before_changing_question():
     assert second.user_prompt.startswith(prefix)
 
 
+@pytest.mark.parametrize("count", [0, 1, 3, 4, 24])
+def test_history_encoding_is_lossless_and_smaller_for_long_histories(count):
+    context = tuple(
+        _turn(i, f'Domanda {i}: "è rosso"?\n<<<CONTENUTO>>>', tuple(QuestionVerdict)[i % 4])
+        for i in range(count)
+    )
+    request = build_question_request(
+        dossier_json='{"facts":["Tutti i fatti originali"]}',
+        current_question="Domanda attuale?", context=context,
+    )
+    payload = json.loads(request.user_prompt)
+    expected = [{"question": t.question, "verdict": t.verdict.value} for t in context]
+    history = payload["history"]
+    if count < 4:
+        assert history == expected
+    else:
+        restored = [dict(zip(history["columns"], row, strict=True)) for row in history["rows"]]
+        assert restored == expected
+        old_payload = {**payload, "history": expected}
+        assert len(request.user_prompt) < len(json.dumps(
+            old_payload, ensure_ascii=False, separators=(",", ":"),
+        ))
+    assert payload["dossier"] == {"facts": ["Tutti i fatti originali"]}
+    assert payload["question"] == "Domanda attuale?"
+
+
 def test_context_is_bounded_relevant_and_chronological():
     """Removing lexical relevance, the cap, or chronological reordering breaks this."""
     turns = tuple(_turn(i, f"domanda generica {i}") for i in range(1, 31))
@@ -102,7 +128,7 @@ def test_request_has_only_dossier_question_history_and_closed_enum():
     assert "answer" not in request.user_prompt and "aliases" not in request.user_prompt
     assert request.schema["additionalProperties"] is False
     assert request.schema["properties"]["verdetto"]["enum"] == [
-        "si", "no", "forse", "usa_risposta",
+        "si", "no", "non_lo_so", "usa_risposta",
     ]
     assert parse_question_verdict({"verdetto": "usa_risposta"}) is QuestionVerdict.usa_risposta
     with pytest.raises(ValueError):
@@ -125,8 +151,16 @@ def test_request_schema_mutation_cannot_weaken_a_later_request():
     )
 
     assert later.schema["properties"]["verdetto"]["enum"] == [
-        "si", "no", "forse", "usa_risposta",
+        "si", "no", "non_lo_so", "usa_risposta",
     ]
+
+
+def test_uncertainty_is_explicit_and_legacy_maybe_is_not_accepted_from_ai():
+    request = build_question_request(dossier_json='{"facts":[]}', current_question="È difficile?", context=())
+    assert "L'assenza di un fatto non significa no" in request.system_prompt
+    assert parse_question_verdict({"verdetto": "non_lo_so"}) is QuestionVerdict.non_lo_so
+    with pytest.raises(ValueError):
+        parse_question_verdict({"verdetto": "forse"})
 
 
 def test_older_duplicate_hash_cannot_reenter_after_the_recent_unique_core():

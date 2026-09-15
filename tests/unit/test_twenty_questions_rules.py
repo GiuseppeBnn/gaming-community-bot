@@ -92,7 +92,9 @@ def test_game_enums_retain_the_historical_legacy_finish_reason():
         "recorded",
         "rejected",
     ]
-    assert [member.value for member in QuestionVerdict] == ["si", "no", "forse", "usa_risposta"]
+    assert [member.value for member in QuestionVerdict] == [
+        "si", "no", "forse", "usa_risposta", "non_lo_so",
+    ]
     assert [member.value for member in TurnRejectReason] == [
         "busy",
         "closed",
@@ -104,6 +106,7 @@ def test_game_enums_retain_the_historical_legacy_finish_reason():
         "invalid_input",
         "providers_unavailable",
         "answer_confirmation_required",
+        "insufficient_information",
         "hash_collision",
     ]
 

@@ -28,6 +28,7 @@ dato corrente, non questo indice come metrica verificabile.
 | [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |
 | [tests/unit/test_twenty_questions_docs.py](tests/unit/test_twenty_questions_docs.py) | Gate del contratto pubblico, template e navigazione v2 | Modifichi documentazione o configurazione del gioco segreto |
+| [docs/ai-token-audit-2026-09-15.md](docs/ai-token-audit-2026-09-15.md) | Ottimizzazioni token fuori dalla chat, modelli verificati e misure live sintetiche | Valuti consumi e limiti delle ottimizzazioni AI |
 
 ### Sezioni di STEERING.md
 
@@ -181,6 +182,7 @@ src/                                  # src-layout: i package restano top-level 
 | `scheduled_tasks` | Azioni future eseguite dallo scheduler in-process |
 | `bot_state` | Key-value di runtime (es. id gruppo effettivo) |
 | `ai_game_sessions` / `ai_game_turns` / `twenty_questions_games` | Aggregate, ledger valido e strategia del gioco segreto v2 |
+| `ai_game_messages` | Associazione persistente dei verdetti/riepiloghi Telegram alla partita per i reply |
 | `ai_game_reward_settlements` / `ai_game_reward_allocations` | Snapshot policy e ricompense terminali idempotenti |
 | `ai_game_provider_attempts` / `ai_budget_periods` / `ai_usage_log` | Telemetria provider e budget prompt-free |
 | `ai_game_catalog_entries` / `ai_game_catalog_draws` | Catalogo locale e rotazione bilanciata |
@@ -221,7 +223,7 @@ eseguita solo su PostgreSQL. Non c'è Alembic.
 | `scripts/import_state.py` | Ripristino post-migrazione (`--mode empty\|replace`) |
 | `scripts/login_telethon.py` | Login MTProto una tantum → `TELEGRAM_SESSION` (**credenziale sensibile**) |
 | `scripts/eval_twenty_questions.py` | CLI opt-in per valutare il gioco segreto senza percorso runtime |
-| `evals/twentyq/v1.jsonl` | Dataset sintetico versionato dell'eval del gioco segreto |
+| `evals/twentyq/v2.jsonl` | Dataset sintetico SÌ/NO/NON LO SO; v1 resta storico |
 | `catalogs/*.example.csv` | Template dei cataloghi: copiali in `data/` senza `.example` |
 
 ---
