@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 
 from database.models import (
     AIGameRewardSettlement,
@@ -24,6 +24,7 @@ from services.ai_game_types import (
     TurnKind,
     TurnOutcome,
     TurnRejectReason,
+    StartRejectReason,
 )
 from services.structured_ai import StructuredAIError
 from services.twenty_questions_catalog import GameDossier
@@ -106,6 +107,64 @@ async def _pending_fields(session, session_id: int) -> tuple[object, ...]:
         AIGameSession.pending_user_tg_id,
         AIGameSession.pending_kind,
     ).where(AIGameSession.id == session_id))).one()
+
+
+async def test_incomplete_v2_lifecycle_cannot_start_or_schedule(session, monkeypatch):
+    monkeypatch.setattr(ai_game_service, "has_configured_twenty_questions_provider", lambda: True)
+    created = await _create_v2(session, monkeypatch)
+    await session.execute(update(AIGameSession).where(
+        AIGameSession.id == created.session_id,
+    ).values(duration_seconds=None, expires_at=None))
+    result = await ai_game_service.start(session, created.session_id, group_id=-1001)
+    assert not result.started and result.reason is StartRejectReason.not_ready
+    assert not (await session.execute(select(ScheduledTask.id))).scalars().all()
+
+
+async def test_missing_v2_settlement_policy_cannot_render_a_misleading_game(session, monkeypatch):
+    created = await _create_v2(session, monkeypatch)
+    await session.execute(delete(AIGameRewardSettlement).where(
+        AIGameRewardSettlement.session_id == created.session_id,
+    ))
+    with pytest.raises(RuntimeError, match="missing its settlement policy"):
+        await ai_game_service.get_game_view(session, created.session_id)
+
+
+@pytest.mark.parametrize("state", ("expired", "closed", "contended"))
+async def test_failed_lease_rechecks_authoritative_state_without_consuming_quota(
+    session, monkeypatch, state,
+):
+    session_id = await _running_v2(session, monkeypatch)
+    if state == "closed":
+        await session.execute(update(AIGameSession).where(
+            AIGameSession.id == session_id,
+        ).values(status="ready"))
+    now = datetime(2031, 1, 1) if state == "expired" else datetime(2030, 8, 23, 11)
+    reason, quota, terminal = await ai_game_service._failed_v2_claim(
+        session, session_id=session_id, user_tg_id=99, kind=TurnKind.question, now=now,
+    )
+    expected = {
+        "expired": TurnRejectReason.expired,
+        "closed": TurnRejectReason.closed,
+        "contended": TurnRejectReason.busy,
+    }[state]
+    assert reason is expected
+    assert quota.questions_used == 0 and quota.guesses_used == 0
+    assert (terminal is not None) == (state == "expired")
+    assert await _turn_count(session, session_id) == 0
+
+
+@pytest.mark.parametrize("payload", ("broken JSON", "[]", "{}", '{"verdetto":"invented"}'))
+async def test_invalid_persisted_verdict_is_not_sent_to_the_next_provider(session, monkeypatch, payload):
+    session_id = await _running_v2(session, monkeypatch)
+    await _record_yes(session, session_id, 10, 1)
+    await session.execute(update(AIGameTurn).where(
+        AIGameTurn.session_id == session_id,
+    ).values(output_json=payload))
+    started = await ai_game_service.begin_question(
+        session, session_id=session_id, user_tg_id=20, question="Ha una modalità cooperativa?",
+    )
+    assert started.outcome is TurnOutcome.claimed
+    assert started.claim is not None and started.claim.context == ()
 
 
 async def test_v2_flag_false_blocks_creation_without_legacy_fallback(session, monkeypatch):

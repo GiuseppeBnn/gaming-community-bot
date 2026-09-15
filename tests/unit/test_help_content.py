@@ -130,6 +130,31 @@ class TestAlduinoReference:
     def test_forbids_claiming_side_effects(self):
         assert "non fingere di aver eseguito" in render_alduino_reference()
 
+    def test_compact_reference_preserves_every_public_knowledge_field(self):
+        import html
+        import re
+
+        reference = render_alduino_reference()
+        for command in _COMMANDS:
+            if command.admin_only:
+                continue
+            usage = command.usage or f"/{command.name}"
+            details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
+            assert command.summary in reference and details in reference
+            assert usage in reference
+            assert all("/" + alias in reference for alias in command.aliases)
+            if usage == f"/{command.name}":
+                assert f"Uso: {usage}." not in reference
+
+    def test_compaction_reduces_only_repeated_usage_tokens(self):
+        public = [command for command in _COMMANDS if not command.admin_only]
+        duplicated_usage = [f" Uso: /{command.name}." for command in public
+                            if not command.usage or command.usage == f"/{command.name}"]
+        compact = render_alduino_reference()
+        assert len(duplicated_usage) >= 10
+        assert sum(len(text.encode("utf-8")) for text in duplicated_usage) > 150
+        assert all(text not in compact for text in duplicated_usage)
+
 
 def esc_token(usage: str) -> str:
     return help_content.esc(usage)

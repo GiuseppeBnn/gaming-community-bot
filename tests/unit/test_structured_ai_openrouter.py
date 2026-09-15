@@ -81,6 +81,27 @@ def _request_count(mocked: aioresponses) -> int:
     return sum(len(calls) for calls in mocked.requests.values())
 
 
+async def test_glm_structured_keeps_strict_schema_and_reserves_thinking(
+    openrouter, structured_request, monkeypatch,
+):
+    monkeypatch.setattr(structured_ai.settings, "twentyq_openrouter_model", "z-ai/glm-5.3-flash")
+    monkeypatch.setattr(structured_ai.settings, "openrouter_reasoning_token_allowance", 1024)
+    payload = _response()
+    payload["model"] = "z-ai/glm-5.3-flash"
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=payload)
+        result = await structured_ai.OpenRouterStructuredProvider().generate_json(structured_request)
+    assert result.model == "z-ai/glm-5.3-flash"
+    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
+    assert sent["reasoning"] == {"effort": "low", "exclude": True}
+    assert sent["max_tokens"] == structured_request.max_output_tokens + 1024
+    assert openrouter.reserve_kwargs["max_output_tokens"] == sent["max_tokens"]
+    assert sent["response_format"]["json_schema"]["strict"] is True
+    assert sent["provider"]["zdr"] and not sent["provider"]["allow_fallbacks"]
+    assert sent["provider"]["sort"] == "latency"
+    assert sent["provider"]["max_price"] == {"prompt": .25, "completion": .6}
+
+
 async def test_openrouter_structured_is_single_model_strict_zdr_and_accounted(
     openrouter, structured_request,
 ):

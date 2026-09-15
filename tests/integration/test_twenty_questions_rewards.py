@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import pytest
@@ -47,6 +47,80 @@ _WINNING_TURN = (10, "guess", "Portal 2", '{"correct":true}')
 def _rewards():
     """Import at test execution so the first RED is a failed behavior, not collection."""
     return importlib.import_module("services.ai_game_rewards")
+
+
+@pytest.mark.parametrize("reason", (None, "invented"))
+async def test_invalid_runtime_settlement_reason_never_queries_or_mutates(session, reason):
+    with pytest.raises(ValueError, match="invalid AI-game settlement reason"):
+        await _rewards().terminalize(session, session_id=123, reason=reason)
+    assert not session.in_transaction()
+
+
+@pytest.mark.parametrize("reason,winner", (
+    (FinishReason.victory, None),
+    (FinishReason.expired, 10),
+))
+async def test_inconsistent_winner_never_starts_settlement(session, reason, winner):
+    with pytest.raises(ValueError, match="winner_tg_id"):
+        await _rewards().terminalize(
+            session, session_id=123, reason=reason, winner_tg_id=winner,
+        )
+    assert not session.in_transaction()
+
+
+async def test_missing_settlement_cannot_be_replayed_or_loaded(session):
+    rewards = _rewards()
+    with pytest.raises(rewards.RewardSettlementError, match="no pending reward"):
+        await rewards._load_pending_settlement(session, 123)
+    with pytest.raises(rewards.RewardSettlementError, match="no terminal settlement"):
+        await rewards.terminalize(session, session_id=123, reason=FinishReason.expired)
+
+
+@pytest.mark.parametrize("root_reason,settlement_reason,status", (
+    ("invented", "expired", "void"),
+    ("expired", "victory", "void"),
+    ("expired", "expired", "pending"),
+))
+async def test_corrupt_terminal_replay_fails_closed(
+    session, monkeypatch, root_reason, settlement_reason, status,
+):
+    rewards = _rewards()
+    session_id = await _running_game(session, monkeypatch, users=(), turns=())
+    await rewards.terminalize(session, session_id=session_id, reason=FinishReason.expired)
+    await session.execute(update(AIGameSession).where(
+        AIGameSession.id == session_id,
+    ).values(finish_reason=root_reason))
+    await session.execute(update(AIGameRewardSettlement).where(
+        AIGameRewardSettlement.session_id == session_id,
+    ).values(finish_reason=settlement_reason, status=status))
+    with pytest.raises(rewards.RewardSettlementError, match="invalid terminal reason|not terminally settled"):
+        await rewards.terminalize(session, session_id=session_id, reason=FinishReason.expired)
+    assert not (await session.execute(select(AIGameRewardAllocation.id))).scalars().all()
+
+
+async def test_aware_terminal_timestamp_is_stored_in_utc(session, monkeypatch):
+    session_id = await _running_game(session, monkeypatch, users=(), turns=())
+    instant = datetime(2030, 8, 23, 12, tzinfo=timezone(timedelta(hours=2)))
+    await _rewards().terminalize(
+        session, session_id=session_id, reason=FinishReason.expired, now=instant,
+    )
+    persisted = (await session.execute(select(AIGameSession.finished_at).where(
+        AIGameSession.id == session_id,
+    ))).scalar_one()
+    assert persisted == datetime(2030, 8, 23, 10)
+
+
+@pytest.mark.parametrize("payload", ("broken JSON", "[]", "null"))
+async def test_malformed_guess_payload_cannot_invent_a_reward_penalty(session, monkeypatch, payload):
+    session_id = await _running_game(session, monkeypatch, users=(10,), turns=(
+        (10, "guess", "Other game", payload),
+    ))
+    result = await _rewards().terminalize(
+        session, session_id=session_id, reason=FinishReason.expired,
+    )
+    assert result.reward.wrong_guess_count == 0
+    assert result.reward.participant_count == 1
+    assert result.allocations[0].coins == 0
 
 
 async def _running_game(

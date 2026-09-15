@@ -123,6 +123,8 @@ src/                                  # src-layout: i package restano top-level 
 | `schedule_service.py` | `parse_run_at` `schedule_task` `due_tasks` `mark_done/failed` — timestamp UTC naive |
 | `group_registry.py` | Id gruppo **effettivo** (sopravvive alle migrazioni chat) + `send_group_message` |
 | `ai_service.py` | Gateway async Groq/OpenRouter: routing entertainment/chat; giudice Groq separato e strict |
+| `ai_routing.py` | Failover text free→paid condiviso: deadline, timeout e circuit breaker per workload/provider/modello |
+| `scripts/eval_text_ai.py` | Smoke test degli otto prompt reali su input sintetici, con limite di costo preflight e ledger per run |
 | `ai_budget.py` | Prenotazione atomica, hard cap mensile e ledger costi senza prompt/completion |
 | `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
 | `group_context.py` | Rolling transcript locale, potatura e rendering senza Telegram ID |

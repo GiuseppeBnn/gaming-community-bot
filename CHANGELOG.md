@@ -3,6 +3,28 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [Unreleased]
+
+### Modificato
+- **AI gratuita prima, GLM 5.3 Flash come fallback paid** — chat Gemini → Groq → GLM,
+  comandi comici Groq → GLM; il router del gioco segreto conserva Gemini → Groq →
+  OpenRouter con GLM e JSON schema strict. Giudice Guess/Sound invariato.
+- **Failover text bounded** — timeout free, deadline totale e circuit breaker condiviso
+  per workload/provider/modello. Nessuna chiamata o prenotazione paid su successo free;
+  cancellazioni ed errori di programmazione non attivano fallback.
+- **Thinking GLM gestito nel budget** — `low` e allowance 1024 token inclusa nella
+  prenotazione; transcript ambientale soltanto su ZDR e risposte pubbliche brevi.
+  Cap globale 5 USD e partizioni giochi 4 USD / altro 1 USD invariati. I `.env`
+  esistenti richiedono aggiornamento esplicito delle route e dei modelli.
+- **Routing GLM orientato alla latenza** — preferenza per endpoint rapidi dello stesso modello;
+  prezzi massimi, ZDR, schema strict e singolo tentativo structured invariati.
+- **Prefissi cache-friendly** — dati stabili prima dei campi variabili, senza
+  affinità forzate, cache di risposte o contesto rimosso; budget conservativo e
+  cache hit contabilizzati dal provider.
+- **Reference Alduino compatta senza perdita di informazioni** — eliminata solo
+  la sintassi bare duplicata; tutti i comandi pubblici, manuali e alias restano
+  nel prompt e le guide Telegram sono invariate.
+
 ## [1.9] - 2026-09-13
 
 ### Aggiunto

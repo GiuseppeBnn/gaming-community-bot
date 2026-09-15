@@ -315,5 +315,19 @@ def test_public_events_are_compact_and_dated():
     )
 
 
+def test_chat_cache_prefix_preserves_all_data_and_puts_variable_fields_last():
+    history = (DialogueTurn("storia utente", "storia Alduino"),)
+    kwargs = {"history": history, "group_context": "Mario: dato ambientale"}
+    first = alduino_chat.render_model_input("adesso uno", live_context="evento uno", quoted_bot_text="citato uno", **kwargs)
+    second = alduino_chat.render_model_input("adesso due", live_context="evento due", quoted_bot_text="citato due", **kwargs)
+    stable_prefix = first.split("<<<DATI LIVE DEL BOT>>>")[0]
+    assert second.startswith(stable_prefix)
+    assert "storia utente" in stable_prefix and "storia Alduino" in stable_prefix
+    assert "Mario: dato ambientale" in stable_prefix
+    assert first.index("<<<CONVERSAZIONE RECENTE>>>") < first.index("<<<CONVERSAZIONE RECENTE DEL GRUPPO>>>")
+    assert first.index("evento uno") < first.index("citato uno") < first.index("adesso uno")
+    assert first.endswith("<<<FINE MESSAGGIO ATTUALE>>>")
+
+
 def test_reply_has_a_hard_character_cap():
     assert len(alduino_chat._clip_reply("x" * 900)) == alduino_chat._MAX_REPLY_CHARS

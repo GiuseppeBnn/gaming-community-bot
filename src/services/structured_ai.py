@@ -832,6 +832,9 @@ class OpenRouterStructuredProvider:
                 kind=StructuredAIErrorKind.missing_key,
                 provider=self.name,
             )
+        reasoning, total_tokens = ai_service.openrouter_generation_policy(
+            (self.model,), request.max_output_tokens,
+        )
         try:
             reservation = await ai_budget.reserve(
                 feature=self._budget_feature or request.operation,
@@ -840,7 +843,7 @@ class OpenRouterStructuredProvider:
                 requested_model=self.model,
                 system_prompt=request.system_prompt,
                 user_text=request.user_prompt,
-                max_output_tokens=request.max_output_tokens,
+                max_output_tokens=total_tokens,
             )
         except ai_budget.AIBudgetExceeded as exc:
             raise StructuredAIError(
@@ -872,10 +875,11 @@ class OpenRouterStructuredProvider:
             "provider": ai_service._openrouter_provider_policy(
                 require_zdr=True,
                 allow_fallbacks=False,
+                models=(self.model,),
             ),
-            "reasoning": {"effort": "none", "exclude": True},
+            "reasoning": reasoning,
             "temperature": request.temperature,
-            "max_tokens": request.max_output_tokens,
+            "max_tokens": total_tokens,
             "usage": {"include": True},
         }
         try:

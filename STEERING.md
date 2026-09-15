@@ -32,7 +32,7 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per tutte le chiamate LLM — **mai** librerie HTTP bloccanti |
-| LLM | OpenRouter + Groq + Gemini | Alduino paid su DeepSeek ZDR; one-shot configurabile Qwen→DeepSeek; giudice dei giochi invariato su `GROQ_JUDGE_MODEL` strict; Gemini resta adapter opzionale per giochi/chat |
+| LLM | OpenRouter + Groq + Gemini | Gratuiti prima: chat Gemini→Groq→GLM, one-shot Groq→GLM; GLM 5.3 Flash paid ZDR; giudice invariato su `GROQ_JUDGE_MODEL` strict |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -76,7 +76,7 @@ Campi importanti:
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
 - `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
 - `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
-- **OpenRouter**: `openrouter_api_key`; fallback CSV ordinati `openrouter_chat_models` (solo DeepSeek ZDR) / `openrouter_fun_models` (Qwen→DeepSeek); `openrouter_max_prompt_price` / `_completion_price` rifiutano provider sopra soglia; `ai_monthly_budget_usd` (default 5 USD) è il cap persistente interno; `ai_entertainment_provider` sceglie `groq|openrouter`
+- **OpenRouter**: `openrouter_api_key`; CSV `openrouter_chat_models` / `openrouter_fun_models` (default GLM 5.3 Flash); tetti di prezzo e cap persistente 5 USD invariati. `ai_entertainment_provider=auto` prova Groq gratuito prima della corsia paid; i provider espliciti restano disponibili per A/B. Thinking GLM `low` con allowance configurabile 1024 token, prenotata insieme al limite della risposta
 - **Gioco segreto v2**: `twentyq_v2_enabled` resta **false** fino al rollout; Gemini → Groq → OpenRouter usa timeout 8/8/12 s, deadline 25 s e storia bounded 24 turni / 12.000 caratteri. I lane cap 4 USD (`twentyq`) + 1 USD (altre richieste) vivono dentro il cap globale di 5 USD. Le regole 20 Domande sono **legacy v1**.
 - **Contesto Alduino**: `alduino_capture_group_context`, `alduino_group_context_messages` / `_chars` limitano ciò che esce, `alduino_group_memory_rows` limita il rolling transcript locale. La cattura completa richiede privacy mode Telegram disabilitata
 - `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
@@ -934,15 +934,33 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 ### ai_service — gateway Groq/OpenRouter
 
 - **Sempre `aiohttp` async** — mai librerie bloccanti (non bloccare l'event loop di aiogram).
-- `generate_completion(...)` è il router one-shot: `AI_ENTERTAINMENT_PROVIDER=groq` usa
-  `generate_groq_completion`; `openrouter` usa l'ordine `OPENROUTER_FUN_MODELS` (Qwen 3.7 Flash →
-  DeepSeek V4 Flash di default). Il giudice **non passa mai** da questo router.
+- `generate_completion(...)` è il router one-shot: default `AI_ENTERTAINMENT_PROVIDER=auto`
+  prova Groq gratuito → OpenRouter paid (GLM 5.3 Flash). `groq` e `openrouter` espliciti
+  selezionano direttamente l'adapter per A/B. Il giudice **non passa mai** da questo router.
+- `services/ai_routing.py` contiene la failover policy riutilizzata da chat e one-shot:
+  timeout free 6 s, deadline assoluta 30 s, circuit breaker 60 s per workload/provider/modello.
+  Cancellazioni ed errori di programmazione propagano senza attivare una seconda richiesta paid.
+  Una risposta free valida termina la route anche con budget paid spento/esaurito.
 - `generate_openrouter_completion(...)` riceve una policy esplicita per feature/modelli/privacy:
   - `provider.data_collection=deny`, `allow_fallbacks=true`, `require_parameters=true`;
   - la chat Alduino forza anche `zdr=true`; la sua lista contiene soltanto modelli con endpoint ZDR;
   - `provider.max_price` deriva dai due tetti USD/1M della config: se i prezzi promozionali cambiano,
     la richiesta viene rifiutata invece di diventare silenziosamente costosa;
-  - `reasoning.effort=none` + `exclude=true`, cap output hard e usage accounting nella risposta;
+  - le route GLM usano `provider.sort=latency` entro gli stessi tetti di prezzo;
+    le route legacy mantengono `price`. Non si cambia provider fisso, non si
+    allentano ZDR/schema strict e lo structured conserva `allow_fallbacks=false`;
+  - cache implicita del provider, senza sessioni/affinità forzate né memoizzazione
+    delle risposte. ZDR/prezzi rimangono vincolanti; ogni chiamata conserva prenotazione
+    completa e settlement su usage reale, inclusi cached_tokens;
+  - i prompt mettono cronologia/dossier stabili prima di eventi/domanda corrente,
+    senza togliere dati, abbassare le finestre di contesto o il margine di thinking;
+  - la reference autorevole di Alduino omette solo l'uso bare duplicato del comando
+    già scritto a inizio riga; sintassi con argomenti, alias, summary e details sono
+    preservati integralmente. I renderer della guida Telegram non cambiano;
+  - GLM 5.3 Flash ha thinking obbligatorio: `reasoning.effort=low`, `exclude=true`, cap totale
+    = limite risposta + `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (1024), prenotato e contabilizzato.
+    Altri modelli mantengono `none`; una lista con policy miste è rifiutata prima della rete.
+    Anche l'adapter structured usa questa policy senza cambiare lo schema strict;
   - timeout/network ambiguo viene contabilizzato al costo massimo prenotato; un non-200 noto costa 0.
 - Prima della rete `ai_budget.reserve` fa un `UPDATE ... WHERE spent + reserved + estimate <= cap`
   atomico. Dopo la risposta `settle` libera la prenotazione e addebita `usage.cost`. Il ledger registra
@@ -971,8 +989,11 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 - `GroupContextMiddleware` cattura prima del handler solo messaggi umani non-command nel gruppo
   effettivo e pota a `ALDUINO_GROUP_MEMORY_ROWS`; senza BotFather privacy mode disabilitata Telegram
   non consegna il traffico ordinario, quindi il sistema degrada al solo contesto visibile al bot.
-- Routing privacy: `ALDUINO_PROVIDER=openrouter` usa DeepSeek-only + ZDR. Qwen 3.7 Flash, che oggi
-  non offre la stessa route ZDR, resta confinato agli input one-shot e non riceve mai memoria gruppo.
+- Routing privacy: default `ALDUINO_PROVIDER=auto` prova Gemini → Groq (se abilitato) → GLM paid.
+  Ogni adapter riceve il ramo locale e i dati live; il transcript ambientale va soltanto alla
+  route OpenRouter ZDR. I provider espliciti conservano il comportamento legacy per A/B.
+  La risposta della chat resta ≤500 caratteri; la corsia paid one-shot resta ≤600 caratteri.
+  Il router structured rimane separato; la config vieta OpenRouter prima dei provider gratuiti.
 - **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente; **admin esenti** (via `is_admin`). Usa lo store condiviso `utils.cooldown` (bucket `"ai"`), quindi il pruning e la semantica in-memory sono quelli di ogni altro bucket — non c'è più una seconda implementazione di throttle nel repo.
   > **Non usa `cooldown.guard()`**, che marca mentre controlla. Qui check e mark sono due chiamate separate di proposito: l'handler controlla, *poi* valida (serve un reply-to, il bersaglio deve parsare), e solo `_dispatch` marca. Così un `/insulta` malformato non costa niente e si può riprovare subito, invece di bruciare 60s di cooldown per un errore di battitura. Fissato da `tests/unit/test_ai_cooldown.py`.
 - `send_chat_action(chat_id, ChatAction.TYPING)` prima della generazione.

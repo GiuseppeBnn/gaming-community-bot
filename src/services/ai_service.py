@@ -1,5 +1,5 @@
 """
-AI entertainment service — async Groq (OpenAI-compatible) client.
+AI entertainment service — async free-first Groq/OpenRouter routing.
 
 All LLM traffic goes through `aiohttp` (never blocking libraries) so the
 aiogram event loop is never stalled. Failures (timeout, network, non-200,
@@ -24,6 +24,7 @@ import aiohttp
 
 from config_data.config import settings
 from services import ai_budget
+from services.ai_routing import ProviderAttempt, ProviderUnavailable, text_router
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ _MAX_DB_BIGINT = 9_223_372_036_854_775_807
 _THINK_BLOCK = re.compile(r"<think>.*?(?:</think>|$)", re.DOTALL | re.IGNORECASE)
 
 
-class AIServiceError(Exception):
+class AIServiceError(ProviderUnavailable):
     """Normalized failure from a configured AI provider."""
 
 
@@ -56,6 +57,21 @@ def parse_model_list(raw: str) -> tuple[str, ...]:
     if not models:
         raise AIServiceError("empty model route")
     return models
+
+
+def openrouter_generation_policy(
+    models: tuple[str, ...], max_answer_tokens: int,
+) -> tuple[dict[str, Any], int]:
+    """Keep mandatory-thinking GLM routes separate from non-thinking routes."""
+    mandatory = [model == "z-ai/glm-5.3-flash" for model in models]
+    if any(mandatory):
+        if not all(mandatory):
+            raise AIServiceError("mixed reasoning policies in model route")
+        return (
+            {"effort": "low", "exclude": True},
+            max_answer_tokens + settings.openrouter_reasoning_token_allowance,
+        )
+    return {"effort": "none", "exclude": True}, max_answer_tokens
 
 
 def _usage_int(value: Any) -> int | None:
@@ -105,14 +121,16 @@ def _openrouter_usage(data: Any) -> tuple[ai_budget.UsageMetrics, int | None]:
 
 
 def _openrouter_provider_policy(
-    *, require_zdr: bool, allow_fallbacks: bool,
+    *, require_zdr: bool, allow_fallbacks: bool, models: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Build the shared privacy, routing and price ceiling policy."""
     provider: dict[str, Any] = {
         "allow_fallbacks": allow_fallbacks,
         "require_parameters": True,
         "data_collection": "deny",
-        "sort": "price",
+        # Interactive GLM calls prefer latency within the same hard price caps.
+        # Legacy routes retain their existing price-oriented policy.
+        "sort": "latency" if "z-ai/glm-5.3-flash" in models else "price",
         "max_price": {
             "prompt": float(settings.openrouter_max_prompt_price),
             "completion": float(settings.openrouter_max_completion_price),
@@ -159,6 +177,7 @@ async def generate_openrouter_completion(
         raise AIServiceError("missing OpenRouter api key")
     if not models:
         raise AIServiceError("empty model route")
+    reasoning, total_tokens = openrouter_generation_policy(models, max_tokens)
     try:
         reservation = await ai_budget.reserve(
             feature=feature,
@@ -166,7 +185,7 @@ async def generate_openrouter_completion(
             requested_model=models[0],
             system_prompt=system_prompt,
             user_text=user_text,
-            max_output_tokens=max_tokens,
+            max_output_tokens=total_tokens,
         )
     except ai_budget.AIBudgetExceeded as exc:
         logger.warning("Budget AI mensile esaurito: blocco %s prima della rete.", feature)
@@ -182,10 +201,10 @@ async def generate_openrouter_completion(
             {"role": "user", "content": user_text},
         ],
         "temperature": _TEMPERATURE if temperature is None else temperature,
-        "max_tokens": max_tokens,
-        "reasoning": {"effort": "none", "exclude": True},
+        "max_tokens": total_tokens,
+        "reasoning": reasoning,
         "provider": _openrouter_provider_policy(
-            require_zdr=require_zdr, allow_fallbacks=True,
+            require_zdr=require_zdr, allow_fallbacks=True, models=models,
         ),
         "usage": {"include": True},
     }
@@ -340,8 +359,39 @@ async def generate_completion(
     temperature: float | None = None,
 ) -> str:
     """Route one-shot entertainment without affecting the strict judge lane."""
+    if settings.ai_entertainment_provider == "auto":
+        async def groq() -> str:
+            return await generate_groq_completion(
+                system_prompt, user_text, max_tokens, temperature=temperature,
+            )
+
+        async def paid() -> str:
+            text = await generate_openrouter_completion(
+                system_prompt, user_text, max_tokens, temperature=temperature,
+                feature="entertainment",
+                models=parse_model_list(settings.openrouter_fun_models),
+                require_zdr=False,
+            )
+            return text if len(text) <= 600 else text[:599].rstrip() + "…"
+
+        attempts = [ProviderAttempt(
+            "groq", settings.groq_model, groq,
+            settings.ai_entertainment_free_timeout_seconds,
+        )]
+        if settings.openrouter_api_key:
+            attempts.append(ProviderAttempt(
+                "openrouter", settings.openrouter_fun_models, paid,
+                settings.openrouter_timeout_seconds,
+            ))
+        try:
+            return await text_router.generate(
+                attempts, workload="entertainment",
+                deadline_seconds=settings.ai_entertainment_deadline_seconds,
+            )
+        except ProviderUnavailable as exc:
+            raise AIServiceError("entertainment providers unavailable") from exc
     if settings.ai_entertainment_provider == "openrouter":
-        return await generate_openrouter_completion(
+        text = await generate_openrouter_completion(
             system_prompt,
             user_text,
             max_tokens,
@@ -350,6 +400,7 @@ async def generate_completion(
             models=parse_model_list(settings.openrouter_fun_models),
             require_zdr=False,
         )
+        return text if len(text) <= 600 else text[:599].rstrip() + "…"
     return await generate_groq_completion(
         system_prompt, user_text, max_tokens, temperature=temperature,
     )

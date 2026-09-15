@@ -258,7 +258,7 @@ class TestTwentyQuestionsProviderSettings:
 
         assert configured.twentyq_gemini_model == "gemini-3.5-flash"
         assert configured.twentyq_groq_model == "openai/gpt-oss-20b"
-        assert configured.twentyq_openrouter_model == "deepseek/deepseek-v4-flash-0731"
+        assert configured.twentyq_openrouter_model == "z-ai/glm-5.3-flash"
         assert configured.twentyq_gemini_timeout_seconds == 8
         assert configured.twentyq_groq_timeout_seconds == 8
         assert configured.twentyq_openrouter_timeout_seconds == 12

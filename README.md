@@ -210,9 +210,10 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 ### Alduino conversazionale
 
-`/alduino` ha una corsia provider indipendente. La configurazione consigliata usa
-DeepSeek V4 Flash via OpenRouter; Gemini e Groq restano selezionabili e Groq può
-fare da fallback operativo. Dopo la prima risposta non serve ripetere il comando:
+`/alduino` ha una corsia provider indipendente. Il default `ALDUINO_PROVIDER=auto`
+prova Gemini gratuito, poi Groq gratuito, infine GLM 5.3 Flash via OpenRouter.
+Una risposta gratuita valida termina la route senza prenotare o spendere budget paid.
+Dopo la prima risposta non serve ripetere il comando:
 una normale risposta Telegram a un messaggio del bot continua il ramo corretto.
 
 Alduino ora capisce anche ciò che si stava dicendo nel gruppo: combina il ramo dei
@@ -222,12 +223,47 @@ aperti/in programma. Non spedisce l'archivio intero solo perché un modello acce
 rumore, latenza e costo restano bassi. Il transcript locale viene potato
 automaticamente; al provider arrivano nomi visualizzati e testo, non i Telegram ID.
 
-La corsia contestuale forza `zdr=true` e `data_collection=deny` e contiene solo
-modelli DeepSeek con endpoint ZDR. **Qwen 3.7 Flash non riceve mai la cronologia del
-gruppo**: è riservato ai comandi comici one-shot, dove offre il costo minimo senza
-trasportare memoria. Il ledger costi salva modello, token e costo, mai prompt o
+Il ramo dei reply e i dati live del bot accompagnano ogni tentativo. Il transcript
+ambientale del gruppo esce soltanto sulla corsia OpenRouter che forza `zdr=true`
+e `data_collection=deny`: Gemini/Groq conservano il loro contesto conversazionale
+bounded, ma non ricevono questi messaggi ambientali. GLM è il fallback paid anche
+per i comandi comici (`AI_ENTERTAINMENT_PROVIDER=auto`: Groq → GLM).
+I tentativi gratuiti della chat hanno un timeout di 6 s ciascuno; la route intera
+ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
+di riprovare per 60 s un provider appena fallito. Il ledger costi salva modello, token e costo, mai prompt o
 risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
 limite e dal prezzo massimo del provider.
+
+GLM 5.3 Flash ha thinking obbligatorio: usiamo `low`, nascondiamo il ragionamento
+e aggiungiamo 1024 token al limite della risposta. Il totale è prenotato nel budget
+prima della rete, inclusi i token di thinking; l'output pubblico rimane corto.
+Non mescolare GLM e modelli non-thinking nella stessa lista OpenRouter.
+Per GLM preferiamo endpoint a bassa latenza anziché il solo prezzo minimo, sempre
+entro gli stessi tetti di prezzo, budget e privacy. La corsia JSON resta su un
+solo modello e senza retry nascosti tra provider.
+Cronologia e dossier vengono prima dei dati più variabili, senza ridurre le
+finestre di contesto, per favorire la cache implicita dei prefissi degli endpoint
+compatibili. Nessuna sessione esplicita forza l'affinità verso un endpoint e nessuna
+risposta viene riciclata. Cache hit e risparmio dipendono dal provider e si misurano
+nei `cached_tokens` del ledger; la prenotazione resta sempre conservativa.
+Il catalogo autorevole dei comandi nel prompt omette solo la ripetizione della
+sintassi senza argomenti: nomi, sintassi con parametri, alias e manuali completi
+restano disponibili. Le schermate `/comandi` e `/spiega_comando` sono invariate.
+I provider espliciti restano disponibili per confronti A/B; `openrouter` esplicito
+usa direttamente la corsia paid. Su un `.env` esistente imposta `auto` e aggiorna
+le liste dei modelli: `git pull` non sovrascrive la configurazione della macchina.
+
+Per il confronto reale in locale o sulla macchina **di test**, lo script seguente
+prova gli otto prompt effettivi con dati sintetici, senza leggere chat o inviare
+messaggi Telegram. Richiede chiave OpenRouter e DB di test: il costo massimo stimato
+deve rientrare in 0,02 USD **prima** di qualunque richiesta; restano attivi anche i
+cap mensili. Pubblica gli output per valutarne tono, lunghezza e latenza.
+
+```bash
+python scripts/eval_text_ai.py --provider openrouter --allow-paid-openrouter --max-cost-usd 0.02
+# Baseline gratuito sugli stessi prompt:
+python scripts/eval_text_ai.py --provider groq
+```
 
 Per ricevere i messaggi ordinari devi disattivare la privacy del bot da BotFather:
 `/setprivacy` → scegli il bot → **Disable**. Se Telegram non applica il cambio a un
@@ -390,23 +426,25 @@ gaming-community-bot/
 | `GROUP_ID` | `0` | supergruppo in forma `-100…`; `0` = guard disattivato |
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
-| `GROQ_API_KEY` | — | giudice, intrattenimento legacy e fallback opzionale di Alduino |
+| `GROQ_API_KEY` | — | giudice, intrattenimento gratuito e secondo tentativo free di Alduino |
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
-| `OPENROUTER_API_KEY` | — | corsie paid DeepSeek/Qwen; vuota = nessuna chiamata OpenRouter |
+| `OPENROUTER_API_KEY` | — | fallback paid GLM; vuota = nessuna chiamata OpenRouter |
 | `AI_MONTHLY_BUDGET_USD` | `5.00` | hard cap interno persistente per mese UTC (`0` lo disabilita esplicitamente) |
-| `AI_ENTERTAINMENT_PROVIDER` | `groq` | `openrouter` abilita Qwen 3.7 Flash + fallback DeepSeek per i comandi comici |
-| `OPENROUTER_CHAT_MODELS` | DeepSeek V4 Flash 0731 → V4 Flash | fallback ordinato ZDR della chat |
-| `OPENROUTER_FUN_MODELS` | Qwen 3.7 Flash → DeepSeek V4 Flash | fallback ordinato one-shot, senza memoria |
-| `GEMINI_API_KEY` | — | giochi AI persistenti e chat legacy opzionale di Alduino |
+| `AI_ENTERTAINMENT_PROVIDER` | `auto` | Groq gratuito → GLM paid; provider espliciti per A/B |
+| `OPENROUTER_CHAT_MODELS` | `z-ai/glm-5.3-flash` | fallback ZDR della chat |
+| `OPENROUTER_FUN_MODELS` | `z-ai/glm-5.3-flash` | fallback one-shot, senza memoria |
+| `OPENROUTER_REASONING_TOKEN_ALLOWANCE` | `1024` | thinking GLM aggiuntivo, incluso nel tetto totale e nella prenotazione |
+| `GEMINI_API_KEY` | — | primo provider gratuito per giochi AI e chat di Alduino |
 | `TWENTYQ_V2_ENABLED` | `false` | mantiene disabilitate le nuove partite premianti finché il rollout non è approvato |
 | `TWENTYQ_PROVIDER_ORDER` | `gemini,groq,openrouter` | fallback gratuito → paid, deadline assoluta 25 s |
-| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / DeepSeek V4 Flash | modelli strutturati del gioco segreto v2 |
+| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
 | `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
 | `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
-| `ALDUINO_PROVIDER` | `gemini` | provider della sola chat: `openrouter`, `gemini` o `groq` |
+| `ALDUINO_PROVIDER` | `auto` | Gemini gratuito → Groq gratuito → GLM paid; provider espliciti per A/B |
+| `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `6` / `30` | timeout per tentativo free / deadline totale chat |
 | `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
 | `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
-| `ALDUINO_FALLBACK_TO_GROQ` | `true` | usa Groq se Gemini fallisce |
+| `ALDUINO_FALLBACK_TO_GROQ` | `true` | include Groq gratuito dopo Gemini in auto; fallback legacy nei modi espliciti |
 | `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
 | `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |
 | `ALDUINO_GROUP_CONTEXT_MESSAGES` / `_CHARS` | `80` / `24000` | finestra ambientale inviata al modello |

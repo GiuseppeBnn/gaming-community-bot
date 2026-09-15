@@ -25,6 +25,19 @@ def _turn(
     return QuestionContextTurn(number, f"hash-{number}", question, verdict)
 
 
+def test_question_cache_prefix_keeps_dossier_history_before_changing_question():
+    dossier = '{"facts":["Un dato completo"],"other":"Non perdere questo dato"}'
+    context = (_turn(1, "Domanda storica?"),)
+    first = build_question_request(dossier_json=dossier, current_question="Prima domanda?", context=context)
+    second = build_question_request(dossier_json=dossier, current_question="Seconda domanda?", context=context)
+    payload = json.loads(first.user_prompt)
+    assert list(payload) == ["dossier", "history", "question"]
+    assert payload["dossier"] == json.loads(dossier)
+    assert payload["history"] == [{"question": "Domanda storica?", "verdict": "si"}]
+    prefix = first.user_prompt.split('"question":"Prima domanda?"')[0]
+    assert second.user_prompt.startswith(prefix)
+
+
 def test_context_is_bounded_relevant_and_chronological():
     """Removing lexical relevance, the cap, or chronological reordering breaks this."""
     turns = tuple(_turn(i, f"domanda generica {i}") for i in range(1, 31))

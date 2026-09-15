@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import AlduinoTurn
 from services import ai_service, schedule_service
+from services.ai_routing import ProviderAttempt, ProviderUnavailable, text_router
 from services.public_event import PublicEvent
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ _MAX_QUOTED_CHARS = 400
 _RETRY_DELAY_SECONDS = 0.5
 
 
-class AlduinoAIError(RuntimeError):
+class AlduinoAIError(ProviderUnavailable):
     """No configured conversational provider could produce a usable answer."""
 
 
@@ -191,16 +192,8 @@ def render_model_input(
     quoted_bot_text: str = "",
     include_history: bool = True,
 ) -> str:
-    """Build one explicitly-labelled, injection-resistant conversational input."""
+    """Build a labelled input, stable prefixes first and the current message last."""
     sections: list[str] = []
-    if live_context:
-        sections.append(f"<<<DATI LIVE DEL BOT>>>\n{live_context}\n<<<FINE DATI LIVE>>>")
-    if group_context:
-        sections.append(
-            "<<<CONVERSAZIONE RECENTE DEL GRUPPO>>>\n"
-            f"{group_context}\n"
-            "<<<FINE CONVERSAZIONE DEL GRUPPO>>>"
-        )
     if include_history and history:
         transcript: list[str] = []
         for turn in history:
@@ -210,6 +203,17 @@ def render_model_input(
             + "\n".join(transcript)
             + "\n<<<FINE CONVERSAZIONE>>>"
         )
+    # A reply branch grows by appending pairs; keep that reusable prefix ahead
+    # of the sliding ambient window and frequently changing event state. Every
+    # section and every existing privacy/size limit is preserved.
+    if group_context:
+        sections.append(
+            "<<<CONVERSAZIONE RECENTE DEL GRUPPO>>>\n"
+            f"{group_context}\n"
+            "<<<FINE CONVERSAZIONE DEL GRUPPO>>>"
+        )
+    if live_context:
+        sections.append(f"<<<DATI LIVE DEL BOT>>>\n{live_context}\n<<<FINE DATI LIVE>>>")
     if quoted_bot_text:
         sections.append(
             "<<<MESSAGGIO DEL BOT A CUI RISPONDE>>>\n"
@@ -392,6 +396,51 @@ async def generate_reply(
         if parent is not None and parent.provider == "gemini"
         else None
     )
+    if settings.alduino_provider == "auto":
+        async def gemini() -> GeneratedReply:
+            return await _gemini_reply(
+                system_prompt=system_prompt, current=current, history=history,
+                live_context=live_context, group_context="",
+                quoted_bot_text=quoted_bot_text, previous_interaction_id=previous_id,
+            )
+
+        async def groq() -> GeneratedReply:
+            return await _groq_reply(
+                system_prompt=system_prompt, current=current, history=history,
+                live_context=live_context, group_context="",
+                quoted_bot_text=quoted_bot_text,
+            )
+
+        async def paid() -> GeneratedReply:
+            return await _openrouter_reply(
+                system_prompt=system_prompt, current=current, history=history,
+                live_context=live_context, group_context=group_context,
+                quoted_bot_text=quoted_bot_text,
+            )
+
+        attempts: list[ProviderAttempt[GeneratedReply]] = []
+        if settings.gemini_api_key:
+            attempts.append(ProviderAttempt(
+                "gemini", settings.alduino_gemini_model, gemini,
+                settings.alduino_free_timeout_seconds,
+            ))
+        if settings.alduino_fallback_to_groq:
+            attempts.append(ProviderAttempt(
+                "groq", settings.groq_model, groq,
+                settings.alduino_free_timeout_seconds,
+            ))
+        if settings.openrouter_api_key:
+            attempts.append(ProviderAttempt(
+                "openrouter", settings.openrouter_chat_models, paid,
+                settings.openrouter_timeout_seconds,
+            ))
+        try:
+            return await text_router.generate(
+                attempts, workload="alduino_chat",
+                deadline_seconds=settings.alduino_provider_deadline_seconds,
+            )
+        except ProviderUnavailable as exc:
+            raise AlduinoAIError("chat providers unavailable") from exc
     if settings.alduino_provider == "groq":
         return await _groq_reply(
             system_prompt=system_prompt, current=current, history=history,

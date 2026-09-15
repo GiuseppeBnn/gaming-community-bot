@@ -55,21 +55,26 @@ class Settings(BaseSettings):
     openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
     openrouter_app_name: str = "Alduino"
     openrouter_chat_models: str = (
-        "deepseek/deepseek-v4-flash-0731,deepseek/deepseek-v4-flash"
+        "z-ai/glm-5.3-flash"
     )
     openrouter_fun_models: str = (
-        "qwen/qwen3.7-flash,deepseek/deepseek-v4-flash"
+        "z-ai/glm-5.3-flash"
     )
     openrouter_timeout_seconds: int = Field(default=20, ge=1)
     openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
     openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
+    # GLM 5.3 always thinks: its LOW effort needs room beyond the short answer.
+    # The total (answer + allowance) is reserved before the network call.
+    openrouter_reasoning_token_allowance: int = Field(default=1024, ge=256, le=4096)
     # Calendar-month application cap, in addition to the limit on the OpenRouter
     # key itself. Its two paid lanes may partition less than the global cap, but
     # never more. Setting all three to zero is an explicit emergency shutdown.
     ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
     openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
-    ai_entertainment_provider: Literal["groq", "openrouter"] = "groq"
+    ai_entertainment_provider: Literal["auto", "groq", "openrouter"] = "auto"
+    ai_entertainment_free_timeout_seconds: int = Field(default=6, ge=1)
+    ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
     # supports only on `openai/gpt-oss-*`, so it cannot come back as prose. The
@@ -85,7 +90,7 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     twentyq_gemini_model: str = "gemini-3.5-flash"
     twentyq_groq_model: str = "openai/gpt-oss-20b"
-    twentyq_openrouter_model: str = "deepseek/deepseek-v4-flash-0731"
+    twentyq_openrouter_model: str = "z-ai/glm-5.3-flash"
     twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
@@ -101,11 +106,13 @@ class Settings(BaseSettings):
     twentyq_max_coins_per_participant: int = Field(default=1_000, ge=1)
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
-    alduino_provider: Literal["openrouter", "gemini", "groq"] = "gemini"
+    alduino_provider: Literal["auto", "openrouter", "gemini", "groq"] = "auto"
     alduino_gemini_model: str = "gemini-3.6-flash"
     alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
     alduino_fallback_to_groq: bool = True
     alduino_timeout_seconds: int = Field(default=15, ge=1)
+    alduino_free_timeout_seconds: int = Field(default=6, ge=1)
+    alduino_provider_deadline_seconds: int = Field(default=30, ge=1)
     alduino_history_turns: int = Field(default=10, ge=1, le=30)
     alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)
     alduino_memory_rows_per_group: int = Field(default=1000, ge=100, le=10000)
@@ -277,6 +284,8 @@ class Settings(BaseSettings):
             raise ValueError("twentyq provider order contains an unknown provider")
         if len(set(providers)) != len(providers):
             raise ValueError("twentyq provider order contains duplicates")
+        if "openrouter" in providers and providers[-1] != "openrouter":
+            raise ValueError("paid OpenRouter must follow free providers")
         return ",".join(providers)
 
     @model_validator(mode="after")

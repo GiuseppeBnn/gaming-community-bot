@@ -113,11 +113,13 @@ def build_question_request(
 ) -> StructuredRequest:
     payload = {
         "dossier": json.loads(dossier_json),
-        "question": current_question[:500],
         "history": [
             {"question": turn.question, "verdict": turn.verdict.value}
             for turn in context
         ],
+        # Reuse the dossier/history prefix across changing questions; JSON
+        # values and their validation remain identical.
+        "question": current_question[:500],
     }
     return StructuredRequest(
         operation="twentyq_question",

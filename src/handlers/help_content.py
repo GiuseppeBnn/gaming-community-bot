@@ -385,8 +385,11 @@ def render_alduino_reference() -> str:
         details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
         aliases = f" Alias: {', '.join('/' + value for value in command.aliases)}." \
             if command.aliases else ""
+        # The leading canonical command already gives its complete bare usage.
+        # Keep argument-bearing syntax, aliases and the full manual verbatim.
+        usage_suffix = "" if usage == f"/{command.name}" else f" Uso: {usage}."
         lines.append(
-            f"- /{command.name} — {command.summary}. Uso: {usage}.{aliases} {details}".strip()
+            f"- /{command.name} — {command.summary}.{usage_suffix}{aliases} {details}".strip()
         )
     lines.append(
         "Gli eventi pubblici aperti o programmati arrivano nei DATI LIVE. "
