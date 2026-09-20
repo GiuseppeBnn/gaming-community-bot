@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import services.schedule_service as sch
 from database.models import ScheduledTask
@@ -23,6 +25,18 @@ async def test_schedule_and_due(session):
     assert len(due) == 1
     assert due[0].task_type == "poll"
     assert sch.task_payload(due[0]) == {"q": "x"}
+
+
+@pytest.mark.parametrize(
+    "payload_json",
+    ("null", "0", '"text"', "[]", '[["internal", true], ["action", "expire"]]'),
+)
+def test_task_payload_rejects_valid_non_object_json(payload_json):
+    """Valid JSON is not enough: scheduler payload contract requires an object."""
+    task = ScheduledTask(payload_json=payload_json)
+
+    with pytest.raises(ValueError, match="JSON object"):
+        sch.task_payload(task)
 
 
 async def test_mark_done_excludes_from_due(session):
@@ -59,6 +73,178 @@ async def test_cancel(session):
     assert pending == []
 
 
+async def test_list_pending_keeps_malformed_payload_visible_for_admin_recovery(session):
+    task = await sch.schedule_task(
+        session, "quiz", sch.utcnow() + timedelta(hours=1), 9, -100,
+    )
+    task.payload_json = "null"
+    await session.commit()
+
+    assert [row.id for row in await sch.list_pending(session)] == [task.id]
+
+
+@pytest.mark.parametrize(
+    ("retry_count", "minutes"),
+    [(0, 1), (1, 2), (2, 4), (3, 8), (4, 16), (5, 32), (6, 60), (99, 60)],
+)
+def test_internal_expiry_backoff_is_bounded(retry_count, minutes):
+    """A wrong exponent would either hammer Telegram or strand expiry for hours."""
+    assert sch.retry_delay_minutes(retry_count) == minutes
+
+
+async def test_mark_retry_persists_across_a_new_session_and_truncates_error(session, engine):
+    """A restart must observe one durable pending retry, not an in-memory retry plan."""
+    now = datetime(2026, 8, 23, 10, 0)
+    task = await sch.schedule_task(
+        session, "twentyq", now, 9, -100, ref_id=7,
+        payload={"internal": True, "action": "expire"},
+    )
+    await session.commit()
+
+    await sch.mark_retry(
+        session, task.id, retry_count=5, error="x" * 700, now=now,
+    )
+    await session.commit()
+
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as observer:
+        stored = await observer.get(ScheduledTask, task.id)
+        assert stored is not None
+        assert (stored.status, stored.retry_count, stored.run_at, stored.executed_at) == (
+            "pending", 6, now + timedelta(minutes=32), None,
+        )
+        assert stored.error == "x" * 512
+
+
+async def test_scalar_outcome_helpers_require_exactly_one_row(session):
+    """A stale/missing scalar id must be observable instead of silently succeeding."""
+    with pytest.raises(RuntimeError, match="not found"):
+        await sch.mark_done_by_id(session, 999_001)
+    with pytest.raises(RuntimeError, match="not found"):
+        await sch.mark_failed_by_id(session, 999_002, "boom")
+
+
+async def test_retry_save_failure_rolls_back_then_a_later_due_tick_recovers(
+    session, monkeypatch,
+):
+    """Exercise real SQL: a failed retry write remains due and the next tick persists backoff."""
+    initial_run_at = sch.utcnow() - timedelta(minutes=1)
+    task = await sch.schedule_task(
+        session,
+        "twentyq",
+        initial_run_at,
+        9,
+        -100,
+        ref_id=7,
+        payload={"internal": True, "action": "expire"},
+    )
+    await session.commit()
+    task_id = task.id
+
+    async def fail_dispatch(*args, **kwargs):
+        raise RuntimeError("temporary publisher failure")
+
+    async def no_notify(*args, **kwargs):
+        return None
+
+    original_mark_retry = sch.mark_retry
+
+    async def fail_after_retry_update(*args, **kwargs):
+        await original_mark_retry(*args, **kwargs)
+        raise ConnectionError("commit path interrupted")
+
+    monkeypatch.setattr(schedule, "execute_task", fail_dispatch)
+    monkeypatch.setattr(schedule, "_notify_creator", no_notify)
+    monkeypatch.setattr(schedule.schedule_service, "mark_retry", fail_after_retry_update)
+
+    await schedule._run_due_task(object(), session, task)
+
+    unchanged = (await session.execute(
+        select(
+            ScheduledTask.status,
+            ScheduledTask.retry_count,
+            ScheduledTask.run_at,
+        ).where(ScheduledTask.id == task_id)
+    )).one()
+    assert unchanged == ("pending", 0, initial_run_at)
+    due_again = await sch.due_tasks(session, sch.utcnow())
+    assert [row.id for row in due_again] == [task_id]
+
+    monkeypatch.setattr(schedule.schedule_service, "mark_retry", original_mark_retry)
+    await schedule._run_due_task(object(), session, due_again[0])
+
+    recovered = (await session.execute(
+        select(
+            ScheduledTask.status,
+            ScheduledTask.retry_count,
+            ScheduledTask.run_at,
+        ).where(ScheduledTask.id == task_id)
+    )).one()
+    assert recovered.status == "pending"
+    assert recovered.retry_count == 1
+    assert recovered.run_at > sch.utcnow()
+    assert await sch.due_tasks(session, sch.utcnow()) == []
+
+
+async def test_retry_is_not_due_again_until_its_persisted_backoff_elapsed(session):
+    """A failed expiry must leave this tick before a later scheduler tick can claim it."""
+    now = datetime(2026, 8, 23, 10, 0)
+    task = await sch.schedule_task(
+        session,
+        "twentyq",
+        now,
+        9,
+        -100,
+        ref_id=7,
+        payload={"internal": True, "action": "expire"},
+    )
+    await session.commit()
+
+    await sch.mark_retry(session, task.id, retry_count=0, error="transient", now=now)
+    await session.commit()
+
+    assert await sch.due_tasks(session, now) == []
+    assert [due.id for due in await sch.due_tasks(session, now + timedelta(minutes=1))] == [task.id]
+
+
+async def test_cancel_pending_for_ref_scopes_type_reference_status_and_requested_actions(session):
+    """Terminalizing one game must not cancel another game's timer or a finished task."""
+    run_at = sch.utcnow() + timedelta(hours=1)
+    expire = await sch.schedule_task(
+        session, "twentyq", run_at, 9, -100, ref_id=7,
+        payload={"internal": True, "action": "expire"},
+    )
+    close = await sch.schedule_task(
+        session, "twentyq", run_at, 9, -100, ref_id=7, payload={"action": "close"},
+    )
+    other_ref = await sch.schedule_task(
+        session, "twentyq", run_at, 9, -100, ref_id=8, payload={"action": "expire"},
+    )
+    other_type = await sch.schedule_task(
+        session, "quiz", run_at, 9, -100, ref_id=7, payload={"action": "close"},
+    )
+    done = await sch.schedule_task(
+        session, "twentyq", run_at, 9, -100, ref_id=7, payload={"action": "expire"},
+    )
+    await sch.mark_done(session, done)
+    await session.commit()
+
+    cancelled = await sch.cancel_pending_for_ref(
+        session, task_type="twentyq", ref_id=7, actions={"expire"},
+    )
+    await session.commit()
+
+    statuses = dict((await session.execute(select(ScheduledTask.id, ScheduledTask.status))).all())
+    assert cancelled == 1
+    assert statuses == {
+        expire.id: "cancelled",
+        close.id: "pending",
+        other_ref.id: "pending",
+        other_type.id: "pending",
+        done.id: "done",
+    }
+
+
 async def test_run_due_task_rolls_back_partial_writes_on_failure(session, monkeypatch):
     """A task that flushes a partial write and then raises must end up ``failed``
     with that partial write rolled back — never stranded ``pending`` (which the
@@ -87,13 +273,17 @@ async def test_run_due_task_rolls_back_partial_writes_on_failure(session, monkey
         past = sch.utcnow() - timedelta(minutes=1)
         task = await sch.schedule_task(session, "boom", past, 9, -100)
         await session.commit()
+        task_id = task.id
 
         # bot is a bare object(): _notify_creator's send_message attempt fails but
         # is swallowed (best-effort), so the outcome persistence is what we assert.
         await schedule._run_due_task(object(), session, task)
 
-        assert task.status == "failed"
-        assert "kaboom" in (task.error or "")
+        stored = (await session.execute(
+            select(ScheduledTask).where(ScheduledTask.id == task_id)
+        )).scalar_one()
+        assert stored.status == "failed"
+        assert "kaboom" in (stored.error or "")
         # The orphan partial write was rolled back; only the real task row remains.
         total = (
             await session.execute(select(func.count()).select_from(ScheduledTask))

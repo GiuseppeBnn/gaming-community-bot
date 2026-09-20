@@ -15,6 +15,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from database.models import EventStatus
 from handlers.betting import cmd_scommesse
+from handlers.callbacks import BetEventCb
 from services import bet_service
 
 USER_ID = 7
@@ -109,7 +110,7 @@ class TestScommesseInPrivate:
         text, markup = message.replies[-1]
         assert "scommess" in text
         cbs = [b.callback_data for b in _buttons(markup) if b.callback_data]
-        assert f"event:view:{event.id}" in cbs
+        assert BetEventCb(action="view", event_id=event.id).pack() in cbs
 
     async def test_private_marks_events_the_user_bet_on(self, session, user_factory):
         event = await _open_event(session, user_factory)

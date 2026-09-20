@@ -1,18 +1,32 @@
 name: Tests
 
-# Runs on EVERY push and PR (the source must always pass the suite), and is
-# reusable (workflow_call) so the image build can gate on it before publishing.
+# Runs directly on feature-branch pushes and every PR. Release branches/tags invoke
+# the same reusable workflow from docker-image.yml, so each commit is tested once
+# while the image build remains strictly gated on the result.
 on:
   push:
-    branches: ["**"]
+    branches-ignore: [main, test, test_giu]
   pull_request:
     branches: ["**"]
   workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: Run test suite
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # If an async worker hangs, Python prints all thread stacks when GNU timeout
+      # sends SIGABRT. Unbuffered output preserves the last useful test log line.
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
 
     # A real PostgreSQL for the `pg`-marked tests. Two things are invisible to the
     # SQLite suite and both live on the money path: `SELECT ... FOR UPDATE` is a
@@ -61,7 +75,9 @@ jobs:
           TEST_PG_URL: "postgresql+asyncpg://postgres:postgres@localhost:5432/gamingbot_test"
         # -rxX lists xfails and xpasses: the money-path race tests are xfail(strict),
         # so an unexpected PASS fails the build and means that site is already safe.
-        run: pytest --cov=src --cov-report=xml --cov-report=term-missing -rxX
+        run: >-
+          timeout --signal=ABRT --kill-after=30s 15m
+          pytest --cov=src --cov-report=xml --cov-report=term-missing -rxX
 
       # Static gates run AFTER the suite on purpose: a lint nit must never hide a
       # failing test in the log. Both are configured in pyproject.toml.

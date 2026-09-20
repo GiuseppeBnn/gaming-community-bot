@@ -188,7 +188,9 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
+| `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
+| `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
 
 ### Admin (`ADMIN_IDS` **o** creator/admin del gruppo `GROUP_ID`)
 
@@ -202,8 +204,80 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
+| `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
+
+### Alduino conversazionale
+
+`/alduino` ha una corsia provider indipendente. Il default `ALDUINO_PROVIDER=auto`
+prova Groq gratuito, poi Gemini gratuito, infine GLM 5.3 Flash via OpenRouter.
+Una risposta gratuita valida termina la route senza prenotare o spendere budget paid.
+Dopo la prima risposta non serve ripetere il comando:
+una normale risposta Telegram a una risposta conversazionale di Alduino continua
+il ramo corretto. Anche le risposte riuscite ai comandi fun (`/drama`, `/maestro`,
+`/complotto`, `/difendi`, `/accusa`, `/dialetto`, `/insulta`) possono iniziare una chat.
+Risultati quiz, schede evento, classifiche e notifiche non attivano Alduino: per
+parlarne con lui usa `/alduino` in reply. Il riconoscimento usa gli ID salvati nel
+DB, non il contenuto del testo. In assenza di registrazione o con DB non disponibile
+il reply automatico è ignorato senza consumare cooldown né chiamare l'AI; il comando
+esplicito resta disponibile. Le risposte fun anteriori a questo aggiornamento non
+sono registrate: per quelle serve `/alduino`.
+
+Alduino ora capisce anche ciò che si stava dicendo nel gruppo: combina il ramo dei
+reply, gli ultimi messaggi ordinari, il catalogo dei comandi e gli eventi realmente
+aperti/in programma. Non spedisce l'archivio intero solo perché un modello accetta
+1M token: il rolling context è configurabile e limitato per righe e caratteri, così
+rumore, latenza e costo restano bassi. Il transcript locale viene potato
+automaticamente; al provider arrivano nomi visualizzati e testo, non i Telegram ID.
+
+Il ramo dei reply e i dati live del bot accompagnano ogni tentativo. Il transcript
+ambientale del gruppo esce soltanto sulla corsia OpenRouter che forza `zdr=true`
+e `data_collection=deny`: Gemini/Groq conservano il loro contesto conversazionale
+bounded, ma non ricevono questi messaggi ambientali. GLM è il fallback paid anche
+per i comandi comici (`AI_ENTERTAINMENT_PROVIDER=auto`: Groq → GLM).
+I tentativi gratuiti della chat e dei comandi fun hanno un timeout di 10 s ciascuno;
+ogni route ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
+di riprovare per 60 s un provider appena fallito. Il ledger costi salva modello, token e costo, mai prompt o
+risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
+limite e dal prezzo massimo del provider.
+
+GLM 5.3 Flash ha thinking obbligatorio: usiamo `low`, nascondiamo il ragionamento
+e aggiungiamo 1024 token al limite della risposta. Il totale è prenotato nel budget
+prima della rete, inclusi i token di thinking; l'output pubblico rimane corto.
+Non mescolare GLM e modelli non-thinking nella stessa lista OpenRouter.
+Per GLM usiamo il routing adattivo costo/uptime di OpenRouter, senza preferenza
+esplicita per la latenza e sempre entro gli stessi tetti di prezzo, budget e
+privacy. La corsia JSON resta su un
+solo modello e senza retry nascosti tra provider.
+Cronologia e dossier vengono prima dei dati più variabili, senza ridurre le
+finestre di contesto, per favorire la cache implicita dei prefissi degli endpoint
+compatibili. Nessuna sessione esplicita forza l'affinità verso un endpoint e nessuna
+risposta viene riciclata. Cache hit e risparmio dipendono dal provider e si misurano
+nei `cached_tokens` del ledger; la prenotazione resta sempre conservativa.
+Il catalogo autorevole dei comandi nel prompt omette solo la ripetizione della
+sintassi senza argomenti: nomi, sintassi con parametri, alias e manuali completi
+restano disponibili. Le schermate `/comandi` e `/spiega_comando` sono invariate.
+I provider espliciti restano disponibili per confronti A/B; `openrouter` esplicito
+usa direttamente la corsia paid. Su un `.env` esistente imposta `auto` e aggiorna
+le liste dei modelli: `git pull` non sovrascrive la configurazione della macchina.
+
+Per il confronto reale in locale o sulla macchina **di test**, lo script seguente
+prova gli otto prompt effettivi con dati sintetici, senza leggere chat o inviare
+messaggi Telegram. Richiede chiave OpenRouter e DB di test: il costo massimo stimato
+deve rientrare in 0,02 USD **prima** di qualunque richiesta; restano attivi anche i
+cap mensili. Pubblica gli output per valutarne tono, lunghezza e latenza.
+
+```bash
+python scripts/eval_text_ai.py --provider openrouter --allow-paid-openrouter --max-cost-usd 0.02
+# Baseline gratuito sugli stessi prompt:
+python scripts/eval_text_ai.py --provider groq
+```
+
+Per ricevere i messaggi ordinari devi disattivare la privacy del bot da BotFather:
+`/setprivacy` → scegli il bot → **Disable**. Se Telegram non applica il cambio a un
+gruppo esistente, rimuovi e riaggiungi il bot. Senza questo passaggio Alduino continua
+a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
 
 ### Quiz a premi
 
@@ -243,6 +317,37 @@ risponde, perché quelle vengono riconosciute **senza** interpellarla.
 Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
 tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
 ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto.
+
+### Il gioco segreto di Alduino
+
+Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
+o al riepilogo di `/gioco`, senza tornare al messaggio iniziale. In alternativa:
+
+- `/gioco` mostra stato e quota personale;
+- `/gioco È multiplayer?` fa una domanda;
+- `/gioco RISPOSTA: Portal 2` tenta il titolo.
+
+Resta disponibile anche `/gioco_alduino`, con gli stessi argomenti. Nei reply,
+per tentare il titolo usa `RISPOSTA: nome del gioco`.
+Ogni persona ha 5 domande valide e 2 tentativi validi:
+duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano nulla.
+Se il dossier non basta, Alduino risponde **NON LO SO**, senza consumare la domanda,
+ridurre il premio o registrare una partecipazione. Non è una garanzia contro ogni
+errore dell'AI: il prompt chiede di astenersi quando non può concludere con affidabilità.
+
+Chi registra almeno un turno valido riceve 10 XP alla chiusura, anche se il gioco scade o viene
+chiuso da un admin. Se il gruppo indovina, tutti i partecipanti ricevono la stessa quota CoInn.
+I CoInn vengono accreditati solo in caso di vittoria. CoInn: 0 su scadenza o chiusura admin.
+Con il default di 100 CoInn massimi a persona:
+
+`pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)`
+
+Il resto della divisione non viene assegnato a nessuno. Può essere attiva una sola
+partita per gruppo, anche con avvii programmati. Le risposte a messaggi di una partita
+conclusa non vengono inoltrate a quella nuova. Dopo l'aggiornamento, i vecchi verdetti
+non sono riconosciuti retroattivamente: usa `/gioco` per un riepilogo a cui rispondere.
+La chiusura amministrativa resta in `/eventi`; la durata raccomandata è 12 ore. Per il dettaglio di
+prodotto e architettura, vedi la [specifica v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md).
 
 ### Scommesse (stile Twitch)
 
@@ -313,7 +418,7 @@ gaming-community-bot/
 │   ├── database/{connection,models}.py
 │   ├── services/                     # logica DB-side (no commit): economy, xp, badge, bet,
 │   │                                 #   shop, quiz, admin, moderation, schedule, ai,
-│   │                                 #   catalog_loader (CSV → trofei/ranghi/cosmetici)
+│   │                                 #   catalog_loader, giochi AI, cache/sync IGDB
 │   ├── handlers/                     # common, onboarding, economy, betting, badges,
 │   │                                 #   leaderboard, shop, quiz, schedule, fun_ai, admin,
 │   │                                 #   admin_betting, admin_dashboard, backup, events,
@@ -344,8 +449,33 @@ gaming-community-bot/
 | `GROUP_ID` | `0` | supergruppo in forma `-100…`; `0` = guard disattivato |
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
-| `GROQ_API_KEY` | — | modulo AI (opzionale) |
+| `GROQ_API_KEY` | — | giudice, intrattenimento gratuito e secondo tentativo free di Alduino |
 | `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
+| `OPENROUTER_API_KEY` | — | fallback paid GLM; vuota = nessuna chiamata OpenRouter |
+| `AI_MONTHLY_BUDGET_USD` | `5.00` | hard cap interno persistente per mese UTC (`0` lo disabilita esplicitamente) |
+| `AI_ENTERTAINMENT_PROVIDER` | `auto` | Groq gratuito → GLM paid; provider espliciti per A/B |
+| `OPENROUTER_CHAT_MODELS` | `z-ai/glm-5.3-flash` | fallback ZDR della chat |
+| `OPENROUTER_FUN_MODELS` | `z-ai/glm-5.3-flash` | fallback one-shot, senza memoria |
+| `OPENROUTER_REASONING_TOKEN_ALLOWANCE` | `1024` | thinking GLM aggiuntivo, incluso nel tetto totale e nella prenotazione |
+| `GEMINI_API_KEY` | — | primo provider gratuito per giochi AI e chat di Alduino |
+| `TWENTYQ_V2_ENABLED` | `false` | mantiene disabilitate le nuove partite premianti finché il rollout non è approvato |
+| `TWENTYQ_PROVIDER_ORDER` | `gemini,groq,openrouter` | fallback gratuito → paid, deadline assoluta 25 s |
+| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
+| `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
+| `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
+| `ALDUINO_PROVIDER` | `auto` | Groq gratuito → Gemini gratuito → GLM paid; provider espliciti per A/B |
+| `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `10` / `30` | timeout per tentativo free / deadline totale chat |
+| `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
+| `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
+| `ALDUINO_FALLBACK_TO_GROQ` | `true` | include Groq gratuito dopo Gemini in auto; fallback legacy nei modi espliciti |
+| `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
+| `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |
+| `ALDUINO_GROUP_CONTEXT_MESSAGES` / `_CHARS` | `80` / `24000` | finestra ambientale inviata al modello |
+| `ALDUINO_GROUP_MEMORY_ROWS` | `3000` | rolling transcript locale; richiede privacy mode Telegram disabilitata |
+| `IGDB_CLIENT_ID` / `IGDB_CLIENT_SECRET` | — | abilita il catalogo IGDB in cache; app Twitch confidential |
+| `IGDB_CATALOG_SIZE` | `300` | giochi principali più noti mantenuti nella cache del gioco segreto v2 (20 Domande è legacy v1) |
+| `IGDB_MIN_RATING_COUNT` | `100` | soglia minima di valutazioni IGDB per escludere titoli oscuri |
+| `IGDB_SYNC_INTERVAL_HOURS` | `24` | frequenza massima di aggiornamento del catalogo IGDB |
 | `CATALOG_DIR` | `data` | cartella con i CSV opzionali (trofei/ranghi/cosmetici) |
 | `XP_DAILY_PARTICIPATION_CAP` | `50` | tetto XP *capped* per utente al giorno |
 | `XP_PER_DAILY_CLAIM` | `10` | XP (capped) sul `/daily` |
@@ -359,6 +489,23 @@ gaming-community-bot/
 | `BOT_IMAGE` | `gaming-community-bot:local` | immagine usata dal compose (override → GHCR) |
 
 PostgreSQL e Redis sono già pronti nel `docker-compose.yml`.
+
+---
+
+## Inline mode (eventi)
+
+Il bot risponde a `@<bot>` con gli eventi utilizzabili adesso e quelli in
+programma, con data e ora locale. Le query `aperti`/`live` e
+`prossimi`/`coming soon` filtrano le due viste. Le card sono read-only: l'azione
+apre un vero deep-link quando l'evento si gioca in privato; i sondaggi e i giochi
+collaborativi non mostrano pulsanti finti.
+
+Attivazione (una volta, con @BotFather):
+1. `/setinline` → testo: `Eventi aperti e in arrivo`
+2. `/setinlinefeedback` → non serve (nessuna mutazione su `chosen_inline_result`).
+
+Sicurezza: il gate membership (`GroupGuard`) si applica anche alle inline query;
+chi non è membro del gruppo non può usare la superficie inline.
 
 ---
 

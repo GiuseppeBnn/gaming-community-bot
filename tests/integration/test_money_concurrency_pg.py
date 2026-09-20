@@ -88,6 +88,7 @@ from exceptions.economy import (
     InsufficientFundsError,
 )
 from handlers import shop
+from handlers.callbacks import ShopCb
 from middlewares.db_middleware import _upsert_user
 from services import admin_service as admin_svc
 from services import bet_service as bet_svc
@@ -571,7 +572,9 @@ class TestShopDoublePurchase:
 
         async def buy():
             async with pg_sessions() as s:
-                await shop.cb_shop_execute(_ShopCallback(item.key), s)
+                await shop.cb_shop_execute(
+                    _ShopCallback(item.key), callback_data=ShopCb(action="exec", key=item.key), db_session=s
+                )
 
         await asyncio.gather(buy(), buy())
 
@@ -602,7 +605,7 @@ class _ShopMessage:
 
 class _ShopCallback:
     def __init__(self, item_key: str) -> None:
-        self.data = f"shop:exec:{item_key}"
+        self.data = ShopCb(action="exec", key=item_key).pack()
         self.message = _ShopMessage()
         self.bot = self.message.bot
         self.from_user = types.SimpleNamespace(id=1)

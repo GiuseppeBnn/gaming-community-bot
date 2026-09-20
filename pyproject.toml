@@ -55,13 +55,10 @@ show_missing = true
 # Pinned just under the run WITHOUT Postgres, so `pytest --cov` still passes on a
 # machine that has no database — the gate must not force everyone to run Docker.
 #
-# The ten lines still uncovered in the Docker-free run are unreachable there by
-# construction, and are deliberately NOT chased with pragmas:
-#   database/connection.py 87-89  the _MIGRATIONS loop — postgresql-only, and 100%
-#                                 covered in the run WITH Postgres.
-#   handlers/backup.py 46         a return after a loop that always returns; it
-#                                 exists so mypy sees a value on every path.
-#   handlers/event_types/base.py  the `...` bodies of the EventType Protocol.
+# The Docker-free run stays above the ratchet. Its remaining misses are guarded
+# fallbacks, Protocol ``...`` bodies and PostgreSQL-only branches; the migration
+# loop is exercised when CI provides ``TEST_PG_URL`` rather than hidden with
+# coverage pragmas.
 fail_under = 99
 
 [tool.ruff]

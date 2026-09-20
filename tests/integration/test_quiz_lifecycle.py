@@ -568,10 +568,11 @@ class TestQuizCommand:
 
         assert first.said and second.said == ""
 
-    async def test_an_admin_in_the_group_is_sent_to_the_panel_in_private(
+    async def test_an_admin_in_the_group_is_sent_to_the_quiz_list_in_private(
         self, session, monkeypatch, user_factory
     ):
-        """The management list has delete and launch buttons on it."""
+        """The group redirect deep-links straight to the quiz management list
+        (?start=manage_quiz), not the whole /admin dashboard."""
         _as_admin(monkeypatch, True)
         await user_factory(tg_id=ADMIN_ID, username="admin")
         message = _GroupMessage()
@@ -579,7 +580,7 @@ class TestQuizCommand:
         await quiz_handlers.cmd_quiz_list(message, session)
 
         urls = [b.url for row in message.markups[0].inline_keyboard for b in row]
-        assert any(u.endswith("?start=admin") for u in urls)
+        assert any(u.endswith("?start=manage_quiz") for u in urls)
 
     async def test_an_admin_in_private_gets_the_management_list(
         self, session, monkeypatch, user_factory

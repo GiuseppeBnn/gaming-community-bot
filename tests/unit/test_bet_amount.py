@@ -8,6 +8,7 @@ validator now rejects non-numeric / non-positive / over-cap input.
 from __future__ import annotations
 
 from handlers import betting
+from handlers.callbacks import BetConfirmCb
 from keyboards.betting_kb import get_confirm_bet_keyboard
 
 
@@ -54,5 +55,5 @@ def test_confirm_callback_data_within_telegram_limit_at_cap():
     # Telegram's 64-byte limit even with large event/option ids and the max amount.
     kb = get_confirm_bet_keyboard(999_999_999, 999_999_999, betting.MAX_BET)
     cb = kb.inline_keyboard[0][0].callback_data
-    assert cb.startswith("bet_confirm:")
+    assert cb.startswith(f"{BetConfirmCb.__prefix__}:")
     assert len(cb.encode("utf-8")) <= 64

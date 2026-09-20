@@ -1,6 +1,7 @@
-from typing import Annotated
+from decimal import Decimal
+from typing import Annotated, Literal, Self
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -22,6 +23,10 @@ class Settings(BaseSettings):
     # CSV format (ADMIN_IDS=123,456) reaches parse_admin_ids as a plain string.
     admin_ids: Annotated[list[int], NoDecode] = []
 
+    # Alert channel: the minimum level that reaches the admins' DMs. Raising it
+    # to CRITICAL is also the off switch — no second variable just for that.
+    alert_min_level: str = "WARNING"
+
     daily_reward_coins: int = 100
     # /daily resets at local midnight (scheduler_timezone). This is the extra
     # minimum gap since the previous claim, ANDed with the midnight rule so a
@@ -42,6 +47,34 @@ class Settings(BaseSettings):
     # `groq_model` and is overridable from .env. Empty string → field omitted,
     # which is the way out for a model that does not take it.
     groq_reasoning_effort: str = "none"
+    # Provider-neutral paid lane for conversational and one-shot AI. OpenRouter
+    # model lists are ordered fallbacks; every route also carries a provider-side
+    # maximum price, so a temporary promotional price cannot silently become an
+    # expensive production bill.
+    openrouter_api_key: str = ""
+    openrouter_url: str = "https://openrouter.ai/api/v1/chat/completions"
+    openrouter_app_name: str = "Alduino"
+    openrouter_chat_models: str = (
+        "z-ai/glm-5.3-flash"
+    )
+    openrouter_fun_models: str = (
+        "z-ai/glm-5.3-flash"
+    )
+    openrouter_timeout_seconds: int = Field(default=20, ge=1)
+    openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
+    openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
+    # GLM 5.3 always thinks: its LOW effort needs room beyond the short answer.
+    # The total (answer + allowance) is reserved before the network call.
+    openrouter_reasoning_token_allowance: int = Field(default=1024, ge=256, le=4096)
+    # Calendar-month application cap, in addition to the limit on the OpenRouter
+    # key itself. Its two paid lanes may partition less than the global cap, but
+    # never more. Setting all three to zero is an explicit emergency shutdown.
+    ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+    twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
+    openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
+    ai_entertainment_provider: Literal["auto", "groq", "openrouter"] = "auto"
+    ai_entertainment_free_timeout_seconds: int = Field(default=10, ge=1)
+    ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
     # Judge model for the guess games. Deliberately separate from `groq_model`:
     # a verdict needs STRICT structured output (constrained decoding), which Groq
     # supports only on `openai/gpt-oss-*`, so it cannot come back as prose. The
@@ -51,6 +84,58 @@ class Settings(BaseSettings):
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
     guess_judge_timeout_seconds: int = Field(default=12, ge=1)
+    # Structured providers for persistent AI games. Their model and timeout
+    # settings are deliberately independent from entertainment, judge and
+    # conversational traffic: changing one workload must not move another.
+    gemini_api_key: str = ""
+    twentyq_gemini_model: str = "gemini-3.5-flash"
+    twentyq_groq_model: str = "openai/gpt-oss-20b"
+    twentyq_openrouter_model: str = "z-ai/glm-5.3-flash"
+    twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
+    twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
+    twentyq_provider_order: str = "gemini,groq,openrouter"
+    twentyq_provider_deadline_seconds: int = Field(default=25, ge=1)
+    # Bounded, local history sent with one secret-game question. These limits cap
+    # both the number of projected turns and the serialized UTF-8 context size.
+    twentyq_context_turns: int = Field(default=24, ge=1, le=96)
+    twentyq_context_chars: int = Field(default=12_000, ge=1_000, le=30_000)
+    # Reward-bearing secret games remain off until the rollout is explicitly
+    # enabled. Existing version-one games intentionally ignore this switch.
+    twentyq_v2_enabled: bool = False
+    twentyq_max_coins_per_participant: int = Field(default=1_000, ge=1)
+    # Alduino chat is intentionally independent from structured AI games: it can
+    # move provider/model without changing 20 Domande.
+    alduino_provider: Literal["auto", "openrouter", "gemini", "groq"] = "auto"
+    alduino_gemini_model: str = "gemini-3.6-flash"
+    alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
+    alduino_fallback_to_groq: bool = True
+    alduino_timeout_seconds: int = Field(default=15, ge=1)
+    alduino_free_timeout_seconds: int = Field(default=10, ge=1)
+    alduino_provider_deadline_seconds: int = Field(default=30, ge=1)
+    alduino_history_turns: int = Field(default=10, ge=1, le=30)
+    alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)
+    alduino_memory_rows_per_group: int = Field(default=1000, ge=100, le=10000)
+    # Ambient group context: stored locally in a bounded rolling window, then a
+    # smaller newest-first slice is sent to the model. This requires BotFather
+    # privacy mode to be disabled; otherwise Telegram never delivers ordinary
+    # group messages to the bot.
+    alduino_capture_group_context: bool = True
+    alduino_group_context_messages: int = Field(default=80, ge=10, le=500)
+    alduino_group_context_chars: int = Field(default=24000, ge=2000, le=100000)
+    alduino_group_memory_rows: int = Field(default=3000, ge=100, le=20000)
+    ai_game_claim_timeout_seconds: int = Field(default=45, ge=5)
+    # IGDB is the primary catalog for 20 Domande. Empty credentials keep the
+    # built-in catalog as a fully functional fallback. The popularity gate uses
+    # IGDB's total_rating_count (users + external critics), not rating score:
+    # famous divisive games are playable; obscure well-rated games are not.
+    igdb_client_id: str = ""
+    igdb_client_secret: str = ""
+    igdb_catalog_size: int = Field(default=300, ge=50, le=2000)
+    igdb_min_rating_count: int = Field(default=100, ge=1)
+    igdb_min_catalog_entries: int = Field(default=50, ge=10, le=2000)
+    igdb_sync_interval_hours: int = Field(default=24, ge=1)
+    igdb_timeout_seconds: int = Field(default=20, ge=1)
     ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
@@ -105,7 +190,7 @@ class Settings(BaseSettings):
     quiz_default_consolation: int = 100   # 4th place; consolation decreases from here
     # Guaranteed floor for the last finisher = max(floor_min, round(consolation * floor_ratio))
     quiz_participation_floor_ratio: float = 0.2
-    quiz_participation_floor_min: int = 1
+    quiz_participation_floor_min: int = 25
 
     # Guess games (Guess The Game · Sound Quest) — one engine, two games.
     # How many UN-JUDGED answers we accept from one player on one round before
@@ -132,12 +217,26 @@ class Settings(BaseSettings):
     guess_default_second: int = 500
     guess_default_third: int = 250
     guess_default_consolation: int = 100
-    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable).
-    guess_xp_participation: int = 15   # XP for submitting at least one answer
-    guess_xp_solved: int = 25          # extra XP for actually guessing it
-    guess_xp_podium_first: int = 50
+    # Guess event XP (uncapped, like the quiz: admin-gated, not farmable). Same
+    # shape as the trivia: participation to every player + a solve bonus + podium.
+    guess_xp_participation: int = 20   # base XP for submitting at least one answer
+    guess_xp_solved: int = 10          # extra XP for actually guessing it
+    guess_xp_podium_first: int = 50    # same podium bonus as the quiz (quiz_xp_podium_*)
     guess_xp_podium_second: int = 30
     guess_xp_podium_third: int = 20
+    # Fixed COIN reward for a NON-solver in guess/sound, paid ONLY when the round has
+    # a prize configured (no prize → non-solvers get no coins). XP is unconditional
+    # (participation, above); solvers keep their own coin ranking (podium +
+    # consolation among solvers) untouched.
+    guess_nonsolver_coins: int = 25
+
+    # Poll rewards (optional, chosen per poll at creation). A poll has no "right"
+    # answer, so the prize is for *participation*: every user who casts a vote gets
+    # these, paid when the poll is closed. 0 in either field disables that half.
+    # Uncapped like the other admin-gated events. Requires a non-anonymous poll so
+    # the voters can be identified (poll_answer updates).
+    poll_reward_coins: int = 25   # CoInn per voter, default suggested in creation
+    poll_reward_xp: int = 10      # XP per voter, default suggested in creation
 
     # Shop cosmetics: how many purchased tags a user can keep active at once
     # (they can switch among owned tags and combine several). Raise to allow more.
@@ -173,6 +272,48 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [int(i) for i in v]
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
+
+    @field_validator("twentyq_provider_order", mode="before")
+    @classmethod
+    def normalize_twentyq_provider_order(cls, value: object) -> str:
+        providers = [part.strip().lower() for part in str(value).split(",")]
+        allowed = {"gemini", "groq", "openrouter"}
+        if not providers or any(not provider for provider in providers):
+            raise ValueError("twentyq provider order cannot be empty")
+        if any(provider not in allowed for provider in providers):
+            raise ValueError("twentyq provider order contains an unknown provider")
+        if len(set(providers)) != len(providers):
+            raise ValueError("twentyq provider order contains duplicates")
+        if "openrouter" in providers and providers[-1] != "openrouter":
+            raise ValueError("paid OpenRouter must follow free providers")
+        return ",".join(providers)
+
+    @model_validator(mode="after")
+    def validate_twentyq_provider_models(self) -> Self:
+        model_fields = {
+            "gemini": "twentyq_gemini_model",
+            "groq": "twentyq_groq_model",
+            "openrouter": "twentyq_openrouter_model",
+        }
+        for provider in self.twentyq_provider_order.split(","):
+            if not getattr(self, model_fields[provider]).strip():
+                raise ValueError(f"{provider} model cannot be empty")
+        return self
+
+    @model_validator(mode="after")
+    def validate_igdb_catalog_bounds(self) -> Self:
+        if self.igdb_min_catalog_entries > self.igdb_catalog_size:
+            raise ValueError("igdb_min_catalog_entries cannot exceed igdb_catalog_size")
+        return self
+
+    @model_validator(mode="after")
+    def validate_openrouter_budget_lanes(self) -> Self:
+        lane_total = (
+            self.twentyq_openrouter_budget_usd + self.openrouter_other_budget_usd
+        )
+        if lane_total > self.ai_monthly_budget_usd:
+            raise ValueError("OpenRouter lane budgets cannot exceed the global AI budget")
+        return self
 
 
 settings = Settings()

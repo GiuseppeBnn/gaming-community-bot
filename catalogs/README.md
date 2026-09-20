@@ -10,6 +10,7 @@ cp catalogs/ranks.example.csv                  data/ranks.csv
 cp catalogs/shop_cosmetics.example.csv         data/shop_cosmetics.csv
 cp catalogs/consumable_categories.example.csv  data/consumable_categories.csv
 cp catalogs/consumables.example.csv            data/consumables.csv
+cp catalogs/twenty_questions_games.example.csv data/twenty_questions_games.csv
 # poi edita data/*.csv e riavvia il bot
 ```
 
@@ -87,3 +88,20 @@ Cibi e bevande acquistabili **più volte** nella Locanda: ogni acquisto spende C
 🎒 Dispensa del membro (mostrata sul profilo) e conta per i trofei del menù. Nessun effetto di gioco,
 nessun permesso. `category` deve essere una `key` di `consumable_categories.csv`. Usa chiavi `cons_*`
 per non collidere con i tag cosmetici. `price` in monete (intero ≥ 0).
+
+## `twenty_questions_games.csv`
+
+`key,title,aliases,dossier`
+
+Catalogo dei giochi che Alduino può estrarre per 20 Domande. `aliases` usa `|`
+come separatore; `dossier` deve contenere almeno 80 caratteri di fatti verificati
+su genere, struttura, ambientazione, protagonista e meccaniche. Gemini risponde
+esclusivamente da questo dossier: più è concreto, meno risposte finiscono
+correttamente in «forse». Le `key` devono essere uniche. Senza CSV il fallback
+integrato contiene 24 giochi; l'estrazione privilegia sempre quelli meno usati e
+completa un giro del catalogo prima di ripeterli.
+
+Con `IGDB_CLIENT_ID` e `IGDB_CLIENT_SECRET` configurati, questo CSV e i built-in
+diventano esclusivamente un fallback. Un sync giornaliero conserva nel DB i 300
+giochi principali più valutati che superano la soglia di notorietà e qualità;
+creazione e gioco non chiamano mai IGDB direttamente.

@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from database.models import GuessRound, ScheduledTask
 from handlers import event_types
+from handlers.callbacks import EventCb
 from handlers.event_types.guess_type import GuessType
 from services import group_registry
 from services import guess_service as gs
@@ -290,8 +291,8 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askstart:guess:{r.id}" in data
-        assert f"ev:sched:guess:{r.id}" in data
+        assert EventCb(action="askstart", task_type="guess", item_id=r.id).pack() in data
+        assert EventCb(action="sched", task_type="guess", item_id=r.id).pack() in data
 
     async def test_every_impactful_action_goes_through_a_confirmation(self, session):
         """STEERING §18.2: no one-tap launch, close or delete."""
@@ -303,7 +304,7 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askclose:guess:{r.id}" in data
+        assert EventCb(action="askclose", task_type="guess", item_id=r.id).pack() in data
         assert not any(d.startswith("ev:close:") or d.startswith("ev:del:") for d in data)
 
     async def test_a_finished_round_offers_a_rerun(self, session):
@@ -315,7 +316,75 @@ class TestDetailScreen:
         await GuessType(kind="guess").render_detail(m, session, r.id)
 
         data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
-        assert f"ev:askreset:guess:{r.id}" in data
+        assert EventCb(action="askreset", task_type="guess", item_id=r.id).pack() in data
+
+    async def test_the_detail_links_to_the_readonly_recap(self, session):
+        """The «👁 Info» button is the hub entry into the read-only recap."""
+        r = await _ready(session)
+        m = _Msg()
+
+        await GuessType(kind="guess").render_detail(m, session, r.id)
+
+        data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
+        assert EventCb(action="info", task_type="guess", item_id=r.id).pack() in data
+
+
+class TestInfoScreen:
+    """Read-only recap: everything the admin built, no way to change it."""
+
+    async def test_it_shows_the_full_hint_texts(self, session):
+        """The detail screen lists only the thresholds; this one the hint bodies,
+        so the admin can remember what they wrote after scheduling/publishing."""
+        r = await gs.create_round(
+            session, kind="guess", creator_tg_id=1, title="T",
+            media_file_id="F", media_kind="photo", answer="Doom",
+            aliases=[], hints=[(2, "sparatutto anni 90")], max_attempts=3,
+            time_limit_seconds=0,
+        )
+        r.status = "ready"
+        await session.flush()
+        m = _Msg()
+
+        await GuessType(kind="guess").render_info(m, session, r.id)
+
+        assert "sparatutto anni 90" in m.said
+        assert "Doom" in m.said
+
+    async def test_it_has_only_a_back_button_no_actions(self, session):
+        r = await _ready(session)
+        m = _Msg()
+
+        await GuessType(kind="guess").render_info(m, session, r.id)
+
+        data = [btn.callback_data for row in m.markups[0].inline_keyboard for btn in row]
+        assert data == [EventCb(action="item", task_type="guess", item_id=r.id).pack()]
+
+    async def test_a_missing_round_says_so(self, session):
+        m = _Msg()
+
+        await GuessType(kind="guess").render_info(m, session, 999)
+
+        assert "non trovato" in m.said.lower()
+
+    async def test_a_round_of_the_other_kind_is_not_shown(self, session):
+        r = await _ready(session, "sound")
+        m = _Msg()
+
+        await GuessType(kind="guess").render_info(m, session, r.id)
+
+        assert "non trovato" in m.said.lower()
+
+    async def test_a_finished_round_shows_its_timestamps(self, session):
+        r = await _ready(session)
+        await GuessType(kind="guess").start_now(_Bot(), session, r.id)
+        await session.commit()
+        await GuessType(kind="guess").close_now(_Bot(), session, r.id)
+        m = _Msg()
+
+        await GuessType(kind="guess").render_info(m, session, r.id)
+
+        assert "Avviato:" in m.said and "Concluso:" in m.said
+        assert "Nessun suggerimento" in m.said
 
 
 class TestStartAndClose:
@@ -494,22 +563,24 @@ class TestTheHubNeededNoEdits:
 
         data = [btn.callback_data for row in _hub_kb().inline_keyboard for btn in row]
 
-        assert "ev:list:guess" in data and "ev:list:sound" in data
+        assert EventCb(action="list", task_type="guess").pack() in data
+        assert EventCb(action="list", task_type="sound").pack() in data
 
     async def test_the_generic_start_callback_starts_a_guess_round(self, session):
         from handlers.events import cb_start_now
 
         r = await _ready(session)
+        cb = EventCb(action="start", task_type="guess", item_id=r.id)
 
         class _Cb:
-            data = f"ev:start:guess:{r.id}"
+            data = cb.pack()
             bot = _Bot()
             message = _Msg()
 
             async def answer(self, *a, **kw):
                 pass
 
-        await cb_start_now(_Cb(), session)
+        await cb_start_now(_Cb(), cb, session)
 
         assert await _status(session, r.id) == "running"
 

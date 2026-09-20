@@ -68,10 +68,12 @@ _AUDIT_LABELS = {
     "xp_grant": "⚡ XP +",
     "xp_set": "⚡ Set XP",
     "xp_airdrop": "⚡ Airdrop XP",
+    "mass_credit": "🎁 Premi CoInn",
+    "mass_xp": "🎁 Premi XP",
 }
 
-_COIN_AUDIT = ("credita", "addebita", "airdrop", "setsaldo")
-_XP_AUDIT = ("xp_grant", "xp_set", "xp_airdrop")
+_COIN_AUDIT = ("credita", "addebita", "airdrop", "setsaldo", "mass_credit")
+_XP_AUDIT = ("xp_grant", "xp_set", "xp_airdrop", "mass_xp")
 
 
 # ---------------------------------------------------------------------------

@@ -20,6 +20,16 @@ from keyboards.shop_kb import (
     get_shop_confirm_kb,
 )
 from services.catalog_loader import ConsumableCategory, ConsumableItem, CosmeticItem
+from handlers.callbacks import (
+    AdminBetCb,
+    BetAmountCb,
+    BetCb,
+    BetConfirmCb,
+    BetCustomCb,
+    BetEventCb,
+    BetOptionCb,
+    ShopCb,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +70,7 @@ class TestEventsKeyboard:
     def test_close_button_callback(self):
         kb = get_events_keyboard([_make_event()])
         close_btn = _flat_buttons(kb)[-1]
-        assert close_btn.callback_data == "bet:close"
+        assert close_btn.callback_data == BetCb(action="close").pack()
 
     def test_event_button_shows_total_wagered(self):
         event = _make_event(options_wagered=[100, 200])  # total = 300
@@ -72,7 +82,7 @@ class TestEventsKeyboard:
         event = _make_event(id=7)
         kb = get_events_keyboard([event])
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "event:view:7"
+        assert btn.callback_data == BetEventCb(action="view", event_id=7).pack()
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +113,7 @@ class TestOptionsKeyboard:
         opts = [SimpleNamespace(id=3, label="X", odds_multiplier=1.0, total_wagered=0)]
         kb = get_options_keyboard(event_id=9, options=opts)
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "bet_option:9:3"
+        assert btn.callback_data == BetOptionCb(action="pick", event_id=9, option_id=3).pack()
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +126,14 @@ class TestAmountKeyboard:
         buttons = _flat_buttons(kb)
         # Only: custom + back + close = 3
         cbs = [b.callback_data for b in buttons if b.callback_data]
-        assert not any(cb.startswith("bet_amount:") for cb in cbs)
+        assert not any(cb.startswith(f"{BetAmountCb.__prefix__}:") for cb in cbs)
 
     def test_only_affordable_presets_shown(self):
         kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=150)
         buttons = _flat_buttons(kb)
-        amount_buttons = [b for b in buttons if b.callback_data and "bet_amount:" in b.callback_data]
+        amount_buttons = [
+            b for b in buttons if b.callback_data and b.callback_data.startswith(f"{BetAmountCb.__prefix__}:")
+        ]
         amounts = [int(b.callback_data.split(":")[-1]) for b in amount_buttons]
         # PRESET_AMOUNTS = [50, 100, 250, 500] — only 50 and 100 fit
         assert 50 in amounts
@@ -133,7 +145,7 @@ class TestAmountKeyboard:
         kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=1000)
         amount_buttons = [
             b for b in _flat_buttons(kb)
-            if b.callback_data and "bet_amount:" in b.callback_data
+            if b.callback_data and b.callback_data.startswith(f"{BetAmountCb.__prefix__}:")
         ]
         assert len(amount_buttons) == len(PRESET_AMOUNTS)
 
@@ -141,7 +153,7 @@ class TestAmountKeyboard:
         for balance in [0, 50, 1000]:
             kb = get_amount_keyboard(event_id=1, option_id=1, user_balance=balance)
             cbs = [b.callback_data for b in _flat_buttons(kb) if b.callback_data]
-            assert any("bet_custom:" in cb for cb in cbs)
+            assert any(cb.startswith(f"{BetCustomCb.__prefix__}:") for cb in cbs)
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +169,9 @@ class TestConfirmBetKeyboard:
     def test_confirm_callback_data(self):
         kb = get_confirm_bet_keyboard(event_id=3, option_id=5, amount=100)
         confirm_btn = _flat_buttons(kb)[0]
-        assert confirm_btn.callback_data == "bet_confirm:3:5:100"
+        assert confirm_btn.callback_data == BetConfirmCb(
+            action="place", event_id=3, option_id=5, amount=100
+        ).pack()
 
     def test_three_buttons_total(self):
         kb = get_confirm_bet_keyboard(event_id=1, option_id=1, amount=50)
@@ -187,17 +201,17 @@ class TestShopCatalogKb:
         kb = get_shop_catalog_kb([_cosmetic()], balance=9999, owned={"tag_pro"})
         btn = _flat_buttons(kb)[0]
         assert "🎁" in btn.text
-        assert btn.callback_data == "shop:owned"
+        assert btn.callback_data == ShopCb(action="owned").pack()
 
     def test_close_button_always_last(self):
         kb = get_shop_catalog_kb([_cosmetic()], balance=9999, owned=set())
         last_btn = _flat_buttons(kb)[-1]
-        assert last_btn.callback_data == "shop:close"
+        assert last_btn.callback_data == ShopCb(action="close").pack()
 
     def test_button_callback_contains_item_key(self):
         kb = get_shop_catalog_kb([_cosmetic(key="tag_vip")], balance=500, owned=set())
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "shop:buy:tag_vip"
+        assert btn.callback_data == ShopCb(action="buy", key="tag_vip").pack()
 
 
 def _consumable(key="cons_pizza_pacman", price=300, category="snack"):
@@ -210,25 +224,25 @@ class TestLocandaKeyboards:
     def test_home_has_both_sections(self):
         kb = get_locanda_home_kb(has_cosmetics=True, has_menu=True)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:list" in cbs and "shop:menu" in cbs
-        assert "shop:pantry" in cbs and "shop:close" in cbs
+        assert ShopCb(action="list").pack() in cbs and ShopCb(action="menu").pack() in cbs
+        assert ShopCb(action="pantry").pack() in cbs and ShopCb(action="close").pack() in cbs
 
     def test_home_hides_empty_sections(self):
         kb = get_locanda_home_kb(has_cosmetics=False, has_menu=False)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:list" not in cbs and "shop:menu" not in cbs
+        assert ShopCb(action="list").pack() not in cbs and ShopCb(action="menu").pack() not in cbs
 
     def test_categories_callbacks(self):
         cats = [ConsumableCategory("snack", "Snack", "📦", 0)]
         kb = get_menu_categories_kb(cats)
         cbs = [b.callback_data for b in _flat_buttons(kb)]
-        assert "shop:cat:snack" in cbs
+        assert ShopCb(action="cat", key="snack").pack() in cbs
         assert all(len(c.encode()) <= 64 for c in cbs)
 
     def test_menu_item_affordable_and_owned_count(self):
         kb = get_menu_items_kb([_consumable()], balance=500, counts={"cons_pizza_pacman": 2})
         btn = _flat_buttons(kb)[0]
-        assert btn.callback_data == "shop:cbuy:cons_pizza_pacman"
+        assert btn.callback_data == ShopCb(action="cbuy", key="cons_pizza_pacman").pack()
         assert "✅" in btn.text and "·2" in btn.text
 
     def test_menu_item_unaffordable(self):
@@ -238,20 +252,20 @@ class TestLocandaKeyboards:
     def test_consumable_confirm_callbacks(self):
         kb = get_consumable_confirm_kb("cons_pizza_pacman", "snack")
         btns = _flat_buttons(kb)
-        assert btns[0].callback_data == "shop:cexec:cons_pizza_pacman"
-        assert btns[1].callback_data == "shop:cat:snack"
+        assert btns[0].callback_data == ShopCb(action="cexec", key="cons_pizza_pacman").pack()
+        assert btns[1].callback_data == ShopCb(action="cat", key="snack").pack()
 
 
 class TestShopConfirmKb:
     def test_execute_button_callback(self):
         kb = get_shop_confirm_kb("tag_vip")
         execute_btn = _flat_buttons(kb)[0]
-        assert execute_btn.callback_data == "shop:exec:tag_vip"
+        assert execute_btn.callback_data == ShopCb(action="exec", key="tag_vip").pack()
 
     def test_back_button_goes_to_list(self):
         kb = get_shop_confirm_kb("tag_vip")
         back_btn = _flat_buttons(kb)[1]
-        assert back_btn.callback_data == "shop:list"
+        assert back_btn.callback_data == ShopCb(action="list").pack()
 
     def test_three_buttons(self):
         kb = get_shop_confirm_kb("tag_pro")
@@ -286,7 +300,9 @@ class TestAdminBettingKeyboards:
         from keyboards.admin_betting_kb import get_admin_confirm_resolve_keyboard
         kb = get_admin_confirm_resolve_keyboard(event_id=5, option_id=3)
         confirm_btn = _flat_buttons(kb)[0]
-        assert confirm_btn.callback_data == "admin_bet:confirm_resolve:5:3"
+        assert confirm_btn.callback_data == AdminBetCb(
+            action="confirm_resolve", event_id=5, option_id=3
+        ).pack()
 
     def test_admin_confirm_cancel_shows_count(self):
         from keyboards.admin_betting_kb import get_admin_confirm_cancel_keyboard

@@ -8,7 +8,13 @@ syntax, not HTML, and must be escaped before going into a ParseMode.HTML message
 from __future__ import annotations
 
 from handlers import help_content
-from handlers.help_content import _COMMANDS, render_command, render_command_or_hint
+from handlers.help_content import (
+    _COMMANDS,
+    render_alduino_reference,
+    render_command,
+    render_command_or_hint,
+    render_legend,
+)
 
 
 class TestRenderCommandIsHtmlSafe:
@@ -85,6 +91,69 @@ class TestTheGuessGamesAreDiscoverable:
     def test_it_is_still_hidden_from_non_admins(self):
         """Only admins create rounds; the help surface must not leak the set."""
         assert render_command("eventi", is_admin=False) is None
+
+
+def test_d20_is_a_public_bare_roll_command():
+    page = render_command("d20", is_admin=False)
+    assert page is not None
+    assert "/d20" in page and "1" in page and "20" in page
+
+
+def test_secret_game_public_manual_comes_from_the_shared_policy_renderer():
+    page = render_command("gioco_alduino", is_admin=False)
+    assert page is not None
+    assert "Regole e stato del gioco segreto di Alduino" in page
+    assert "Il gioco segreto di Alduino" in page
+    assert "10 XP" in page
+    assert "RISPOSTA:" in page
+
+
+def test_secret_game_is_discoverable_from_the_legend_and_shared_reference():
+    assert "/gioco_alduino" in render_legend(is_admin=False)
+    assert "/gioco_alduino" in render_command_or_hint("gioco_alduino")
+    assert "/gioco_alduino" in render_alduino_reference()
+
+
+class TestAlduinoReference:
+    def test_is_generated_from_the_public_catalog(self):
+        reference = render_alduino_reference()
+        for command in _COMMANDS:
+            if not command.admin_only:
+                assert f"/{command.name}" in reference
+
+    def test_never_leaks_admin_commands_or_html(self):
+        reference = render_alduino_reference()
+        assert "/credita" not in reference
+        assert "<b>" not in reference
+        assert "&lt;" not in reference
+
+    def test_forbids_claiming_side_effects(self):
+        assert "non fingere di aver eseguito" in render_alduino_reference()
+
+    def test_compact_reference_preserves_every_public_knowledge_field(self):
+        import html
+        import re
+
+        reference = render_alduino_reference()
+        for command in _COMMANDS:
+            if command.admin_only:
+                continue
+            usage = command.usage or f"/{command.name}"
+            details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
+            assert command.summary in reference and details in reference
+            assert usage in reference
+            assert all("/" + alias in reference for alias in command.aliases)
+            if usage == f"/{command.name}":
+                assert f"Uso: {usage}." not in reference
+
+    def test_compaction_reduces_only_repeated_usage_tokens(self):
+        public = [command for command in _COMMANDS if not command.admin_only]
+        duplicated_usage = [f" Uso: /{command.name}." for command in public
+                            if not command.usage or command.usage == f"/{command.name}"]
+        compact = render_alduino_reference()
+        assert len(duplicated_usage) >= 10
+        assert sum(len(text.encode("utf-8")) for text in duplicated_usage) > 150
+        assert all(text not in compact for text in duplicated_usage)
 
 
 def esc_token(usage: str) -> str:

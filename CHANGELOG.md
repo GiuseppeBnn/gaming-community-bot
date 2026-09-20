@@ -3,6 +3,201 @@
 Modifiche rilevanti al bot. Formato ispirato a
 [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 
+## [Unreleased]
+
+### Aggiunto
+- **Gioco di Alduino senza scroll** — `/gioco` (alias di `/gioco_alduino`) mostra
+  stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
+  verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
+  partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
+- **Una partita per gruppo** — avvii manuali e programmati serializzati su
+  PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
+  segnala l'ambiguità finché un admin non chiude quelle in eccesso.
+
+### Modificato
+- **Verdetti prudenti** — niente nuovi FORSE: SÌ/NO solo con elementi sufficienti,
+  altrimenti NON LO SO, senza quota consumata, penalità sul premio o turno valido.
+  Nessun secondo giudice né fallback paid per la sola incertezza. Dati storici
+  conservati; schema e prompt versionati, dataset sintetico aggiornato a v2.
+- **Token AI fuori dalla chat** — cronologia del gioco in colonne/righe da quattro
+  turni, senza rimuovere dati; prefissi condivisi per regole del giudice e comandi
+  comici. Groq structured ha margine separato per il reasoning; gli errori
+  `json_validate_failed` non disabilitano il provider per 15 minuti. Modelli,
+  contesto e output della chat normale invariati. Dettagli e limiti della verifica
+  in `docs/ai-token-audit-2026-09-15.md`.
+- **Reply Alduino selettivi** — conversazioni e risposte fun riconosciute tramite
+  ID persistiti; eventi, risultati e notifiche non attivano la chat automatica.
+  `/alduino` esplicito conserva il messaggio citato. Verifica fail-closed prima
+  di cooldown/typing/AI, senza nuove tabelle o modifiche al budget/provider.
+- **Alduino privilegia i gratuiti** — Groq → Gemini → OpenRouter, con 10 s per
+  ciascun tentativo gratuito e deadline totale invariata a 30 s.
+- **AI gratuita prima, GLM 5.3 Flash come fallback paid** — chat Groq → Gemini → GLM,
+  comandi comici Groq → GLM; il router del gioco segreto conserva Gemini → Groq →
+  OpenRouter con GLM e JSON schema strict. Giudice Guess/Sound invariato.
+- **Failover text bounded** — timeout free, deadline totale e circuit breaker condiviso
+  per workload/provider/modello. Nessuna chiamata o prenotazione paid su successo free;
+  cancellazioni ed errori di programmazione non attivano fallback.
+- **Thinking GLM gestito nel budget** — `low` e allowance 1024 token inclusa nella
+  prenotazione; transcript ambientale soltanto su ZDR e risposte pubbliche brevi.
+  Cap globale 5 USD e partizioni giochi 4 USD / altro 1 USD invariati. I `.env`
+  esistenti richiedono aggiornamento esplicito delle route e dei modelli.
+- **Routing GLM costo/affidabilità** — rimossa la preferenza esplicita per la latenza;
+  il routing adattivo OpenRouter privilegia prezzo ed endpoint senza outage recenti,
+  mantenendo il tetto prezzo hard. Il gioco strutturato consente ora il failover
+  tra endpoint dello stesso modello quando quello selezionato è saturo, conservando
+  ZDR, schema strict, parametri richiesti e limiti di prezzo;
+  prezzi massimi, ZDR, schema strict e singolo tentativo structured invariati.
+- **Prefissi cache-friendly** — dati stabili prima dei campi variabili, senza
+  affinità forzate, cache di risposte o contesto rimosso; budget conservativo e
+  cache hit contabilizzati dal provider.
+- **Reference Alduino compatta senza perdita di informazioni** — eliminata solo
+  la sintassi bare duplicata; tutti i comandi pubblici, manuali e alias restano
+  nel prompt e le guide Telegram sono invariate.
+
+## [1.9] - 2026-09-13
+
+### Aggiunto
+- **Guess The Game / Sound Quest — scheda informazioni (sola lettura)** — nuova
+  vista che mostra il **recap completo** di un round senza poterlo modificare:
+  risposta, tentativi, limite di tempo, chiusura, premi e **tutti gli indizi con
+  il loro testo** (prima, nella scheda di gestione, degli indizi si vedeva solo
+  «dopo N tentativi», non cosa dicevano). Serve a ricordarsi cosa si è preparato
+  dopo aver programmato o pubblicato l'attività. Si apre da due punti: dagli
+  **Eventi**, aprendo il round, con il pulsante **👁 Info**; e da **`/programmati`**,
+  dove ora si **tocca l'attività** per aprire una schermata con «👁 Guarda info»,
+  «❌ Annulla» e «⬅️ Indietro» (il tasto per annullare è stato spostato lì dentro).
+
+### Corretto
+- **`/trasferisci` non funzionava in chat privata** — digitando l'`@username` con
+  maiuscole/minuscole diverse da quelle salvate (frequente in privato, dove non
+  c'è il completamento automatico dei membri del gruppo) il bot rispondeva «utente
+  non trovato». Ora la ricerca per username **ignora maiuscole/minuscole** (come già
+  altrove nel bot). Stessa correzione applicata a **`/credita`** e alla risoluzione
+  dei destinatari via `@username` dei comandi admin (es. `/ban`, `/addebita`, `/warn`).
+- **Manda premi — pulsante «Cerca» doppio** — nella dashboard `/admin` → 💰 Economia
+  → «🎯 Manda premi», dopo aver premuto «🔍 Cerca» compariva un **secondo** pulsante
+  «🔍 Cerca» che, se premuto, dava errore. È stato rimosso: nella schermata di
+  ricerca resta solo «📋 Lista completa» per tornare all'elenco.
+
+## [1.8] - 2026-08-30
+
+### Aggiunto
+- **Guess The Game / Sound Quest — descrizione** — in creazione si può aggiungere
+  una **descrizione** opzionale al round (un campo della scheda, come le grafie
+  alternative: si tocca per compilarlo, si manda «-» per saltarlo). Quando c'è,
+  viene mostrata **sotto il titolo** sia nell'annuncio nel gruppo sia all'avvio del
+  gioco in privato. Come il titolo la leggono tutti: non va messa la soluzione.
+
+### Modificato
+- **Manda premi — selezione dei destinatari dalla lista** — nella dashboard
+  `/admin` → 💰 Economia → «🎯 Manda premi», dopo aver scelto **XP** o **CoInn** e
+  l'importo non si incollano più gli @username a mano: si **spuntano i membri dalla
+  lista** (la stessa di 👥 Utenti, con scorrimento a pagine e **ricerca testuale**).
+  A ogni scelta il bot chiede se aggiungere un'altra persona; alla fine una
+  **schermata di riepilogo** mostra tutti i nomi selezionati e permette di
+  confermare l'invio, aggiungere o rimuovere qualcuno, oppure annullare tutto.
+  L'invio è possibile solo con almeno una persona selezionata. Premi, avvisi in
+  privato e registrazione nell'audit log restano invariati.
+
+## [1.7] - 2026-08-25
+
+### Modificato
+- **Guess The Game / Sound Quest — XP come il Trivia Nerd** — l'esperienza ora
+  segue lo stesso schema del trivia: **20 XP di base a ogni partecipante** +
+  **10 XP se si indovina** + il **bonus podio** (50 / 30 / 20 per 1°/2°/3°).
+  L'XP viene assegnato **sempre**, anche nei round senza premi. Le ricompense in
+  CoInn restano invariate (podio e consolazione a chi indovina; importo fisso a chi
+  non indovina, solo se il round ha premi).
+
+## [1.6] - 2026-08-24
+
+### Modificato
+- **Sondaggi — premio e chiusura nello stesso messaggio** — le righe
+  «🏆 Premio… / 🏁 Si chiude il…» ora compaiono **sotto il titolo, nello stesso
+  messaggio del sondaggio**, quando titolo + descrizione + queste righe stanno nel
+  limite di **300 caratteri** di Telegram. Se non ci stanno, restano in un
+  messaggio separato come prima.
+- **Guess The Game / Sound Quest — i comandi non contano come tentativi** — se
+  durante una partita si invia `/start` (capita ri-toccando «avvia» quando non ci
+  si accorge che l'attività è già partita) o un altro comando, non viene più
+  contato come tentativo: viene semplicemente ignorato e i tentativi restano
+  intatti.
+
+## [1.5] - 2026-08-24
+
+### Aggiunto
+- **Sondaggi — avviso del premio ai votanti** — alla chiusura di un sondaggio con
+  premio, ogni votante premiato riceve ora un **avviso in privato** (come quando è
+  un admin a mandare i premi a mano).
+
+### Modificato
+- **Guess The Game / Sound Quest — ricompense riviste** — chi **indovina** mantiene
+  la **classifica identica** (podio 1°/2°/3° e consolazione a scendere tra i soli
+  risolutori); chi **non indovina** riceve ora una **ricompensa fissa** di
+  **25 🪙 CoInn + 10 ⚡ XP**, ma **solo se il round ha premi assegnati** (un round
+  senza premi non dà nulla a chi non ha indovinato).
+- **Ricompensa minima garantita a 25 CoInn** — per Trivia Nerd, Guess The Game e
+  Sound Quest il minimo garantito dell'ultimo classificato è stato alzato da 1 a
+  **25 CoInn**.
+- **Sondaggi — descrizione** — ora si inserisce **subito dopo la domanda** e viene
+  mostrata **sotto il titolo, nello stesso messaggio del sondaggio** (non più in un
+  messaggio separato). Se domanda e descrizione insieme superano i **300 caratteri**
+  (limite di Telegram), il bot lo segnala e chiede una descrizione più corta.
+- **Comando `/daily`** — descrizione del comando semplificata nella guida.
+
+## [1.4] - 2026-08-18
+
+### Aggiunto
+- **Manda premi a più utenti** — nuovo pulsante «🎯 Manda premi» nella dashboard
+  `/admin` → 💰 Economia. Flusso guidato: scegli **XP** o **CoInn** → digita
+  l'importo → incolla la lista degli **@username** (uno per riga). Gli utenti
+  trovati vengono premiati e avvisati in privato; quelli non trovati sono
+  segnalati nel riepilogo. Registrato nell'audit log.
+- **Guess The Game / Sound Quest — premi a tutti i partecipanti** — anche chi
+  **non indovina** ora entra in classifica e riceve CoInn (oltre agli XP di
+  partecipazione che già prendeva). I CoInn seguono la stessa scala decrescente
+  dei quiz, estesa a tutti: chi indovina resta sopra (podio 1°/2°/3° riservato a
+  loro), i non-solver ricevono la consolazione a scendere. La classifica di
+  chiusura mostra tutti, con i CoInn ricevuti e un segno «non indovinato».
+
+### Corretto
+- **`/quiz`, `/guessTheGame`, `/soundQuest` (admin)** — dal gruppo, il pulsante
+  «gestisci in privato» ora porta **direttamente all'elenco** di quell'attività,
+  invece di aprire tutta la dashboard `/admin`.
+- **Trofeo «Ehi, ti sei svegliato finalmente!»** — ora viene assegnato
+  retroattivamente a chi usa il bot ma non l'aveva ancora ricevuto (tipicamente un
+  admin che aveva saltato la schermata delle regole). Nessun effetto per chi lo ha
+  già.
+
+## [1.3] - 2026-08-18
+
+### Aggiunto
+- **Comandi `/guessTheGame` e `/soundQuest`** — funzionano come `/quiz`: scritti
+  da un utente mostrano i round attivi di quel tipo con il pulsante per giocarli
+  in privato (o un messaggio chiaro quando non ce ne sono); agli admin mostrano
+  la lista di gestione in chat privata. (Nel menù «/» compaiono in minuscolo
+  perché Telegram lo impone, ma la grafia con le maiuscole funziona lo stesso.)
+- **Sondaggi — premi ai votanti** — in creazione si può decidere se assegnare un
+  premio a **ogni votante**: CoInn + XP (di default 25 🪙 + 10 ⚡, personalizzabili
+  o nessuno). Il premio viene pagato alla **chiusura** del sondaggio.
+- **Sondaggi — descrizione** — si può aggiungere una descrizione opzionale,
+  mostrata nel gruppo insieme al sondaggio.
+- **Sondaggi — chiusura programmata** — si può impostare una **data di chiusura**
+  (`AAAA-MM-GG HH:MM`): all'orario scelto il bot chiude il sondaggio e annuncia
+  nel gruppo l'**opzione vincente**. Se il sondaggio ha un premio la data è
+  obbligatoria (è il momento in cui si paga); senza premio la data è facoltativa.
+- **Sondaggi — gestione dagli Eventi** — dall'elenco si possono ora **eliminare**
+  (come per Trivia Nerd, Guess The Game e Sound Quest) e ogni sondaggio ha una
+  scheda con avvia / chiudi / programma chiusura / elimina.
+
+### Modificato
+- **Elenchi eventi (Trivia Nerd, Guess The Game, Sound Quest, Sondaggi)** —
+  rimosso il codice `#numero` prima del titolo: nell'elenco si vede solo il
+  **titolo** scelto in creazione.
+- **Sondaggi senza premio né data** — restano sondaggi normali
+  «spara-e-dimentica» come prima: pubblicati nel gruppo, senza chiusura
+  automatica né premi.
+
 ## [1.2] - 2026-08-07
 
 ### Aggiunto

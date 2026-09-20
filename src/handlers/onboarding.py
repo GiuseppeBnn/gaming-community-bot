@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import Badge, User
 from handlers._trophy_announce import announce_trophies
+from handlers.callbacks import RulesCb
 from keyboards.onboarding_kb import get_rules_keyboard
 from services import badge_service
 from utils.text import esc
@@ -37,29 +38,22 @@ async def show_rules_prompt(message: Message) -> None:
     """Entry point called from cmd_start when onboarding is not yet completed."""
     name = esc(message.from_user.first_name)
     await message.answer(
-        f"🎮 <b>Ciao {name}, benvenuto nell'Arena!</b>\n\n"
-        f"{_COMMUNITY_RULES}",
+        f"🎮 <b>Ciao {name}, benvenuto nell'Arena!</b>\n\n{_COMMUNITY_RULES}",
         reply_markup=get_rules_keyboard(),
     )
 
 
-@router.callback_query(F.data == "rules:accept")
-async def cb_accept_rules(
-    callback: CallbackQuery, db_session: AsyncSession
-) -> None:
+@router.callback_query(RulesCb.filter(F.action == "accept"))
+async def cb_accept_rules(callback: CallbackQuery, db_session: AsyncSession) -> None:
     # Defense-in-depth: acceptance is personal and must be completed in PRIVATE.
     # Never honor this callback from a group message (a stale/forwarded rules card
     # there must not let a bystander accept "for" someone or grab the welcome
     # trophy). cmd_start already keeps the rules card out of groups.
     if callback.message is None or callback.message.chat.type != ChatType.PRIVATE:
-        await callback.answer(
-            "🔒 Accetta le regole in chat privata con me.", show_alert=True
-        )
+        await callback.answer("🔒 Accetta le regole in chat privata con me.", show_alert=True)
         return
 
-    result = await db_session.execute(
-        select(User).where(User.tg_id == callback.from_user.id)
-    )
+    result = await db_session.execute(select(User).where(User.tg_id == callback.from_user.id))
     user = result.scalar_one_or_none()
     if user is not None:
         user.onboarding_completed = True

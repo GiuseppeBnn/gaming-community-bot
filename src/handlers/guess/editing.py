@@ -26,6 +26,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers.callbacks import GuessAliasCb
 from services import guess_service
 from utils.text import esc
 
@@ -43,22 +44,24 @@ class GuessAliasStates(StatesGroup):
 
 def _cancel_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="❌ Annulla", callback_data="guess_alias:cancel")
+    b.button(text="❌ Annulla", callback_data=GuessAliasCb(action="cancel").pack())
     return b.as_markup()
 
 
-@router.callback_query(F.data.startswith("guess_alias:add:"), IsAdminCallbackFilter())
+@router.callback_query(GuessAliasCb.filter(F.action == "add"), IsAdminCallbackFilter())
 async def cb_add_aliases(
-    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession
+    callback: CallbackQuery,
+    state: FSMContext,
+    db_session: AsyncSession,
+    callback_data: GuessAliasCb,
 ) -> None:
-    raw = callback.data.split(":")[2]
-    if not raw.isdigit():
+    round_id = callback_data.round_id
+    if round_id is None:
         await callback.answer()
         return
-    round_ = await guess_service.get_round(db_session, int(raw))
+    round_ = await guess_service.get_round(db_session, round_id)
     if round_ is None or round_.status not in _EDITABLE:
-        await callback.answer("Round non modificabile (concluso o eliminato).",
-                              show_alert=True)
+        await callback.answer("Round non modificabile (concluso o eliminato).", show_alert=True)
         return
     spec = kind_of(round_.kind)
     await state.clear()
@@ -77,9 +80,7 @@ async def cb_add_aliases(
 
 
 @router.message(GuessAliasStates.waiting_aliases, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_aliases(
-    message: Message, state: FSMContext, db_session: AsyncSession
-) -> None:
+async def fsm_aliases(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     values, err = _parse_aliases((message.text or "").strip(), {})
     if err:
         await message.answer(err, reply_markup=_cancel_kb())
@@ -99,12 +100,11 @@ async def fsm_aliases(
     await state.clear()
     tail = f" ({skipped} già presenti o fuori spazio)" if skipped else ""
     await message.answer(
-        f"✅ <b>{added} grafie aggiunte</b>{tail}.\n"
-        "Da adesso chi le scrive viene accettato subito."
+        f"✅ <b>{added} grafie aggiunte</b>{tail}.\nDa adesso chi le scrive viene accettato subito."
     )
 
 
-@router.callback_query(F.data == "guess_alias:cancel", IsAdminCallbackFilter())
+@router.callback_query(GuessAliasCb.filter(F.action == "cancel"), IsAdminCallbackFilter())
 async def cb_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Nessuna grafia aggiunta.")

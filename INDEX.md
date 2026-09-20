@@ -6,10 +6,11 @@ né istruzioni di setup (quelle stanno in [README.md](README.md)).
 
 Bot Telegram per una community di gaming: economia in **CoInn**, scommesse stile Twitch,
 quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio cosmetici, suite admin,
-moderazione, backup. Stack: **Python 3.12** · aiogram 3.13.1 · SQLAlchemy 2.0 async ·
-PostgreSQL 16 (prod) / SQLite (dev-test) · Groq LLM (opzionale).
+moderazione, backup. Stack: **Python 3.12** · aiogram 3.30.0 · SQLAlchemy 2.0 async ·
+PostgreSQL 16 (prod) / SQLite (dev-test) · OpenRouter/Groq/Gemini LLM (opzionali).
 
-Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), **2092 test**.
+Dimensioni e conteggi dei test cambiano con le feature: usa `pytest --collect-only -q` per il
+dato corrente, non questo indice come metrica verificabile.
 
 ---
 
@@ -18,13 +19,16 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | File | Cosa contiene | Leggilo quando |
 | --- | --- | --- |
 | [README.md](README.md) | Setup, avvio locale/Docker, comandi del bot, CI/CD, FAQ | Devi **far girare** il bot |
-| [STEERING.md](STEERING.md) | Documento **normativo** (§0–§25, ~1800 righe): architettura, invarianti, ogni sottosistema in dettaglio | Devi **modificare** il codice |
+| [STEERING.md](STEERING.md) | Documento **normativo** (§0–§27, ~2250 righe): architettura, invarianti, ogni sottosistema in dettaglio | Devi **modificare** il codice |
 | [CLAUDE.md](CLAUDE.md) | Regole operative condensate + ricette per agenti/nuovi contributor | Prima di scrivere codice, come riassunto di STEERING |
 | [INDEX.md](INDEX.md) | Questo file: mappa dei file | Non sai **dove** sta una cosa |
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
+| [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
-| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina» (2026-07-27, 2026-07-28) | Serve il *perché* dietro `handlers/guess/` |
-| [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task degli stessi giochi | Ricostruire la sequenza di lavoro |
+| [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
+| [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |
+| [tests/unit/test_twenty_questions_docs.py](tests/unit/test_twenty_questions_docs.py) | Gate del contratto pubblico, template e navigazione v2 | Modifichi documentazione o configurazione del gioco segreto |
+| [docs/ai-token-audit-2026-09-15.md](docs/ai-token-audit-2026-09-15.md) | Ottimizzazioni token fuori dalla chat, modelli verificati e misure live sintetiche | Valuti consumi e limiti delle ottimizzazioni AI |
 
 ### Sezioni di STEERING.md
 
@@ -43,7 +47,7 @@ Dimensioni attuali: **~47.700 righe** Python (`src/` + `tests/` + `scripts/`), *
 | 10 | Betting payout · 10.a `/daily` | 23 | Test suite |
 | 11 | Locanda: 11.a cosmetici · 11.b consumabili | 24 | **Checklist pre-PR** |
 | 12 | Trofei · 12.1 XP · 12.2 cataloghi CSV | 25 | Backup & export stato |
-| 13 | `group_registry` (id gruppo effettivo) | | |
+| 13 | `group_registry` (id gruppo effettivo) | 26 | Alert al maintainer |
 
 ---
 
@@ -56,7 +60,7 @@ src/                                  # src-layout: i package restano top-level 
 ├── database/
 │   ├── models.py                     # tutte le tabelle (DeclarativeBase) + enum
 │   └── connection.py                 # engine async, session maker, _MIGRATIONS (DDL idempotente, solo Postgres)
-├── middlewares/                      # in ordine di esecuzione: rate_limit → db → ban_guard → group_guard
+├── middlewares/                      # rate_limit → db → ban_guard → group_guard → group_context
 ├── filters/admin_filter.py           # is_admin + IsAdminFilter / IsAdminCallbackFilter
 ├── exceptions/economy.py             # eccezioni di dominio (saldo, daily, scommesse)
 ├── handlers/                         # layer aiogram — l'unico che committa
@@ -84,9 +88,10 @@ src/                                  # src-layout: i package restano top-level 
 | `admin.py` | Valuta, moderazione, dossier, `/stats`, `/audit`, warn/strike |
 | `admin_dashboard.py` | Dashboard a bottoni (`adm:*`) |
 | `events.py` | Hub eventi (`ev:*`): crea → avvia ora / programma. **Zero `if/elif` per tipo** |
-| `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type` |
+| `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type`, `twenty_questions_type` |
 | `quiz/` | Quiz: creazione FSM, editor, lifecycle, gioco in privato, dry-run admin |
 | `guess/` | Guess The Game (immagine) e Sound Quest (audio): un motore, due giochi |
+| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2; 20 Domande è legacy v1 |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
@@ -118,7 +123,23 @@ src/                                  # src-layout: i package restano top-level 
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |
 | `schedule_service.py` | `parse_run_at` `schedule_task` `due_tasks` `mark_done/failed` — timestamp UTC naive |
 | `group_registry.py` | Id gruppo **effettivo** (sopravvive alle migrazioni chat) + `send_group_message` |
-| `ai_service.py` | Client Groq async: `generate_completion` (intrattenimento) e il giudizio structured-output |
+| `ai_service.py` | Gateway async Groq/OpenRouter: routing entertainment/chat; giudice Groq separato e strict |
+| `ai_routing.py` | Failover text free→paid condiviso: deadline, timeout e circuit breaker per workload/provider/modello |
+| `scripts/eval_text_ai.py` | Smoke test degli otto prompt reali su input sintetici, con limite di costo preflight e ledger per run |
+| `ai_budget.py` | Prenotazione atomica, hard cap mensile e ledger costi senza prompt/completion |
+| `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
+| `group_context.py` | Rolling transcript locale, potatura e rendering senza Telegram ID |
+| `ai_game_service.py` | Aggregate, ledger, quote personali e lifecycle del gioco segreto v2 (20 Domande è legacy v1) |
+| `ai_game_types.py` | Tipi immutabili del dominio: policy, quote, turni, outcome e risultati terminali |
+| `ai_game_rewards.py` | Terminalizzazione idempotente, quote CoInn uguali, XP e allocazioni in una transazione |
+| `ai_provider_audit.py` | Audit provider prompt-free per tentativo del gioco |
+| `structured_ai_router.py` | Catena provider strutturata, deadline totale e tentativi auditabili |
+| `twenty_questions_rules.py` | Policy v2, formula del pool e proiezioni di quota |
+| `twenty_questions_ai.py` | Prompt/schema strutturato, normalizzazione e cache duplicati |
+| `twenty_questions_eval.py` | Costruzione route eval/provider, separata dal runtime |
+| `structured_ai.py` | Porta JSON Schema + adapter Gemini/Groq/OpenRouter per i giochi AI persistenti |
+| `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
+| `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback del gioco segreto v2 (20 Domande è legacy v1) |
 | `backup/state_export.py` | Export/import logico dell'intero DB (streaming, atomico) |
 | `backup/chat_archive.py` | Archivio incrementale della chat via MTProto/Telethon (opt-in) |
 | `backup/loop.py` | Driver in background dei due precedenti — non blocca mai l'event loop |
@@ -131,9 +152,11 @@ src/                                  # src-layout: i package restano top-level 
 | `middlewares/db_middleware.py` | Inietta `db_session` + upsert di `User`/`Wallet` |
 | `middlewares/ban_guard.py` | `is_banned` ⇒ update **scartato in silenzio**, ovunque |
 | `middlewares/group_guard.py` | In privato risponde solo ai membri del gruppo (cache 300 s, fail-open) |
+| `middlewares/group_context.py` | Cattura best-effort del testo ordinario per il contesto di Alduino |
 | `filters/admin_filter.py` | `is_admin` (ADMIN_IDS **o** admin Telegram del gruppo), fail-closed, guardia «tutti admin» |
 | `utils/text.py` | `esc` (escaping HTML **obbligatorio**), `chunk_blocks`, `format_duration` |
 | `utils/daytime.py` | Sorgente unica di «cos'è un giorno»: `local_day`, `next_local_midnight` |
+| `utils/twenty_questions_view.py` | Renderer comune della policy e delle card del gioco segreto v2 |
 | `utils/cooldown.py` | Cooldown anti-spam per (bucket, utente) |
 | `utils/static_reply.py` | Anti-flood dei comandi statici in gruppo |
 | `utils/atomic_io.py` | Scritture crash-safe (tmp+fsync+replace), sha256, membri gzip |
@@ -158,6 +181,11 @@ src/                                  # src-layout: i package restano top-level 
 | `warnings` / `admin_actions` | Moderazione e audit trail |
 | `scheduled_tasks` | Azioni future eseguite dallo scheduler in-process |
 | `bot_state` | Key-value di runtime (es. id gruppo effettivo) |
+| `ai_game_sessions` / `ai_game_turns` / `twenty_questions_games` | Aggregate, ledger valido e strategia del gioco segreto v2 |
+| `ai_game_messages` | Associazione persistente dei verdetti/riepiloghi Telegram alla partita per i reply |
+| `ai_game_reward_settlements` / `ai_game_reward_allocations` | Snapshot policy e ricompense terminali idempotenti |
+| `ai_game_provider_attempts` / `ai_budget_periods` / `ai_usage_log` | Telemetria provider e budget prompt-free |
+| `ai_game_catalog_entries` / `ai_game_catalog_draws` | Catalogo locale e rotazione bilanciata |
 
 Le migrazioni sono una lista di DDL **idempotente** in `database/connection.py` (`_MIGRATIONS`),
 eseguita solo su PostgreSQL. Non c'è Alembic.
@@ -166,7 +194,7 @@ eseguita solo su PostgreSQL. Non c'è Alembic.
 
 ## 4. Test (`tests/`)
 
-- **2092 test** raccolti — 2062 passano, 30 marcati `pg` skippano senza Postgres (~40 s).
+- **2121 test** raccolti — 2091 passano, 30 marcati `pg` skippano senza Postgres (~40 s).
   `pytest` con `asyncio_mode=auto`, SQLite in-memory, un DB nuovo per test.
 - `tests/unit/` — funzioni pure, keyboard, middleware, parser, cooldown, ordine router.
 - `tests/integration/` — service + flussi handler end-to-end con Telegram finto.
@@ -194,6 +222,8 @@ eseguita solo su PostgreSQL. Non c'è Alembic.
 | `scripts/export_state.py` | Snapshot totale del DB (`state-*.jsonl.gz`) |
 | `scripts/import_state.py` | Ripristino post-migrazione (`--mode empty\|replace`) |
 | `scripts/login_telethon.py` | Login MTProto una tantum → `TELEGRAM_SESSION` (**credenziale sensibile**) |
+| `scripts/eval_twenty_questions.py` | CLI opt-in per valutare il gioco segreto senza percorso runtime |
+| `evals/twentyq/v2.jsonl` | Dataset sintetico SÌ/NO/NON LO SO; v1 resta storico |
 | `catalogs/*.example.csv` | Template dei cataloghi: copiali in `data/` senza `.example` |
 
 ---

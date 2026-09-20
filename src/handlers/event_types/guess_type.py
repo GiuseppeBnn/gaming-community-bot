@@ -23,8 +23,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
+from handlers.callbacks import EventCb, GuessAliasCb
 from handlers.guess._shared import kind_of
 from services import guess_service, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc, format_seconds_short
 
 from .base import StartResult, edit_or_send
@@ -47,6 +49,28 @@ def _fmt_dt(dt) -> str:
     return schedule_service.to_local(dt).strftime("%d/%m %H:%M")
 
 
+def _recap_lines(round_) -> list[str]:
+    """The facts shared by the management detail and the read-only recap: header,
+    answer, attempts/limit, close and prize. Both screens start from these and then
+    append what is specific to each (thresholds + play stats vs. full hint texts)."""
+    dot, label = _STATUS.get(round_.status, ("•", round_.status))
+    limit = round_.time_limit_seconds
+    return [
+        f"{dot} <b>{esc(round_.title)}</b> — <i>{label}</i>",
+        f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
+        f"🎯 {round_.max_attempts} tentativi · "
+        + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
+        "⏳ Chiusura: " + (
+            f"automatica il {schedule_service.to_local(round_.closes_at):%d/%m %H:%M}"
+            if round_.closes_at is not None
+            else f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
+            if round_.round_duration_seconds
+            else "manuale"
+        ),
+        f"🏆 {guess_service.format_prize_summary(round_)}",
+    ]
+
+
 class GuessType:
     """One instance per game; ``key`` is the ``kind``."""
 
@@ -63,6 +87,30 @@ class GuessType:
         self.hub_label = f"{spec.emoji} {spec.label}"
         self.create_label = spec.create_label
 
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        rounds = await guess_service.list_manageable(db_session, self.kind)
+        return [
+            PublicEvent(
+                key=self.key, item_id=round_.id, title=round_.title,
+                summary=f"{round_.max_attempts} tentativi · gioca in privato",
+                emoji=kind_of(self.kind).emoji,
+                deep_link_payload=f"{self.kind}_{round_.id}",
+            )
+            for round_ in rounds if round_.status == "running"
+        ]
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        round_ = await guess_service.get_round(db_session, item_id)
+        if round_ is None or round_.kind != self.kind or round_.status != "ready":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=round_.id, title=round_.title,
+            summary=f"{round_.max_attempts} tentativi", emoji=kind_of(self.kind).emoji,
+            deep_link_payload=f"{self.kind}_{round_.id}",
+        )
+
     # ------------------------------------------------------------------
     # Hub screens
     # ------------------------------------------------------------------
@@ -76,19 +124,23 @@ class GuessType:
         lines = [f"{self.hub_label}\n"]
         for r in rounds:
             dot, label = _STATUS.get(r.status, ("•", r.status))
-            lines.append(f"{dot} #{r.id} {esc(r.title)} — <i>{label}</i>")
-            b.button(text=f"{dot} #{r.id} {r.title[:22]}",
-                     callback_data=f"ev:item:{self.key}:{r.id}")
+            # Title only — no `#id` in the listing (the id still travels in the
+            # callback payload, so tapping still resolves the right round).
+            lines.append(f"{dot} {esc(r.title)} — <i>{label}</i>")
+            b.button(
+                text=f"{dot} {r.title[:25]}",
+                callback_data=EventCb(action="item", task_type=self.key, item_id=r.id).pack(),
+            )
         if not rounds:
             lines.append("<i>Nessun round. Creane uno.</i>")
-        b.button(text=self.create_label, callback_data=f"ev:new:{self.key}")
-        b.button(text="⬅️ Eventi", callback_data="ev:home")
+        b.button(
+            text=self.create_label, callback_data=EventCb(action="new", task_type=self.key).pack()
+        )
+        b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
-    async def render_detail(
-        self, message: Message, db_session: AsyncSession, item_id: int
-    ) -> None:
+    async def render_detail(self, message: Message, db_session: AsyncSession, item_id: int) -> None:
         """Info screen for a single round with status-aware actions.
 
         The correct answer is shown here. This screen is admin-only — the hub
@@ -100,27 +152,13 @@ class GuessType:
         round_ = await guess_service.get_round(db_session, item_id)
         if round_ is None or round_.kind != self.kind:
             b = InlineKeyboardBuilder()
-            b.button(text="⬅️ Indietro", callback_data=f"ev:list:{self.key}")
-            await edit_or_send(message, "⚠️ Round non trovato (eliminato?).",
-                               b.as_markup())
+            b.button(
+                text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack()
+            )
+            await edit_or_send(message, "⚠️ Round non trovato (eliminato?).", b.as_markup())
             return
 
-        dot, label = _STATUS.get(round_.status, ("•", round_.status))
-        limit = round_.time_limit_seconds
-        lines = [
-            f"{dot} <b>{esc(round_.title)}</b> — <i>{label}</i>",
-            f"\n✅ Risposta: <b>{esc(round_.answer)}</b>",
-            f"🎯 {round_.max_attempts} tentativi · "
-            + (f"⏱️ {format_seconds_short(limit)}" if limit else "⏱️ senza limite"),
-            "⏳ Chiusura: " + (
-                f"automatica il {schedule_service.to_local(round_.closes_at):%d/%m %H:%M}"
-                if round_.closes_at is not None
-                else f"automatica dopo {format_seconds_short(round_.round_duration_seconds)}"
-                if round_.round_duration_seconds
-                else "manuale"
-            ),
-            f"🏆 {guess_service.format_prize_summary(round_)}",
-        ]
+        lines = _recap_lines(round_)
         hints = guess_service.hints_of(round_)
         if hints:
             lines.append("💡 " + " · ".join(f"dopo {a}" for a, _ in hints))
@@ -131,14 +169,11 @@ class GuessType:
             lines.append(
                 f"👥 {players} giocatori · ✍️ {attempts} tentativi · 🎉 {solvers} indovinati"
             )
-            rejected = await guess_service.recent_rejected(
-                db_session, item_id, limit=_AUDIT_LIMIT
-            )
+            rejected = await guess_service.recent_rejected(db_session, item_id, limit=_AUDIT_LIMIT)
             if rejected:
                 lines.append(
                     "\n<i>Ultime risposte scartate (controlla che il giudice non "
-                    "abbia sbagliato):</i>\n"
-                    + "\n".join(f"• {esc(r)}" for r in rejected)
+                    "abbia sbagliato):</i>\n" + "\n".join(f"• {esc(r)}" for r in rejected)
                 )
         if round_.started_at:
             lines.append(f"▶️ Avviato: {_fmt_dt(round_.started_at)}")
@@ -147,26 +182,111 @@ class GuessType:
 
         b = InlineKeyboardBuilder()
         if round_.status == "ready":
-            b.button(text="▶️ Avvia ora", callback_data=f"ev:askstart:{self.key}:{item_id}")
-            b.button(text="🗓️ Programma", callback_data=f"ev:sched:{self.key}:{item_id}")
-            b.button(text="🔤 Aggiungi grafie",
-                     callback_data=f"guess_alias:add:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
+            b.button(
+                text="▶️ Avvia ora",
+                callback_data=EventCb(
+                    action="askstart", task_type=self.key, item_id=item_id
+                ).pack(),
+            )
+            b.button(
+                text="🗓️ Programma",
+                callback_data=EventCb(action="sched", task_type=self.key, item_id=item_id).pack(),
+            )
+            b.button(
+                text="🔤 Aggiungi grafie",
+                callback_data=GuessAliasCb(action="add", round_id=item_id).pack(),
+            )
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack(),
+            )
         elif round_.status == "running":
-            b.button(text="🏁 Chiudi", callback_data=f"ev:askclose:{self.key}:{item_id}")
-            b.button(text="🗓️ Programma chiusura",
-                     callback_data=f"ev:sched:{self.key}:{item_id}:close")
+            b.button(
+                text="🏁 Chiudi",
+                callback_data=EventCb(
+                    action="askclose", task_type=self.key, item_id=item_id
+                ).pack(),
+            )
+            b.button(
+                text="🗓️ Programma chiusura",
+                # was the optional 5th segment ("...:close"), now its own action
+                callback_data=EventCb(
+                    action="sched_close", task_type=self.key, item_id=item_id
+                ).pack(),
+            )
             # The judge is an LLM: it will occasionally turn down a spelling that
             # was right. Accepting it here fixes the round for everyone who guesses
             # from now on, without rebuilding it (see `handlers.guess.editing`).
-            b.button(text="🔤 Aggiungi grafie",
-                     callback_data=f"guess_alias:add:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
+            b.button(
+                text="🔤 Aggiungi grafie",
+                callback_data=GuessAliasCb(action="add", round_id=item_id).pack(),
+            )
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack(),
+            )
         else:  # finished
-            b.button(text="🔁 Riproponi", callback_data=f"ev:askreset:{self.key}:{item_id}")
-            b.button(text="🗑️ Elimina", callback_data=f"ev:askdel:{self.key}:{item_id}")
-        b.button(text="⬅️ Indietro", callback_data=f"ev:list:{self.key}")
-        b.adjust(2, 1, 1)
+            b.button(
+                text="🔁 Riproponi",
+                callback_data=EventCb(
+                    action="askreset", task_type=self.key, item_id=item_id
+                ).pack(),
+            )
+            b.button(
+                text="🗑️ Elimina",
+                callback_data=EventCb(action="askdel", task_type=self.key, item_id=item_id).pack(),
+            )
+        # Read-only recap (answer + full hint texts, no edit buttons): the one way
+        # to remember what was built without risking a mistap on a live round.
+        b.button(
+            text="👁 Info",
+            callback_data=EventCb(action="info", task_type=self.key, item_id=item_id).pack(),
+        )
+        b.button(text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack())
+        # Action buttons go two per row; «Info» + «Indietro» share the last row.
+        action_rows = [2] * (1 if round_.status == "finished" else 2)
+        b.adjust(*action_rows, 2)
+        await edit_or_send(message, "\n".join(lines), b.as_markup())
+
+    async def render_info(self, message: Message, db_session: AsyncSession, item_id: int) -> None:
+        """Read-only recap of a round: same facts as the detail screen, plus the
+        full hint texts, and **no action buttons** (only a way back).
+
+        This is what an admin opens to remember what they built — the answer, the
+        prize, and the exact hints they wrote — after the round has been scheduled
+        or published, without any risk of changing it by mistap. Reachable from the
+        Events hub detail and from the /programmati per-task screen.
+        """
+        round_ = await guess_service.get_round(db_session, item_id)
+        if round_ is None or round_.kind != self.kind:
+            b = InlineKeyboardBuilder()
+            b.button(
+                text="⬅️ Indietro", callback_data=EventCb(action="list", task_type=self.key).pack()
+            )
+            await edit_or_send(message, "⚠️ Round non trovato (eliminato?).", b.as_markup())
+            return
+
+        lines = _recap_lines(round_)
+        hints = guess_service.hints_of(round_)
+        if hints:
+            # Full text here (the detail screen only lists the thresholds): this is
+            # the one place that answers «che indizi avevo messo?».
+            lines.append("\n💡 <b>Suggerimenti</b>")
+            lines += [
+                f"• dopo <b>{after}</b> tentativi: {esc(text)}" for after, text in hints
+            ]
+        else:
+            lines.append("\n💡 Nessun suggerimento")
+        if round_.started_at:
+            lines.append(f"\n▶️ Avviato: {_fmt_dt(round_.started_at)}")
+        if round_.finished_at:
+            lines.append(f"🏁 Concluso: {_fmt_dt(round_.finished_at)}")
+
+        b = InlineKeyboardBuilder()
+        b.button(
+            text="⬅️ Indietro",
+            callback_data=EventCb(action="item", task_type=self.key, item_id=item_id).pack(),
+        )
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 
     # ------------------------------------------------------------------
@@ -175,14 +295,14 @@ class GuessType:
 
     async def delete(self, db_session: AsyncSession, item_id: int) -> StartResult:
         ok = await guess_service.delete_round(db_session, item_id)
-        return StartResult(ok, "🗑️ Round eliminato." if ok else "Round non trovato.",
-                           alert=not ok)
+        return StartResult(ok, "🗑️ Round eliminato." if ok else "Round non trovato.", alert=not ok)
 
     async def reset(self, db_session: AsyncSession, item_id: int) -> StartResult | None:
         ok = await guess_service.reset_round(db_session, item_id)
         return StartResult(
             ok,
-            "🔁 Round riproposto: tentativi azzerati, di nuovo pronto." if ok
+            "🔁 Round riproposto: tentativi azzerati, di nuovo pronto."
+            if ok
             else "Impossibile riproporre (solo i round conclusi).",
             alert=not ok,
         )
@@ -192,14 +312,9 @@ class GuessType:
     # ------------------------------------------------------------------
 
     async def schedulable_items(self, db_session: AsyncSession) -> list[tuple[int, str]]:
-        return [
-            (r.id, r.title)
-            for r in await guess_service.list_ready(db_session, self.kind)
-        ]
+        return [(r.id, r.title) for r in await guess_service.list_ready(db_session, self.kind)]
 
-    async def start_creation(
-        self, message: Message, state: FSMContext, creator_id: int
-    ) -> None:
+    async def start_creation(self, message: Message, state: FSMContext, creator_id: int) -> None:
         from handlers.guess import start_guess_creation
 
         await start_guess_creation(message, state, kind=self.kind, creator_id=creator_id)
@@ -210,14 +325,11 @@ class GuessType:
         ok, msg = await open_round(bot, db_session, item_id)
         return StartResult(ok, msg, alert=not ok)
 
-    async def close_now(
-        self, bot, db_session: AsyncSession, item_id: int
-    ) -> StartResult | None:
+    async def close_now(self, bot, db_session: AsyncSession, item_id: int) -> StartResult | None:
         from handlers.guess import close_round
 
         ok, msg = await close_round(bot, db_session, item_id)
-        return StartResult(ok, "🏁 Round chiuso. Podio pubblicato." if ok else msg,
-                           alert=not ok)
+        return StartResult(ok, "🏁 Round chiuso. Podio pubblicato." if ok else msg, alert=not ok)
 
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int

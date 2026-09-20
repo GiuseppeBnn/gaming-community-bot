@@ -20,6 +20,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from handlers.callbacks import EventCb, QuizEditCb
 from handlers.event_types import edit_or_send
 from services import quiz_service
 from utils.text import esc
@@ -56,45 +57,86 @@ class QuizEditStates(StatesGroup):
 
 
 def _edit_cancel_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Annulla", callback_data="quiz_edit:cancel")
-    ]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="❌ Annulla", callback_data=QuizEditCb(action="cancel").pack()
+                )
+            ]
+        ]
+    )
 
 
 def _edit_back_kb(quiz_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⬅️ Torna al quiz", callback_data=f"ev:item:quiz:{quiz_id}")
-    ]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⬅️ Torna al quiz",
+                    callback_data=EventCb(action="item", task_type="quiz", item_id=quiz_id).pack(),
+                )
+            ]
+        ]
+    )
 
 
 def _edit_correct_kb(options: list[str]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for i, opt in enumerate(options):
-        b.button(text=f"{i + 1}. {opt[:20]}", callback_data=f"quiz_edit:correct:{i}")
-    b.button(text="❌ Annulla", callback_data="quiz_edit:cancel")
+        b.button(
+            text=f"{i + 1}. {opt[:20]}", callback_data=QuizEditCb(action="correct", index=i).pack()
+        )
+    b.button(text="❌ Annulla", callback_data=QuizEditCb(action="cancel").pack())
     b.adjust(1)
     return b.as_markup()
 
 
 def _edit_skip_expl_kb() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="⏭️ Salta", callback_data="quiz_edit:redoskipexpl"),
-        InlineKeyboardButton(text="❌ Annulla", callback_data="quiz_edit:cancel"),
-    ]])
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="⏭️ Salta", callback_data=QuizEditCb(action="redo_skip_explanation").pack()
+                ),
+                InlineKeyboardButton(
+                    text="❌ Annulla", callback_data=QuizEditCb(action="cancel").pack()
+                ),
+            ]
+        ]
+    )
 
 
 def _edit_view_kb(quiz_id: int, idx: int, total: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     if idx > 0:
-        b.button(text="⬅️", callback_data=f"quiz_edit:nav:{quiz_id}:{idx - 1}")
-    b.button(text=f"{idx + 1}/{total}", callback_data="quiz_edit:noop")
+        b.button(
+            text="⬅️", callback_data=QuizEditCb(action="nav", quiz_id=quiz_id, index=idx - 1).pack()
+        )
+    b.button(text=f"{idx + 1}/{total}", callback_data=QuizEditCb(action="noop").pack())
     if idx < total - 1:
-        b.button(text="➡️", callback_data=f"quiz_edit:nav:{quiz_id}:{idx + 1}")
-    b.button(text="✏️ Testo", callback_data=f"quiz_edit:text:{quiz_id}:{idx}")
-    b.button(text="✏️ Risposte", callback_data=f"quiz_edit:opts:{quiz_id}:{idx}")
-    b.button(text="✏️ Spiegazione", callback_data=f"quiz_edit:expl:{quiz_id}:{idx}")
-    b.button(text="🔄 Rifai domanda", callback_data=f"quiz_edit:redo:{quiz_id}:{idx}")
-    b.button(text="⬅️ Torna al quiz", callback_data=f"ev:item:quiz:{quiz_id}")
+        b.button(
+            text="➡️", callback_data=QuizEditCb(action="nav", quiz_id=quiz_id, index=idx + 1).pack()
+        )
+    b.button(
+        text="✏️ Testo", callback_data=QuizEditCb(action="text", quiz_id=quiz_id, index=idx).pack()
+    )
+    b.button(
+        text="✏️ Risposte",
+        callback_data=QuizEditCb(action="options", quiz_id=quiz_id, index=idx).pack(),
+    )
+    b.button(
+        text="✏️ Spiegazione",
+        callback_data=QuizEditCb(action="explanation", quiz_id=quiz_id, index=idx).pack(),
+    )
+    b.button(
+        text="🔄 Rifai domanda",
+        callback_data=QuizEditCb(action="redo", quiz_id=quiz_id, index=idx).pack(),
+    )
+    b.button(
+        text="⬅️ Torna al quiz",
+        callback_data=EventCb(action="item", task_type="quiz", item_id=quiz_id).pack(),
+    )
     nav_count = 1 + (1 if idx > 0 else 0) + (1 if idx < total - 1 else 0)
     b.adjust(nav_count, 3, 1, 1)  # nav row · three edit buttons · redo · back
     return b.as_markup()
@@ -166,13 +208,15 @@ async def _finish_field_edit(
         await _render_question_edit(message, db_session, quiz_id, idx)
 
 
-@router.callback_query(F.data == "quiz_edit:noop", IsAdminCallbackFilter())
-async def cb_edit_noop(callback: CallbackQuery) -> None:
+@router.callback_query(QuizEditCb.filter(F.action == "noop"), IsAdminCallbackFilter())
+async def cb_edit_noop(callback: CallbackQuery, callback_data: QuizEditCb) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "quiz_edit:cancel", IsAdminCallbackFilter())
-async def cb_edit_cancel(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+@router.callback_query(QuizEditCb.filter(F.action == "cancel"), IsAdminCallbackFilter())
+async def cb_edit_cancel(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
     data = await state.get_data()
     quiz_id = data.get("edit_quiz_id")
     idx = data.get("edit_idx", 0)
@@ -184,23 +228,33 @@ async def cb_edit_cancel(callback: CallbackQuery, state: FSMContext, db_session:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("quiz_edit:nav:"), IsAdminCallbackFilter())
-async def cb_edit_nav(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    await state.clear()  # entering/scrolling the editor abandons any half-done field edit
-    _, _, raw_quiz, raw_idx = callback.data.split(":")
-    if not (raw_quiz.isdigit() and raw_idx.isdigit()):
+@router.callback_query(QuizEditCb.filter(F.action == "nav"), IsAdminCallbackFilter())
+async def cb_edit_nav(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    quiz_id = callback_data.quiz_id
+    index = callback_data.index
+    if quiz_id is None or index is None:
         await callback.answer()
         return
-    await _render_question_edit(callback.message, db_session, int(raw_quiz), int(raw_idx))
+    await state.clear()  # entering/scrolling the editor abandons any half-done field edit
+    await _render_question_edit(callback.message, db_session, quiz_id, index)
     await callback.answer()
 
 
 # --- Single-field edits ----------------------------------------------------
 
-@router.callback_query(F.data.startswith("quiz_edit:text:"), IsAdminCallbackFilter())
-async def cb_edit_text(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    _, _, raw_quiz, raw_idx = callback.data.split(":")
-    q = await _edit_load(state, db_session, int(raw_quiz), int(raw_idx))
+
+@router.callback_query(QuizEditCb.filter(F.action == "text"), IsAdminCallbackFilter())
+async def cb_edit_text(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    quiz_id = callback_data.quiz_id
+    index = callback_data.index
+    if quiz_id is None or index is None:
+        await callback.answer()
+        return
+    q = await _edit_load(state, db_session, quiz_id, index)
     if q is None:
         await callback.answer("Quiz non più modificabile.", show_alert=True)
         return
@@ -217,7 +271,9 @@ async def cb_edit_text(callback: CallbackQuery, state: FSMContext, db_session: A
 async def fsm_edit_text(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     text = (message.text or "").strip()
     if len(text) < 3:
-        await message.answer("⚠️ La domanda deve avere almeno 3 caratteri.", reply_markup=_edit_cancel_kb())
+        await message.answer(
+            "⚠️ La domanda deve avere almeno 3 caratteri.", reply_markup=_edit_cancel_kb()
+        )
         return
     if err := _too_long(text, _MAX_QUESTION, "La domanda è troppo lunga"):
         await message.answer(err, reply_markup=_edit_cancel_kb())
@@ -232,10 +288,16 @@ async def fsm_edit_text(message: Message, state: FSMContext, db_session: AsyncSe
     await _finish_field_edit(message, state, db_session, ok)
 
 
-@router.callback_query(F.data.startswith("quiz_edit:expl:"), IsAdminCallbackFilter())
-async def cb_edit_expl(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    _, _, raw_quiz, raw_idx = callback.data.split(":")
-    q = await _edit_load(state, db_session, int(raw_quiz), int(raw_idx))
+@router.callback_query(QuizEditCb.filter(F.action == "explanation"), IsAdminCallbackFilter())
+async def cb_edit_expl(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    quiz_id = callback_data.quiz_id
+    index = callback_data.index
+    if quiz_id is None or index is None:
+        await callback.answer()
+        return
+    q = await _edit_load(state, db_session, quiz_id, index)
     if q is None:
         await callback.answer("Quiz non più modificabile.", show_alert=True)
         return
@@ -250,7 +312,9 @@ async def cb_edit_expl(callback: CallbackQuery, state: FSMContext, db_session: A
 
 
 @router.message(QuizEditStates.editing_explanation, IsAdminFilter(), ~F.text.startswith("/"))
-async def fsm_edit_explanation(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
+async def fsm_edit_explanation(
+    message: Message, state: FSMContext, db_session: AsyncSession
+) -> None:
     raw = (message.text or "").strip()
     if err := _too_long(raw, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
         await message.answer(err, reply_markup=_edit_cancel_kb())
@@ -269,7 +333,10 @@ async def fsm_edit_explanation(message: Message, state: FSMContext, db_session: 
 
 # --- Answers edit (options + which is correct) ------------------------------
 
-async def _prompt_edit_options(message: Message, state: FSMContext, current: list[str] | None = None) -> None:
+
+async def _prompt_edit_options(
+    message: Message, state: FSMContext, current: list[str] | None = None
+) -> None:
     await state.set_state(QuizEditStates.editing_options)
     hint = f"\n\n<i>Attuali: {esc(', '.join(current))}</i>" if current else ""
     await message.answer(
@@ -279,10 +346,16 @@ async def _prompt_edit_options(message: Message, state: FSMContext, current: lis
     )
 
 
-@router.callback_query(F.data.startswith("quiz_edit:opts:"), IsAdminCallbackFilter())
-async def cb_edit_opts(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    _, _, raw_quiz, raw_idx = callback.data.split(":")
-    q = await _edit_load(state, db_session, int(raw_quiz), int(raw_idx))
+@router.callback_query(QuizEditCb.filter(F.action == "options"), IsAdminCallbackFilter())
+async def cb_edit_opts(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    quiz_id = callback_data.quiz_id
+    index = callback_data.index
+    if quiz_id is None or index is None:
+        await callback.answer()
+        return
+    q = await _edit_load(state, db_session, quiz_id, index)
     if q is None:
         await callback.answer("Quiz non più modificabile.", show_alert=True)
         return
@@ -298,14 +371,23 @@ async def fsm_edit_options(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(edit_options=options)
     await state.set_state(QuizEditStates.editing_correct)
-    await message.answer("Quale opzione è quella <b>corretta</b>?", reply_markup=_edit_correct_kb(options))
+    await message.answer(
+        "Quale opzione è quella <b>corretta</b>?", reply_markup=_edit_correct_kb(options)
+    )
 
 
 @router.callback_query(
-    QuizEditStates.editing_correct, F.data.startswith("quiz_edit:correct:"), IsAdminCallbackFilter()
+    QuizEditStates.editing_correct,
+    QuizEditCb.filter(F.action == "correct"),
+    IsAdminCallbackFilter(),
 )
-async def cb_edit_correct(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    idx = int(callback.data.split(":")[2])
+async def cb_edit_correct(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    idx = callback_data.index
+    if idx is None:
+        await callback.answer()
+        return
     data = await state.get_data()
     options = data.get("edit_options", [])
     if idx >= len(options):
@@ -330,10 +412,17 @@ async def cb_edit_correct(callback: CallbackQuery, state: FSMContext, db_session
 
 # --- Redo the whole question ------------------------------------------------
 
-@router.callback_query(F.data.startswith("quiz_edit:redo:"), IsAdminCallbackFilter())
-async def cb_edit_redo(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
-    _, _, raw_quiz, raw_idx = callback.data.split(":")
-    q = await _edit_load(state, db_session, int(raw_quiz), int(raw_idx))
+
+@router.callback_query(QuizEditCb.filter(F.action == "redo"), IsAdminCallbackFilter())
+async def cb_edit_redo(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
+    quiz_id = callback_data.quiz_id
+    index = callback_data.index
+    if quiz_id is None or index is None:
+        await callback.answer()
+        return
+    q = await _edit_load(state, db_session, quiz_id, index)
     if q is None:
         await callback.answer("Quiz non più modificabile.", show_alert=True)
         return
@@ -347,9 +436,13 @@ async def cb_edit_redo(callback: CallbackQuery, state: FSMContext, db_session: A
 
 
 @router.callback_query(
-    QuizEditStates.editing_explanation, F.data == "quiz_edit:redoskipexpl", IsAdminCallbackFilter()
+    QuizEditStates.editing_explanation,
+    QuizEditCb.filter(F.action == "redo_skip_explanation"),
+    IsAdminCallbackFilter(),
 )
-async def cb_redo_skip_expl(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+async def cb_redo_skip_expl(
+    callback: CallbackQuery, state: FSMContext, db_session: AsyncSession, callback_data: QuizEditCb
+) -> None:
     await _save_redo(callback.message, state, db_session, None)
     await callback.answer()
 
@@ -368,4 +461,3 @@ async def _save_redo(
     )
     await db_session.commit()
     await _finish_field_edit(message, state, db_session, ok)
-

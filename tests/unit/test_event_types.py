@@ -67,7 +67,7 @@ def test_register_builtin_registers_every_type_in_hub_order():
     games — which is why they sit next to each other."""
     event_types.register_builtin()
     assert [t.key for t in event_types.all_types()] == [
-        "quiz", "guess", "sound", "poll", "bet",
+        "quiz", "guess", "sound", "poll", "bet", "twentyq",
     ]
 
 
@@ -96,4 +96,18 @@ def test_builtin_specs_satisfy_contract(key):
 
 def test_start_result_defaults_to_no_alert():
     res = StartResult(True, "ok")
-    assert (res.ok, res.message, res.alert) == (True, "ok", False)
+    assert (res.ok, res.message, res.alert, res.post_commit) == (True, "ok", False, None)
+
+
+async def test_start_result_keeps_a_generic_post_commit_hook():
+    """A registry spec can defer presentation without teaching the hub its type."""
+    events: list[str] = []
+
+    async def hook() -> None:
+        events.append("hook")
+
+    result = StartResult(True, "ok", post_commit=hook)
+
+    assert result.post_commit is hook
+    await result.post_commit()
+    assert events == ["hook"]

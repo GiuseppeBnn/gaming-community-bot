@@ -176,6 +176,11 @@ async def place_bet(
     if option is None:
         raise EventNotFoundError(event_id)
 
+    # The event lock above comes first; then every account effect follows the
+    # shared User → Wallet order. Keep debit's validation/error behavior intact
+    # for non-positive amounts by letting it reject before any account lock.
+    if amount > 0:
+        await economy_service.lock_users_then_wallets(session, (user_tg_id,))
     await economy_service.debit(
         session,
         user_tg_id,
@@ -214,8 +219,8 @@ async def place_bet(
 
     # Event XP for participating (placing a bet), uncapped — once per event, since a
     # second bet on the same event raises AlreadyBetError above. The (larger) win
-    # bonus is paid later, only to winners, in resolve_event. Uncapped grant takes no
-    # User lock, so it never inverts the canonical User → Wallet lock order.
+    # bonus is paid later, only to winners, in resolve_event. The account rows
+    # were already locked User → Wallet before the debit above.
     if settings.xp_per_bet_placed > 0:
         await xp_service.grant_xp(
             session, user_tg_id, settings.xp_per_bet_placed,

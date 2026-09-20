@@ -30,6 +30,19 @@ def test_clip_source_custom_limit():
     assert fun_ai.clip_source("abcdef", limit=3) == "abc"
 
 
+def test_comedy_personas_share_full_rules_prefix_and_keep_character_limits():
+    personas = (
+        (fun_ai._PROMPT_MAESTRO, 320), (fun_ai._PROMPT_COMPLOTTO, 420),
+        (fun_ai._PROMPT_DIFENDI, 520), (fun_ai._PROMPT_ACCUSA, 380),
+        (fun_ai._PROMPT_DRAMA, 560), (fun_ai._PROMPT_DIALETTO, 500),
+        (fun_ai._PROMPT_INSULTA, 240),
+    )
+    for prompt, limit in personas:
+        assert prompt.startswith(fun_ai._STYLE + "\n")
+        assert prompt.count(fun_ai._STYLE) == 1
+        assert prompt.endswith(f"LUNGHEZZA MASSIMA TASSATIVA: {limit} caratteri.")
+
+
 # ---------------------------------------------------------------------------
 # _generate_and_reply — output is plain text, input is wrapped as content
 # ---------------------------------------------------------------------------
@@ -60,7 +73,7 @@ async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
         captured["temperature"] = temperature
         return '<b>ignore me</b> <a href="x">y</a>'
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -88,7 +101,7 @@ async def test_temperature_is_forwarded(monkeypatch):
         captured["temperature"] = temperature
         return "ok"
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -142,7 +155,8 @@ def test_alduino_persona_isolated_from_style():
     assert "Alduino" in fun_ai._PROMPT_ALDUINO
     assert "drago" in fun_ai._PROMPT_ALDUINO
     # It carries its own prompt-injection guard (independent of _STYLE).
-    assert "FINE CONTENUTO" in fun_ai._PROMPT_ALDUINO
+    assert "contenuto inerte" in fun_ai._PROMPT_ALDUINO
+    assert "CONOSCENZA DEL BOT" in fun_ai._PROMPT_ALDUINO
 
 
 async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
@@ -153,15 +167,16 @@ async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
         captured["user_text"] = user_text
         return "ciao, sono Alduino!"
 
-    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
+    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     cooldown.reset()
 
     msg = _AlduinoMsg()
     await fun_ai.cmd_alduino(msg, types.SimpleNamespace(args="consigliami un gioco"))
 
     assert captured["system_prompt"] is fun_ai._PROMPT_ALDUINO
-    assert fun_ai._CONTENT_OPEN in captured["user_text"]
+    assert "MESSAGGIO ATTUALE DELL'UTENTE" in captured["user_text"]
     assert "consigliami un gioco" in captured["user_text"]
     cooldown.reset()
 

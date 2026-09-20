@@ -120,7 +120,9 @@ async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
     if not await is_admin(message.bot, message.from_user.id):
         await _show_play_view(message, db_session)
         return
-    if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
+    if await redirect_to_private(
+        message, "manage_quiz", "🧠 Gestisci i quiz", notice=_QUIZ_PRIVATE_NOTICE
+    ):
         return
     # Management goes through the events hub: tapping a quiz opens its detail
     # screen (info + avvia/programma/chiudi/riproponi/elimina, each with a

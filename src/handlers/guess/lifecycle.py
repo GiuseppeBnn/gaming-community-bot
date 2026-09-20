@@ -21,12 +21,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.filters.command import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from database.models import ScheduledTask
+from filters.admin_filter import is_admin
 from handlers._mentions import mention
+from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from services import (
     badge_service,
@@ -35,9 +40,11 @@ from services import (
     progress_service,
     schedule_service,
 )
+from utils import cooldown
+from utils.static_reply import reply_static
 from utils.text import esc, format_seconds_short
 
-from handlers.guess._shared import kind_of, log, send_media
+from handlers.guess._shared import _GUESS_PRIVATE_NOTICE, kind_of, log, router, send_media
 
 
 async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool, str]:
@@ -84,9 +91,11 @@ async def open_round(bot, db_session: AsyncSession, round_id: int) -> tuple[bool
     # one nobody knows about. The medium is NOT posted — see the module docstring.
     try:
         bot_info = await bot.get_me()
+        desc_txt = f"<i>{esc(round_.description)}</i>\n" if round_.description else ""
         await group_registry.send_group_message(
             bot, db_session,
             f"{spec.emoji} <b>{esc(spec.label.upper())}: {esc(round_.title)}</b>\n"
+            f"{desc_txt}"
             f"🎯 {round_.max_attempts} tentativi · {time_txt} · "
             f"🏆 {guess_service.format_prize_summary(round_)}{closes_txt}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ci arriva in <b>meno "
@@ -211,7 +220,10 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
     for uid, earned in trophy_notes.items():
         await announce_trophies(bot, db_session, uid, earned)
 
-    text = await _podium_text(db_session, round_, ranked, awards)
+    # The announcement shows the FULL ranking (solvers + non-solvers, each with the
+    # coins they got), not just the solver podium `ranked` used for the trophies above.
+    full_ranking = await guess_service.full_standings(db_session, round_id)
+    text = await _podium_text(db_session, round_, full_ranking, awards)
     group_id = group_registry.get_group_id()
     if group_id != 0:
         # Two separate `try`s, and the split is the point. The medium is a bonus;
@@ -230,27 +242,105 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
     return True, text
 
 
+# ---------------------------------------------------------------------------
+# Public commands: /guessTheGame and /soundQuest — same two-faced shape as /quiz.
+# Non-admins get a "play" view (buttons to the running rounds, or a clear "none
+# active" message instead of silence); admins get the events-hub management list.
+# Telegram lowercases command names in the "/" menu, so they are registered as
+# `guessthegame`/`soundquest` — `ignore_case=True` still matches the camelCase a
+# user might type.
+# ---------------------------------------------------------------------------
+
+async def _show_play_view(message: Message, db_session: AsyncSession, kind: str) -> None:
+    spec = kind_of(kind)
+    if not await cooldown.ready(message, kind, settings.command_cooldown_seconds):
+        return
+    running = [
+        r for r in await guess_service.list_manageable(db_session, kind)
+        if r.status == "running"
+    ]
+    if not running:
+        await reply_static(
+            message,
+            f"{spec.emoji} <b>Nessun {esc(spec.label)} attivo al momento.</b>\n"
+            "Quando un admin ne avvia uno te lo segnaliamo qui nel gruppo! 🏁",
+            kind,
+        )
+        return
+    bot_info = await message.bot.get_me()
+    b = InlineKeyboardBuilder()
+    for r in running:
+        # Button text is not HTML-parsed → raw title is fine here.
+        b.button(
+            text=f"▶️ Gioca: {r.title[:30]}",
+            url=f"https://t.me/{bot_info.username}?start={kind}_{r.id}",
+        )
+    b.adjust(1)
+    await reply_static(
+        message,
+        f"{spec.emoji} <b>{esc(spec.label)} in corso!</b> Tocca per giocare in chat privata:",
+        kind,
+        reply_markup=b.as_markup(),
+    )
+
+
+async def _cmd_guess_list(message: Message, db_session: AsyncSession, kind: str) -> None:
+    # Public entry point. Non-admins get the play view; admins get the hub list.
+    # The admin branch is still gated by this in-handler is_admin check.
+    if not await is_admin(message.bot, message.from_user.id):
+        await _show_play_view(message, db_session, kind)
+        return
+    if await redirect_to_private(
+        message, f"manage_{kind}", "🎮 Gestisci gli eventi", notice=_GUESS_PRIVATE_NOTICE
+    ):
+        return
+    from handlers.event_types.guess_type import GuessType
+
+    await GuessType(kind).render_list(message, db_session)
+
+
+@router.message(Command("guessthegame", ignore_case=True))
+async def cmd_guess_the_game(message: Message, db_session: AsyncSession) -> None:
+    await _cmd_guess_list(message, db_session, "guess")
+
+
+@router.message(Command("soundquest", ignore_case=True))
+async def cmd_sound_quest(message: Message, db_session: AsyncSession) -> None:
+    await _cmd_guess_list(message, db_session, "sound")
+
+
 async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:
+    """Render the full closing ranking.
+
+    ``ranked`` is the full participant list (``guess_service.RankedPlayer``): solvers
+    first, with medals and their attempts/time, then non-solvers marked «non
+    indovinato». Both show the CoInn they received — solvers keep the podium +
+    consolation ranking, non-solvers a single fixed reward (only on a prized round).
+    """
     spec = kind_of(round_.kind)
     header = (
         f"🏁 <b>{esc(round_.title)}</b> — chiuso!\n"
         f"✅ Era: <b>{esc(round_.answer)}</b>\n"
     )
     if not ranked:
-        return header + "\n<i>Nessuno ci è arrivato. Alla prossima!</i>"
+        return header + "\n<i>Nessuno ci ha giocato. Alla prossima!</i>"
 
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
-    lines = [f"{spec.emoji} {header}", f"<b>PODIO {esc(spec.label.upper())}</b>\n"]
+    lines = [f"{spec.emoji} {header}", f"<b>CLASSIFICA {esc(spec.label.upper())}</b>\n"]
     for i, row in enumerate(ranked[:10]):
-        rank = medals[i] if i < 3 else f"{i + 1}."
+        # Medals only for solvers on the actual podium; everyone else is numbered.
+        rank = medals[i] if (row.solved and i < 3) else f"{i + 1}."
         who = await mention(db_session, row.user_tg_id)
-        tries = "1 tentativo" if row.attempts == 1 else f"{row.attempts} tentativi"
-        time_txt = f" · ⏱️ {format_seconds_short(round(row.solve_ms / 1000))}"
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:
-            icon = "🎖️" if award.kind == "consolation" else "🏆"
+            icon = "🏆" if award.kind == "podium" else "🎖️"
             prize_txt = f" — {icon} <b>+{award.coins} 🪙 CoInn</b>"
-        lines.append(f"{rank} {who} — {tries}{time_txt}{prize_txt}")
+        if row.solved:
+            tries = "1 tentativo" if row.attempts == 1 else f"{row.attempts} tentativi"
+            time_txt = f" · ⏱️ {format_seconds_short(round((row.solve_ms or 0) / 1000))}"
+            lines.append(f"{rank} {who} — {tries}{time_txt}{prize_txt}")
+        else:
+            lines.append(f"{rank} {who} — ❌ non indovinato{prize_txt}")
     return "\n".join(lines)

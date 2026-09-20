@@ -1,7 +1,9 @@
 # Guess The Game & Sound Quest — riparazione del giudice, dei tentativi e della UX
 
 **Data:** 2026-07-28
-**Stato:** approvato
+**Stato:** ☑ **attuato il 2026-08-01** — giudice, suggerimenti senza sintassi, budget tentativi,
+chiusura programmabile e messaggi-notifica corretti sono integrati nel lavoro Guess The Game &
+Sound Quest (vincola `2026-07-27-guess-the-game-design.md` e le sue fix fino al 2026-08-01).
 **Tocca:** §19.b di STEERING (va aggiornato), `services/ai_service.py`,
 `services/guess_judge.py`, `services/guess_service.py`, `handlers/guess/*`,
 `handlers/event_types/guess_type.py`, `config_data/config.py`

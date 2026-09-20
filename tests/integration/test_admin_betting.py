@@ -21,12 +21,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 import services.bet_service as bet_svc
 from database.models import BettingEvent, EventStatus, Wallet
 from handlers import admin_betting as ab
+from handlers.callbacks import AdminBetCb
 
 ADMIN_ID = 1
 
@@ -70,8 +72,9 @@ class _FakeMessage:
 
 
 class _FakeCallback:
-    def __init__(self, data, message=None, user_id=ADMIN_ID) -> None:
-        self.data = data
+    def __init__(self, callback_data: AdminBetCb, message=None, user_id=ADMIN_ID) -> None:
+        self.data = callback_data.pack()
+        self.callback_data = callback_data
         self.message = message or _FakeMessage()
         self.bot = self.message.bot
         self.from_user = SimpleNamespace(id=user_id)
@@ -83,6 +86,16 @@ class _FakeCallback:
     @property
     def alerts(self) -> list[str]:
         return [t for t, alert in self.answers if alert and t]
+
+
+def _admin_bet(
+    action: str, event_id: int | None = None, option_id: int | None = None
+) -> AdminBetCb:
+    return AdminBetCb(action=action, event_id=event_id, option_id=option_id)
+
+
+async def _invoke(handler, callback: _FakeCallback, session) -> None:
+    await handler(callback, callback.callback_data, session)
 
 
 async def _event_with_bets(session, user_factory, *, amounts=((10, 0, 300), (11, 1, 100))):
@@ -122,6 +135,29 @@ async def _status(session, event_id: int) -> str:
     ).scalar_one()
 
 
+@pytest.mark.parametrize(
+    ("handler", "callback_data"),
+    [
+        (ab.cb_admin_event, _admin_bet("event")),
+        (ab.cb_admin_lock, _admin_bet("lock")),
+        (ab.cb_admin_confirm_lock, _admin_bet("confirm_lock")),
+        (ab.cb_admin_resolve, _admin_bet("resolve")),
+        (ab.cb_admin_pick_winner, _admin_bet("pick_winner", event_id=1)),
+        (ab.cb_admin_confirm_resolve, _admin_bet("confirm_resolve", event_id=1)),
+        (ab.cb_admin_cancel, _admin_bet("cancel")),
+        (ab.cb_admin_confirm_cancel, _admin_bet("confirm_cancel")),
+    ],
+)
+async def test_handlers_reject_typed_callbacks_missing_required_ids(
+    handler, callback_data, session
+):
+    cb = _FakeCallback(callback_data)
+
+    await _invoke(handler, cb, session)
+
+    assert cb.alerts == ["❌ Dati callback non validi."]
+
+
 class TestResolve:
     async def test_the_whole_pot_reaches_the_winners(self, session, user_factory):
         """300 + 100 in, 400 out, all of it to the one winner.
@@ -132,9 +168,9 @@ class TestResolve:
         """
         event = await _event_with_bets(session, user_factory)
         winner_option = event.options[0].id
-        cb = _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{winner_option}")
+        cb = _FakeCallback(_admin_bet("confirm_resolve", event.id, winner_option))
 
-        await ab.cb_admin_confirm_resolve(cb, session)
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)
 
         assert await _status(session, event.id) == EventStatus.resolved.value
         # 1000 - 300 staked, + 400 pot back
@@ -144,9 +180,9 @@ class TestResolve:
 
     async def test_both_sides_are_told(self, session, user_factory):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}")
+        cb = _FakeCallback(_admin_bet("confirm_resolve", event.id, event.options[0].id))
 
-        await ab.cb_admin_confirm_resolve(cb, session)
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)
 
         told = {tg_id: text for tg_id, text in cb.message.bot.sent}
         assert "Hai vinto" in told[10]
@@ -161,13 +197,13 @@ class TestResolve:
         on the alert, because the alert is cosmetic and the balance is not.
         """
         event = await _event_with_bets(session, user_factory)
-        data = f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}"
+        data = _admin_bet("confirm_resolve", event.id, event.options[0].id)
 
-        await ab.cb_admin_confirm_resolve(_FakeCallback(data), session)
+        await _invoke(ab.cb_admin_confirm_resolve, _FakeCallback(data), session)
         after_first = await _coins(session, 10)
 
         second = _FakeCallback(data)
-        await ab.cb_admin_confirm_resolve(second, session)
+        await _invoke(ab.cb_admin_confirm_resolve, second, session)
 
         assert await _coins(session, 10) == after_first, "the pot was paid out twice"
         assert second.alerts and "già chiuso" in second.alerts[0]
@@ -184,10 +220,10 @@ class TestResolve:
         event = await _event_with_bets(session, user_factory)
         message = _FakeMessage(bot=_BlockedBot())
         cb = _FakeCallback(
-            f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}", message
+            _admin_bet("confirm_resolve", event.id, event.options[0].id), message
         )
 
-        await ab.cb_admin_confirm_resolve(cb, session)  # must not raise
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)  # must not raise
 
         assert await _status(session, event.id) == EventStatus.resolved.value
         assert await _coins(session, 10) == 1100
@@ -213,9 +249,9 @@ class TestResolve:
         monkeypatch.setattr(ab, "announce_trophies", fake_announce)
 
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}")
+        cb = _FakeCallback(_admin_bet("confirm_resolve", event.id, event.options[0].id))
 
-        await ab.cb_admin_confirm_resolve(cb, session)
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)
 
         assert checked == [10], "the loser was checked for winner milestones"
         assert announced == [10]
@@ -234,18 +270,18 @@ class TestResolve:
         monkeypatch.setattr(ab.badge_service, "check_and_award_milestones", boom)
 
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}")
+        cb = _FakeCallback(_admin_bet("confirm_resolve", event.id, event.options[0].id))
 
-        await ab.cb_admin_confirm_resolve(cb, session)  # must not raise
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)  # must not raise
 
         assert await _coins(session, 10) == 1100
         assert cb.message.texts, "the admin was left without a confirmation screen"
 
     async def test_a_missing_event_is_an_alert_not_a_crash(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID)
-        cb = _FakeCallback("admin_bet:confirm_resolve:999999:1")
+        cb = _FakeCallback(_admin_bet("confirm_resolve", 999999, 1))
 
-        await ab.cb_admin_confirm_resolve(cb, session)
+        await _invoke(ab.cb_admin_confirm_resolve, cb, session)
 
         assert cb.alerts and "non trovato" in cb.alerts[0]
 
@@ -258,9 +294,9 @@ class TestPayoutPreview:
         If it under-reports the pot, the admin approves something else than they read.
         """
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:pick_winner:{event.id}:{event.options[0].id}")
+        cb = _FakeCallback(_admin_bet("pick_winner", event.id, event.options[0].id))
 
-        await ab.cb_admin_pick_winner(cb, session)
+        await _invoke(ab.cb_admin_pick_winner, cb, session)
 
         text = cb.message.texts[-1]
         assert "400" in text, "total pot missing from the confirmation screen"
@@ -268,17 +304,17 @@ class TestPayoutPreview:
 
     async def test_an_unknown_option_is_refused(self, session, user_factory):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:pick_winner:{event.id}:999999")
+        cb = _FakeCallback(_admin_bet("pick_winner", event.id, 999999))
 
-        await ab.cb_admin_pick_winner(cb, session)
+        await _invoke(ab.cb_admin_pick_winner, cb, session)
 
         assert cb.alerts and "Opzione non trovata" in cb.alerts[0]
 
     async def test_a_missing_event_is_refused(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID)
-        cb = _FakeCallback("admin_bet:pick_winner:999999:1")
+        cb = _FakeCallback(_admin_bet("pick_winner", 999999, 1))
 
-        await ab.cb_admin_pick_winner(cb, session)
+        await _invoke(ab.cb_admin_pick_winner, cb, session)
 
         assert cb.alerts and "non trovato" in cb.alerts[0]
 
@@ -290,9 +326,9 @@ class TestPayoutPreview:
         """
         bets = tuple((100 + i, 0, 10) for i in range(11))
         event = await _event_with_bets(session, user_factory, amounts=bets)
-        cb = _FakeCallback(f"admin_bet:pick_winner:{event.id}:{event.options[0].id}")
+        cb = _FakeCallback(_admin_bet("pick_winner", event.id, event.options[0].id))
 
-        await ab.cb_admin_pick_winner(cb, session)
+        await _invoke(ab.cb_admin_pick_winner, cb, session)
 
         text = cb.message.texts[-1]
         assert "e altri 3 vincitori" in text
@@ -304,9 +340,9 @@ class TestPayoutPreview:
         """Declaring an option nobody bet on is legal — the whole pot then has no
         winners. The admin has to be able to see that *before* confirming."""
         event = await _event_with_bets(session, user_factory, amounts=((10, 0, 300),))
-        cb = _FakeCallback(f"admin_bet:pick_winner:{event.id}:{event.options[1].id}")
+        cb = _FakeCallback(_admin_bet("pick_winner", event.id, event.options[1].id))
 
-        await ab.cb_admin_pick_winner(cb, session)
+        await _invoke(ab.cb_admin_pick_winner, cb, session)
 
         assert "Nessuna scommessa su questa opzione" in cb.message.texts[-1]
 
@@ -316,9 +352,9 @@ class TestCancel:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:confirm_cancel:{event.id}")
+        cb = _FakeCallback(_admin_bet("confirm_cancel", event.id))
 
-        await ab.cb_admin_confirm_cancel(cb, session)
+        await _invoke(ab.cb_admin_confirm_cancel, cb, session)
 
         assert await _status(session, event.id) == EventStatus.cancelled.value
         assert await _coins(session, 10) == 1000, "refund did not restore the stake"
@@ -327,11 +363,11 @@ class TestCancel:
 
     async def test_cancelling_twice_does_not_refund_twice(self, session, user_factory):
         event = await _event_with_bets(session, user_factory)
-        data = f"admin_bet:confirm_cancel:{event.id}"
+        data = _admin_bet("confirm_cancel", event.id)
 
-        await ab.cb_admin_confirm_cancel(_FakeCallback(data), session)
+        await _invoke(ab.cb_admin_confirm_cancel, _FakeCallback(data), session)
         second = _FakeCallback(data)
-        await ab.cb_admin_confirm_cancel(second, session)
+        await _invoke(ab.cb_admin_confirm_cancel, second, session)
 
         assert await _coins(session, 10) == 1000, "the stake was credited back twice"
         assert second.alerts and "già chiuso" in second.alerts[0]
@@ -341,18 +377,18 @@ class TestCancel:
     ):
         event = await _event_with_bets(session, user_factory)
         message = _FakeMessage(bot=_BlockedBot())
-        cb = _FakeCallback(f"admin_bet:confirm_cancel:{event.id}", message)
+        cb = _FakeCallback(_admin_bet("confirm_cancel", event.id), message)
 
-        await ab.cb_admin_confirm_cancel(cb, session)  # must not raise
+        await _invoke(ab.cb_admin_confirm_cancel, cb, session)  # must not raise
 
         assert await _coins(session, 10) == 1000
         assert await _coins(session, 11) == 1000
 
     async def test_cancelling_a_missing_event_is_an_alert(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID)
-        cb = _FakeCallback("admin_bet:confirm_cancel:999999")
+        cb = _FakeCallback(_admin_bet("confirm_cancel", 999999))
 
-        await ab.cb_admin_confirm_cancel(cb, session)
+        await _invoke(ab.cb_admin_confirm_cancel, cb, session)
 
         assert cb.alerts and "non trovato" in cb.alerts[0]
 
@@ -362,9 +398,9 @@ class TestCancel:
         """An irreversible refund is being approved from this screen; the amount on it
         has to be the amount that moves."""
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:cancel:{event.id}")
+        cb = _FakeCallback(_admin_bet("cancel", event.id))
 
-        await ab.cb_admin_cancel(cb, session)
+        await _invoke(ab.cb_admin_cancel, cb, session)
 
         assert "400" in cb.message.texts[-1]
 
@@ -372,13 +408,13 @@ class TestCancel:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        await ab.cb_admin_confirm_resolve(
-            _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}"),
-            session,
+        resolved = _FakeCallback(
+            _admin_bet("confirm_resolve", event.id, event.options[0].id)
         )
-        cb = _FakeCallback(f"admin_bet:cancel:{event.id}")
+        await _invoke(ab.cb_admin_confirm_resolve, resolved, session)
+        cb = _FakeCallback(_admin_bet("cancel", event.id))
 
-        await ab.cb_admin_cancel(cb, session)
+        await _invoke(ab.cb_admin_cancel, cb, session)
 
         assert cb.alerts and "già chiuso" in cb.alerts[0]
         assert cb.message.texts == [], "a dead-end screen was rendered anyway"
@@ -389,22 +425,22 @@ class TestLock:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:confirm_lock:{event.id}")
+        cb = _FakeCallback(_admin_bet("confirm_lock", event.id))
 
-        await ab.cb_admin_confirm_lock(cb, session)
+        await _invoke(ab.cb_admin_confirm_lock, cb, session)
 
         assert await _status(session, event.id) == EventStatus.locked.value
         assert await _coins(session, 10) == 700, "locking must not touch the stakes"
 
     async def test_locking_a_resolved_event_is_refused(self, session, user_factory):
         event = await _event_with_bets(session, user_factory)
-        await ab.cb_admin_confirm_resolve(
-            _FakeCallback(f"admin_bet:confirm_resolve:{event.id}:{event.options[0].id}"),
-            session,
+        resolved = _FakeCallback(
+            _admin_bet("confirm_resolve", event.id, event.options[0].id)
         )
-        cb = _FakeCallback(f"admin_bet:confirm_lock:{event.id}")
+        await _invoke(ab.cb_admin_confirm_resolve, resolved, session)
+        cb = _FakeCallback(_admin_bet("confirm_lock", event.id))
 
-        await ab.cb_admin_confirm_lock(cb, session)
+        await _invoke(ab.cb_admin_confirm_lock, cb, session)
 
         assert cb.alerts and "già chiuso" in cb.alerts[0]
 
@@ -414,9 +450,9 @@ class TestLock:
         """Locking is the one settlement action that moves no money, and the screen
         has to say so — otherwise an admin reads «blocca» and assumes a refund."""
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:lock:{event.id}")
+        cb = _FakeCallback(_admin_bet("lock", event.id))
 
-        await ab.cb_admin_lock(cb, session)
+        await _invoke(ab.cb_admin_lock, cb, session)
 
         text = cb.message.texts[-1]
         assert "2" in text                      # two bets still pending
@@ -426,9 +462,9 @@ class TestLock:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:resolve:{event.id}")
+        cb = _FakeCallback(_admin_bet("resolve", event.id))
 
-        await ab.cb_admin_resolve(cb, session)
+        await _invoke(ab.cb_admin_resolve, cb, session)
 
         assert "400" in cb.message.texts[-1]
         labels = [
@@ -438,9 +474,9 @@ class TestLock:
 
     async def test_locking_a_missing_event_is_an_alert(self, session, user_factory):
         await user_factory(tg_id=ADMIN_ID)
-        cb = _FakeCallback("admin_bet:confirm_lock:999999")
+        cb = _FakeCallback(_admin_bet("confirm_lock", 999999))
 
-        await ab.cb_admin_confirm_lock(cb, session)
+        await _invoke(ab.cb_admin_confirm_lock, cb, session)
 
         assert cb.alerts and "non trovato" in cb.alerts[0]
 
@@ -458,12 +494,12 @@ class TestNavigation:
 
         # No seeding here: the empty case must hold on a database with no rows at all,
         # and `_event_with_bets` below creates the admin itself.
-        empty = _FakeCallback("admin_bet:list")
+        empty = _FakeCallback(_admin_bet("list"))
         await ab.cb_admin_list(empty, session)
         assert "Nessun evento attivo" in empty.message.texts[-1]
 
         await _event_with_bets(session, user_factory)
-        full = _FakeCallback("admin_bet:list")
+        full = _FakeCallback(_admin_bet("list"))
         await ab.cb_admin_list(full, session)
         assert "Nessun evento attivo" not in full.message.texts[-1]
 
@@ -509,9 +545,9 @@ class TestEntryPoint:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        cb = _FakeCallback(f"admin_bet:event:{event.id}")
+        cb = _FakeCallback(_admin_bet("event", event.id))
 
-        await ab.cb_admin_event(cb, session)
+        await _invoke(ab.cb_admin_event, cb, session)
 
         text = cb.message.texts[-1]
         assert "400" in text          # pool
@@ -522,13 +558,13 @@ class TestEntryPoint:
     ):
         await user_factory(tg_id=ADMIN_ID)
         for handler, data in (
-            (ab.cb_admin_event, "admin_bet:event:999999"),
-            (ab.cb_admin_lock, "admin_bet:lock:999999"),
-            (ab.cb_admin_resolve, "admin_bet:resolve:999999"),
-            (ab.cb_admin_cancel, "admin_bet:cancel:999999"),
+            (ab.cb_admin_event, _admin_bet("event", 999999)),
+            (ab.cb_admin_lock, _admin_bet("lock", 999999)),
+            (ab.cb_admin_resolve, _admin_bet("resolve", 999999)),
+            (ab.cb_admin_cancel, _admin_bet("cancel", 999999)),
         ):
             cb = _FakeCallback(data)
-            await handler(cb, session)
+            await _invoke(handler, cb, session)
             assert cb.alerts and "non trovato" in cb.alerts[0], data
             assert cb.message.texts == [], data
 
@@ -536,17 +572,16 @@ class TestEntryPoint:
         self, session, user_factory
     ):
         event = await _event_with_bets(session, user_factory)
-        await ab.cb_admin_confirm_cancel(
-            _FakeCallback(f"admin_bet:confirm_cancel:{event.id}"), session
-        )
-        cb = _FakeCallback(f"admin_bet:resolve:{event.id}")
+        cancelled = _FakeCallback(_admin_bet("confirm_cancel", event.id))
+        await _invoke(ab.cb_admin_confirm_cancel, cancelled, session)
+        cb = _FakeCallback(_admin_bet("resolve", event.id))
 
-        await ab.cb_admin_resolve(cb, session)
+        await _invoke(ab.cb_admin_resolve, cb, session)
 
         assert cb.alerts and "già chiuso" in cb.alerts[0]
 
     async def test_close_deletes_the_panel_and_survives_a_failed_delete(self):
-        cb = _FakeCallback("admin_bet:close")
+        cb = _FakeCallback(_admin_bet("close"))
         await ab.cb_admin_close(cb)
         assert cb.message.deleted
 
@@ -555,9 +590,9 @@ class TestEntryPoint:
                 raise RuntimeError("message to delete not found")
 
         # Telegram refuses to delete messages older than 48h; the panel must still close.
-        await ab.cb_admin_close(_FakeCallback("admin_bet:close", _Undeletable()))
+        await ab.cb_admin_close(_FakeCallback(_admin_bet("close"), _Undeletable()))
 
     async def test_non_admins_get_a_denial(self):
-        cb = _FakeCallback("admin_bet:event:1", user_id=999)
+        cb = _FakeCallback(_admin_bet("event", 1), user_id=999)
         await ab.cb_admin_deny(cb)
         assert cb.alerts and "non autorizzato" in cb.alerts[0]

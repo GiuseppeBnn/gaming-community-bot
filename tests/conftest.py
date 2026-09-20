@@ -28,6 +28,16 @@ from database.models import Base, User, Wallet
 #   export TEST_PG_URL="postgresql+asyncpg://postgres:postgres@localhost:5433/gamingbot_test"
 PG_URL = os.environ.get("TEST_PG_URL")
 
+
+@pytest.fixture(autouse=True)
+def isolated_text_ai_router():
+    """A provider failure in one test must not open the next test's breaker."""
+    from services.ai_routing import text_router
+
+    text_router.reset()
+    yield
+    text_router.reset()
+
 # ---------------------------------------------------------------------------
 # In-memory SQLite engine — one fresh DB per test function (complete isolation)
 # ---------------------------------------------------------------------------

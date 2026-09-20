@@ -31,6 +31,7 @@ from sqlalchemy import select
 
 from database.models import ScheduledTask
 from handlers import event_types, schedule
+from handlers.callbacks import EventCb, SchedCb
 from handlers.event_types import StartResult
 from services import schedule_service
 from utils import cooldown
@@ -174,9 +175,15 @@ class TestEntry:
         await schedule.start_schedule_flow(message, _state())
 
         assert set(_callbacks(message.markups[0])) == {
-            "sched:type:quiz", "sched:type:guess", "sched:type:sound",
-            "sched:type:poll", "sched:type:bet", "sched:cancel",
+            SchedCb(action="type", key="quiz").pack(),
+            SchedCb(action="type", key="guess").pack(),
+            SchedCb(action="type", key="sound").pack(),
+            SchedCb(action="type", key="poll").pack(),
+            SchedCb(action="type", key="bet").pack(),
+            SchedCb(action="type", key="twentyq").pack(),
+            SchedCb(action="cancel").pack(),
         }
+        assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_new_type_is_schedulable_without_touching_this_file(self, session):
         event_types.register(_FakeType())
@@ -184,7 +191,7 @@ class TestEntry:
 
         await schedule.start_schedule_flow(message, _state())
 
-        assert "sched:type:fake" in _callbacks(message.markups[0])
+        assert SchedCb(action="type", key="fake").pack() in _callbacks(message.markups[0])
 
     async def test_entering_the_flow_clears_a_previous_one(self, session):
         state = _state()
@@ -212,11 +219,14 @@ class TestEntry:
 
 class TestPicker:
     async def test_choosing_a_type_lists_its_schedulable_items(self, session, only_fake):
-        callback = _FakeCallback("sched:type:fake")
+        cb = SchedCb(action="type", key="fake")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_type(callback, _state(), session)
+        await schedule.cb_type(callback, cb, _state(), session)
 
-        assert "sched:pick:fake:7" in _callbacks(callback.message.markups[0])
+        assert SchedCb(action="pick", key="fake", item_id=7).pack() in _callbacks(
+            callback.message.markups[0]
+        )
 
     async def test_a_type_with_nothing_ready_says_so_instead_of_an_empty_list(
         self, session
@@ -225,42 +235,42 @@ class TestPicker:
         one, not handed a keyboard with only «annulla» on it."""
         event_types.clear()
         event_types.register(_FakeType(items=[]))
-        callback = _FakeCallback("sched:type:fake")
+        cb = SchedCb(action="type", key="fake")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_type(callback, _state(), session)
+        await schedule.cb_type(callback, cb, _state(), session)
 
         assert callback.alerts and "Crealo dagli Eventi" in callback.alerts[0]
         assert callback.message.texts == []
 
     async def test_an_unknown_type_is_ignored(self, session, only_fake):
-        callback = _FakeCallback("sched:type:inesistente")
+        cb = SchedCb(action="type", key="inesistente")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_type(callback, _state(), session)
+        await schedule.cb_type(callback, cb, _state(), session)
 
         assert callback.said == ""
 
     async def test_picking_an_item_asks_when(self, session, only_fake):
         state = _state()
-        callback = _FakeCallback("sched:pick:fake:7")
+        cb = SchedCb(action="pick", key="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_pick_event(callback, state)
+        await schedule.cb_pick_event(callback, cb, state)
 
         data = await state.get_data()
         assert (data["sched_type"], data["sched_ref"]) == ("fake", 7)
         assert await state.get_state() == schedule.ScheduleStates.event_runat.state
 
-    async def test_picking_a_non_numeric_id_is_ignored(self, session, only_fake):
-        state = _state()
-        callback = _FakeCallback("sched:pick:fake:abc")
-
-        await schedule.cb_pick_event(callback, state)
-
-        assert await state.get_state() is None
+    # A non-numeric id ("sched:pick:fake:abc") used to be ignored here; now the
+    # filter drops it before it ever reaches cb_pick_event, so the coverage moved
+    # to tests/unit/test_callbacks.py::test_a_non_numeric_id_never_reaches_the_handler.
 
     async def test_picking_an_unknown_type_is_ignored(self, session, only_fake):
         state = _state()
+        cb = SchedCb(action="pick", key="inesistente", item_id=7)
 
-        await schedule.cb_pick_event(_FakeCallback("sched:pick:inesistente:7"), state)
+        await schedule.cb_pick_event(_FakeCallback(cb.pack()), cb, state)
 
         assert await state.get_state() is None
 
@@ -324,7 +334,7 @@ class TestRunAt:
 
         assert await _tasks(session) == []
         assert await state.get_state() == schedule.ScheduleStates.event_runat.state
-        assert "sched:cancel" in _callbacks(message.markups[-1])
+        assert SchedCb(action="cancel").pack() in _callbacks(message.markups[-1])
 
     async def test_the_confirmation_names_the_type_and_the_local_time(
         self, session, only_fake, user_factory
@@ -373,7 +383,9 @@ class TestWhatToSchedule:
         await schedule.start_schedule_for(message, _state(), "chiudibile", 7, "🧪 #7")
 
         assert set(_callbacks(message.markups[0])) == {
-            "sched:act:start", "sched:act:close", "sched:cancel",
+            SchedCb(action="act", key="start").pack(),
+            SchedCb(action="act", key="close").pack(),
+            SchedCb(action="cancel").pack(),
         }
 
     async def test_a_type_that_cannot_close_goes_straight_to_the_time(
@@ -401,9 +413,10 @@ class TestWhatToSchedule:
     async def test_choosing_close_arms_the_run_at_step(self, session, closable):
         state = _state()
         await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
-        callback = _FakeCallback("sched:act:close")
+        cb = SchedCb(action="act", key="close")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_action(callback, state)
+        await schedule.cb_action(callback, cb, state)
 
         assert (await state.get_data())["sched_action"] == "close"
         assert await state.get_state() == schedule.ScheduleStates.event_runat.state
@@ -414,9 +427,10 @@ class TestWhatToSchedule:
         """The flow was cleared (cancelled, or another one started): without a
         target, arming the run-at step would take a time and drop it."""
         state = _state()
-        callback = _FakeCallback("sched:act:close")
+        cb = SchedCb(action="act", key="close")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_action(callback, state)
+        await schedule.cb_action(callback, cb, state)
 
         assert callback.alerts and "Ricomincia" in callback.alerts[0]
         assert await state.get_state() is None
@@ -424,9 +438,10 @@ class TestWhatToSchedule:
     async def test_an_unknown_action_is_refused(self, session, closable):
         state = _state()
         await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
-        callback = _FakeCallback("sched:act:inventata")
+        cb = SchedCb(action="act", key="inventata")
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_action(callback, state)
+        await schedule.cb_action(callback, cb, state)
 
         assert await state.get_state() is None
 
@@ -438,7 +453,8 @@ class TestWhatToSchedule:
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
         await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
-        await schedule.cb_action(_FakeCallback("sched:act:close"), state)
+        cb = SchedCb(action="act", key="close")
+        await schedule.cb_action(_FakeCallback(cb.pack()), cb, state)
 
         await schedule.fsm_event_runat(_FakeMessage("2h"), state, session)
 
@@ -452,7 +468,8 @@ class TestWhatToSchedule:
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
         await schedule.start_schedule_for(_FakeMessage(), state, "chiudibile", 7, "🧪 #7")
-        await schedule.cb_action(_FakeCallback("sched:act:start"), state)
+        cb = SchedCb(action="act", key="start")
+        await schedule.cb_action(_FakeCallback(cb.pack()), cb, state)
 
         await schedule.fsm_event_runat(_FakeMessage("2h"), state, session)
 
@@ -479,15 +496,79 @@ class TestPendingList:
 
         assert "Nessun evento programmato" in message.said
 
-    async def test_each_pending_task_gets_a_cancel_button(self, session, only_fake, user_factory):
+    async def test_each_pending_task_is_tappable_and_cancellable(
+        self, session, only_fake, user_factory
+    ):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         task = await self._task(session)
         message = _FakeMessage()
 
         await schedule.cmd_programmati(message, session)
 
-        assert f"sched:del:{task.id}" in _callbacks(message.markups[0])
+        # The list now offers a per-task screen; the cancel moved inside it.
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
         assert "🧪 Finto" in message.said
+
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+        await schedule.cb_sched_view(callback, cb, session)
+        view_cbs = _callbacks(callback.message.markups[0])
+        assert SchedCb(action="del", item_id=task.id).pack() in view_cbs
+        assert SchedCb(action="list").pack() in view_cbs
+        # The fake type exposes no read-only recap → no «Guarda info».
+        assert not any(c.startswith("ev:info") for c in view_cbs)
+
+    async def test_a_type_with_a_recap_offers_guarda_info(self, session, user_factory):
+        """A guess/sound task (its type exposes render_info) gets «Guarda info»,
+        pointing at the read-only recap of the round it will open."""
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await schedule_service.schedule_task(
+            session, "guess", schedule_service.utcnow() + timedelta(hours=1),
+            ADMIN_ID, GROUP_CHAT, ref_id=42,
+        )
+        await session.commit()
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        view_cbs = _callbacks(callback.message.markups[0])
+        assert EventCb(action="info", task_type="guess", item_id=42).pack() in view_cbs
+
+    async def test_viewing_with_no_task_id_is_ignored(self, session):
+        cb = SchedCb(action="view")
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        assert callback.message.texts == []
+
+    async def test_the_back_button_re_renders_the_list(self, session, only_fake, user_factory):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await self._task(session)
+        cb = SchedCb(action="list")
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_list(callback, session)
+
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(
+            callback.message.markups[0]
+        )
+
+    async def test_viewing_a_task_that_is_gone_falls_back_to_the_list(
+        self, session, only_fake, user_factory
+    ):
+        await user_factory(tg_id=ADMIN_ID, username="admin")
+        task = await self._task(session)
+        await schedule_service.mark_done(session, task)
+        await session.commit()
+        cb = SchedCb(action="view", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
+
+        await schedule.cb_sched_view(callback, cb, session)
+
+        assert "Nessun evento programmato" in callback.message.said
+        assert callback.alerts and "Non più programmato" in callback.alerts[0]
 
     async def test_the_list_says_which_tasks_are_closes(self, session, only_fake, user_factory):
         """An item can have a start and a close pending at once: telling them apart
@@ -514,16 +595,29 @@ class TestPendingList:
         await schedule.cmd_programmati(message, session)
 
         assert "scomparso" in message.said
-        assert f"sched:del:{task.id}" in _callbacks(message.markups[0])
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
+
+    async def test_malformed_payload_is_visible_and_cancellable(self, session, only_fake):
+        """A corrupt persisted row must not take down `/programmati` or become invisible."""
+        task = await self._task(session)
+        task.payload_json = '[["internal", true], ["action", "expire"]]'
+        await session.commit()
+        message = _FakeMessage()
+
+        await schedule.cmd_programmati(message, session)
+
+        assert "Dati non validi" in message.said
+        assert SchedCb(action="view", item_id=task.id).pack() in _callbacks(message.markups[0])
 
     async def test_cancelling_removes_it_from_the_list_for_good(
         self, session, only_fake, user_factory
     ):
         await user_factory(tg_id=ADMIN_ID, username="admin")
         task = await self._task(session)
-        callback = _FakeCallback(f"sched:del:{task.id}")
+        cb = SchedCb(action="del", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_sched_del(callback, session)
+        await schedule.cb_sched_del(callback, cb, session)
         await session.rollback()  # only a committed cancel survives this
 
         assert await schedule_service.list_pending(session) == []
@@ -538,9 +632,10 @@ class TestPendingList:
         task = await self._task(session)
         await schedule_service.mark_done(session, task)
         await session.commit()
-        callback = _FakeCallback(f"sched:del:{task.id}")
+        cb = SchedCb(action="del", item_id=task.id)
+        callback = _FakeCallback(cb.pack())
 
-        await schedule.cb_sched_del(callback, session)
+        await schedule.cb_sched_del(callback, cb, session)
 
         assert callback.alerts and "Non annullabile" in callback.alerts[0]
         assert callback.message.texts == []
@@ -553,7 +648,7 @@ class TestPendingList:
 class TestCancel:
     async def test_cancelling_before_anything_is_entered_is_immediate(self, session):
         """Nothing to lose → no «sei sicuro?» in the way."""
-        callback = _FakeCallback("sched:cancel")
+        callback = _FakeCallback(SchedCb(action="cancel").pack())
 
         await schedule.cb_sched_cancel(callback, _state())
 
@@ -562,12 +657,12 @@ class TestCancel:
     async def test_cancelling_mid_flow_asks_first(self, session):
         state = _state()
         await state.set_state(schedule.ScheduleStates.event_runat)
-        callback = _FakeCallback("sched:cancel")
+        callback = _FakeCallback(SchedCb(action="cancel").pack())
 
         await schedule.cb_sched_cancel(callback, state)
 
         assert set(_callbacks(callback.message.markups[0])) == {
-            "sched:cancel_yes", "sched:cancel_no",
+            SchedCb(action="cancel_yes").pack(), SchedCb(action="cancel_no").pack(),
         }
         assert await state.get_state() is not None
 
@@ -576,7 +671,7 @@ class TestCancel:
         await state.set_state(schedule.ScheduleStates.event_runat)
         await state.update_data(sched_ref=7)
 
-        await schedule.cb_sched_cancel_yes(_FakeCallback("sched:cancel_yes"), state)
+        await schedule.cb_sched_cancel_yes(_FakeCallback(SchedCb(action="cancel_yes").pack()), state)
 
         assert await state.get_state() is None and await state.get_data() == {}
 
@@ -585,7 +680,7 @@ class TestCancel:
         await state.set_state(schedule.ScheduleStates.event_runat)
         await state.update_data(sched_ref=7)
 
-        await schedule.cb_sched_cancel_no(_FakeCallback("sched:cancel_no"))
+        await schedule.cb_sched_cancel_no(_FakeCallback(SchedCb(action="cancel_no").pack()))
 
         assert (await state.get_data())["sched_ref"] == 7
 

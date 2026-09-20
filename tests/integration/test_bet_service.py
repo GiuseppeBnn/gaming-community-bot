@@ -170,6 +170,26 @@ class TestPlaceBet:
         assert exc.value.user_tg_id == 1
         assert exc.value.event_id == event_id
 
+    async def test_duplicate_bet_keeps_the_first_wallet_and_xp_effects_only(
+        self, session, user_factory, monkeypatch,
+    ):
+        """Would fail if the new prelock moved the unique-bet rollback boundary."""
+        monkeypatch.setattr(bet_svc.settings, "xp_per_bet_placed", 10)
+        await user_factory(tg_id=1, coins=1_000)
+        event = await _create_event(session, creator_tg_id=1)
+        event_id = event.id
+        option_id = event.options[0].id
+
+        await _place_bet_for(session, user_tg_id=1, event=event, amount=100)
+        with pytest.raises(AlreadyBetError):
+            await bet_svc.place_bet(session, 1, event.id, option_id, 100)
+
+        assert await bet_svc.economy_service.get_balance(session, 1) == 900
+        assert (await session.execute(select(User.xp).where(User.tg_id == 1))).scalar_one() == 10
+        assert len((await session.execute(select(UserBet).where(
+            UserBet.user_tg_id == 1, UserBet.event_id == event_id,
+        ))).scalars().all()) == 1
+
     async def test_raises_insufficient_funds(self, session, user_factory):
         await user_factory(tg_id=1, coins=10)
         event = await _create_event(session, creator_tg_id=1)

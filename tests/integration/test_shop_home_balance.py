@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from handlers.shop import cb_shop_home
+from handlers.callbacks import ShopCb
 
 USER_ID = 1
 BOT_ID = 999_999  # the panel's author on a callback; intentionally has no wallet
@@ -36,6 +37,7 @@ class _FakeCallback:
     def __init__(self, user_id: int, panel_author_id: int) -> None:
         self.from_user = SimpleNamespace(id=user_id)
         self.message = _FakeMessage(panel_author_id)
+        self.data = ShopCb(action="home").pack()
 
     async def answer(self, *args, **kwargs) -> None:
         return None

@@ -4,6 +4,7 @@ General-purpose handlers: /start (with deep-link dispatch), /profilo, /help.
 Deep-link payloads routed through /start:
   create_bet            → opens the bet-creation FSM in private chat
   create_poll           → opens the poll-creation FSM in private chat (admin only)
+  manage_quiz/guess/sound → admin management list of that event type (from /quiz etc.)
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   guess_<id> / sound_<id> → plays a Guess The Game / Sound Quest round in private
@@ -17,6 +18,7 @@ deep-link landing must not trust that the caller passed the originating command'
 admin filter (a non-admin could craft the ?start=… link directly).
 """
 
+import logging
 import re
 
 from aiogram import Router
@@ -24,7 +26,7 @@ from aiogram.enums import ChatType
 from aiogram.filters import CommandStart
 from aiogram.filters.command import Command, CommandObject
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,17 +37,48 @@ from filters.admin_filter import is_admin as is_bot_admin
 from handlers._privacy import redirect_to_private
 from handlers.help_content import normalize, render_command_or_hint, render_legend
 from handlers.onboarding import show_rules_prompt
+from services import consumable_service
 from utils import cooldown
+from utils.profile_view import profile_text
 from utils.static_reply import reply_static
 from utils.text import esc
 
 router = Router()
+
+log = logging.getLogger(__name__)
+
+#: Response for a callback that no router claimed. Short enough for a toast.
+_UNHANDLED_CALLBACK = "Questo bottone non è più valido."
 
 
 async def _show_help(message: Message, is_admin: bool) -> None:
     # The legend lives in help_content (single source of truth shared with
     # /spiega_comando), so the two never drift apart.
     await message.answer(render_legend(is_admin))
+
+
+async def _ensure_welcome_trophy(message: Message, db_session: AsyncSession) -> None:
+    """Grant the «first_steps» welcome trophy if the caller is using the bot but
+    somehow never got it (see cmd_start for why an admin can miss it). Idempotent:
+    ``award_badge`` returns ``is_new=False`` for anyone who already owns it, so this
+    only ever affects the few users who slipped through. Announced like every trophy."""
+    from database.models import Badge
+    from handlers._trophy_announce import announce_trophies
+    from services import badge_service
+
+    _ub, is_new = await badge_service.award_badge(
+        db_session, message.from_user.id, badge_service.BADGE_FIRST_STEPS
+    )
+    if not is_new:
+        return
+    await db_session.commit()
+    badge = (
+        await db_session.execute(
+            select(Badge).where(Badge.slug == badge_service.BADGE_FIRST_STEPS)
+        )
+    ).scalar_one_or_none()
+    if badge is not None:
+        await announce_trophies(message.bot, db_session, message.from_user.id, [badge])
 
 
 @router.message(CommandStart())
@@ -84,6 +117,13 @@ async def cmd_start(
                 await show_rules_prompt(message)
             return
 
+    # Welcome-trophy backfill (idempotent): reaching here means the caller is using
+    # the bot and has cleared the onboarding gate — either they completed onboarding
+    # (and normally already have the trophy) or they are a Telegram-recognized admin
+    # who bypasses the rules-acceptance flow, which is the only place «first_steps» is
+    # granted. Without this, such an admin never gets it. No-op for anyone who has it.
+    await _ensure_welcome_trophy(message, db_session)
+
     payload = command.args or ""
 
     # Deep-link: admin (admin tools dashboard)
@@ -100,6 +140,24 @@ async def cmd_start(
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.events import show_hub
             await show_hub(message)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
+    # Deep-link: manage_quiz / manage_guess / manage_sound — the admin management
+    # list of that event type. This is where /quiz, /guessTheGame and /soundQuest
+    # send an admin from the group: straight to the type's own list, not the whole
+    # /admin dashboard.
+    if payload in ("manage_quiz", "manage_guess", "manage_sound"):
+        if await is_bot_admin(message.bot, message.from_user.id):
+            if payload == "manage_quiz":
+                from handlers.event_types.quiz_type import QuizType
+                await QuizType().render_list(message, db_session)
+            else:
+                from handlers.event_types.guess_type import GuessType
+                await GuessType("guess" if payload == "manage_guess" else "sound").render_list(
+                    message, db_session
+                )
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return
@@ -281,42 +339,11 @@ async def show_profilo(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ Profilo non trovato. Usa /start per registrarti.")
         return
 
-    username_display = f"@{esc(user.username)}" if user.username else "N/D"
-    badge_count = len(user.badges)
-
-    from services import consumable_service, xp_service
-    from services.shop_service import render_active_tags
-    prog = xp_service.level_for_xp(user.xp)
-    rank = xp_service.rank_for_level(prog.level)
-    rank_txt = f" · {rank.emoji} {esc(rank.name)}" if rank else ""
-    level_line = (
-        f"⚡ <b>Livello {prog.level}</b>{rank_txt}\n"
-        f"   {xp_service.progress_bar(prog)} "
-        f"{prog.xp_into_level:,}/{prog.xp_for_next:,} XP\n"
-    )
-    tags = render_active_tags(user)
-    tag_line = f"🏷️ <b>Tag:</b> {esc(tags)}\n" if tags else ""
-    title = esc(user.full_name)
-    if tags:
-        title = f"{esc(tags)} · {title}"
-
     # Pantry preview: the first few consumables, compact (e.g. "🍕 ×3 · 🐉 ×1").
     pantry = await consumable_service.inventory(db_session, user.tg_id)
-    pantry_line = ""
-    if pantry:
-        shown = " · ".join(f"{it.emoji} ×{qty}" for it, qty in pantry[:6])
-        more = " …" if len(pantry) > 6 else ""
-        pantry_line = f"🎒 <b>Dispensa:</b> {shown}{more}\n"
-
     await reply_static(
         message,
-        f"🎮 <b>{title}</b>\n\n"
-        f"🔖 <b>Username:</b> {username_display}\n\n"
-        f"{tag_line}"
-        f"{level_line}"
-        f"💰 <b>CoInn:</b> <b>{user.wallet.coins:,} 🪙</b>\n"
-        f"🏆 <b>Trofei:</b> {badge_count}\n"
-        f"{pantry_line}".rstrip("\n"),
+        profile_text(user, pantry),
         "profilo",
     )
 
@@ -377,3 +404,22 @@ async def cmd_spiega_comando(message: Message, command: CommandObject) -> None:
 
     is_admin = await is_bot_admin(message.bot, message.from_user.id)
     await message.answer(render_command_or_hint(arg, is_admin))
+
+
+@router.callback_query()
+async def cb_unhandled(callback: CallbackQuery) -> None:
+    """Answer any callback no router claimed, instead of leaving the spinner up.
+
+    `common.router` is last (`handlers/__init__.py`), so nothing that another
+    router wanted can reach here. Two cases do: a button from a keyboard older
+    than the current deploy — normal, and the user deserves a reply — and a
+    handler that stopped matching by mistake, which would otherwise be silent
+    forever. Hence the WARNING: it reaches the admins through utils.alerts
+    (STEERING §26), so a button that quietly stops working reports itself.
+
+    The `%s` is deliberate, not style: utils.alerts deduplicates on the message
+    *template*, so an f-string would turn every stale click into its own alert
+    and drown the channel meant to protect us.
+    """
+    log.warning("Unhandled callback: %s", callback.data)
+    await callback.answer(_UNHANDLED_CALLBACK)

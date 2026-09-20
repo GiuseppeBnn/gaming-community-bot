@@ -36,16 +36,20 @@ from handlers import (
     badges,
     betting,
     common,
+    dice,
     economy,
     events,
     fun_ai,
     group_events,
     guess,
+    inline_mode,
     leaderboard,
     onboarding,
+    poll_vote,
     quiz,
     schedule,
     shop,
+    twenty_questions,
 )
 
 #: Every router, in the order the dispatcher must try them. See the module docstring.
@@ -58,14 +62,18 @@ ROUTERS: tuple[Router, ...] = (
     badges.router,
     leaderboard.router,
     shop.router,
+    dice.router,
     admin.router,
     admin_dashboard.router,
     events.router,
+    poll_vote.router,       # public poll_answer tracking; disjoint update type
     quiz.router,
     guess.router,          # next to its twin; the callback prefixes are disjoint
+    twenty_questions.router,
     schedule.router,
     backup.router,
     fun_ai.router,
+    inline_mode.router,
     common.router,          # must stay last (global fallbacks)
 )
 

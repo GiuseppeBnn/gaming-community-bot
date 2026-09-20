@@ -84,11 +84,59 @@ _MIGRATIONS: list[str] = [
     # to round_duration_seconds (STEERING §19.b). NULL = fall back to the duration,
     # so rounds created before this column keep behaving exactly as they did.
     "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    # guess_rounds: optional player-facing description, shown in the group
+    # announcement and the private play screen. NULL = no description, so rounds
+    # created before this column keep behaving exactly as they did.
+    "ALTER TABLE guess_rounds ADD COLUMN IF NOT EXISTS description VARCHAR(512)",
+    # poll_templates: participation prizes, optional description, scheduled auto-close
+    # and the live-poll handles needed to stop it and pay its voters (STEERING §18.2).
+    # All defaulted/nullable, so polls created before this feature keep behaving as
+    # fire-and-forget sends.
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS description TEXT",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS prize_coins INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS prize_xp INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS closes_at TIMESTAMP",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS tg_poll_id VARCHAR(64)",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS message_id BIGINT",
+    "ALTER TABLE poll_templates ADD COLUMN IF NOT EXISTS chat_id BIGINT",
+    "CREATE INDEX IF NOT EXISTS ix_poll_templates_tg_poll_id "
+    "ON poll_templates (tg_poll_id)",
+    # Raid was removed from the product. Preserve its historical rows, but make
+    # every still-live aggregate and timer inert so the scheduler cannot emit a
+    # failure alert later for an event type that intentionally no longer exists.
+    "UPDATE scheduled_tasks SET status = 'cancelled', "
+    "executed_at = COALESCE(executed_at, CURRENT_TIMESTAMP), error = NULL "
+    "WHERE task_type = 'raid' AND status = 'pending'",
+    "UPDATE ai_game_sessions SET status = 'finished', "
+    "finished_at = COALESCE(finished_at, CURRENT_TIMESTAMP), "
+    "pending_token = NULL, pending_since = NULL "
+    "WHERE game_type = 'raid' AND status IN ('ready', 'running')",
+    # Alduino v2: additive fields leave legacy sessions inert and unexpired.
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS duration_seconds BIGINT",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS finish_reason VARCHAR(32)",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS archived_at TIMESTAMP",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS pending_user_tg_id BIGINT",
+    "ALTER TABLE ai_game_sessions ADD COLUMN IF NOT EXISTS pending_kind VARCHAR(16)",
+    "ALTER TABLE ai_game_turns ADD COLUMN IF NOT EXISTS normalized_input_hash CHAR(64)",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS rules_version "
+    "INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS questions_per_user INTEGER",
+    "ALTER TABLE twenty_questions_games ADD COLUMN IF NOT EXISTS guesses_per_user INTEGER",
+    "ALTER TABLE twenty_questions_games ALTER COLUMN question_limit DROP NOT NULL",
+    "ALTER TABLE twenty_questions_games ALTER COLUMN guess_limit DROP NOT NULL",
+    "ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS ix_ai_game_turn_quota "
+    "ON ai_game_turns (session_id, user_tg_id, kind)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_ai_game_turn_normalized "
+    "ON ai_game_turns (session_id, kind, normalized_input_hash)",
+    "UPDATE ai_game_sessions SET finish_reason = 'legacy' "
+    "WHERE game_type = 'twentyq' AND status = 'finished' AND finish_reason IS NULL",
 ]
 
 
 async def run_migrations() -> None:
-    """Apply idempotent DDL migrations for columns added after the initial deploy.
+    """Apply idempotent schema migrations and feature-retirement maintenance.
 
     Only runs on PostgreSQL — SQLite test DBs are always created fresh by create_tables().
     """

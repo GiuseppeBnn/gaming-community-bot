@@ -19,6 +19,7 @@ be invisible in production — the bot would simply answer slightly wrong, forev
 from __future__ import annotations
 
 import types
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -45,16 +46,23 @@ class _StubBot:
 
 class _StubMessage:
     def __init__(self, *, chat_type: str = "supergroup", reply_to=None,
-                 user_id: int = USER_ID) -> None:
+                 user_id: int = USER_ID, text: str | None = None,
+                 caption: str | None = None, user_is_bot: bool = False,
+                 message_id: int = 500) -> None:
         self.bot = _StubBot()
         self.chat = types.SimpleNamespace(id=-100_123, type=chat_type)
         self.from_user = types.SimpleNamespace(id=user_id, username="tizio",
-                                               full_name="Tizio Test")
+                                               full_name="Tizio Test",
+                                               is_bot=user_is_bot)
         self.reply_to_message = reply_to
+        self.text = text
+        self.caption = caption
+        self.message_id = message_id
         self.replies: list[str] = []
 
     async def reply(self, text, **kwargs):
         self.replies.append(text)
+        return types.SimpleNamespace(message_id=900 + len(self.replies))
 
     @property
     def said(self) -> str:
@@ -63,11 +71,13 @@ class _StubMessage:
 
 def _replied(text: str | None = "ciao", *, caption: str | None = None,
              author_username: str | None = "vittima",
-             author_name: str = "La Vittima"):
+             author_name: str = "La Vittima", author_id: int = 99,
+             message_id: int = 400):
     return types.SimpleNamespace(
+        message_id=message_id,
         text=text,
         caption=caption,
-        from_user=types.SimpleNamespace(id=99, username=author_username,
+        from_user=types.SimpleNamespace(id=author_id, username=author_username,
                                         full_name=author_name),
     )
 
@@ -87,7 +97,7 @@ def llm(monkeypatch):
                       "max_tokens": max_tokens, "temperature": temperature})
         return "risposta del modello"
 
-    monkeypatch.setattr(ai_service, "generate_completion", _fake)
+    monkeypatch.setattr(ai_service, "generate_groq_completion", _fake)
     return calls
 
 
@@ -95,6 +105,7 @@ def llm(monkeypatch):
 def _no_admin_no_cooldown(monkeypatch):
     """Nobody is an admin (admins bypass the cooldown), and no cooldown leaks in."""
     monkeypatch.setattr(admin_filter.settings, "admin_ids", [])
+    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     admin_filter._cache.clear()
     cooldown.reset()
     yield
@@ -298,3 +309,80 @@ class TestAlduino:
         await fun_ai.cmd_alduino(second, types.SimpleNamespace(args="ciao"))
 
         assert len(llm) == 1 and "Aspetta" in second.said
+
+
+class TestNaturalAlduinoReplies:
+    @pytest.fixture
+    def eligible_session(self, monkeypatch):
+        from services import alduino_chat
+
+        parent = types.SimpleNamespace(
+            history_json=alduino_chat.encode_history((
+                alduino_chat.DialogueTurn("un consiglio?", "Ti consiglio Hades."),
+            )), provider="fun", provider_interaction_id=None,
+        )
+        monkeypatch.setattr(alduino_chat, "find_parent", AsyncMock(return_value=parent))
+        monkeypatch.setattr(alduino_chat, "record_turn", AsyncMock())
+        monkeypatch.setattr(fun_ai, "_live_context", AsyncMock(return_value=""))
+        monkeypatch.setattr(fun_ai.group_context, "recent_messages", AsyncMock(return_value=()))
+        return types.SimpleNamespace(commit=AsyncMock(), rollback=AsyncMock())
+
+    async def test_reply_to_bot_continues_without_command_and_includes_context(self, llm, eligible_session):
+        message = _StubMessage(
+            text="perché?",
+            reply_to=_replied("Ti consiglio Hades.", author_id=_StubBot.id),
+        )
+
+        await fun_ai.reply_to_alduino(message, eligible_session)
+
+        assert len(llm) == 1
+        assert "Ti consiglio Hades." in llm[0]["text"]
+        assert "perché?" in llm[0]["text"]
+        assert "CONVERSAZIONE RECENTE" in llm[0]["text"]
+
+    async def test_caption_is_valid_user_text(self, llm, eligible_session):
+        message = _StubMessage(
+            caption="che ne pensi?",
+            reply_to=_replied("Mandami pure la foto.", author_id=_StubBot.id),
+        )
+
+        await fun_ai.reply_to_alduino(message, eligible_session)
+
+        assert len(llm) == 1 and "che ne pensi?" in llm[0]["text"]
+
+    @pytest.mark.parametrize("shape", ["other_user", "command", "media_only", "bot"])
+    async def test_irrelevant_replies_are_skipped(self, llm, shape):
+        kwargs = {
+            "text": "ciao",
+            "reply_to": _replied("test", author_id=_StubBot.id),
+        }
+        if shape == "other_user":
+            kwargs["reply_to"] = _replied("test", author_id=123)
+        elif shape == "command":
+            kwargs["text"] = "/daily"
+        elif shape == "media_only":
+            kwargs["text"] = None
+        elif shape == "bot":
+            kwargs["user_is_bot"] = True
+        message = _StubMessage(**kwargs)
+
+        with pytest.raises(fun_ai.SkipHandler):
+            await fun_ai.reply_to_alduino(message)
+
+        assert llm == []
+
+    async def test_natural_replies_share_the_ai_cooldown(self, llm, eligible_session):
+        target = _replied("Ciao.", author_id=_StubBot.id)
+        await fun_ai.reply_to_alduino(_StubMessage(text="uno", reply_to=target), eligible_session)
+        second = _StubMessage(text="due", reply_to=target)
+
+        await fun_ai.reply_to_alduino(second, eligible_session)
+
+        assert len(llm) == 1 and "Aspetta" in second.said
+
+    async def test_unknown_bot_reply_without_database_is_silently_skipped(self, llm):
+        message = _StubMessage(text="bella partita", reply_to=_replied("Risultati quiz", author_id=_StubBot.id))
+        with pytest.raises(fun_ai.SkipHandler):
+            await fun_ai.reply_to_alduino(message)
+        assert llm == [] and message.replies == [] and message.bot.actions == []
+        assert cooldown.remaining("ai", USER_ID, fun_ai.settings.ai_cooldown_seconds) == 0

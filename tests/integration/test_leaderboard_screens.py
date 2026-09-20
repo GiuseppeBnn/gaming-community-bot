@@ -21,6 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from handlers import leaderboard
+from handlers.callbacks import LeaderboardCb
 from services import badge_service
 from utils import cooldown
 
@@ -69,8 +70,9 @@ class _FakeMessage:
 
 
 class _FakeCallback:
-    def __init__(self, data: str, message=None) -> None:
-        self.data = data
+    def __init__(self, callback_data: LeaderboardCb, message=None) -> None:
+        self.data = callback_data.pack()
+        self.callback_data = callback_data
         self.message = message or _FakeMessage()
         self.bot = self.message.bot
         self.from_user = SimpleNamespace(id=USER_ID, username="tizio")
@@ -98,8 +100,7 @@ def _callbacks(markup) -> list[str]:
 async def _players(user_factory):
     await user_factory(tg_id=1, username="ricco", coins=10_000, xp=50)
     await user_factory(tg_id=2, username="medio", coins=500, xp=5_000)
-    await user_factory(tg_id=3, username=None, coins=10, xp=0,
-                       full_name="Senza Username")
+    await user_factory(tg_id=3, username=None, coins=10, xp=0, full_name="Senza Username")
 
 
 class TestBoards:
@@ -126,9 +127,7 @@ class TestBoards:
         assert "Livelli" in text and "Livello" in text
         assert text.index("@medio") < text.index("@ricco")
 
-    async def test_the_trophy_board_counts_trophies(
-        self, seeded_session, user_factory
-    ):
+    async def test_the_trophy_board_counts_trophies(self, seeded_session, user_factory):
         await _players(user_factory)
         badges = await badge_service.get_all_badges(seeded_session)
         await badge_service.award_badge(seeded_session, 2, badges[0].slug)
@@ -138,9 +137,7 @@ class TestBoards:
 
         assert "Trofei" in text and "@medio" in text
 
-    async def test_the_top_three_get_medals_and_the_rest_a_number(
-        self, session, user_factory
-    ):
+    async def test_the_top_three_get_medals_and_the_rest_a_number(self, session, user_factory):
         await _players(user_factory)
         await user_factory(tg_id=4, username="quarto", coins=1)
 
@@ -149,9 +146,7 @@ class TestBoards:
         assert text.count("🥇") == 1 and text.count("🥈") == 1 and text.count("🥉") == 1
         assert "4." in text
 
-    async def test_a_player_without_a_username_is_shown_by_name(
-        self, session, user_factory
-    ):
+    async def test_a_player_without_a_username_is_shown_by_name(self, session, user_factory):
         """Not everyone has a @username; falling back to the full name is what keeps
         them from appearing as a blank row."""
         await _players(user_factory)
@@ -161,8 +156,7 @@ class TestBoards:
         assert "Senza Username" in text
 
     async def test_an_active_tag_travels_with_the_name(self, session, user_factory):
-        await user_factory(tg_id=1, username="ricco", coins=100,
-                           cosmetic_tag="👑 Reietto")
+        await user_factory(tg_id=1, username="ricco", coins=100, cosmetic_tag="👑 Reietto")
 
         text = await leaderboard.render_board(session, "coins")
 
@@ -188,7 +182,10 @@ class TestCommand:
 
         assert "Ricchezza" in message.said
         assert set(_callbacks(message.markups[0])) == {
-            "lead:coins", "lead:xp", "lead:trofei", "lead:close",
+            "lead:show:coins",
+            "lead:show:xp",
+            "lead:show:trofei",
+            "lead:close:",
         }
 
     async def test_the_active_tab_is_marked(self, session, user_factory):
@@ -200,9 +197,7 @@ class TestCommand:
         labels = [b.text for row in message.markups[0].inline_keyboard for b in row]
         assert sum(t.startswith("•") for t in labels) == 1
 
-    async def test_the_second_call_within_the_window_is_refused(
-        self, session, user_factory
-    ):
+    async def test_the_second_call_within_the_window_is_refused(self, session, user_factory):
         await _players(user_factory)
         first, second = _FakeMessage(), _FakeMessage()
 
@@ -213,52 +208,58 @@ class TestCommand:
 
 
 class TestSwitcher:
-    @pytest.mark.parametrize("board,expected", [
-        ("coins", "Ricchezza"),
-        ("xp", "Livelli"),
-        ("trofei", "Trofei"),
-    ])
-    async def test_each_tab_renders_its_own_board(
-        self, session, user_factory, board, expected
-    ):
+    @pytest.mark.parametrize(
+        "board,expected",
+        [
+            ("coins", "Ricchezza"),
+            ("xp", "Livelli"),
+            ("trofei", "Trofei"),
+        ],
+    )
+    async def test_each_tab_renders_its_own_board(self, session, user_factory, board, expected):
         await _players(user_factory)
-        callback = _FakeCallback(f"lead:{board}")
+        callback = _FakeCallback(LeaderboardCb(action="show", board=board))
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead(callback, callback.callback_data, session)
 
         assert expected in callback.said
 
     async def test_the_switched_board_marks_its_own_tab(self, session, user_factory):
         await _players(user_factory)
-        callback = _FakeCallback("lead:xp")
+        callback = _FakeCallback(LeaderboardCb(action="show", board="xp"))
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead(callback, callback.callback_data, session)
 
         labels = [b.text for row in callback.message.markups[0].inline_keyboard for b in row]
         assert any(t.startswith("•") and "XP" in t for t in labels)
 
-    async def test_an_unknown_board_is_ignored(self, session, user_factory):
-        """Callback data is user-supplied; an old or forged tab must do nothing."""
+    @pytest.mark.parametrize("board", [None, "inventata"])
+    async def test_a_missing_or_unknown_board_is_ignored_before_rendering(
+        self, session, user_factory, board
+    ):
+        """A typed but forged tab must not fall through to the money renderer."""
         await _players(user_factory)
-        callback = _FakeCallback("lead:inventata")
+        callback = _FakeCallback(LeaderboardCb(action="show", board=board))
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead(callback, callback.callback_data, session)
 
         assert callback.said == "" and callback.answers == [(None, False)]
 
     async def test_close_deletes_the_message(self, session):
-        callback = _FakeCallback("lead:close")
+        callback = _FakeCallback(LeaderboardCb(action="close"))
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead_close(callback)
 
         assert callback.message.deleted
 
     async def test_close_on_a_message_that_cannot_be_deleted_still_answers(self, session):
         """Telegram refuses to delete messages older than 48h; leaving the callback
         unanswered would spin the client's loading indicator forever."""
-        callback = _FakeCallback("lead:close", message=_FakeMessage(editable=False))
+        callback = _FakeCallback(
+            LeaderboardCb(action="close"), message=_FakeMessage(editable=False)
+        )
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead_close(callback)
 
         assert callback.answers == [(None, False)]
 
@@ -266,8 +267,10 @@ class TestSwitcher:
         """Telegram rejects an edit that changes nothing; that error must not reach
         the user as a failed button."""
         await _players(user_factory)
-        callback = _FakeCallback("lead:coins", message=_FakeMessage(editable=False))
+        callback = _FakeCallback(
+            LeaderboardCb(action="show", board="coins"), message=_FakeMessage(editable=False)
+        )
 
-        await leaderboard.cb_lead(callback, session)
+        await leaderboard.cb_lead(callback, callback.callback_data, session)
 
         assert callback.answers == [(None, False)]

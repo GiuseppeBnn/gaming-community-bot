@@ -1,6 +1,9 @@
 # Guess The Game & Sound Quest — design
 
-Data: 2026-07-27 · Branch: `test_giu` · Stato: design approvato, da implementare
+Data: 2026-07-27 · Branch: `test_giu` · Stato: ☑ **completato il 2026-07-28** — eseguito da
+[`2026-07-27-guess-the-game.md`](../plans/2026-07-27-guess-the-game.md) (motore, giudice in quattro
+stadi, FSM di creazione, chiusura programmabile, reveal); hardening successivi in
+[`2026-07-28-guess-sound-hardening-design.md`](2026-07-28-guess-sound-hardening-design.md).
 
 Due nuovi eventi admin-driven, giocati **in privato** col bot: si indovina un
 videogioco da un'**immagine** (`guess`, "Guess The Game") o da un **audio**

@@ -27,6 +27,8 @@ from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
+from handlers.callbacks import EventCb, SchedCb
+from handlers.event_types.base import PostCommitHook
 from keyboards.common_kb import confirm_cancel_kb
 from services import group_registry, schedule_service
 from utils import cooldown
@@ -49,7 +51,7 @@ class ScheduleStates(StatesGroup):
 
 def _cancel_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="❌ Annulla", callback_data="sched:cancel")
+        InlineKeyboardButton(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
     ]])
 
 
@@ -81,9 +83,9 @@ async def start_schedule_flow(message: Message, state: FSMContext) -> None:
     b = InlineKeyboardBuilder()
     types = event_types.all_types()
     for et in types:
-        b.button(text=et.hub_label, callback_data=f"sched:type:{et.key}")
-    b.button(text="❌ Annulla", callback_data="sched:cancel")
-    b.adjust(len(types) or 1, 1)
+        b.button(text=et.hub_label, callback_data=SchedCb(action="type", key=et.key).pack())
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
+    b.adjust(1)
     await message.answer("🗓️ <b>Programma un evento</b>\n\nCosa vuoi programmare?", reply_markup=b.as_markup())
 
 
@@ -103,7 +105,7 @@ async def cmd_programma(message: Message, state: FSMContext) -> None:
     await start_schedule_flow(message, state)
 
 
-@router.callback_query(F.data == "sched:cancel")
+@router.callback_query(SchedCb.filter(F.action == "cancel"))
 async def cb_sched_cancel(callback: CallbackQuery, state: FSMContext) -> None:
     # Nothing entered yet (e.g. the type-choice menu / quiz picker) → cancel
     # directly; otherwise confirm before discarding the entered data.
@@ -113,19 +115,21 @@ async def cb_sched_cancel(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await callback.message.answer(
         "⚠️ Sicuro di voler annullare? I dati inseriti andranno persi.",
-        reply_markup=confirm_cancel_kb("sched:cancel_yes", "sched:cancel_no"),
+        reply_markup=confirm_cancel_kb(
+            SchedCb(action="cancel_yes").pack(), SchedCb(action="cancel_no").pack()
+        ),
     )
     await callback.answer()
 
 
-@router.callback_query(F.data == "sched:cancel_yes")
+@router.callback_query(SchedCb.filter(F.action == "cancel_yes"))
 async def cb_sched_cancel_yes(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.edit_text("❌ Operazione annullata.")
     await callback.answer()
 
 
-@router.callback_query(F.data == "sched:cancel_no")
+@router.callback_query(SchedCb.filter(F.action == "cancel_no"))
 async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
     await callback.message.edit_text("▶️ Ok, continua pure da dove eri rimasto.")
     await callback.answer()
@@ -136,8 +140,11 @@ async def cb_sched_cancel_no(callback: CallbackQuery) -> None:
 def _pick_kb(task_type: str, items: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for iid, label in items:
-        b.button(text=f"#{iid} {label[:30]}", callback_data=f"sched:pick:{task_type}:{iid}")
-    b.button(text="❌ Annulla", callback_data="sched:cancel")
+        b.button(
+            text=f"#{iid} {label[:30]}",
+            callback_data=SchedCb(action="pick", key=task_type, item_id=iid).pack(),
+        )
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
     b.adjust(1)
     return b.as_markup()
 
@@ -160,8 +167,8 @@ async def start_schedule_for(
     if action is None and getattr(et, "closable", False):
         b = InlineKeyboardBuilder()
         for key, (button, _word) in _ACTIONS.items():
-            b.button(text=button, callback_data=f"sched:act:{key}")
-        b.button(text="❌ Annulla", callback_data="sched:cancel")
+            b.button(text=button, callback_data=SchedCb(action="act", key=key).pack())
+        b.button(text="❌ Annulla", callback_data=SchedCb(action="cancel").pack())
         b.adjust(2, 1)
         await message.answer(
             f"🗓️ <b>Programma:</b> {esc(label)}\n\nCosa vuoi programmare?",
@@ -183,11 +190,13 @@ async def _ask_run_at(
     )
 
 
-@router.callback_query(F.data.startswith("sched:act:"))
-async def cb_action(callback: CallbackQuery, state: FSMContext) -> None:
-    action = callback.data.split(":")[2]
+@router.callback_query(SchedCb.filter(F.action == "act"))
+async def cb_action(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext
+) -> None:
+    action = callback_data.key
     data = await state.get_data()
-    if action not in _ACTIONS or "sched_ref" not in data:
+    if action is None or action not in _ACTIONS or "sched_ref" not in data:
         # Unknown action, or a stale button from a flow that has since been
         # cleared: there is nothing left to schedule, so say so instead of
         # arming a run-at step with no target.
@@ -197,9 +206,15 @@ async def cb_action(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("sched:type:"))
-async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> None:
-    et = event_types.get(callback.data.split(":")[2])
+@router.callback_query(SchedCb.filter(F.action == "type"))
+async def cb_type(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext, db_session
+) -> None:
+    task_type = callback_data.key
+    if task_type is None:
+        await callback.answer()
+        return
+    et = event_types.get(task_type)
     if et is None:
         await callback.answer()
         return
@@ -216,14 +231,22 @@ async def cb_type(callback: CallbackQuery, state: FSMContext, db_session) -> Non
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("sched:pick:"))
-async def cb_pick_event(callback: CallbackQuery, state: FSMContext) -> None:
-    _, _, task_type, raw_id = callback.data.split(":")
-    et = event_types.get(task_type)
-    if et is None or not raw_id.isdigit():
+@router.callback_query(SchedCb.filter(F.action == "pick"))
+async def cb_pick_event(
+    callback: CallbackQuery, callback_data: SchedCb, state: FSMContext
+) -> None:
+    task_type = callback_data.key
+    # No isdigit() guard: a non-numeric id no longer reaches this handler, the
+    # filter drops it (tests/unit/test_callbacks.py).
+    item_id = callback_data.item_id
+    if task_type is None or item_id is None:
         await callback.answer()
         return
-    ref_id = int(raw_id)
+    et = event_types.get(task_type)
+    if et is None:
+        await callback.answer()
+        return
+    ref_id = item_id
     await start_schedule_for(
         callback.message, state, task_type, ref_id, f"{et.hub_label} #{ref_id}"
     )
@@ -252,31 +275,97 @@ async def fsm_event_runat(message: Message, state: FSMContext, db_session) -> No
 # /programmati — list & cancel
 # ---------------------------------------------------------------------------
 
-@router.message(Command("programmati"), IsAdminFilter())
-async def cmd_programmati(message: Message, db_session) -> None:
+def _task_what(t) -> str:
+    """The «▶️ Avvio»/«🏁 Chiusura» label for a task — which one is pending is the
+    difference between cancelling the right timer and the wrong one."""
+    try:
+        action = schedule_service.task_payload(t).get("action", _ACTION_START)
+    except (TypeError, ValueError):
+        return "⚠️ Dati non validi"
+    return _ACTIONS[action][0] if action in _ACTIONS else ""
+
+
+def _task_label(t) -> str:
+    et = event_types.get(t.task_type)
+    return et.hub_label if et else t.task_type
+
+
+async def _programmati_view(db_session) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the /programmati list: one tappable button per task (opens its
+    per-task screen). Empty state has no keyboard."""
     tasks = await schedule_service.list_pending(db_session)
     if not tasks:
-        await message.reply("🗓️ Nessun evento programmato.")
-        return
+        return "🗓️ Nessun evento programmato.", InlineKeyboardMarkup(inline_keyboard=[])
     b = InlineKeyboardBuilder()
     lines = ["🗓️ <b>Eventi programmati</b>\n"]
     for t in tasks:
         when = schedule_service.to_local(t.run_at).strftime("%d/%m %H:%M")
-        et = event_types.get(t.task_type)
-        label = et.hub_label if et else t.task_type
-        # An item can have both a start and a close pending: saying which is which
-        # is the difference between cancelling the right one and the wrong one.
-        action = schedule_service.task_payload(t).get("action", _ACTION_START)
-        what = _ACTIONS[action][0] if action in _ACTIONS else ""
+        label, what = _task_label(t), _task_what(t)
         lines.append(f"• #{t.id} {label} {what} — {when}")
-        b.button(text=f"❌ Annulla #{t.id}", callback_data=f"sched:del:{t.id}")
+        b.button(
+            text=f"#{t.id} {label} {what}"[:60],
+            callback_data=SchedCb(action="view", item_id=t.id).pack(),
+        )
     b.adjust(1)
-    await message.reply("\n".join(lines), reply_markup=b.as_markup())
+    return "\n".join(lines), b.as_markup()
 
 
-@router.callback_query(F.data.startswith("sched:del:"))
-async def cb_sched_del(callback: CallbackQuery, db_session) -> None:
-    task_id = int(callback.data.split(":")[2])
+@router.message(Command("programmati"), IsAdminFilter())
+async def cmd_programmati(message: Message, db_session) -> None:
+    text, kb = await _programmati_view(db_session)
+    await message.reply(text, reply_markup=kb)
+
+
+@router.callback_query(SchedCb.filter(F.action == "list"))
+async def cb_sched_list(callback: CallbackQuery, db_session) -> None:
+    text, kb = await _programmati_view(db_session)
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@router.callback_query(SchedCb.filter(F.action == "view"))
+async def cb_sched_view(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
+    """Per-task screen: view its read-only info (where the type offers one) or
+    cancel it. Cancelling used to sit directly in the list; it moved here."""
+    task_id = callback_data.item_id
+    if task_id is None:
+        await callback.answer()
+        return
+    task = await schedule_service.get_task(db_session, task_id)
+    if task is None or task.status != "pending":
+        # Executed/cancelled in the meantime → back to a fresh list.
+        text, kb = await _programmati_view(db_session)
+        await callback.message.edit_text(text, reply_markup=kb)
+        await callback.answer("Non più programmato.", show_alert=True)
+        return
+    when = schedule_service.to_local(task.run_at).strftime("%d/%m %H:%M")
+    label, what = _task_label(task), _task_what(task)
+    b = InlineKeyboardBuilder()
+    # «Guarda info» only for types that expose a read-only recap (guess/sound).
+    et = event_types.get(task.task_type)
+    if getattr(et, "render_info", None) is not None:
+        b.button(
+            text="👁 Guarda info",
+            callback_data=EventCb(
+                action="info", task_type=task.task_type, item_id=task.ref_id
+            ).pack(),
+        )
+    b.button(text="❌ Annulla", callback_data=SchedCb(action="del", item_id=task_id).pack())
+    b.button(text="⬅️ Indietro", callback_data=SchedCb(action="list").pack())
+    b.adjust(1)
+    await callback.message.edit_text(
+        f"🗓️ <b>{esc(label)}</b> {what}\n🕒 Esecuzione: <b>{when}</b>",
+        reply_markup=b.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(SchedCb.filter(F.action == "del"))
+async def cb_sched_del(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
+    task_id = callback_data.item_id
+    if task_id is None:
+        await callback.answer()
+        return
     ok = await schedule_service.cancel(db_session, task_id)
     await db_session.commit()
     await callback.answer("Annullato." if ok else "Non annullabile.", show_alert=not ok)
@@ -347,7 +436,7 @@ async def _confirm(message: Message, task, action: str = _ACTION_START) -> None:
 # Scheduler loop + executor (started from main.py)
 # ---------------------------------------------------------------------------
 
-async def execute_task(bot, session, task) -> None:
+async def execute_task(bot, session, task) -> PostCommitHook | None:
     """Execute a single due task by delegating to its event-type spec.
 
     Raises on failure (the caller marks the task failed). Dispatch goes through
@@ -362,18 +451,23 @@ async def execute_task(bot, session, task) -> None:
     et = event_types.get(task.task_type)
     if et is None:
         raise RuntimeError(f"Tipo task sconosciuto: {task.task_type}")
-    await et.execute_scheduled(bot, session, task, group_id)
+    return await et.execute_scheduled(bot, session, task, group_id)
 
 
-async def _notify_creator(bot, task, text: str) -> None:
+async def _notify_creator(
+    bot,
+    creator_tg_id: int | None,
+    task_id: int,
+    text: str,
+) -> None:
     """Best-effort DM to the admin who scheduled the task, so failures/skips are
     visible on Telegram and not only in the logs."""
-    if not getattr(task, "created_by_tg_id", None):
+    if not creator_tg_id:
         return
     try:
-        await bot.send_message(task.created_by_tg_id, text)
+        await bot.send_message(creator_tg_id, text)
     except Exception:  # noqa: BLE001 — the admin may have never opened the bot in private
-        log.warning("Avviso task #%s all'admin %s fallito", task.id, task.created_by_tg_id)
+        log.warning("Avviso task #%s all'admin %s fallito", task_id, creator_tg_id)
 
 
 async def _run_due_task(bot, session, task) -> None:
@@ -387,31 +481,87 @@ async def _run_due_task(bot, session, task) -> None:
     (illegal in async). Each task is its own unit: a failure never bleeds into the
     next one in the same tick.
     """
-    task_id = getattr(task, "id", "?")
-    task_type = getattr(task, "task_type", "?")
-    notice: str | None = None
+    task_id = int(task.id)
+    creator_tg_id = getattr(task, "created_by_tg_id", None)
+    retry_count = int(getattr(task, "retry_count", 0))
+    task_type = str(getattr(task, "task_type", "?"))
+    payload: dict = {}
+
     try:
-        try:
-            await execute_task(bot, session, task)
-            await schedule_service.mark_done(session, task)
-        except schedule_service.TaskSkip as e:
-            # Not an error: the task was an intentional no-op (e.g. quiz already running).
-            await session.rollback()
-            log.info("Task #%s saltato: %s", task_id, e)
-            await schedule_service.mark_done(session, task)
-            notice = f"ℹ️ Task #{task_id} ({task_type}) saltato: {e}"
-        except Exception as e:  # noqa: BLE001
-            await session.rollback()
-            log.exception("Task #%s fallito: %s", task_id, e)
-            await schedule_service.mark_failed(session, task, str(e))
-            notice = f"⚠️ Task #{task_id} ({task_type}) fallito: {e}"
+        # Persisted payload is untrusted state.  Decode it inside the same failure
+        # boundary as dispatch so corrupt JSON is rolled back and terminally
+        # recorded by scalar id instead of aborting the scheduler tick.
+        payload = schedule_service.task_payload(task)
+        hook = await execute_task(bot, session, task)
+        await schedule_service.mark_done(session, task)
         await session.commit()
-    except Exception:  # noqa: BLE001 — persisting the outcome failed; retry next tick
-        log.exception("Task #%s: persistenza esito fallita", task_id)
+    except schedule_service.TaskSkip:
         await session.rollback()
+        try:
+            await schedule_service.mark_done_by_id(session, task_id)
+            await session.commit()
+        except Exception:  # noqa: BLE001 — preserve the pending row for a later tick
+            log.warning("Task #%s esito skip non persistito", task_id)
+            await session.rollback()
+            return
+        await _notify_creator(bot, creator_tg_id, task_id, f"ℹ️ Task #{task_id} saltato.")
         return
-    if notice:
-        await _notify_creator(bot, task, notice)
+    except Exception as exc:  # noqa: BLE001 — task errors are isolated per due row
+        await session.rollback()
+        internal_expiry = (
+            payload.get("internal") is True and payload.get("action") == "expire"
+        )
+        if internal_expiry:
+            try:
+                await schedule_service.mark_retry(
+                    session,
+                    task_id,
+                    retry_count=retry_count,
+                    error=str(exc),
+                    now=schedule_service.utcnow(),
+                )
+                await session.commit()
+            except Exception:  # noqa: BLE001 — leave the old pending row resumable
+                log.warning("Task #%s retry non persistito", task_id)
+                await session.rollback()
+                return
+            new_retry_count = retry_count + 1
+            if new_retry_count == 1 or new_retry_count % 6 == 0:
+                await _notify_creator(
+                    bot,
+                    creator_tg_id,
+                    task_id,
+                    f"⚠️ Scadenza task #{task_id}: verrà riprovata.",
+                )
+            else:
+                log.warning(
+                    "Task #%s retry=%s type=%s",
+                    task_id,
+                    new_retry_count,
+                    task_type,
+                )
+            return
+        try:
+            await schedule_service.mark_failed_by_id(session, task_id, str(exc))
+            await session.commit()
+        except Exception:  # noqa: BLE001 — preserve the pending row for a later tick
+            log.warning("Task #%s failure non persistita", task_id)
+            await session.rollback()
+            return
+        log.warning("Task #%s fallito type=%s", task_id, task_type)
+        await _notify_creator(bot, creator_tg_id, task_id, f"⚠️ Task #{task_id} fallito.")
+        return
+
+    if hook is not None:
+        try:
+            await hook()
+        except Exception as exc:  # noqa: BLE001 — the durable task stays done
+            log.warning(
+                "Task #%s post-commit hook failed type=%s error=%s",
+                task_id,
+                task_type,
+                type(exc).__name__,
+            )
 
 
 async def scheduler_loop(bot) -> None:

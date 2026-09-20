@@ -7,7 +7,7 @@ import logging
 from aiogram import Router
 from aiogram.filters.command import Command
 from aiogram.types import Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
@@ -45,6 +45,8 @@ _TX_LABELS = {
     TransactionType.daily_reward.value: "📅 Premio giornaliero",
     TransactionType.shop_purchase.value: "🛒 Acquisto negozio",
     TransactionType.quiz_reward.value: "🧠 Premio quiz",
+    TransactionType.poll_reward.value: "📊 Premio sondaggio",
+    TransactionType.ai_game_reward.value: "🐲 Premio gioco di Alduino",
 }
 
 
@@ -109,6 +111,16 @@ async def cmd_storico(message: Message, db_session: AsyncSession) -> None:
 async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     try:
         reward, streak = await economy_service.claim_daily(db_session, message.from_user.id)
+        # Capped participation XP + milestone check: committed together with the
+        # claim, so a failure anywhere in the unit rolls back all of it (a paid
+        # claim whose XP side effects were lost could never be retried).
+        xp_res = await xp_service.grant_xp(
+            db_session, message.from_user.id, settings.xp_per_daily_claim,
+            XpSource.daily, capped=True,
+        )
+        newly_earned = await badge_service.check_and_award_milestones(
+            db_session, message.from_user.id
+        )
         await db_session.commit()
     except DailyAlreadyClaimedError as e:
         # Neutral wording: the block can be either "already claimed today" or the
@@ -121,16 +133,6 @@ async def cmd_daily(message: Message, db_session: AsyncSession) -> None:
     except WalletNotFoundError:
         await message.reply("⚠️ Wallet non trovato. Usa /start per registrarti.")
         return
-
-    # Capped participation XP + milestone check, committed together.
-    xp_res = await xp_service.grant_xp(
-        db_session, message.from_user.id, settings.xp_per_daily_claim,
-        XpSource.daily, capped=True,
-    )
-    newly_earned = await badge_service.check_and_award_milestones(
-        db_session, message.from_user.id
-    )
-    await db_session.commit()
     # Trophies are announced in the GROUP (tagging the user), not in private.
     await announce_trophies(message.bot, db_session, message.from_user.id, newly_earned)
 
@@ -190,14 +192,17 @@ async def cmd_trasferisci(message: Message, db_session: AsyncSession) -> None:
         await message.answer("⚠️ L'importo deve essere positivo.")
         return
 
-    # Resolve target by username or tg_id
+    # Resolve target by username or tg_id. Telegram usernames are case-insensitive
+    # (@Mario == @mario), so match on lower() — otherwise a hand-typed casing that
+    # differs from the stored one (common in private chat, where there is no member
+    # autocomplete) misses and looks like the user never interacted.
     if target_ref.isdigit():
         result = await db_session.execute(
             select(User).where(User.tg_id == int(target_ref))
         )
     else:
         result = await db_session.execute(
-            select(User).where(User.username == target_ref)
+            select(User).where(func.lower(User.username) == target_ref.lower())
         )
     target = result.scalar_one_or_none()
     if target is None:
@@ -263,7 +268,10 @@ async def cmd_credita(message: Message, db_session: AsyncSession) -> None:
     if target_ref.isdigit():
         result = await db_session.execute(select(User).where(User.tg_id == int(target_ref)))
     else:
-        result = await db_session.execute(select(User).where(User.username == target_ref))
+        # Case-insensitive: Telegram usernames ignore case (see cmd_trasferisci).
+        result = await db_session.execute(
+            select(User).where(func.lower(User.username) == target_ref.lower())
+        )
     target = result.scalar_one_or_none()
     if target is None:
         await message.answer(

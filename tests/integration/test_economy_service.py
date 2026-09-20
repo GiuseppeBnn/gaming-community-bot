@@ -65,6 +65,25 @@ class TestCredit:
         assert entries[0].amount == 200
         assert entries[0].tx_type == TransactionType.admin_credit.value
 
+    async def test_ai_game_reward_is_recorded_without_a_reference(self, session, user_factory):
+        await user_factory(tg_id=7, coins=0)
+
+        await eco.credit(
+            session,
+            7,
+            200,
+            TransactionType.ai_game_reward,
+            "Alduino reward",
+            reference_id=None,
+        )
+        await session.commit()
+
+        from sqlalchemy import select
+
+        entry = (await session.execute(select(LedgerEntry))).scalar_one()
+        assert entry.tx_type == "ai_game_reward"
+        assert entry.reference_id is None
+
     async def test_ledger_truncates_long_description(self, session, user_factory):
         await user_factory(tg_id=1, coins=0)
         long_desc = "x" * 600

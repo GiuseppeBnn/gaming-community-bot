@@ -38,6 +38,7 @@ from database.models import TransactionType, Wallet
 from exceptions.economy import InsufficientFundsError, WalletNotFoundError
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
+from handlers.callbacks import ShopCb
 from keyboards.shop_kb import (
     get_consumable_confirm_kb,
     get_locanda_home_kb,
@@ -145,13 +146,13 @@ def _catalog_text(balance: int, has_items: bool) -> str:
 # Callbacks
 # ---------------------------------------------------------------------------
 
-@router.callback_query(F.data == "shop:home")
+@router.callback_query(ShopCb.filter(F.action == "home"))
 async def cb_shop_home(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await _show_home(callback.message, db_session, callback.from_user.id, edit=True)
     await callback.answer()
 
 
-@router.callback_query(F.data == "shop:list")
+@router.callback_query(ShopCb.filter(F.action == "list"))
 async def cb_shop_list(callback: CallbackQuery, db_session: AsyncSession) -> None:
     tg_id = callback.from_user.id
     balance = await _balance(db_session, tg_id)
@@ -164,14 +165,19 @@ async def cb_shop_list(callback: CallbackQuery, db_session: AsyncSession) -> Non
     await callback.answer()
 
 
-@router.callback_query(F.data == "shop:owned")
+@router.callback_query(ShopCb.filter(F.action == "owned"))
 async def cb_shop_owned(callback: CallbackQuery) -> None:
     await callback.answer("🎁 Possiedi già questa personalizzazione.", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("shop:buy:"))
-async def cb_shop_buy(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    item_key = callback.data[len("shop:buy:"):]
+@router.callback_query(ShopCb.filter(F.action == "buy"))
+async def cb_shop_buy(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    item_key = callback_data.key
+    if item_key is None:
+        await callback.answer()
+        return
     item = shop_service.get_item(item_key)
     if item is None:
         await callback.answer("⚠️ Oggetto non disponibile.", show_alert=True)
@@ -200,9 +206,14 @@ async def cb_shop_buy(callback: CallbackQuery, db_session: AsyncSession) -> None
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("shop:exec:"))
-async def cb_shop_execute(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    item_key = callback.data[len("shop:exec:"):]
+@router.callback_query(ShopCb.filter(F.action == "exec"))
+async def cb_shop_execute(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    item_key = callback_data.key
+    if item_key is None:
+        await callback.answer()
+        return
     item = shop_service.get_item(item_key)
     if item is None:
         await callback.answer("⚠️ Oggetto non disponibile.", show_alert=True)
@@ -266,7 +277,7 @@ def _menu_text(balance: int) -> str:
     )
 
 
-@router.callback_query(F.data == "shop:menu")
+@router.callback_query(ShopCb.filter(F.action == "menu"))
 async def cb_shop_menu(callback: CallbackQuery, db_session: AsyncSession) -> None:
     cats = consumable_service.get_categories()
     if not cats:
@@ -279,9 +290,14 @@ async def cb_shop_menu(callback: CallbackQuery, db_session: AsyncSession) -> Non
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("shop:cat:"))
-async def cb_shop_category(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    cat_key = callback.data[len("shop:cat:"):]
+@router.callback_query(ShopCb.filter(F.action == "cat"))
+async def cb_shop_category(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    cat_key = callback_data.key
+    if cat_key is None:
+        await callback.answer()
+        return
     cat = consumable_service.get_category(cat_key)
     items = consumable_service.items_in_category(cat_key)
     if cat is None or not items:
@@ -299,9 +315,14 @@ async def cb_shop_category(callback: CallbackQuery, db_session: AsyncSession) ->
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("shop:cbuy:"))
-async def cb_consumable_buy(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    item_key = callback.data[len("shop:cbuy:"):]
+@router.callback_query(ShopCb.filter(F.action == "cbuy"))
+async def cb_consumable_buy(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    item_key = callback_data.key
+    if item_key is None:
+        await callback.answer()
+        return
     item = consumable_service.get_item(item_key)
     if item is None:
         await callback.answer("⚠️ Oggetto non disponibile.", show_alert=True)
@@ -327,9 +348,14 @@ async def cb_consumable_buy(callback: CallbackQuery, db_session: AsyncSession) -
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("shop:cexec:"))
-async def cb_consumable_execute(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    item_key = callback.data[len("shop:cexec:"):]
+@router.callback_query(ShopCb.filter(F.action == "cexec"))
+async def cb_consumable_execute(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    item_key = callback_data.key
+    if item_key is None:
+        await callback.answer()
+        return
     item = consumable_service.get_item(item_key)
     if item is None:
         await callback.answer("⚠️ Oggetto non disponibile.", show_alert=True)
@@ -371,7 +397,7 @@ async def cb_consumable_execute(callback: CallbackQuery, db_session: AsyncSessio
     await callback.answer("🎉 Acquistato!")
 
 
-@router.callback_query(F.data == "shop:pantry")
+@router.callback_query(ShopCb.filter(F.action == "pantry"))
 async def cb_shop_pantry(callback: CallbackQuery, db_session: AsyncSession) -> None:
     items = await consumable_service.inventory(db_session, callback.from_user.id)
     if not items:
@@ -423,15 +449,20 @@ async def _show_tag_switcher(message: Message, db_session: AsyncSession, tg_id: 
         await message.answer(text, reply_markup=kb)
 
 
-@router.callback_query(F.data == "shop:tags")
+@router.callback_query(ShopCb.filter(F.action == "tags"))
 async def cb_shop_tags(callback: CallbackQuery, db_session: AsyncSession) -> None:
     await _show_tag_switcher(callback.message, db_session, callback.from_user.id, edit=True)
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("shop:tag:"))
-async def cb_shop_toggle_tag(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    item_key = callback.data[len("shop:tag:"):]
+@router.callback_query(ShopCb.filter(F.action == "tag"))
+async def cb_shop_toggle_tag(
+    callback: CallbackQuery, callback_data: ShopCb, db_session: AsyncSession
+) -> None:
+    item_key = callback_data.key
+    if item_key is None:
+        await callback.answer()
+        return
     result = await shop_service.toggle_tag(
         db_session, callback.from_user.id, item_key, settings.max_active_tags
     )
@@ -448,7 +479,7 @@ async def cb_shop_toggle_tag(callback: CallbackQuery, db_session: AsyncSession) 
     await _show_tag_switcher(callback.message, db_session, callback.from_user.id, edit=True)
 
 
-@router.callback_query(F.data == "shop:close")
+@router.callback_query(ShopCb.filter(F.action == "close"))
 async def cb_shop_close(callback: CallbackQuery) -> None:
     try:
         await callback.message.delete()

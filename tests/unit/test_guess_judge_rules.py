@@ -161,6 +161,15 @@ class TestVerdictDataclass:
 
 
 class TestPrompt:
+    def test_rounds_share_the_complete_policy_prefix(self):
+        first = gj.build_prompt("Portal 2")
+        second = gj.build_prompt("Half-Life 2")
+        prefix, answer = first.rsplit("RISPOSTA CORRETTA:", 1)
+        assert second.startswith(prefix)
+        assert answer == " «Portal 2»"
+        assert "ACCETTA:" in prefix and "RIFIUTA:" in prefix
+        assert gj._CONTENT_OPEN in prefix and gj._CONTENT_CLOSE in prefix
+
     def test_the_canonical_answer_is_in_the_prompt(self):
         assert "GTA San Andreas" in gj.build_prompt("GTA San Andreas")
 

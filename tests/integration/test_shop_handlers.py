@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from sqlalchemy import func, select
 
 from database.models import ShopPurchase, User, Wallet
+from handlers.callbacks import ShopCb
 from handlers import shop
 from services import catalog_loader, consumable_service, shop_service
 from utils import cooldown
@@ -68,8 +69,9 @@ class _FakeMessage:
 
 
 class _FakeCallback:
-    def __init__(self, data: str, message=None, user_id: int = USER_ID) -> None:
-        self.data = data
+    def __init__(self, callback_data: ShopCb, message=None, user_id: int = USER_ID) -> None:
+        self.callback_data = callback_data
+        self.data = callback_data.pack()
         self.message = message or _FakeMessage()
         self.bot = self.message.bot
         self.from_user = SimpleNamespace(id=user_id)
@@ -85,6 +87,33 @@ class _FakeCallback:
     @property
     def toasts(self) -> list[str]:
         return [t for t, alert in self.answers if not alert and t]
+
+
+def _shop_callback(action: str, key: str | None = None, message=None, user_id: int = USER_ID):
+    return _FakeCallback(ShopCb(action=action, key=key), message, user_id)
+
+
+async def _call_keyed(handler, callback: _FakeCallback, session) -> None:
+    await handler(callback, callback.callback_data, session)
+
+
+async def test_keyed_callbacks_without_a_key_are_ignored_before_any_purchase_logic():
+    """Removing a `key is None` guard would turn this into an unavailable-item
+    alert or reach a service with `None`; either behavior admits a malformed
+    callback beyond its typed boundary."""
+    for handler, action in (
+        (shop.cb_shop_buy, "buy"),
+        (shop.cb_shop_execute, "exec"),
+        (shop.cb_shop_category, "cat"),
+        (shop.cb_consumable_buy, "cbuy"),
+        (shop.cb_consumable_execute, "cexec"),
+        (shop.cb_shop_toggle_tag, "tag"),
+    ):
+        callback = _shop_callback(action)
+
+        await _call_keyed(handler, callback, None)
+
+        assert callback.answers == [(None, False)], action
 
 
 async def _coins(session, tg_id: int = USER_ID) -> int:
@@ -107,9 +136,9 @@ class TestCosmeticPurchase:
     async def test_buying_charges_once_and_applies_the_tag(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=5000)
         item = shop_service.get_item(COSMETIC)
-        cb = _FakeCallback(f"shop:exec:{COSMETIC}")
+        cb = _shop_callback("exec", COSMETIC)
 
-        await shop.cb_shop_execute(cb, session)
+        await _call_keyed(shop.cb_shop_execute, cb, session)
 
         assert await _coins(session) == 5000 - item.price
         assert await _purchases(session, COSMETIC) == 1
@@ -125,11 +154,11 @@ class TestCosmeticPurchase:
         await user_factory(tg_id=USER_ID, coins=5000)
         item = shop_service.get_item(COSMETIC)
 
-        await shop.cb_shop_execute(_FakeCallback(f"shop:exec:{COSMETIC}"), session)
+        await _call_keyed(shop.cb_shop_execute, _shop_callback("exec", COSMETIC), session)
         after_first = await _coins(session)
 
-        second = _FakeCallback(f"shop:exec:{COSMETIC}")
-        await shop.cb_shop_execute(second, session)
+        second = _shop_callback("exec", COSMETIC)
+        await _call_keyed(shop.cb_shop_execute, second, session)
 
         assert await _coins(session) == after_first == 5000 - item.price
         assert await _purchases(session, COSMETIC) == 1
@@ -137,26 +166,26 @@ class TestCosmeticPurchase:
 
     async def test_not_enough_coins_leaves_the_wallet_alone(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=10)
-        cb = _FakeCallback(f"shop:exec:{COSMETIC}")
+        cb = _shop_callback("exec", COSMETIC)
 
-        await shop.cb_shop_execute(cb, session)
+        await _call_keyed(shop.cb_shop_execute, cb, session)
 
         assert await _coins(session) == 10
         assert await _purchases(session, COSMETIC) == 0
         assert cb.alerts and "insufficiente" in cb.alerts[0]
 
     async def test_a_user_without_a_wallet_is_told_to_register(self, session):
-        cb = _FakeCallback(f"shop:exec:{COSMETIC}")
+        cb = _shop_callback("exec", COSMETIC)
 
-        await shop.cb_shop_execute(cb, session)
+        await _call_keyed(shop.cb_shop_execute, cb, session)
 
         assert cb.alerts and "/start" in cb.alerts[0]
 
     async def test_an_unknown_item_is_refused(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=5000)
-        cb = _FakeCallback("shop:exec:tag_inesistente")
+        cb = _shop_callback("exec", "tag_inesistente")
 
-        await shop.cb_shop_execute(cb, session)
+        await _call_keyed(shop.cb_shop_execute, cb, session)
 
         assert await _coins(session) == 5000
         assert cb.alerts and "non disponibile" in cb.alerts[0]
@@ -165,9 +194,9 @@ class TestCosmeticPurchase:
         """The user approves the spend from this screen, so both numbers on it have to
         be theirs — the panel's author is the bot, which owns no wallet."""
         await user_factory(tg_id=USER_ID, coins=4321)
-        cb = _FakeCallback(f"shop:buy:{COSMETIC}")
+        cb = _shop_callback("buy", COSMETIC)
 
-        await shop.cb_shop_buy(cb, session)
+        await _call_keyed(shop.cb_shop_buy, cb, session)
 
         text = cb.message.texts[-1]
         assert "2,000" in text or "2.000" in text or "2000" in text
@@ -177,9 +206,9 @@ class TestCosmeticPurchase:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=1)
-        cb = _FakeCallback(f"shop:buy:{COSMETIC}")
+        cb = _shop_callback("buy", COSMETIC)
 
-        await shop.cb_shop_buy(cb, session)
+        await _call_keyed(shop.cb_shop_buy, cb, session)
 
         assert cb.message.texts == []
         assert cb.alerts and "insufficiente" in cb.alerts[0]
@@ -188,10 +217,10 @@ class TestCosmeticPurchase:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=5000)
-        await shop.cb_shop_execute(_FakeCallback(f"shop:exec:{COSMETIC}"), session)
+        await _call_keyed(shop.cb_shop_execute, _shop_callback("exec", COSMETIC), session)
 
-        cb = _FakeCallback(f"shop:buy:{COSMETIC}")
-        await shop.cb_shop_buy(cb, session)
+        cb = _shop_callback("buy", COSMETIC)
+        await _call_keyed(shop.cb_shop_buy, cb, session)
 
         assert cb.message.texts == []
         assert cb.alerts and "già" in cb.alerts[0]
@@ -200,9 +229,9 @@ class TestCosmeticPurchase:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=5000)
-        cb = _FakeCallback("shop:buy:tag_inesistente")
+        cb = _shop_callback("buy", "tag_inesistente")
 
-        await shop.cb_shop_buy(cb, session)
+        await _call_keyed(shop.cb_shop_buy, cb, session)
 
         assert cb.alerts and "non disponibile" in cb.alerts[0]
 
@@ -217,8 +246,8 @@ class TestConsumablePurchase:
         await user_factory(tg_id=USER_ID, coins=item.price * 3)
 
         for _ in range(3):
-            await shop.cb_consumable_execute(
-                _FakeCallback(f"shop:cexec:{CONSUMABLE}"), session
+            await _call_keyed(
+                shop.cb_consumable_execute, _shop_callback("cexec", CONSUMABLE), session
             )
 
         assert await _coins(session) == 0
@@ -228,15 +257,17 @@ class TestConsumablePurchase:
         item = consumable_service.get_item(CONSUMABLE)
         await user_factory(tg_id=USER_ID, coins=item.price)
 
-        await shop.cb_consumable_execute(_FakeCallback(f"shop:cexec:{CONSUMABLE}"), session)
+        await _call_keyed(
+            shop.cb_consumable_execute, _shop_callback("cexec", CONSUMABLE), session
+        )
 
-        cb = _FakeCallback("shop:pantry")
+        cb = _shop_callback("pantry")
         await shop.cb_shop_pantry(cb, session)
         assert item.name in cb.message.texts[-1]
 
     async def test_an_empty_pantry_says_so(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=0)
-        cb = _FakeCallback("shop:pantry")
+        cb = _shop_callback("pantry")
 
         await shop.cb_shop_pantry(cb, session)
 
@@ -244,18 +275,18 @@ class TestConsumablePurchase:
 
     async def test_not_enough_coins_leaves_the_wallet_alone(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=1)
-        cb = _FakeCallback(f"shop:cexec:{CONSUMABLE}")
+        cb = _shop_callback("cexec", CONSUMABLE)
 
-        await shop.cb_consumable_execute(cb, session)
+        await _call_keyed(shop.cb_consumable_execute, cb, session)
 
         assert await _coins(session) == 1
         assert await _purchases(session, CONSUMABLE) == 0
         assert cb.alerts and "insufficiente" in cb.alerts[0]
 
     async def test_a_user_without_a_wallet_is_told_to_register(self, session):
-        cb = _FakeCallback(f"shop:cexec:{CONSUMABLE}")
+        cb = _shop_callback("cexec", CONSUMABLE)
 
-        await shop.cb_consumable_execute(cb, session)
+        await _call_keyed(shop.cb_consumable_execute, cb, session)
 
         assert cb.alerts and "/start" in cb.alerts[0]
 
@@ -263,21 +294,21 @@ class TestConsumablePurchase:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=5000)
-        for handler, data in (
-            (shop.cb_consumable_buy, "shop:cbuy:cons_inesistente"),
-            (shop.cb_consumable_execute, "shop:cexec:cons_inesistente"),
+        for handler, callback_data in (
+            (shop.cb_consumable_buy, ShopCb(action="cbuy", key="cons_inesistente")),
+            (shop.cb_consumable_execute, ShopCb(action="cexec", key="cons_inesistente")),
         ):
-            cb = _FakeCallback(data)
-            await handler(cb, session)
-            assert cb.alerts and "non disponibile" in cb.alerts[0], data
+            cb = _FakeCallback(callback_data)
+            await _call_keyed(handler, cb, session)
+            assert cb.alerts and "non disponibile" in cb.alerts[0], callback_data
         assert await _coins(session) == 5000
 
     async def test_the_confirm_screen_shows_the_price(self, session, user_factory):
         item = consumable_service.get_item(CONSUMABLE)
         await user_factory(tg_id=USER_ID, coins=5000)
-        cb = _FakeCallback(f"shop:cbuy:{CONSUMABLE}")
+        cb = _shop_callback("cbuy", CONSUMABLE)
 
-        await shop.cb_consumable_buy(cb, session)
+        await _call_keyed(shop.cb_consumable_buy, cb, session)
 
         assert str(item.price) in cb.message.texts[-1]
 
@@ -285,9 +316,9 @@ class TestConsumablePurchase:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=1)
-        cb = _FakeCallback(f"shop:cbuy:{CONSUMABLE}")
+        cb = _shop_callback("cbuy", CONSUMABLE)
 
-        await shop.cb_consumable_buy(cb, session)
+        await _call_keyed(shop.cb_consumable_buy, cb, session)
 
         assert cb.message.texts == []
         assert cb.alerts and "insufficiente" in cb.alerts[0]
@@ -313,7 +344,9 @@ class TestConsumablePurchase:
         item = consumable_service.get_item(CONSUMABLE)
         await user_factory(tg_id=USER_ID, coins=item.price)
 
-        await shop.cb_consumable_execute(_FakeCallback(f"shop:cexec:{CONSUMABLE}"), session)
+        await _call_keyed(
+            shop.cb_consumable_execute, _shop_callback("cexec", CONSUMABLE), session
+        )
 
         assert announced == [(USER_ID, ["ghiottone"])]
 
@@ -323,18 +356,18 @@ class TestTagSwitcher:
         total = sum(shop_service.get_item(k).price for k in keys)
         await user_factory(tg_id=USER_ID, coins=total)
         for key in keys:
-            await shop.cb_shop_execute(_FakeCallback(f"shop:exec:{key}"), session)
+            await _call_keyed(shop.cb_shop_execute, _shop_callback("exec", key), session)
 
     async def test_a_tag_can_be_switched_off_and_back_on(self, session, user_factory):
         await self._own(session, user_factory, COSMETIC)
 
-        off = _FakeCallback(f"shop:tag:{COSMETIC}")
-        await shop.cb_shop_toggle_tag(off, session)
+        off = _shop_callback("tag", COSMETIC)
+        await _call_keyed(shop.cb_shop_toggle_tag, off, session)
         assert COSMETIC not in await shop_service.get_active_keys(session, USER_ID)
         assert off.toasts and "disattivato" in off.toasts[0]
 
-        on = _FakeCallback(f"shop:tag:{COSMETIC}")
-        await shop.cb_shop_toggle_tag(on, session)
+        on = _shop_callback("tag", COSMETIC)
+        await _call_keyed(shop.cb_shop_toggle_tag, on, session)
         assert COSMETIC in await shop_service.get_active_keys(session, USER_ID)
         assert on.toasts and "attivato" in on.toasts[0]
 
@@ -342,9 +375,9 @@ class TestTagSwitcher:
         """Otherwise the switcher becomes a way to wear anything in the catalogue for
         free — the buy flow is not the only entry point to the active list."""
         await user_factory(tg_id=USER_ID, coins=0)
-        cb = _FakeCallback("shop:tag:tag_leggenda")
+        cb = _shop_callback("tag", "tag_leggenda")
 
-        await shop.cb_shop_toggle_tag(cb, session)
+        await _call_keyed(shop.cb_shop_toggle_tag, cb, session)
 
         assert cb.alerts and "Non possiedi" in cb.alerts[0]
         assert await shop_service.get_active_keys(session, USER_ID) == []
@@ -359,9 +392,9 @@ class TestTagSwitcher:
         # one being worn; activating the first again must be refused.
         active = set(await shop_service.get_active_keys(session, USER_ID))
         spare = ({COSMETIC, "tag_pro"} - active).pop()
-        cb = _FakeCallback(f"shop:tag:{spare}")
+        cb = _shop_callback("tag", spare)
 
-        await shop.cb_shop_toggle_tag(cb, session)
+        await _call_keyed(shop.cb_shop_toggle_tag, cb, session)
 
         assert cb.alerts and "Massimo" in cb.alerts[0]
         assert set(await shop_service.get_active_keys(session, USER_ID)) == active
@@ -370,7 +403,7 @@ class TestTagSwitcher:
         self, session, user_factory
     ):
         await user_factory(tg_id=USER_ID, coins=0)
-        cb = _FakeCallback("shop:tags")
+        cb = _shop_callback("tags")
 
         await shop.cb_shop_tags(cb, session)
 
@@ -389,9 +422,9 @@ class TestTagSwitcher:
             raise RuntimeError("Bad Request: message is not modified")
 
         message.edit_text = refuse_edit
-        cb = _FakeCallback(f"shop:tag:{COSMETIC}", message)
+        cb = _shop_callback("tag", COSMETIC, message)
 
-        await shop.cb_shop_toggle_tag(cb, session)
+        await _call_keyed(shop.cb_shop_toggle_tag, cb, session)
 
         assert message.texts, "no fallback message was sent"
 
@@ -402,33 +435,33 @@ class TestNavigation:
     ):
         await user_factory(tg_id=USER_ID, coins=5000)
 
-        cb = _FakeCallback("shop:list")
+        cb = _shop_callback("list")
         await shop.cb_shop_list(cb, session)
         assert cb.message.texts
 
         monkeypatch.setattr(catalog_loader, "get_cosmetics", dict)
         monkeypatch.setattr(shop_service, "get_cosmetics", dict)
-        empty = _FakeCallback("shop:list")
+        empty = _shop_callback("list")
         await shop.cb_shop_list(empty, session)
         assert empty.message.texts
 
     async def test_the_menu_and_its_categories_render(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=5000)
 
-        menu = _FakeCallback("shop:menu")
+        menu = _shop_callback("menu")
         await shop.cb_shop_menu(menu, session)
         assert menu.message.texts
 
         category = consumable_service.get_categories()[0]
-        cat_cb = _FakeCallback(f"shop:cat:{category.key}")
-        await shop.cb_shop_category(cat_cb, session)
+        cat_cb = _shop_callback("cat", category.key)
+        await _call_keyed(shop.cb_shop_category, cat_cb, session)
         assert cat_cb.message.texts
 
     async def test_an_unknown_category_is_refused(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=100)
-        cb = _FakeCallback("shop:cat:inesistente")
+        cb = _shop_callback("cat", "inesistente")
 
-        await shop.cb_shop_category(cb, session)
+        await _call_keyed(shop.cb_shop_category, cb, session)
 
         assert cb.message.texts == []
 
@@ -444,7 +477,7 @@ class TestNavigation:
         assert message.texts
 
     async def test_close_deletes_the_panel_and_survives_a_failed_delete(self):
-        cb = _FakeCallback("shop:close")
+        cb = _shop_callback("close")
         await shop.cb_shop_close(cb)
         assert cb.message.deleted
 
@@ -452,11 +485,11 @@ class TestNavigation:
             async def delete(self):
                 raise RuntimeError("message to delete not found")
 
-        await shop.cb_shop_close(_FakeCallback("shop:close", _Undeletable()))
+        await shop.cb_shop_close(_shop_callback("close", message=_Undeletable()))
 
     async def test_owned_screen_renders(self, session, user_factory):
         await user_factory(tg_id=USER_ID, coins=0)
-        cb = _FakeCallback("shop:owned")
+        cb = _shop_callback("owned")
         await shop.cb_shop_owned(cb)
         assert cb.message.texts or cb.answers
 
@@ -471,29 +504,29 @@ class TestBalanceBelongsToTheClicker:
         """
         await user_factory(tg_id=USER_ID, coins=7777)
 
-        for handler, data in (
-            (shop.cb_shop_list, "shop:list"),
-            (shop.cb_shop_menu, "shop:menu"),
+        for handler, action in (
+            (shop.cb_shop_list, "list"),
+            (shop.cb_shop_menu, "menu"),
         ):
-            cb = _FakeCallback(data)
+            cb = _shop_callback(action)
             await handler(cb, session)
             text = cb.message.texts[-1]
-            assert "7" in text and "0 CoInn" not in text, data
+            assert "7" in text and "0 CoInn" not in text, action
 
 
 class TestUserWithoutAWallet:
     async def test_the_screens_do_not_crash(self, session):
         """A user who reached the shop through a deep link before `/start` finished.
         Nothing has to work for them, but nothing may raise either."""
-        for handler, data in (
-            (shop.cb_shop_list, "shop:list"),
-            (shop.cb_shop_menu, "shop:menu"),
-            (shop.cb_shop_pantry, "shop:pantry"),
-            (shop.cb_shop_tags, "shop:tags"),
+        for handler, action in (
+            (shop.cb_shop_list, "list"),
+            (shop.cb_shop_menu, "menu"),
+            (shop.cb_shop_pantry, "pantry"),
+            (shop.cb_shop_tags, "tags"),
         ):
-            cb = _FakeCallback(data, user_id=424242)
+            cb = _shop_callback(action, user_id=424242)
             await handler(cb, session)
-            assert cb.message.texts, data
+            assert cb.message.texts, action
 
         assert (await session.execute(select(User).where(User.tg_id == 424242))).first() is None
 
@@ -623,7 +656,7 @@ class TestEmptyMenu:
         empty, and an empty screen with buttons is worse than a clear message."""
         await user_factory(tg_id=USER_ID, coins=5000)
         monkeypatch.setattr(consumable_service, "get_categories", lambda: [])
-        cb = _FakeCallback("shop:menu")
+        cb = _shop_callback("menu")
 
         await shop.cb_shop_menu(cb, session)
 
@@ -670,9 +703,9 @@ class TestConcurrentCosmeticPurchase:
                 return await real_has(db, tg_id, key)
 
         monkeypatch.setattr(shop_service, "has_cosmetic", _racing)
-        cb = _FakeCallback(f"shop:exec:{COSMETIC}")
+        cb = _shop_callback("exec", COSMETIC)
 
-        await shop.cb_shop_execute(cb, session)
+        await _call_keyed(shop.cb_shop_execute, cb, session)
 
         assert cb.alerts and "già questa" in cb.alerts[0]
         assert await _coins(session) == 5000, "the loser's debit must be rolled back"

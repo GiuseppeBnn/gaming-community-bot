@@ -15,9 +15,13 @@ from __future__ import annotations
 
 import difflib
 from dataclasses import dataclass, field
+import html
+import re
 
-from config_data.config import settings
+from services.ai_game_types import DEFAULT_MAX_COINS_PER_PARTICIPANT
+from services.twenty_questions_rules import v2_policy
 from utils.text import esc
+from utils.twenty_questions_view import render_public_help
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ USER_CATEGORIES = (
     "🎲 Scommesse",
     "🏆 Progressione",
     "🍺 Locanda",
+    "🎲 Giochi rapidi",
     "🤖 Intrattenimento AI",
     "❓ Aiuto",
 )
@@ -77,10 +82,9 @@ _COMMANDS: list[CommandDoc] = [
         "daily", "Premio giornaliero (si azzera a mezzanotte)", "👤 Profilo & Economia",
         usage="/daily",
         details="Riscuoti il premio in CoInn: <b>uno al giorno</b>, e il giorno si azzera a "
-                "<b>mezzanotte</b>. Se hai riscosso a tarda notte devono comunque passare almeno "
-                f"<b>{settings.daily_min_hours} ore</b> dall'ultima volta. Se riprovi prima, il "
-                "bot ti dice quanto manca. Riscuoterlo in giorni consecutivi aumenta la tua "
-                "<i>streak</i>: <b>saltare un giorno la azzera</b>.",
+                "<b>mezzanotte</b>. Se riprovi prima, il bot ti dice quanto manca. "
+                "Riscuoterlo in giorni consecutivi aumenta la tua <i>streak</i>: "
+                "<b>saltare un giorno la azzera</b>.",
     ),
     CommandDoc(
         "trasferisci", "Manda CoInn a un altro utente", "👤 Profilo & Economia",
@@ -111,6 +115,20 @@ _COMMANDS: list[CommandDoc] = [
                 "invece per gestire e avviare i quiz.",
     ),
     CommandDoc(
+        "guessthegame", "Guess The Game attivi da giocare", "🏆 Progressione",
+        usage="/guessTheGame",
+        details="Elenca i <b>Guess The Game</b> (indovina il gioco da una foto) in corso, col "
+                "pulsante per giocarli in chat privata. Se non ce ne sono, te lo dice. Gli admin "
+                "lo usano per gestire i round.",
+    ),
+    CommandDoc(
+        "soundquest", "Sound Quest attivi da giocare", "🏆 Progressione",
+        usage="/soundQuest",
+        details="Elenca i <b>Sound Quest</b> (indovina il gioco da un audio) in corso, col "
+                "pulsante per giocarli in chat privata. Se non ce ne sono, te lo dice. Gli admin "
+                "lo usano per gestire i round.",
+    ),
+    CommandDoc(
         "trofei", "I tuoi trofei (per rarità) e il rango", "🏆 Progressione",
         usage="/trofei",
         details="Mostra i trofei che hai sbloccato, raggruppati per rarità, e il tuo rango XP attuale.",
@@ -126,6 +144,14 @@ _COMMANDS: list[CommandDoc] = [
         details="Le classifiche della community con uno switcher tra ricchezza, XP e trofei. "
                 "Si aprono in chat privata.",
     ),
+    CommandDoc(
+        "gioco_alduino",
+        "Regole e stato del gioco segreto di Alduino",
+        "🏆 Progressione",
+        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
+        aliases=("gioco",),
+        details=render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
+    ),
     # --- 🍺 Locanda ---
     CommandDoc(
         "locanda", "La Locanda: tag cosmetici e menù consumabili", "🍺 Locanda",
@@ -135,6 +161,12 @@ _COMMANDS: list[CommandDoc] = [
                 "<b>Personalizzazioni</b> (tag cosmetici da mostrare sul profilo, attivabili "
                 "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
                 "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei).",
+    ),
+    # --- 🎲 Giochi rapidi ---
+    CommandDoc(
+        "d20", "Tira un dado da 1 a 20", "🎲 Giochi rapidi",
+        usage="/d20",
+        details="Alduino risponde con un solo numero casuale da <b>1</b> a <b>20</b>, inclusi.",
     ),
     # --- 🤖 Intrattenimento AI (in gruppo, in risposta a un messaggio) ---
     CommandDoc(
@@ -180,7 +212,9 @@ _COMMANDS: list[CommandDoc] = [
         details="Scrivi a <b>Alduino</b>, il draghetto viola gamer della community: gli parli "
                 "direttamente e lui ti risponde a tono — gentile e premuroso, ma furbo e "
                 "sarcastico quando ci sta. Es. <code>/alduino consigliami un gioco</code> "
-                "(o rispondi a un messaggio).",
+                "(o usa il comando in risposta a un messaggio). Dopo che Alduino ti ha "
+                "risposto, continua rispondendo direttamente ai suoi messaggi: non serve "
+                "ripetere il comando.",
     ),
     # --- ❓ Aiuto ---
     CommandDoc(
@@ -331,6 +365,37 @@ def render_legend(is_admin: bool = False) -> str:
         for cat, cmds in _by_category(ADMIN_CATEGORIES):
             lines.append(f"\n<b>{cat}</b>")
             lines.extend(f"/{c.name} — {c.summary}" for c in cmds)
+    return "\n".join(lines)
+
+
+def render_alduino_reference() -> str:
+    """Trusted plain-text product knowledge derived from the public help catalog.
+
+    This is deliberately generated from the same records as ``/comandi``: a new
+    public command becomes known to Alduino without maintaining a second prompt.
+    Admin-only manuals stay private and live state is supplied separately.
+    """
+    lines = [
+        "CONOSCENZA DEL BOT (fonte autorevole):",
+        "Puoi spiegare queste funzioni, ma non fingere di aver eseguito comandi o azioni.",
+    ]
+    for command in _COMMANDS:
+        if command.admin_only:
+            continue
+        usage = command.usage or f"/{command.name}"
+        details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
+        aliases = f" Alias: {', '.join('/' + value for value in command.aliases)}." \
+            if command.aliases else ""
+        # The leading canonical command already gives its complete bare usage.
+        # Keep argument-bearing syntax, aliases and the full manual verbatim.
+        usage_suffix = "" if usage == f"/{command.name}" else f" Uso: {usage}."
+        lines.append(
+            f"- /{command.name} — {command.summary}.{usage_suffix}{aliases} {details}".strip()
+        )
+    lines.append(
+        "Gli eventi pubblici aperti o programmati arrivano nei DATI LIVE. "
+        "Se un dato live non c'è, dichiaralo senza inventarlo."
+    )
     return "\n".join(lines)
 
 

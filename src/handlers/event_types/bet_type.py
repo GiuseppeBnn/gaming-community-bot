@@ -16,7 +16,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import BettingEvent, ScheduledTask
+from handlers.callbacks import AdminCb, EventCb
 from services import bet_service, group_registry, schedule_service
+from services.public_event import PublicEvent
 from utils.text import esc
 
 from .base import StartResult, edit_or_send
@@ -29,18 +31,41 @@ class BetType:
     hub_label = "🎲 Scommessa"
     create_label = "➕ Crea scommessa"
 
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        return [
+            PublicEvent(
+                key=self.key, item_id=event.id, title=event.title,
+                summary=f"{len(event.options)} opzioni · puntate aperte",
+                emoji="🎲", deep_link_payload=f"bet_{event.id}",
+            )
+            for event in await bet_service.get_open_events(db_session)
+        ]
+
+    async def describe_scheduled(
+        self, db_session: AsyncSession, item_id: int
+    ) -> PublicEvent | None:
+        event = await bet_service.get_event_detail(db_session, item_id)
+        if event is None or event.status != "draft":
+            return None
+        return PublicEvent(
+            key=self.key, item_id=event.id, title=event.title,
+            summary=f"{len(event.options)} opzioni", emoji="🎲",
+            deep_link_payload=f"bet_{event.id}",
+        )
+
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
         drafts = await bet_service.list_drafts(db_session)
         b = InlineKeyboardBuilder()
         lines = ["🎲 <b>Scommesse in bozza</b>\n"]
         for e in drafts:
             lines.append(f"#{e.id} {esc(e.title)}")
-            b.button(text=f"⚙️ #{e.id} {e.title[:22]}", callback_data=f"ev:item:bet:{e.id}")
+            b.button(text=f"⚙️ #{e.id} {e.title[:22]}",
+                     callback_data=EventCb(action="item", task_type="bet", item_id=e.id).pack())
         if not drafts:
             lines.append("<i>Nessuna bozza. Creane una.</i>")
-        b.button(text="➕ Crea scommessa", callback_data="ev:new:bet")
-        b.button(text="🛠️ Scommesse attive", callback_data="adm:bets")
-        b.button(text="⬅️ Eventi", callback_data="ev:home")
+        b.button(text="➕ Crea scommessa", callback_data=EventCb(action="new", task_type="bet").pack())
+        b.button(text="🛠️ Scommesse attive", callback_data=AdminCb(action="bets").pack())
+        b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
 

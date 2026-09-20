@@ -19,10 +19,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.fsm.storage.memory import MemoryStorage
 
+from handlers.callbacks import QuizEditCb
 from handlers.quiz import _shared
 from handlers.quiz import editing as qz
 from services import quiz_service
@@ -85,8 +87,12 @@ async def _ready_quiz(session, user_factory, *, n_questions: int = 2):
     quiz = await quiz_service.create_quiz(session, ADMIN_ID, "Capitali", "Geo")
     for i in range(n_questions):
         await quiz_service.add_question(
-            session, quiz.id, f"Domanda {i}?", ["Roma", "Milano", "Napoli"],
-            correct_option_id=0, explanation=f"Spiegazione {i}",
+            session,
+            quiz.id,
+            f"Domanda {i}?",
+            ["Roma", "Milano", "Napoli"],
+            correct_option_id=0,
+            explanation=f"Spiegazione {i}",
         )
     await quiz_service.set_status(session, quiz.id, "ready")
     await session.commit()
@@ -103,34 +109,42 @@ class TestViewing:
         self, session, user_factory
     ):
         quiz = await _ready_quiz(session, user_factory)
-        cb = _FakeCallback(f"quiz_edit:nav:{quiz.id}:0")
+        cb = _FakeCallback(QuizEditCb(action="nav", quiz_id=quiz.id, index=0).pack())
 
-        await qz.cb_edit_nav(cb, _state(), session)
+        await qz.cb_edit_nav(
+            cb, _state(), session, QuizEditCb(action="nav", quiz_id=quiz.id, index=0)
+        )
 
         assert "Domanda 1/2" in cb.message.said
         assert "✅ Roma" in cb.message.said, "the correct option is not marked"
         assert "Spiegazione 0" in cb.message.said
 
-    async def test_scrolling_past_the_end_clamps_instead_of_failing(
-        self, session, user_factory
-    ):
+    async def test_scrolling_past_the_end_clamps_instead_of_failing(self, session, user_factory):
         """The navigation buttons are built from a count that can be stale after a
         question is removed elsewhere; an out-of-range index must land on the last
         question, not raise."""
         quiz = await _ready_quiz(session, user_factory)
-        cb = _FakeCallback(f"quiz_edit:nav:{quiz.id}:99")
+        cb = _FakeCallback(QuizEditCb(action="nav", quiz_id=quiz.id, index=99).pack())
 
-        await qz.cb_edit_nav(cb, _state(), session)
+        await qz.cb_edit_nav(
+            cb, _state(), session, QuizEditCb(action="nav", quiz_id=quiz.id, index=99)
+        )
 
         assert "Domanda 2/2" in cb.message.said
 
-    async def test_a_non_numeric_navigation_is_ignored(self, session, user_factory):
-        await _ready_quiz(session, user_factory)
-        cb = _FakeCallback("quiz_edit:nav:abc:def")
+    async def test_incomplete_navigation_leaves_an_active_edit_untouched(self, session):
+        """An incomplete typed payload must not discard the field edit it cannot navigate from."""
+        cb = _FakeCallback(QuizEditCb(action="nav").pack())
+        state = _state()
+        await state.set_state(qz.QuizEditStates.editing_text)
+        await state.update_data(edit_quiz_id=7, edit_idx=1, edit_question_id=9)
 
-        await qz.cb_edit_nav(cb, _state(), session)
+        await qz.cb_edit_nav(cb, state, session, QuizEditCb(action="nav"))
 
         assert cb.message.texts == []
+        assert cb.answers == [(None, False)]
+        assert await state.get_state() == qz.QuizEditStates.editing_text
+        assert await state.get_data() == {"edit_quiz_id": 7, "edit_idx": 1, "edit_question_id": 9}
 
     async def test_a_running_quiz_cannot_be_edited(self, session, user_factory):
         """Recorded answers reference options by stored index, so editing a running
@@ -139,14 +153,18 @@ class TestViewing:
         await quiz_service.set_status(session, quiz.id, "running")
         await session.commit()
 
-        cb = _FakeCallback(f"quiz_edit:nav:{quiz.id}:0")
-        await qz.cb_edit_nav(cb, _state(), session)
+        cb = _FakeCallback(QuizEditCb(action="nav", quiz_id=quiz.id, index=0).pack())
+        await qz.cb_edit_nav(
+            cb, _state(), session, QuizEditCb(action="nav", quiz_id=quiz.id, index=0)
+        )
 
         assert "solo su un quiz" in cb.message.said
 
     async def test_a_missing_or_empty_quiz_says_so(self, session, user_factory):
-        missing = _FakeCallback("quiz_edit:nav:999999:0")
-        await qz.cb_edit_nav(missing, _state(), session)
+        missing = _FakeCallback(QuizEditCb(action="nav", quiz_id=999999, index=0).pack())
+        await qz.cb_edit_nav(
+            missing, _state(), session, QuizEditCb(action="nav", quiz_id=999999, index=0)
+        )
         assert "non trovato" in missing.message.said
 
         await user_factory(tg_id=ADMIN_ID, username="admin")
@@ -154,14 +172,51 @@ class TestViewing:
         await quiz_service.set_status(session, empty.id, "ready")
         await session.commit()
 
-        cb = _FakeCallback(f"quiz_edit:nav:{empty.id}:0")
-        await qz.cb_edit_nav(cb, _state(), session)
+        cb = _FakeCallback(QuizEditCb(action="nav", quiz_id=empty.id, index=0).pack())
+        await qz.cb_edit_nav(
+            cb, _state(), session, QuizEditCb(action="nav", quiz_id=empty.id, index=0)
+        )
         assert "non ha domande" in cb.message.said
 
     async def test_the_noop_button_does_nothing(self):
-        cb = _FakeCallback("quiz_edit:noop")
-        await qz.cb_edit_noop(cb)
+        cb = _FakeCallback(QuizEditCb(action="noop").pack())
+        await qz.cb_edit_noop(cb, QuizEditCb(action="noop"))
         assert cb.message.texts == []
+
+
+class TestTypedCallbackGuards:
+    @pytest.mark.parametrize(
+        ("handler", "payload"),
+        [
+            (qz.cb_edit_nav, QuizEditCb(action="nav", quiz_id=7)),
+            (qz.cb_edit_nav, QuizEditCb(action="nav", index=0)),
+            (qz.cb_edit_text, QuizEditCb(action="text", quiz_id=7)),
+            (qz.cb_edit_text, QuizEditCb(action="text", index=0)),
+            (qz.cb_edit_expl, QuizEditCb(action="explanation", quiz_id=7)),
+            (qz.cb_edit_expl, QuizEditCb(action="explanation", index=0)),
+            (qz.cb_edit_opts, QuizEditCb(action="options", quiz_id=7)),
+            (qz.cb_edit_opts, QuizEditCb(action="options", index=0)),
+            (qz.cb_edit_redo, QuizEditCb(action="redo", quiz_id=7)),
+            (qz.cb_edit_redo, QuizEditCb(action="redo", index=0)),
+        ],
+    )
+    async def test_question_actions_reject_each_missing_locator(self, handler, payload, session):
+        """Changing an ``or`` guard to ``and`` would call the service with a partial locator."""
+        cb = _FakeCallback(payload.pack())
+
+        await handler(cb, _state(), session, payload)
+
+        assert cb.message.texts == []
+        assert cb.answers == [(None, False)]
+
+    async def test_correct_requires_only_its_option_index(self, session):
+        """The correct-answer action is scoped by FSM state, never by a quiz id."""
+        cb = _FakeCallback(QuizEditCb(action="correct").pack())
+
+        await qz.cb_edit_correct(cb, _state(), session, QuizEditCb(action="correct"))
+
+        assert cb.message.texts == []
+        assert cb.answers == [(None, False)]
 
 
 class TestSingleFieldEdits:
@@ -171,7 +226,12 @@ class TestSingleFieldEdits:
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
 
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_text(_FakeMessage("Capitale d'Italia?"), state, session)
 
         q = await _question(session, quiz.id)
@@ -181,12 +241,15 @@ class TestSingleFieldEdits:
         assert q.explanation == "Spiegazione 0"
         assert await state.get_state() is None
 
-    async def test_a_too_short_text_is_refused_and_the_step_stays_open(
-        self, session, user_factory
-    ):
+    async def test_a_too_short_text_is_refused_and_the_step_stays_open(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=0),
+        )
 
         message = _FakeMessage("ab")
         await qz.fsm_edit_text(message, state, session)
@@ -198,7 +261,12 @@ class TestSingleFieldEdits:
     async def test_an_over_long_text_is_refused(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=0),
+        )
 
         message = _FakeMessage("x" * (_shared._MAX_QUESTION + 1))
         await qz.fsm_edit_text(message, state, session)
@@ -206,27 +274,40 @@ class TestSingleFieldEdits:
         assert message.said
         assert (await _question(session, quiz.id)).text == "Domanda 0?"
 
-    async def test_the_explanation_can_be_replaced_and_removed(
-        self, session, user_factory
-    ):
+    async def test_the_explanation_can_be_replaced_and_removed(self, session, user_factory):
         """«-» is the only way to clear it — an empty message would be indistinguishable
         from a mistap, so the sentinel is what makes removal expressible."""
         quiz = await _ready_quiz(session, user_factory)
 
         state = _state()
-        await qz.cb_edit_expl(_FakeCallback(f"quiz_edit:expl:{quiz.id}:0"), state, session)
+        await qz.cb_edit_expl(
+            _FakeCallback(QuizEditCb(action="explanation", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="explanation", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_explanation(_FakeMessage("Perché è Roma"), state, session)
         assert (await _question(session, quiz.id)).explanation == "Perché è Roma"
 
         state = _state()
-        await qz.cb_edit_expl(_FakeCallback(f"quiz_edit:expl:{quiz.id}:0"), state, session)
+        await qz.cb_edit_expl(
+            _FakeCallback(QuizEditCb(action="explanation", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="explanation", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_explanation(_FakeMessage("-"), state, session)
         assert (await _question(session, quiz.id)).explanation is None
 
     async def test_an_over_long_explanation_is_refused(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_expl(_FakeCallback(f"quiz_edit:expl:{quiz.id}:0"), state, session)
+        await qz.cb_edit_expl(
+            _FakeCallback(QuizEditCb(action="explanation", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="explanation", quiz_id=quiz.id, index=0),
+        )
 
         message = _FakeMessage("x" * (_shared._MAX_EXPLANATION + 1))
         await qz.fsm_edit_explanation(message, state, session)
@@ -243,9 +324,19 @@ class TestSingleFieldEdits:
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
 
-        await qz.cb_edit_opts(_FakeCallback(f"quiz_edit:opts:{quiz.id}:0"), state, session)
+        await qz.cb_edit_opts(
+            _FakeCallback(QuizEditCb(action="options", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="options", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_options(_FakeMessage("Parigi\nLione\nNizza"), state)
-        await qz.cb_edit_correct(_FakeCallback("quiz_edit:correct:1"), state, session)
+        await qz.cb_edit_correct(
+            _FakeCallback(QuizEditCb(action="correct", index=1).pack()),
+            state,
+            session,
+            QuizEditCb(action="correct", index=1),
+        )
 
         q = await _question(session, quiz.id)
         assert quiz_service.question_options(q) == ["Parigi", "Lione", "Nizza"]
@@ -255,30 +346,42 @@ class TestSingleFieldEdits:
     async def test_an_invalid_option_list_is_refused(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_opts(_FakeCallback(f"quiz_edit:opts:{quiz.id}:0"), state, session)
+        await qz.cb_edit_opts(
+            _FakeCallback(QuizEditCb(action="options", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="options", quiz_id=quiz.id, index=0),
+        )
 
         message = _FakeMessage("Una sola")
         await qz.fsm_edit_options(message, state)
 
         assert message.said
         assert quiz_service.question_options(await _question(session, quiz.id)) == [
-            "Roma", "Milano", "Napoli"
+            "Roma",
+            "Milano",
+            "Napoli",
         ]
 
-    async def test_a_correct_index_past_the_new_options_is_refused(
-        self, session, user_factory
-    ):
+    async def test_a_correct_index_past_the_new_options_is_refused(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_opts(_FakeCallback(f"quiz_edit:opts:{quiz.id}:0"), state, session)
+        await qz.cb_edit_opts(
+            _FakeCallback(QuizEditCb(action="options", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="options", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_options(_FakeMessage("Parigi\nLione"), state)
 
-        cb = _FakeCallback("quiz_edit:correct:5")
-        await qz.cb_edit_correct(cb, state, session)
+        cb = _FakeCallback(QuizEditCb(action="correct", index=5).pack())
+        await qz.cb_edit_correct(cb, state, session, QuizEditCb(action="correct", index=5))
 
         assert cb.alerts and "non valida" in cb.alerts[0]
         assert quiz_service.question_options(await _question(session, quiz.id)) == [
-            "Roma", "Milano", "Napoli"
+            "Roma",
+            "Milano",
+            "Napoli",
         ]
 
     async def test_starting_an_edit_on_a_quiz_that_is_no_longer_ready_is_refused(
@@ -292,12 +395,13 @@ class TestSingleFieldEdits:
 
         for handler, prefix in (
             (qz.cb_edit_text, "text"),
-            (qz.cb_edit_expl, "expl"),
-            (qz.cb_edit_opts, "opts"),
+            (qz.cb_edit_expl, "explanation"),
+            (qz.cb_edit_opts, "options"),
             (qz.cb_edit_redo, "redo"),
         ):
-            cb = _FakeCallback(f"quiz_edit:{prefix}:{quiz.id}:0")
-            await handler(cb, _state(), session)
+            payload = QuizEditCb(action=prefix, quiz_id=quiz.id, index=0)
+            cb = _FakeCallback(payload.pack())
+            await handler(cb, _state(), session, payload)
             assert cb.alerts and "non più modificabile" in cb.alerts[0], prefix
 
     async def test_an_edit_that_lands_after_the_launch_reports_the_failure(
@@ -308,7 +412,12 @@ class TestSingleFieldEdits:
         editor re-renders as if the change had been saved."""
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=0),
+        )
 
         await quiz_service.set_status(session, quiz.id, "running")
         await session.commit()
@@ -321,23 +430,31 @@ class TestSingleFieldEdits:
 
 
 class TestRedo:
-    async def test_the_redo_path_replaces_every_field_at_once(
-        self, session, user_factory
-    ):
+    async def test_the_redo_path_replaces_every_field_at_once(self, session, user_factory):
         """Same handlers as the single-field edits, told apart by `edit_redo`. Nothing
         may be written until the last step, so an admin who abandons halfway leaves
         the question untouched."""
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
 
-        await qz.cb_edit_redo(_FakeCallback(f"quiz_edit:redo:{quiz.id}:0"), state, session)
+        await qz.cb_edit_redo(
+            _FakeCallback(QuizEditCb(action="redo", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="redo", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_text(_FakeMessage("Capitale di Francia?"), state, session)
 
         # Nothing saved yet: the redo is still collecting.
         assert (await _question(session, quiz.id)).text == "Domanda 0?"
 
         await qz.fsm_edit_options(_FakeMessage("Parigi\nLione"), state)
-        await qz.cb_edit_correct(_FakeCallback("quiz_edit:correct:0"), state, session)
+        await qz.cb_edit_correct(
+            _FakeCallback(QuizEditCb(action="correct", index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="correct", index=0),
+        )
         await qz.fsm_edit_explanation(_FakeMessage("È Parigi"), state, session)
 
         q = await _question(session, quiz.id)
@@ -351,25 +468,48 @@ class TestRedo:
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
 
-        await qz.cb_edit_redo(_FakeCallback(f"quiz_edit:redo:{quiz.id}:0"), state, session)
+        await qz.cb_edit_redo(
+            _FakeCallback(QuizEditCb(action="redo", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="redo", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_text(_FakeMessage("Capitale di Francia?"), state, session)
         await qz.fsm_edit_options(_FakeMessage("Parigi\nLione"), state)
-        await qz.cb_edit_correct(_FakeCallback("quiz_edit:correct:0"), state, session)
-        await qz.cb_redo_skip_expl(_FakeCallback("quiz_edit:redoskipexpl"), state, session)
+        await qz.cb_edit_correct(
+            _FakeCallback(QuizEditCb(action="correct", index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="correct", index=0),
+        )
+        await qz.cb_redo_skip_expl(
+            _FakeCallback(QuizEditCb(action="redo_skip_explanation").pack()),
+            state,
+            session,
+            QuizEditCb(action="redo_skip_explanation"),
+        )
 
         q = await _question(session, quiz.id)
         assert q.text == "Capitale di Francia?"
         assert q.explanation is None
 
-    async def test_abandoning_a_redo_leaves_the_question_alone(
-        self, session, user_factory
-    ):
+    async def test_abandoning_a_redo_leaves_the_question_alone(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
 
-        await qz.cb_edit_redo(_FakeCallback(f"quiz_edit:redo:{quiz.id}:0"), state, session)
+        await qz.cb_edit_redo(
+            _FakeCallback(QuizEditCb(action="redo", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="redo", quiz_id=quiz.id, index=0),
+        )
         await qz.fsm_edit_text(_FakeMessage("Mai salvata"), state, session)
-        await qz.cb_edit_cancel(_FakeCallback("quiz_edit:cancel"), state, session)
+        await qz.cb_edit_cancel(
+            _FakeCallback(QuizEditCb(action="cancel").pack()),
+            state,
+            session,
+            QuizEditCb(action="cancel"),
+        )
 
         q = await _question(session, quiz.id)
         assert q.text == "Domanda 0?"
@@ -377,36 +517,47 @@ class TestRedo:
 
 
 class TestCancel:
-    async def test_cancelling_returns_to_the_question_being_edited(
-        self, session, user_factory
-    ):
+    async def test_cancelling_returns_to_the_question_being_edited(self, session, user_factory):
         quiz = await _ready_quiz(session, user_factory, n_questions=3)
         state = _state()
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:2"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=2).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=2),
+        )
 
-        cb = _FakeCallback("quiz_edit:cancel")
-        await qz.cb_edit_cancel(cb, state, session)
+        cb = _FakeCallback(QuizEditCb(action="cancel").pack())
+        await qz.cb_edit_cancel(cb, state, session, QuizEditCb(action="cancel"))
 
         assert "Domanda 3/3" in cb.message.said, "cancelling jumped to another question"
         assert await state.get_state() is None
 
     async def test_cancelling_with_nothing_in_progress_is_silent(self, session):
-        cb = _FakeCallback("quiz_edit:cancel")
+        cb = _FakeCallback(QuizEditCb(action="cancel").pack())
 
-        await qz.cb_edit_cancel(cb, _state(), session)
+        await qz.cb_edit_cancel(cb, _state(), session, QuizEditCb(action="cancel"))
 
         assert cb.message.texts == []
 
-    async def test_navigating_away_abandons_a_half_done_edit(
-        self, session, user_factory
-    ):
+    async def test_navigating_away_abandons_a_half_done_edit(self, session, user_factory):
         """Otherwise the next message typed anywhere would be swallowed by the
         still-armed edit step and applied to a question the admin has left behind."""
         quiz = await _ready_quiz(session, user_factory)
         state = _state()
-        await qz.cb_edit_text(_FakeCallback(f"quiz_edit:text:{quiz.id}:0"), state, session)
+        await qz.cb_edit_text(
+            _FakeCallback(QuizEditCb(action="text", quiz_id=quiz.id, index=0).pack()),
+            state,
+            session,
+            QuizEditCb(action="text", quiz_id=quiz.id, index=0),
+        )
         assert await state.get_state() == qz.QuizEditStates.editing_text
 
-        await qz.cb_edit_nav(_FakeCallback(f"quiz_edit:nav:{quiz.id}:1"), state, session)
+        await qz.cb_edit_nav(
+            _FakeCallback(QuizEditCb(action="nav", quiz_id=quiz.id, index=1).pack()),
+            state,
+            session,
+            QuizEditCb(action="nav", quiz_id=quiz.id, index=1),
+        )
 
         assert await state.get_state() is None

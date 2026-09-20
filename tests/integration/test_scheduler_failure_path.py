@@ -14,25 +14,15 @@ undo, touching any attribute of the instance raises `MissingGreenlet`:
     task.status = "running"; await session.flush(); await session.rollback()
     task.created_by_tg_id   → MissingGreenlet
 
-Which raises an obvious suspicion, since `_run_due_task` then hands that same
-instance to `_notify_creator`, which reads `created_by_tg_id` **and** `id` off it.
-
-**The suspicion is wrong, and this test is why it stays wrong.** Between the rollback
-and the notification there are `mark_failed` (which only *assigns* attributes — an
-assignment never loads) and `await session.commit()`, whose flush loads the row to
-build the UPDATE, in greenlet context. The instance comes out of that fully loaded,
-so `_notify_creator` reads plain Python values.
-
-That makes it a real but *latent* hazard: it depends on an awaited SQLAlchemy call
-sitting between the rollback and the attribute access. Reorder those lines — move the
-notification before the commit, say, or drop the commit on the failure path — and the
-daemon starts raising `MissingGreenlet` out of `_run_due_task`, which aborts the whole
-tick and silently skips every task still due. This test fails if that happens.
+Task 13 closes that hazard instead of relying on an incidental ORM refresh:
+`_run_due_task` copies id, creator and payload before risk/rollback, persists its
+outcome with a scalar-ID update, then notifies with primitives. The live instance may
+remain expired forever; its readability is neither assumed nor needed.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -132,25 +122,29 @@ class TestFailurePathOnARealSession:
         assert stored.status == "failed"
         assert bot.sent == []
 
-    async def test_the_instance_is_readable_after_the_rollback(
+    async def test_the_failure_path_uses_captured_primitives_not_the_expired_instance(
         self, session, monkeypatch
     ):
-        """The mechanism itself, asserted directly rather than left implicit.
-
-        If a future edit removes the awaited call between the rollback and the
-        notification, this is the test that names the cause instead of leaving a
-        `MissingGreenlet` in the logs at 3am.
-        """
+        """The post-rollback path stays safe even when SQLAlchemy expires the row."""
         task = await _pending_task(session)
+        task_id = task.id
+        notified: list[tuple[int | None, int, str]] = []
+
+        async def notify(bot, creator_tg_id, notified_task_id, text):
+            notified.append((creator_tg_id, notified_task_id, text))
+
         monkeypatch.setattr(
             schedule, "execute_task", _raising_execute(RuntimeError("boom"))
         )
+        monkeypatch.setattr(schedule, "_notify_creator", notify)
 
         await schedule._run_due_task(_FakeBot(), session, task)
 
-        # Plain attribute access, no await: this is exactly what _notify_creator does.
-        assert task.created_by_tg_id == 999
-        assert task.id is not None
+        stored = (await session.execute(
+            select(ScheduledTask).where(ScheduledTask.id == task_id)
+        )).scalar_one()
+        assert stored.status == "failed"
+        assert notified == [(999, task_id, f"⚠️ Task #{task_id} fallito.")]
 
 
 @pytest.mark.pg
@@ -172,3 +166,53 @@ class TestFailurePathOnPostgres:
             _ = task.created_by_tg_id
 
         assert "greenlet_spawn" in str(exc.value)
+
+    async def test_scalar_outcomes_and_retry_persist_on_postgres(
+        self, pg_session, pg_sessions
+    ):
+        """PostgreSQL must report exact rowcounts and persist scalar retry state."""
+        now = datetime(2026, 8, 23, 10, 0)
+        done = await schedule_service.schedule_task(
+            pg_session, "quiz", now, 9, -100, ref_id=1,
+        )
+        failed = await schedule_service.schedule_task(
+            pg_session, "poll", now, 9, -100, ref_id=2,
+        )
+        retry = await schedule_service.schedule_task(
+            pg_session,
+            "twentyq",
+            now,
+            9,
+            -100,
+            ref_id=3,
+            payload={"internal": True, "action": "expire"},
+        )
+        await pg_session.commit()
+
+        await schedule_service.mark_done_by_id(pg_session, done.id)
+        await schedule_service.mark_failed_by_id(pg_session, failed.id, "boom")
+        await schedule_service.mark_retry(
+            pg_session,
+            retry.id,
+            retry_count=0,
+            error="temporary",
+            now=now,
+        )
+        await pg_session.commit()
+
+        async with pg_sessions() as observer:
+            rows = dict((await observer.execute(
+                select(ScheduledTask.id, ScheduledTask)
+            )).all())
+            assert rows[done.id].status == "done"
+            assert rows[failed.id].status == "failed"
+            assert rows[failed.id].error == "boom"
+            assert rows[retry.id].status == "pending"
+            assert rows[retry.id].retry_count == 1
+            assert rows[retry.id].run_at == now + timedelta(minutes=1)
+
+        with pytest.raises(RuntimeError, match="not found"):
+            await schedule_service.mark_done_by_id(pg_session, 999_001)
+        with pytest.raises(RuntimeError, match="not found"):
+            await schedule_service.mark_failed_by_id(pg_session, 999_002, "missing")
+        await pg_session.rollback()

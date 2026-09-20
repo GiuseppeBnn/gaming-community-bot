@@ -658,7 +658,12 @@ class TestSchemaBootstrap:
         which is why running it here against the test DB_URL is harmless."""
         from database import connection
 
-        await connection.create_tables()
+        try:
+            await connection.create_tables()
+        finally:
+            # This test is the only one that opens the application-level engine.
+            # Do not leave its aiosqlite worker alive until interpreter shutdown.
+            await connection.engine.dispose()
 
     async def test_migrations_are_a_no_op_outside_postgresql(self):
         """The DDL list is Postgres-specific; on SQLite it must return immediately

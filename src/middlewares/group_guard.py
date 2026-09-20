@@ -8,6 +8,10 @@ GROUP_MEMBER_CACHE_TTL seconds to avoid hammering the Telegram API.
 Group updates (messages/callbacks posted inside the group itself) are always
 allowed through — the group itself is the authoritative context.
 
+Inline queries are gated too, exactly like private chats: `@bot <name>` can be
+typed from any chat (including strangers' private chats), so the group
+membership check — not the query chat_type — is the source of truth.
+
 If GROUP_ID is 0 (not configured) the middleware is fully bypassed.
 """
 
@@ -17,7 +21,16 @@ import time
 from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
-from aiogram.types import CallbackQuery, Message, TelegramObject, User
+from aiogram.enums import ParseMode
+from aiogram.types import (
+    CallbackQuery,
+    InlineQuery,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    Message,
+    TelegramObject,
+    User,
+)
 
 from services import group_registry
 
@@ -67,6 +80,11 @@ def _chat_type(event: TelegramObject) -> str | None:
         return event.chat.type
     if isinstance(event, CallbackQuery) and event.message:
         return event.message.chat.type
+    # InlineQuery has a chat_type field but it is not reliable: a query can be
+    # typed from any chat. Always reporting "private" forces the membership gate,
+    # which is the source of truth (rule: group members may use the bot).
+    if isinstance(event, InlineQuery):
+        return "private"
     return None
 
 
@@ -116,3 +134,21 @@ async def _reject(event: TelegramObject) -> None:
         await event.answer(msg)
     elif isinstance(event, CallbackQuery):
         await event.answer("⛔ Devi essere membro del gruppo.", show_alert=True)
+    elif isinstance(event, InlineQuery):
+        # Telegram returns inline results even to rejected users: answer with a
+        # single informational article and cache_time=0 so the rejection is not
+        # cached for strangers.
+        await event.answer(
+            results=[
+                InlineQueryResultArticle(
+                    id="denied",
+                    title="⛔ Accesso negato",
+                    description="Devi essere membro del gruppo per usare questo bot.",
+                    input_message_content=InputTextMessageContent(
+                        message_text=msg, parse_mode=ParseMode.HTML
+                    ),
+                )
+            ],
+            cache_time=0,
+            is_personal=True,
+        )

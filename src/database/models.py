@@ -7,12 +7,14 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CHAR,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -36,6 +38,8 @@ class TransactionType(str, Enum):
     daily_reward = "daily_reward"
     shop_purchase = "shop_purchase"
     quiz_reward = "quiz_reward"
+    poll_reward = "poll_reward"
+    ai_game_reward = "ai_game_reward"
 
 
 class EventStatus(str, Enum):
@@ -399,7 +403,17 @@ class PollTemplate(Base):
     """A pre-created poll (question + options) that an admin can later start in
     the group immediately or schedule — mirroring how quizzes are pre-created.
 
-    Status: ``ready`` (usable) → ``used`` (already sent). One-shot, like a quiz run.
+    Status lifecycle: ``ready`` (usable) → ``running`` (live in the group,
+    collecting votes) → ``finished`` (closed, prizes paid). The legacy ``used``
+    value is treated as terminal for back-compat with rows created before the
+    prize/close feature (they were sent fire-and-forget).
+
+    A poll can carry an optional participation prize (``prize_coins``/``prize_xp``,
+    0 = none) paid to every voter at close, an optional ``description`` shown in
+    the group alongside the poll, and an optional absolute ``closes_at`` that arms
+    an auto-close task when the poll is started. Votes are tracked via ``PollVote``
+    (populated by the poll_answer handler) so the prize can be paid to the people
+    who actually voted — which is why the poll is sent non-anonymous.
     """
 
     __tablename__ = "poll_templates"
@@ -410,8 +424,44 @@ class PollTemplate(Base):
     creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
     group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # Optional context shown in the group with the poll (the native poll cannot
+    # carry it, so it is sent as a separate message). NULL = no description line.
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Participation prize paid to every voter at close. 0 = that half is off.
+    prize_coins: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    prize_xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Absolute auto-close instant chosen at creation. NULL = closed by hand.
+    closes_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    # Set when the poll goes live, needed to stop the poll and pay its voters.
+    tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    chat_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class PollVote(Base):
+    """One user's vote in a running poll, recorded from ``poll_answer`` updates.
+
+    The Telegram Bot API tells us the per-option counts on ``stopPoll`` but never
+    who voted; a non-anonymous poll emits a ``poll_answer`` update per voter, and
+    that is the only way to know whom to pay the participation prize. Retracting a
+    vote arrives as an update with no option ids → ``option_ids_json`` becomes
+    ``"[]"`` and that user is no longer paid.
+
+    One row per (poll, user); the latest choice overwrites the previous one.
+    """
+
+    __tablename__ = "poll_votes"
+    __table_args__ = (UniqueConstraint("poll_id", "user_tg_id", name="uq_poll_vote"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    poll_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("poll_templates.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    option_ids_json: Mapped[str] = mapped_column(String(256), nullable=False)  # JSON list[int]
+    voted_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
 class BotState(Base):
@@ -444,6 +494,11 @@ class GuessRound(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(256), nullable=False)
+    # Optional flavour text shown in the group announcement and the private play
+    # screen. Player-facing like the title, so it must never contain the answer;
+    # the creation prompt says so. Added after the first deploy → has a
+    # `_MIGRATIONS` entry.
+    description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
     group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
@@ -569,3 +624,324 @@ class ScheduledTask(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class AlduinoTurn(Base):
+    """One completed chat turn or replyable fun output with the community mascot.
+
+    ``bot_message_id`` is the durable bridge between Telegram's reply tree and
+    local conversational state.  ``history_json`` is a bounded snapshot: a
+    follow-up loads its entire useful branch in one query instead of walking a
+    recursive chain, while ``parent_turn_id`` preserves the actual topology for
+    diagnostics and future features.
+    """
+
+    __tablename__ = "alduino_turns"
+    __table_args__ = (
+        UniqueConstraint("group_id", "user_message_id"),
+        UniqueConstraint("group_id", "bot_message_id"),
+        Index("ix_alduino_group_created", "group_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    bot_message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    parent_turn_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("alduino_turns.id", ondelete="SET NULL"), nullable=True,
+    )
+    input_text: Mapped[str] = mapped_column(String(1500), nullable=False)
+    output_text: Mapped[str] = mapped_column(String(1000), nullable=False)
+    history_json: Mapped[str] = mapped_column(Text, nullable=False)
+    provider: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_interaction_id: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AlduinoGroupMessage(Base):
+    """Bounded local transcript used to understand the surrounding group chat.
+
+    The external model receives display names and text, never Telegram ids.  The
+    ids remain local solely for deduplication, reply topology and per-group
+    retention. Commands are not captured by the middleware.
+    """
+
+    __tablename__ = "alduino_group_messages"
+    __table_args__ = (
+        UniqueConstraint("group_id", "message_id"),
+        Index("ix_alduino_group_message_created", "group_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    display_name: Mapped[str] = mapped_column(String(256), nullable=False)
+    username: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    reply_to_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[str] = mapped_column(String(1500), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIBudgetPeriod(Base):
+    """Atomic monthly spend guard shared by every paid AI route."""
+
+    __tablename__ = "ai_budget_periods"
+
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)  # YYYY-MM, UTC
+    cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spent_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class AIUsageLog(Base):
+    """Prompt-free audit row for one physical paid-provider request."""
+
+    __tablename__ = "ai_usage_log"
+    __table_args__ = (Index("ix_ai_usage_period_feature", "period", "feature"),)
+
+    request_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    feature: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    actual_model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cached_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AIGameSession(Base):
+    """Aggregate root shared by persistent AI-assisted community games."""
+
+    __tablename__ = "ai_game_sessions"
+    __table_args__ = (
+        Index("ix_ai_game_status_type", "status", "game_type"),
+        Index("ix_ai_game_anchor", "group_id", "anchor_message_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    creator_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    group_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="ready", nullable=False)
+    anchor_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    next_turn_no: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    pending_token: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    pending_since: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    pending_user_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    pending_kind: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finish_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AIGameMessage(Base):
+    """Bot messages that accept replies for one specific game, across restarts."""
+
+    __tablename__ = "ai_game_messages"
+
+    group_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    message_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), index=True,
+    )
+
+
+class AIGameTurn(Base):
+    """Append-only, numbered audit ledger shared by every AI game strategy."""
+
+    __tablename__ = "ai_game_turns"
+    __table_args__ = (
+        UniqueConstraint("session_id", "turn_no"),
+        Index("ix_ai_game_turn_quota", "session_id", "user_tg_id", "kind"),
+        Index(
+            "uq_ai_game_turn_normalized",
+            "session_id",
+            "kind",
+            "normalized_input_hash",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), nullable=False,
+    )
+    turn_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_text: Mapped[str] = mapped_column(String(512), nullable=False)
+    output_json: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_input_hash: Mapped[Optional[str]] = mapped_column(CHAR(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class TwentyQuestionsGame(Base):
+    """Strategy state for «Alduino ha scelto un gioco»."""
+
+    __tablename__ = "twenty_questions_games"
+
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    answer: Mapped[str] = mapped_column(String(200), nullable=False)
+    aliases_json: Mapped[str] = mapped_column(String(2048), nullable=False)
+    dossier_json: Mapped[str] = mapped_column(Text, nullable=False)
+    rules_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    question_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guess_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    questions_per_user: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    guesses_per_user: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    guesses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+
+class AIGameRewardSettlement(Base):
+    """Immutable reward-policy snapshot and settlement result for one v2 game."""
+
+    __tablename__ = "ai_game_reward_settlements"
+
+    session_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("ai_game_sessions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    max_coins_per_participant: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    minimum_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_penalty_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    wrong_guess_penalty_bps: Mapped[int] = mapped_column(Integer, nullable=False)
+    xp_per_participant: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    finish_reason: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    participant_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    question_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    wrong_guess_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    base_amount: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    penalty_amount: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    computed_pool: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    paid_pool: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    share: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    remainder: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    settled_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AIGameRewardAllocation(Base):
+    """One participant's terminal reward allocation."""
+
+    __tablename__ = "ai_game_reward_allocations"
+    __table_args__ = (UniqueConstraint("session_id", "user_tg_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_reward_settlements.session_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    user_tg_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.tg_id", ondelete="RESTRICT"), nullable=False
+    )
+    coins: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    xp: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    awarded_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIGameProviderAttempt(Base):
+    """Prompt-free operational audit for one provider request in an AI game."""
+
+    __tablename__ = "ai_game_provider_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("ai_game_sessions.id", ondelete="RESTRICT"), nullable=False
+    )
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    schema_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_class: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    latency_ms: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    prompt_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    completion_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cached_tokens: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    cost_microusd: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIFeatureBudgetPeriod(Base):
+    """Per-feature monthly spend guard, stored in micro-USD."""
+
+    __tablename__ = "ai_feature_budget_periods"
+
+    period: Mapped[str] = mapped_column(String(7), primary_key=True)
+    feature: Mapped[str] = mapped_column(String(32), primary_key=True)
+    cap_microusd: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    spent_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    reserved_microusd: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIGameCatalogDraw(Base):
+    """Append-only draw history used to keep catalog selection balanced.
+
+    Deliberately independent from a session FK: deleting an old game must not
+    make its target look unused and therefore immediately more likely again.
+    """
+
+    __tablename__ = "ai_game_catalog_draws"
+    __table_args__ = (
+        Index("ix_ai_game_draw_type_key", "game_type", "catalog_key"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    drawn_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class AIGameCatalogEntry(Base):
+    """Normalized, locally cached entry from an external game catalog."""
+
+    __tablename__ = "ai_game_catalog_entries"
+    __table_args__ = (
+        UniqueConstraint("game_type", "catalog_key"),
+        UniqueConstraint("game_type", "source", "external_id"),
+        Index("ix_ai_game_catalog_active", "game_type", "active"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    game_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    catalog_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    aliases_json: Mapped[str] = mapped_column(String(2048), nullable=False)
+    dossier_json: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    notoriety_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

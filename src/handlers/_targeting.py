@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from aiogram.enums import MessageEntityType
 from aiogram.types import Message
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import User
@@ -46,7 +46,9 @@ async def _lookup(session: AsyncSession, *, tg_id: int | None = None, username: 
     if tg_id is not None:
         stmt = select(User).where(User.tg_id == tg_id)
     elif username is not None:
-        stmt = select(User).where(User.username == username)
+        # Telegram usernames are case-insensitive (@Mario == @mario); match on
+        # lower() so a differently-cased hand-typed @username still resolves.
+        stmt = select(User).where(func.lower(User.username) == username.lower())
     else:
         return None
     return (await session.execute(stmt)).scalar_one_or_none()

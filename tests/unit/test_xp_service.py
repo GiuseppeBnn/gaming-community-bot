@@ -125,6 +125,14 @@ class TestGrantUncapped:
         assert res.granted == 300
         assert (await _xp(session, 1)) == 300
 
+    async def test_twenty_questions_reward_is_uncapped(self, session, user_factory):
+        await user_factory(tg_id=5)
+        res = await xp_service.grant_xp(session, 5, 300, XpSource.twentyq, capped=False)
+        await session.commit()
+
+        assert res.granted == 300
+        assert (await _xp(session, 5)) == 300
+
     async def test_rank_up_reported_on_promotion(self, session, user_factory):
         await user_factory(tg_id=2)
         target = xp_service.xp_to_reach_level(6)  # first XP that reaches the iniziato tier

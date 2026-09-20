@@ -24,6 +24,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select, update
 
+from config_data.config import settings
 from database.models import GuessAttempt, GuessRound, GuessSession, User, Wallet
 from services import guess_service as gs
 from services.guess_judge import Verdict
@@ -427,11 +428,12 @@ class TestPrizes:
 
         assert await _coins(session, 10) == 10
 
-    async def test_a_player_who_ran_out_of_attempts_gets_no_coins(
+    async def test_a_non_solver_gets_the_fixed_coins_and_participation_xp(
         self, session, round_, user_factory
     ):
-        """Here "finisher" means "guessed it" — that is what makes fewer attempts
-        worth something."""
+        """A non-solver on a prized round gets the FIXED coin reward (not the solver
+        consolation schedule), below the solver, plus the standard participation XP
+        (unconditional, same as the trivia)."""
         await user_factory(7, "u7")
         await user_factory(8, "u8")
         await _solve(session, round_, 7)
@@ -442,7 +444,40 @@ class TestPrizes:
         await gs.award_prizes(session, round_.id)
         await session.commit()
 
+        solver, non_solver = await _coins(session, 7), await _coins(session, 8)
+        assert solver == 100                                    # podium 1st, untouched
+        assert non_solver == settings.guess_nonsolver_coins     # fixed, not a schedule
+        assert non_solver < solver                              # guessing still ranks higher
+        non_solver_xp = (
+            await session.execute(select(User.xp).where(User.tg_id == 8))
+        ).scalar_one()
+        assert non_solver_xp == settings.guess_xp_participation  # base XP, no solve bonus
+
+    async def test_a_prizeless_round_pays_no_coins_but_still_grants_xp(
+        self, session, user_factory
+    ):
+        """With no prize configured (0 0 0 0), a non-solver gets no coins — but XP is
+        unconditional (like the trivia), so they still get the participation XP."""
+        r = await gs.create_round(
+            session, kind="guess", creator_tg_id=1, title="Senza premi",
+            media_file_id="F", media_kind="photo", answer="Doom",
+            aliases=[], hints=[], max_attempts=5, time_limit_seconds=0,
+            prize_first=0, prize_second=0, prize_third=0, prize_consolation=0,
+            group_id=None,
+        )
+        r.status = "running"
+        await session.flush()
+        await user_factory(8, "u8")
+        await gs.start_or_resume(session, r.id, 8)
+        await gs.record_attempt(session, r, 8, "Quake", _no())
+
+        awards = await gs.award_prizes(session, r.id)
+        await session.commit()
+
+        assert awards == []                       # no coin awards on a prize-less round
         assert await _coins(session, 8) == 0
+        xp = (await session.execute(select(User.xp).where(User.tg_id == 8))).scalar_one()
+        assert xp == settings.guess_xp_participation  # XP flows regardless of prizes
 
     async def test_everyone_who_played_gets_xp(self, session, round_, user_factory):
         await user_factory(7, "u7")
@@ -472,9 +507,11 @@ class TestPrizes:
         rows = dict((await session.execute(select(User.tg_id, User.xp))).all())
         assert rows[7] > rows[8]
 
-    async def test_xp_reaches_players_even_when_nobody_solved_it(
+    async def test_players_are_paid_and_get_xp_even_when_nobody_solved_it(
         self, session, round_, user_factory
     ):
+        """With nobody solving, there is no podium — but on a prized round every
+        non-solver still gets the participation XP and the fixed coin reward."""
         await user_factory(7, "u7")
         await gs.start_or_resume(session, round_.id, 7)
         await gs.record_attempt(session, round_, 7, "Quake", _no())
@@ -483,10 +520,36 @@ class TestPrizes:
         await session.commit()
 
         xp = (await session.execute(select(User.xp).where(User.tg_id == 7))).scalar_one()
-        assert awards == [] and xp > 0
+        assert xp == settings.guess_xp_participation
+        assert [a.user_tg_id for a in awards] == [7]
+        assert awards[0].kind == "participation"
+        assert await _coins(session, 7) == settings.guess_nonsolver_coins
 
     async def test_awarding_on_a_missing_round_is_empty_not_a_crash(self, session):
         assert await gs.award_prizes(session, 999) == []
+
+    async def test_full_standings_puts_solvers_before_non_solvers(
+        self, session, round_, user_factory
+    ):
+        """The full ranking used for payout: a solver always outranks a non-solver,
+        and non-solvers are ordered by effort (most attempts first)."""
+        await user_factory(7, "u7")
+        await user_factory(8, "u8")
+        await user_factory(9, "u9")
+        await _solve(session, round_, 7)                 # solver
+        await gs.start_or_resume(session, round_.id, 8)  # non-solver, 1 attempt
+        await gs.record_attempt(session, round_, 8, "Quake", _no())
+        await gs.start_or_resume(session, round_.id, 9)  # non-solver, 3 attempts
+        for _ in range(3):
+            await gs.record_attempt(session, round_, 9, "Quake", _no())
+
+        ranking = await gs.full_standings(session, round_.id)
+
+        assert [(r.user_tg_id, r.solved) for r in ranking] == [
+            (7, True),    # solver first
+            (9, False),   # more attempts → ahead of the other non-solver
+            (8, False),
+        ]
 
 
 class TestClaimClose:

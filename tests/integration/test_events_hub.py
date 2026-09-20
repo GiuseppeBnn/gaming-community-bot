@@ -32,6 +32,7 @@ from sqlalchemy import select
 
 from database.models import PollTemplate
 from handlers import event_types, events
+from handlers.callbacks import AdminCb, EventCb, PollCreateCb
 from handlers.event_types import StartResult
 
 ADMIN_ID = 1
@@ -170,6 +171,28 @@ class _RichType(_FakeType):
         return self.reset_result
 
 
+class _ArchiveType(_FakeType):
+    """Optional archive capability: generic hub must not learn its registry key."""
+
+    key = "archive"
+
+    def __init__(self, *, archive_ok=True) -> None:
+        super().__init__()
+        self.archive_ok = archive_ok
+        self.archived: list[int] = []
+
+    async def archive(self, db_session, item_id) -> StartResult:
+        self.archived.append(item_id)
+        db_session.add(PollTemplate(question=f"archiviato {item_id}", options_json="[]",
+                                    creator_tg_id=ADMIN_ID, status="ready"))
+        await db_session.flush()
+        return StartResult(
+            self.archive_ok,
+            "archiviato" if self.archive_ok else "no",
+            alert=not self.archive_ok,
+        )
+
+
 @pytest.fixture(autouse=True)
 def _restore_registry():
     """The registry is process-global and is only populated by `main` at startup, so
@@ -223,9 +246,15 @@ class TestHub:
         await events.show_hub(message)
 
         assert set(_callbacks(message.markups[0])) == {
-            "ev:list:quiz", "ev:list:guess", "ev:list:sound",
-            "ev:list:poll", "ev:list:bet", "adm:home",
+            EventCb(action="list", task_type="quiz").pack(),
+            EventCb(action="list", task_type="guess").pack(),
+            EventCb(action="list", task_type="sound").pack(),
+            EventCb(action="list", task_type="poll").pack(),
+            EventCb(action="list", task_type="bet").pack(),
+            EventCb(action="list", task_type="twentyq").pack(),
+            AdminCb(action="home").pack(),
         }
+        assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_newly_registered_type_appears_without_touching_the_hub(self, session):
         """This is the whole point of the registry: the hub has no per-type code."""
@@ -234,7 +263,7 @@ class TestHub:
 
         await events.show_hub(message)
 
-        assert "ev:list:fake" in _callbacks(message.markups[0])
+        assert EventCb(action="list", task_type="fake").pack() in _callbacks(message.markups[0])
 
     async def test_the_command_is_private_only(self, session):
         """The hub starts events and deletes them: its buttons must not sit in the
@@ -258,23 +287,25 @@ class TestHub:
         state = _state()
         await state.set_state(events.PollTemplateStates.options)
 
-        await events.cb_hub(_FakeCallback("ev:home"), state)
+        await events.cb_hub(_FakeCallback(EventCb(action="home").pack()), state)
 
         assert await state.get_state() is None
 
     async def test_an_unknown_type_is_ignored_quietly(self, session):
         """Old keyboards outlive deployments: a button for a type that no longer
         exists must do nothing, not raise."""
-        callback = _FakeCallback("ev:list:inesistente")
+        cb = EventCb(action="list", task_type="inesistente")
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_list(callback, session)
+        await events.cb_list(callback, cb, session)
 
         assert callback.said == ""
 
     async def test_listing_delegates_to_the_type(self, session, only_fake):
-        callback = _FakeCallback("ev:list:fake")
+        cb = EventCb(action="list", task_type="fake")
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_list(callback, session)
+        await events.cb_list(callback, cb, session)
 
         assert only_fake.rendered_lists == 1
 
@@ -283,28 +314,84 @@ class TestItemScreen:
     async def test_a_type_without_a_detail_screen_gets_the_generic_one(
         self, session, only_fake
     ):
-        callback = _FakeCallback("ev:item:fake:7")
+        cb = EventCb(action="item", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_item(callback, session)
+        await events.cb_item(callback, cb, session)
 
         assert set(_callbacks(callback.message.markups[0])) == {
-            "ev:start:fake:7", "ev:sched:fake:7", "ev:list:fake",
+            EventCb(action="start", task_type="fake", item_id=7).pack(),
+            EventCb(action="sched", task_type="fake", item_id=7).pack(),
+            EventCb(action="list", task_type="fake").pack(),
         }
 
     async def test_a_type_with_one_shows_its_own(self, session):
         event_types.clear()
         rich = _RichType()
         event_types.register(rich)
-        callback = _FakeCallback("ev:item:rich:7")
+        cb = EventCb(action="item", task_type="rich", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_item(callback, session)
+        await events.cb_item(callback, cb, session)
 
         assert rich.details == [7]
 
-    async def test_a_non_numeric_id_is_ignored(self, session, only_fake):
-        callback = _FakeCallback("ev:item:fake:abc")
+    async def test_an_unknown_type_is_ignored_quietly(self, session):
+        """Old keyboards outlive deployments: a button for a type that no longer
+        exists must do nothing, not raise."""
+        cb = EventCb(action="item", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_item(callback, session)
+        await events.cb_item(callback, cb, session)
+
+        assert callback.said == ""
+
+    # A non-numeric id ("ev:item:fake:abc") used to be ignored here; now the filter
+    # drops it before it ever reaches cb_item, so the coverage moved to
+    # tests/unit/test_callbacks.py::test_a_non_numeric_event_id_never_reaches_the_handler.
+
+
+class TestInfoScreen:
+    """Generic dispatch of the optional read-only recap (`render_info`)."""
+
+    async def test_it_dispatches_to_the_types_readonly_recap(self, session):
+        class _InfoType(_FakeType):
+            key = "info_t"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.infos: list[int] = []
+
+            async def render_info(self, message, db_session, item_id) -> None:
+                self.infos.append(item_id)
+                await message.answer(f"recap #{item_id}")
+
+        event_types.clear()
+        t = _InfoType()
+        event_types.register(t)
+        cb = EventCb(action="info", task_type="info_t", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
+
+        assert t.infos == [7]
+        assert "recap #7" in callback.said
+
+    async def test_a_type_without_a_recap_is_ignored_quietly(self, session, only_fake):
+        # _FakeType exposes no render_info → nothing rendered, spinner still stopped.
+        cb = EventCb(action="info", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
+
+        assert callback.said == ""
+        assert callback.answers
+
+    async def test_an_unknown_type_is_ignored_quietly(self, session):
+        cb = EventCb(action="info", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_info(callback, cb, session)
 
         assert callback.said == ""
 
@@ -314,21 +401,25 @@ class TestItemScreen:
 # ---------------------------------------------------------------------------
 
 class TestConfirmationGate:
-    @pytest.mark.parametrize("action,executor", [
-        ("askstart", "ev:start:fake:7"),
-        ("askclose", "ev:close:fake:7"),
-        ("askdel", "ev:del:fake:7"),
-        ("askreset", "ev:reset:fake:7"),
+    @pytest.mark.parametrize("action,exec_action", [
+        ("askstart", "start"),
+        ("askclose", "close"),
+        ("askdel", "del"),
+        ("askarchive", "archive"),
+        ("askreset", "reset"),
     ])
     async def test_each_action_asks_first_and_routes_yes_to_its_executor(
-        self, session, only_fake, action, executor
+        self, session, only_fake, action, exec_action
     ):
-        callback = _FakeCallback(f"ev:{action}:fake:7")
+        cb = EventCb(action=action, task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_confirm(callback)
+        await events.cb_confirm(callback, cb)
 
+        executor = EventCb(action=exec_action, task_type="fake", item_id=7).pack()
         assert executor in _callbacks(callback.message.markups[0])
-        assert "ev:item:fake:7" in _callbacks(callback.message.markups[0]), \
+        item = EventCb(action="item", task_type="fake", item_id=7).pack()
+        assert item in _callbacks(callback.message.markups[0]), \
             "«no» must go back to the item, not leave the admin stranded"
         assert only_fake.started == [], "asking must not already do it"
 
@@ -337,18 +428,27 @@ class TestConfirmationGate:
     ):
         """A re-run pays the full pool a second time — deliberate, since a re-run is
         a new event, which is exactly why the admin has to be told before saying yes."""
-        callback = _FakeCallback("ev:askreset:fake:7")
+        cb = EventCb(action="askreset", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_confirm(callback)
+        await events.cb_confirm(callback, cb)
 
         assert "montepremi intero" in callback.said
 
-    async def test_an_unknown_action_is_ignored(self, session, only_fake):
-        callback = _FakeCallback("ev:askqualcosa:fake:7")
+    async def test_an_unknown_type_is_ignored_quietly(self, session):
+        """Old keyboards outlive deployments: a button for a type that no longer
+        exists must do nothing, not raise."""
+        cb = EventCb(action="askstart", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_confirm(callback)
+        await events.cb_confirm(callback, cb)
 
         assert callback.said == ""
+
+    # An unrecognised ask-action ("ev:askqualcosa:fake:7") used to be ignored by a
+    # `conf is None` branch inside cb_confirm; now the filter (`F.action.in_(_CONFIRM)`)
+    # only admits the four known ones, so the coverage moved to
+    # tests/unit/test_callbacks.py::test_an_unknown_confirm_action_never_reaches_the_handler.
 
 
 # ---------------------------------------------------------------------------
@@ -356,13 +456,170 @@ class TestConfirmationGate:
 # ---------------------------------------------------------------------------
 
 class TestStartAndClose:
+    async def test_start_commits_then_runs_hook_then_updates_ui(self):
+        """Reordering this sequence could advertise a card for rolled-back state."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "ok", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_close_uses_the_same_commit_hook_ui_seam(self):
+        """A second bespoke close path would inevitably drift from start's safety rule."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def close_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "ok", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_close(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_commit_failure_skips_hook_and_success_ui(self):
+        """A failed commit must not claim that the start was saved or published."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+                raise RuntimeError("database down")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "avviato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "rollback", "ui"]
+        assert callback.toasts != ["avviato"]
+
+    async def test_hook_failure_reports_recoverable_saved_state(self):
+        """After commit, a Telegram error is recovery work, not a fake rollback."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _HookType(_FakeType):
+            async def start_now(self, bot, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+                    raise RuntimeError("telegram down")
+
+                return StartResult(True, "avviato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_HookType())
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_start_now(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "rollback", "ui", "list"]
+        assert "salvato" in callback.toasts[0].lower()
+
     async def test_a_successful_start_is_committed(self, session):
         event_types.clear()
         fake = _FakeType(seed_on_start=True)
         event_types.register(fake)
-        callback = _FakeCallback("ev:start:fake:7")
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_start_now(callback, session)
+        await events.cb_start_now(callback, cb, session)
 
         assert fake.started == [7]
         assert await _survived(session, "avviato 7")
@@ -373,25 +630,28 @@ class TestStartAndClose:
         event_types.clear()
         fake = _FakeType(start_ok=False, seed_on_start=True)
         event_types.register(fake)
-        callback = _FakeCallback("ev:start:fake:7")
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_start_now(callback, session)
+        await events.cb_start_now(callback, cb, session)
 
         assert not await _survived(session, "avviato 7")
         assert callback.answers[0][1] is True, "a failure must be an alert, not a toast"
 
     async def test_the_list_is_redrawn_after_a_start(self, session, only_fake):
         """The item's state changed; leaving the old screen up invites a second tap."""
-        callback = _FakeCallback("ev:start:fake:7")
+        cb = EventCb(action="start", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_start_now(callback, session)
+        await events.cb_start_now(callback, cb, session)
 
         assert only_fake.rendered_lists == 1
 
     async def test_starting_an_unknown_type_does_nothing(self, session, only_fake):
-        callback = _FakeCallback("ev:start:inesistente:7")
+        cb = EventCb(action="start", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_start_now(callback, session)
+        await events.cb_start_now(callback, cb, session)
 
         assert only_fake.started == [] and callback.said == ""
 
@@ -401,16 +661,18 @@ class TestStartAndClose:
         event_types.clear()
         fake = _FakeType(close_result=None)
         event_types.register(fake)
-        callback = _FakeCallback("ev:close:fake:7")
+        cb = EventCb(action="close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_close(callback, session)
+        await events.cb_close(callback, cb, session)
 
         assert fake.rendered_lists == 0 and callback.toasts == []
 
     async def test_a_successful_close_answers_and_redraws(self, session, only_fake):
-        callback = _FakeCallback("ev:close:fake:7")
+        cb = EventCb(action="close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_close(callback, session)
+        await events.cb_close(callback, cb, session)
 
         assert only_fake.rendered_lists == 1
         assert callback.toasts == ["chiuso"]
@@ -418,27 +680,133 @@ class TestStartAndClose:
     async def test_a_failed_close_is_an_alert(self, session):
         event_types.clear()
         event_types.register(_FakeType(close_result=StartResult(False, "non in corso", alert=True)))
-        callback = _FakeCallback("ev:close:fake:7")
+        cb = EventCb(action="close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_close(callback, session)
+        await events.cb_close(callback, cb, session)
 
         assert callback.answers[0][1] is True
 
-    async def test_closing_a_non_numeric_id_does_nothing(self, session, only_fake):
-        callback = _FakeCallback("ev:close:fake:x")
+    async def test_closing_an_unknown_type_does_nothing(self, session, only_fake):
+        cb = EventCb(action="close", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_close(callback, session)
+        await events.cb_close(callback, cb, session)
 
-        assert only_fake.rendered_lists == 0
+        assert only_fake.rendered_lists == 0 and callback.said == ""
+
+    # A non-numeric id ("ev:close:fake:x") used to be ignored here; now the filter
+    # drops it before it ever reaches cb_close, so the coverage moved to
+    # tests/unit/test_callbacks.py::test_a_non_numeric_event_id_never_reaches_the_handler.
 
 
 class TestDeleteAndReset:
+    async def test_delete_uses_the_generic_commit_hook_ui_seam(self):
+        """Optional delete must not publish or answer before its mutation is durable."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _DeleteHookType(_FakeType):
+            key = "delete_hook"
+
+            async def delete(self, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "eliminato", post_commit=hook)
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_DeleteHookType())
+        cb = EventCb(action="del", task_type="delete_hook", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_delete(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "list"]
+
+    async def test_delete_commit_failure_rolls_back_without_success_ui(self):
+        """A failed delete commit cannot claim success or redraw stale state."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+                raise RuntimeError("database down")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _DeleteType(_FakeType):
+            key = "delete_fail"
+
+            async def delete(self, db_session, item_id):
+                events_seen.append("spec")
+                return StartResult(True, "eliminato")
+
+            async def render_list(self, message, db_session):
+                events_seen.append("list")
+
+        event_types.clear()
+        event_types.register(_DeleteType())
+        cb = EventCb(action="del", task_type="delete_fail", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_delete(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "rollback", "ui"]
+        assert callback.toasts != ["eliminato"]
+
+    async def test_archive_capability_is_generic_committed_and_returns_to_list(self, session):
+        """A finished audit record must be hidden without giving the hub a twentyq branch."""
+        event_types.clear()
+        archival = _ArchiveType()
+        event_types.register(archival)
+        cb = EventCb(action="archive", task_type="archive", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_archive(callback, cb, session)
+
+        assert archival.archived == [7] and archival.rendered_lists == 1
+        assert await _survived(session, "archiviato 7")
+
+    async def test_a_type_without_archive_ignores_the_button(self, session, only_fake):
+        cb = EventCb(action="archive", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
+
+        await events.cb_archive(callback, cb, session)
+
+        assert callback.said == "" and callback.toasts == []
+
     async def test_a_type_without_delete_ignores_the_button(self, session, only_fake):
         """`delete` is optional; probing it with getattr is what lets a type opt out
         without the hub knowing the type exists."""
-        callback = _FakeCallback("ev:del:fake:7")
+        cb = EventCb(action="del", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_delete(callback, session)
+        await events.cb_delete(callback, cb, session)
 
         assert callback.said == "" and callback.toasts == []
 
@@ -446,9 +814,10 @@ class TestDeleteAndReset:
         event_types.clear()
         rich = _RichType()
         event_types.register(rich)
-        callback = _FakeCallback("ev:del:rich:7")
+        cb = EventCb(action="del", task_type="rich", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_delete(callback, session)
+        await events.cb_delete(callback, cb, session)
 
         assert rich.deleted == [7] and rich.rendered_lists == 1
         assert await _survived(session, "eliminato 7")
@@ -456,20 +825,131 @@ class TestDeleteAndReset:
     async def test_a_failed_delete_is_not_committed(self, session):
         event_types.clear()
         event_types.register(_RichType(delete_ok=False))
-        callback = _FakeCallback("ev:del:rich:7")
+        cb = EventCb(action="del", task_type="rich", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_delete(callback, session)
+        await events.cb_delete(callback, cb, session)
 
         assert not await _survived(session, "eliminato 7")
+
+    async def test_reset_uses_the_generic_commit_hook_ui_seam(self):
+        """Reset returns StartResult too, so it shares the durable presentation seam."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _ResetHookType(_FakeType):
+            key = "reset_hook"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+
+                async def hook():
+                    events_seen.append("hook")
+
+                return StartResult(True, "riproposto", post_commit=hook)
+
+            async def render_detail(self, message, db_session, item_id):
+                events_seen.append("detail")
+
+        event_types.clear()
+        event_types.register(_ResetHookType())
+        cb = EventCb(action="reset", task_type="reset_hook", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "commit", "hook", "ui", "detail"]
+
+    async def test_failed_reset_rolls_back_before_ui(self):
+        """A typed non-ok result may follow reads/writes and must close that transaction."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _FailedResetType(_FakeType):
+            key = "reset_failed"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+                return StartResult(False, "non riproponibile", alert=True)
+
+            async def render_detail(self, message, db_session, item_id):
+                events_seen.append("detail")
+
+        event_types.clear()
+        event_types.register(_FailedResetType())
+        cb = EventCb(action="reset", task_type="reset_failed", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "rollback", "ui", "detail"]
+
+    async def test_non_rerunnable_reset_closes_read_transaction_before_ui(self):
+        """None can follow a database lookup, so it has the same rollback boundary."""
+        events_seen: list[str] = []
+
+        class _Session:
+            async def commit(self):
+                events_seen.append("commit")
+
+            async def rollback(self):
+                events_seen.append("rollback")
+
+        class _NoResetType(_FakeType):
+            key = "no_reset"
+
+            async def reset(self, db_session, item_id):
+                events_seen.append("spec")
+                return None
+
+        event_types.clear()
+        event_types.register(_NoResetType())
+        cb = EventCb(action="reset", task_type="no_reset", item_id=7)
+        callback = _FakeCallback(cb.pack())
+        original_answer = callback.answer
+
+        async def answer(text=None, show_alert=False):
+            events_seen.append("ui")
+            await original_answer(text, show_alert)
+
+        callback.answer = answer
+        await events.cb_reset(callback, cb, _Session())
+
+        assert events_seen == ["spec", "rollback", "ui"]
 
     async def test_a_type_that_is_not_re_runnable_ignores_the_button(self, session):
         """`reset` returning None is different from a reset that failed: nothing is
         answered, because there was nothing to do."""
         event_types.clear()
         event_types.register(_RichType(reset_result=None))
-        callback = _FakeCallback("ev:reset:rich:7")
+        cb = EventCb(action="reset", task_type="rich", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_reset(callback, session)
+        await events.cb_reset(callback, cb, session)
 
         assert callback.toasts == []
 
@@ -479,9 +959,10 @@ class TestDeleteAndReset:
         event_types.clear()
         rich = _RichType()
         event_types.register(rich)
-        callback = _FakeCallback("ev:reset:rich:7")
+        cb = EventCb(action="reset", task_type="rich", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_reset(callback, session)
+        await events.cb_reset(callback, cb, session)
 
         assert rich.details == [7] and rich.rendered_lists == 0
 
@@ -496,16 +977,18 @@ class TestDeleteAndReset:
 
         fake = _ResettableOnly()
         event_types.register(fake)
-        callback = _FakeCallback("ev:reset:resettable:7")
+        cb = EventCb(action="reset", task_type="resettable", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_reset(callback, session)
+        await events.cb_reset(callback, cb, session)
 
         assert fake.rendered_lists == 1
 
     async def test_a_type_without_reset_ignores_the_button(self, session, only_fake):
-        callback = _FakeCallback("ev:reset:fake:7")
+        cb = EventCb(action="reset", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_reset(callback, session)
+        await events.cb_reset(callback, cb, session)
 
         assert callback.toasts == []
 
@@ -521,9 +1004,10 @@ class TestScheduleAndCreate:
 
         import handlers.schedule as sched
         monkeypatch.setattr(sched, "start_schedule_for", _fake_start)
-        callback = _FakeCallback("ev:sched:fake:7")
+        cb = EventCb(action="sched", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_schedule(callback, _state())
+        await events.cb_schedule(callback, cb, _state())
 
         assert seen == [("fake", 7, "🧪 Finto #7", None)]
 
@@ -537,32 +1021,37 @@ class TestScheduleAndCreate:
 
         import handlers.schedule as sched
         monkeypatch.setattr(sched, "start_schedule_for", _fake_start)
-        callback = _FakeCallback("ev:sched:fake:7:close")
+        # was the optional 5th segment ("ev:sched:fake:7:close"), now its own action
+        cb = EventCb(action="sched_close", task_type="fake", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_schedule(callback, _state())
+        await events.cb_schedule(callback, cb, _state())
 
         assert seen == ["close"]
 
     async def test_scheduling_an_unknown_type_does_nothing(self, session, only_fake):
-        callback = _FakeCallback("ev:sched:inesistente:7")
+        cb = EventCb(action="sched", task_type="inesistente", item_id=7)
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_schedule(callback, _state())
+        await events.cb_schedule(callback, cb, _state())
 
         assert callback.said == ""
 
     async def test_creating_passes_the_admin_id_not_the_bot_id(self, session, only_fake):
         """The callback's message is authored by the bot, so the creator has to come
         from `from_user` — otherwise every item is created by the bot itself."""
-        callback = _FakeCallback("ev:new:fake")
+        cb = EventCb(action="new", task_type="fake")
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_new(callback, _state())
+        await events.cb_new(callback, cb, _state())
 
         assert only_fake.created_for == [ADMIN_ID]
 
     async def test_creating_an_unknown_type_does_nothing(self, session, only_fake):
-        callback = _FakeCallback("ev:new:inesistente")
+        cb = EventCb(action="new", task_type="inesistente")
+        callback = _FakeCallback(cb.pack())
 
-        await events.cb_new(callback, _state())
+        await events.cb_new(callback, cb, _state())
 
         assert only_fake.created_for == []
 
@@ -590,13 +1079,14 @@ class TestPollTemplateCreation:
 
         assert await state.get_state() == events.PollTemplateStates.question.state
 
-    async def test_a_valid_question_moves_on_to_the_options(self, session):
+    async def test_a_valid_question_moves_on_to_the_description(self, session):
         state = _state()
         message = _FakeMessage(text="Meglio pizza o sushi?")
 
         await events.fsm_pt_question(message, state)
 
-        assert await state.get_state() == events.PollTemplateStates.options.state
+        # The description now comes right after the question (before the options).
+        assert await state.get_state() == events.PollTemplateStates.description.state
         assert (await state.get_data())["pt_question"] == "Meglio pizza o sushi?"
 
     @pytest.mark.parametrize("raw", [
@@ -606,49 +1096,60 @@ class TestPollTemplateCreation:
     ])
     async def test_bad_option_lists_are_refused_and_create_nothing(self, session, raw):
         state = _state()
-        await state.update_data(pt_question="Meglio?")
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
         await state.set_state(events.PollTemplateStates.options)
         message = _FakeMessage(text=raw)
 
-        await events.fsm_pt_options(message, state, session)
+        await events.fsm_pt_options(message, state)
 
         assert (await session.execute(select(PollTemplate))).scalars().all() == []
         assert await state.get_state() == events.PollTemplateStates.options.state
 
-    async def test_a_valid_list_creates_the_template_and_offers_the_next_step(
-        self, session, user_factory
-    ):
+    async def test_a_valid_list_advances_to_the_prize_step(self, session, user_factory):
+        """The options step no longer creates the poll: it stores them and moves to
+        the prize choice — creation happens at the end of the flow."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
-        await state.update_data(pt_question="Meglio?")
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
         await state.set_state(events.PollTemplateStates.options)
         message = _FakeMessage(text="Pizza\nSushi")
 
-        await events.fsm_pt_options(message, state, session)
+        await events.fsm_pt_options(message, state)
 
-        poll = (await session.execute(select(PollTemplate))).scalar_one()
-        assert poll.question == "Meglio?"
-        assert set(_callbacks(message.markups[-1])) == {
-            f"ev:start:poll:{poll.id}", f"ev:sched:poll:{poll.id}", "ev:list:poll",
-        }
-        assert await state.get_state() is None
+        assert (await session.execute(select(PollTemplate))).scalars().all() == []
+        assert (await state.get_data())["pt_options"] == ["Pizza", "Sushi"]
+        assert await state.get_state() == events.PollTemplateStates.prize_choice.state
 
-    async def test_the_created_template_survives_a_rollback(self, session, user_factory):
+    async def test_the_full_flow_creates_a_template_that_survives_a_rollback(
+        self, session, user_factory
+    ):
         """It is offered for an immediate start on the very next tap, so it has to be
-        committed, not merely pending in the session."""
+        committed, not merely pending in the session. The minimal path (skip
+        description, no prize, no auto-close) reaches the create at the end."""
         await user_factory(tg_id=ADMIN_ID, username="admin")
         state = _state()
-        await state.update_data(pt_question="Meglio?")
-        await state.set_state(events.PollTemplateStates.options)
+        await state.update_data(pt_question="Meglio?", pt_creator=ADMIN_ID)
+        await state.set_state(events.PollTemplateStates.description)
 
-        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state, session)
+        await events.cb_pt_desc_skip(_FakeCallback(""), state)
+        await events.fsm_pt_options(_FakeMessage(text="Pizza\nSushi"), state)
+        await events.cb_pt_prize_none(_FakeCallback(""), state)
+        cb = _FakeCallback("")
+        await events.cb_pt_close_none(cb, state, session)
 
+        poll = (await session.execute(select(PollTemplate))).scalar_one()
+        assert set(_callbacks(cb.message.markups[-1])) == {
+            EventCb(action="start", task_type="poll", item_id=poll.id).pack(),
+            EventCb(action="sched", task_type="poll", item_id=poll.id).pack(),
+            EventCb(action="list", task_type="poll").pack(),
+        }
+        assert await state.get_state() is None
         assert await _survived(session, "Meglio?")
 
 
 class TestPollTemplateCancel:
     async def test_cancel_outside_the_flow_is_a_no_op(self, session):
-        callback = _FakeCallback("ev:pt:cancel")
+        callback = _FakeCallback(PollCreateCb(action="cancel").pack())
 
         await events.cb_pt_cancel(callback, _state())
 
@@ -657,12 +1158,12 @@ class TestPollTemplateCancel:
     async def test_cancel_inside_the_flow_asks_first(self, session):
         state = _state()
         await state.set_state(events.PollTemplateStates.options)
-        callback = _FakeCallback("ev:pt:cancel")
+        callback = _FakeCallback(PollCreateCb(action="cancel").pack())
 
         await events.cb_pt_cancel(callback, state)
 
         assert set(_callbacks(callback.message.markups[0])) == {
-            "ev:pt:cancel_yes", "ev:pt:cancel_no",
+            PollCreateCb(action="cancel_yes").pack(), PollCreateCb(action="cancel_no").pack(),
         }
         assert await state.get_state() is not None
 
@@ -671,7 +1172,8 @@ class TestPollTemplateCancel:
         await state.set_state(events.PollTemplateStates.options)
         await state.update_data(pt_question="Meglio?")
 
-        await events.cb_pt_cancel_yes(_FakeCallback("ev:pt:cancel_yes"), state)
+        callback = _FakeCallback(PollCreateCb(action="cancel_yes").pack())
+        await events.cb_pt_cancel_yes(callback, state)
 
         assert await state.get_state() is None and await state.get_data() == {}
 
@@ -680,6 +1182,7 @@ class TestPollTemplateCancel:
         await state.set_state(events.PollTemplateStates.options)
         await state.update_data(pt_question="Meglio?")
 
-        await events.cb_pt_cancel_no(_FakeCallback("ev:pt:cancel_no"))
+        callback = _FakeCallback(PollCreateCb(action="cancel_no").pack())
+        await events.cb_pt_cancel_no(callback)
 
         assert (await state.get_data())["pt_question"] == "Meglio?"
