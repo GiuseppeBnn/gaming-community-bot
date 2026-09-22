@@ -99,8 +99,11 @@ def test_d20_is_a_public_bare_roll_command():
     assert "/d20" in page and "1" in page and "20" in page
 
 
-def test_secret_game_public_manual_comes_from_the_shared_policy_renderer():
-    page = render_command("gioco_alduino", is_admin=False)
+def test_secret_game_manual_is_admin_only_while_in_development():
+    """Temporarily restricted: hidden from players, still fully documented for admins."""
+    assert render_command("gioco_alduino", is_admin=False) is None
+
+    page = render_command("gioco_alduino", is_admin=True)
     assert page is not None
     assert "Regole e stato del gioco segreto di Alduino" in page
     assert "Il gioco segreto di Alduino" in page
@@ -108,10 +111,12 @@ def test_secret_game_public_manual_comes_from_the_shared_policy_renderer():
     assert "RISPOSTA:" in page
 
 
-def test_secret_game_is_discoverable_from_the_legend_and_shared_reference():
-    assert "/gioco_alduino" in render_legend(is_admin=False)
-    assert "/gioco_alduino" in render_command_or_hint("gioco_alduino")
-    assert "/gioco_alduino" in render_alduino_reference()
+def test_secret_game_is_discoverable_only_by_admins():
+    assert "/gioco_alduino" not in render_legend(is_admin=False)
+    assert "/gioco_alduino" in render_legend(is_admin=True)
+    assert "/gioco_alduino" not in render_command_or_hint("gioco_alduino")
+    assert "/gioco_alduino" in render_command_or_hint("gioco_alduino", is_admin=True)
+    assert "/gioco_alduino" not in render_alduino_reference()
 
 
 class TestAlduinoReference:

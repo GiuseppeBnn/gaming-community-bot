@@ -283,7 +283,20 @@ class TestPublicDeepLinks:
 
         assert "daily" in message.said.lower()
 
-    async def test_the_secret_game_spiega_payload_uses_the_public_manual(self, session, onboarded):
+    async def test_the_secret_game_spiega_payload_is_hidden_from_non_admins(
+        self, session, onboarded
+    ):
+        """Temporarily admin-only: a regular user gets the same "not found" hint
+        as for any unknown command, never the manual."""
+        message = _FakeMessage()
+
+        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+
+        assert "Il gioco segreto di Alduino" not in message.said
+
+    async def test_the_secret_game_spiega_payload_uses_the_public_manual_for_admins(
+        self, session, onboarded, as_admin
+    ):
         message = _FakeMessage()
 
         await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)

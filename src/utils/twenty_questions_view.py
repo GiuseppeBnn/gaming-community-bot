@@ -124,9 +124,6 @@ def render_public_help(policy: TwentyQuestionsPolicy) -> str:
         (
             "Rispondi alla card o a un verdetto del gioco con una domanda. "
             "Per provare il titolo usa <code>RISPOSTA: titolo del gioco</code>. "
-            "Puoi anche scrivere <code>/gioco domanda</code> oppure "
-            "<code>/gioco RISPOSTA: titolo del gioco</code>. "
-            "<code>/gioco</code> mostra lo stato qui, senza cercare la card iniziale. "
             "Può esserci una sola partita attiva per gruppo."
         ),
         "Alduino risponde SÌ o NO; se non ha elementi sufficienti, NON LO SO: "
@@ -207,8 +204,7 @@ def render_live_card(
             "",
             "Rispondi <b>a questo messaggio</b> con una domanda.",
             "Per tentare: <code>RISPOSTA: titolo del gioco</code>",
-            "Puoi rispondere anche ai verdetti del gioco, oppure usare "
-            "<code>/gioco domanda</code> · <code>/gioco RISPOSTA: titolo</code>.",
+            "Puoi rispondere anche ai verdetti del gioco.",
         ))
     return "\n".join(lines)
 

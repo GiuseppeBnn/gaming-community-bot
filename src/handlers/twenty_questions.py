@@ -375,11 +375,16 @@ async def _finish_creation(
     )
 
 
-@router.message(Command("gioco_alduino", "gioco"))
+@router.message(Command("gioco_alduino", "gioco"), IsAdminFilter())
 async def cmd_gioco_alduino(
     message: Message, db_session: AsyncSession, command: CommandObject | None = None,
 ) -> None:
-    """Explain the public rules privately, or show safe live status in a group."""
+    """Explain the public rules privately, or show safe live status in a group.
+
+    Admin-only while the command is in development (§ plan): a non-admin
+    simply gets no match here, same as an unknown command. The reply-to-card
+    gameplay in ``play_turn`` below is unaffected.
+    """
     policy = v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)
     if message.chat.type == ChatType.PRIVATE:
         await message.answer(render_public_help(policy))
@@ -752,7 +757,7 @@ async def play_turn(message: Message, db_session: AsyncSession) -> None:
         raise SkipHandler()
     if snapshot.session.status != "running":
         await db_session.rollback()
-        await message.reply("🐲 Questa partita è conclusa. Usa /gioco per quella attuale.")
+        await message.reply("🐲 Questa partita è conclusa. Rispondi alla card di quella attuale.")
         return
     if snapshot.game.rules_version == 1:
         await _play_turn_v1(message, db_session, snapshot)
