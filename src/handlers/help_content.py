@@ -144,14 +144,6 @@ _COMMANDS: list[CommandDoc] = [
         details="Le classifiche della community con uno switcher tra ricchezza, XP e trofei. "
                 "Si aprono in chat privata.",
     ),
-    CommandDoc(
-        "gioco_alduino",
-        "Regole e stato del gioco segreto di Alduino",
-        "🏆 Progressione",
-        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
-        aliases=("gioco",),
-        details=render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
-    ),
     # --- 🍺 Locanda ---
     CommandDoc(
         "locanda", "La Locanda: tag cosmetici e menù consumabili", "🍺 Locanda",
@@ -298,6 +290,16 @@ _COMMANDS: list[CommandDoc] = [
                        "«GTA SA» vale «Grand Theft Auto: San Andreas» — ma la <b>serie da "
                        "sola non basta</b>. In creazione puoi aggiungere grafie alternative "
                        "sempre accettate: sono la rete di sicurezza se l'AI non risponde."),
+    CommandDoc(
+        "gioco_alduino",
+        "Regole e stato del gioco segreto di Alduino",
+        "🎬 Eventi",
+        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
+        aliases=("gioco",),
+        admin_only=True,
+        details="<i>In sviluppo: comando temporaneamente riservato agli admin.</i>\n\n"
+                + render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
+    ),
     CommandDoc("crea_quiz", "Crea un quiz (in privato)", "🎬 Eventi",
                usage="/crea_quiz", admin_only=True),
     CommandDoc("quiz", "Elenca i quiz pronti e avviali", "🎬 Eventi",

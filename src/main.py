@@ -45,8 +45,6 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="scommesse", description="Scommesse aperte"),
     BotCommand(command="crea_scommessa", description="Crea una scommessa"),
     BotCommand(command="quiz", description="🧠 Quiz: gioca o gestisci"),
-    BotCommand(command="gioco", description="🐲 Gioca qui: stato, domande e tentativi"),
-    BotCommand(command="gioco_alduino", description="🐲 Regole e stato del gioco segreto"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
@@ -66,8 +64,6 @@ _GROUP_COMMANDS = [
     BotCommand(command="trasferisci", description="Trasferisci CoInn"),
     BotCommand(command="profilo", description="Il tuo profilo"),
     BotCommand(command="quiz", description="🧠 Quiz attivo da giocare"),
-    BotCommand(command="gioco", description="🐲 Gioca qui: stato, domande e tentativi"),
-    BotCommand(command="gioco_alduino", description="🐲 Regole e stato del gioco segreto"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
@@ -92,6 +88,10 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="admin", description="🔧 Pannello admin"),
     BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
     BotCommand(command="eventi", description="🎬 Hub eventi"),
+    # In sviluppo: comando temporaneamente riservato agli admin (vedi
+    # help_content.CommandDoc("gioco_alduino", admin_only=True)).
+    BotCommand(command="gioco", description="🐲 Gioca qui: stato, domande e tentativi"),
+    BotCommand(command="gioco_alduino", description="🐲 Regole e stato del gioco segreto"),
     BotCommand(command="crea_quiz", description="🎬 Crea un quiz"),
     BotCommand(command="sondaggio", description="🎬 Crea un sondaggio"),
     BotCommand(command="programma", description="🎬 Programma un evento"),

@@ -10,6 +10,8 @@ Modifiche rilevanti al bot. Formato ispirato a
   stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
   verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
   partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
+  *In sviluppo: `/gioco`/`/gioco_alduino` sono temporaneamente riservati agli
+  admin; il gioco resta comunque giocabile rispondendo alle card in gruppo.*
 - **Una partita per gruppo** — avvii manuali e programmati serializzati su
   PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
