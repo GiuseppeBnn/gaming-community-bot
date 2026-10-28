@@ -483,3 +483,17 @@ async def test_gemini_rejects_untrusted_usage_values(gemini, structured_request)
         mocked.post(_url(), payload=response)
         result = await gemini.generate_json(structured_request)
     assert result.usage == ai_budget.UsageMetrics("gemini-test-actual", None, None, None, 0)
+
+
+async def test_gemini_38_omits_sampling_and_keeps_room_for_reasoning(
+    gemini, structured_request, monkeypatch,
+):
+    monkeypatch.setattr(structured_ai.settings, "twentyq_gemini_model", "gemini-3.8-flash")
+    with aioresponses() as mocked:
+        mocked.post(_url("gemini-3.8-flash"), payload=_response())
+        result = await gemini.generate_json(structured_request)
+    config = next(iter(mocked.requests.values()))[0].kwargs["json"]["generationConfig"]
+    assert "temperature" not in config
+    assert config["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert config["maxOutputTokens"] == structured_request.max_output_tokens + 1024
+    assert result.value == {"verdetto": "si"}

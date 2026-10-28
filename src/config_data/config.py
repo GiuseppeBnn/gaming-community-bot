@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from decimal import Decimal
 from typing import Annotated, Literal, Self
 
@@ -40,9 +42,9 @@ class Settings(BaseSettings):
 
     # Groq LLM (AI entertainment module)
     groq_api_key: str = ""
-    groq_model: str = "qwen/qwen3.6-27b"
-    # qwen3.6 is a hybrid reasoning model: without this it writes its chain of
-    # thought INSIDE `content` (`<think>…</think>`) and it would reach the group.
+    groq_model: str = "qwen/qwen3.8-27b"
+    # Disable Qwen's optional reasoning explicitly for fast, short replies.
+    # The parser also strips <think> blocks if an endpoint emits them anyway.
     # Model-specific — `openai/gpt-oss-*` rejects "none" — so it travels with
     # `groq_model` and is overridable from .env. Empty string → field omitted,
     # which is the way out for a model that does not take it.
@@ -88,7 +90,7 @@ class Settings(BaseSettings):
     # settings are deliberately independent from entertainment, judge and
     # conversational traffic: changing one workload must not move another.
     gemini_api_key: str = ""
-    twentyq_gemini_model: str = "gemini-3.5-flash"
+    twentyq_gemini_model: str = "gemini-3.8-flash"
     twentyq_groq_model: str = "openai/gpt-oss-20b"
     twentyq_openrouter_model: str = "z-ai/glm-5.3-flash"
     twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
@@ -107,8 +109,8 @@ class Settings(BaseSettings):
     # Alduino chat is intentionally independent from structured AI games: it can
     # move provider/model without changing 20 Domande.
     alduino_provider: Literal["auto", "openrouter", "gemini", "groq"] = "auto"
-    alduino_gemini_model: str = "gemini-3.6-flash"
-    alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "minimal"
+    alduino_gemini_model: str = "gemini-3.8-flash"
+    alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
     alduino_fallback_to_groq: bool = True
     alduino_timeout_seconds: int = Field(default=15, ge=1)
     alduino_free_timeout_seconds: int = Field(default=10, ge=1)
@@ -265,6 +267,16 @@ class Settings(BaseSettings):
     telegram_api_id: int = 0
     telegram_api_hash: str = ""
     telegram_session: str = ""
+
+    @field_validator("groq_model", mode="before")
+    @classmethod
+    def migrate_retired_groq_model(cls, value: object) -> object:
+        # Existing deployments keep their .env across image updates. This exact
+        # retired default is no longer callable on free/developer Groq accounts.
+        if not isinstance(value, str):
+            return value
+        value = value.strip()
+        return "qwen/qwen3.8-27b" if value == "qwen/qwen3.6-27b" else value
 
     @field_validator("admin_ids", mode="before")
     @classmethod

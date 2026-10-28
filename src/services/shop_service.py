@@ -128,11 +128,8 @@ async def get_active_keys(session: AsyncSession, user_tg_id: int) -> list[str]:
 
 async def owned_tag_keys(session: AsyncSession, user_tg_id: int) -> list[str]:
     """Catalog keys the user owns (purchased), in catalog order."""
-    owned: list[str] = []
-    for key in catalog_loader.get_cosmetics():
-        if await has_cosmetic(session, user_tg_id, key):
-            owned.append(key)
-    return owned
+    owned = await owned_cosmetic_keys(session, user_tg_id)
+    return [key for key in catalog_loader.get_cosmetics() if key in owned]
 
 
 async def ensure_active_seeded(session: AsyncSession, user_tg_id: int) -> None:

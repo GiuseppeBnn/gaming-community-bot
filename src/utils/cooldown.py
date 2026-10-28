@@ -63,16 +63,13 @@ async def guard(
     `notice` may contain ``{s}`` for the remaining seconds. Admins bypass by
     default (``exempt_admin``).
     """
-    uid = message.from_user.id if message.from_user else 0
-    if exempt_admin and uid and await is_admin(message.bot, uid):
+    if await ready(message, bucket, seconds, exempt_admin=exempt_admin):
         return True
+    uid = message.from_user.id if message.from_user else 0
     left = remaining(bucket, uid, seconds)
-    if left > 0:
-        template = notice or "⏳ Vai più piano! Riprova tra {s}s."
-        await message.reply(template.format(s=int(left) + 1))
-        return False
-    mark(bucket, uid)
-    return True
+    template = notice or "⏳ Vai più piano! Riprova tra {s}s."
+    await message.reply(template.format(s=int(left) + 1))
+    return False
 
 
 async def ready(

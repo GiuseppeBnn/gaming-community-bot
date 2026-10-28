@@ -832,3 +832,17 @@ def test_factory_follows_normalized_settings_order_and_configuration(monkeypatch
         "groq", "gemini", "openrouter",
     ]
     assert module.has_configured_twenty_questions_provider() is True
+
+
+@pytest.mark.parametrize("error_type", [TypeError, ValueError, RuntimeError])
+async def test_adapter_programming_error_never_triggers_paid_fallback(structured_request, error_type):
+    sentinel = error_type("adapter defect")
+    primary = FakeProvider("gemini", sentinel)
+    paid = FakeProvider("openrouter")
+    router = _module().StructuredAIRouter(providers=(primary, paid), deadline_seconds=25)
+
+    with pytest.raises(error_type) as raised:
+        await router.generate(structured_request, session_id=None, validate=parse_verdict, audit=False)
+
+    assert raised.value is sentinel
+    assert paid.calls == 0

@@ -235,3 +235,19 @@ def test_usage_rejects_values_that_cannot_fit_accounting_columns(raw_cost):
 
     assert metrics == ai_budget.UsageMetrics()
     assert cost is None
+
+
+async def test_invalid_json_settles_conservatively_and_allows_failover(openrouter):
+    _reserve, settlements = openrouter
+    with aioresponses() as mocked:
+        mocked.post(
+            ai_service.settings.openrouter_url, status=200,
+            body="{broken", content_type="application/json",
+        )
+        with pytest.raises(ai_service.AIServiceError, match="malformed OpenRouter response"):
+            await ai_service.generate_openrouter_completion(
+                "s", "u", feature="entertainment", models=("test/model",), require_zdr=False,
+            )
+    assert len(settlements) == 1
+    assert settlements[0][1]["status"] == "malformed"
+    assert settlements[0][1]["actual_microusd"] is None

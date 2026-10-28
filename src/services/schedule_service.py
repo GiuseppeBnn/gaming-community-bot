@@ -342,10 +342,15 @@ async def cancel_pending_for_ref(
 
 
 async def cancel(session: AsyncSession, task_id: int, by_tg_id: int | None = None) -> bool:
-    task = (
-        await session.execute(select(ScheduledTask).where(ScheduledTask.id == task_id))
-    ).scalar_one_or_none()
-    if task is None or task.status != "pending":
+    result = await session.execute(
+        update(ScheduledTask)
+        .where(ScheduledTask.id == task_id, ScheduledTask.status == "pending")
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
         return False
-    task.status = "cancelled"
+    task = await session.get(ScheduledTask, task_id)
+    if task is not None:
+        await session.refresh(task, ["status"])
     return True

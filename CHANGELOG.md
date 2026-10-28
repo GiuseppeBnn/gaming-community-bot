@@ -17,6 +17,23 @@ Modifiche rilevanti al bot. Formato ispirato a
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **Modelli AI aggiornati** — Qwen 3.8 27B su Groq e Gemini 3.8 Flash per chat
+  e giudizi del gioco segreto; il vecchio default Groq viene migrato anche con
+  `.env` preesistente. Gemini usa thinking compatibile, margine di ragionamento
+  e payload senza sampling legacy. GPT-OSS strict e GLM paid confermati disponibili.
+- **Prompt più mirati** — ruoli comici più brevi, Alduino ancorato a comandi e dati
+  live senza azioni inventate, giudice v4 esplicito su negazioni e domande composte.
+- **Alert recuperabili** — tentativi AI recuperati dal fallback nei log INFO;
+  alert quando la route è esaurita. Reset di rete Telegram notificati solo se la
+  sequenza dura almeno 60 s; errori auth/conflitti sempre immediati. Circuit breaker
+  di 15 min per errori HTTP di configurazione, 60 s per quelli temporanei.
+- **Semplificazione interna** — un solo percorso di audit/fallback nel router AI
+  strutturato, validazione lunghezze condivisa tra quiz e guess, cooldown senza
+  duplicazione; tag posseduti letti con una query invece di una per voce catalogo.
+- **Robustezza** — annullamento task condizionato allo stato persistito, timer
+  corrotti/interni esclusi dalla discovery pubblica, messaggi lunghi misurati in
+  unità UTF-16, JSON AI invalido gestito come errore provider con contabilizzazione
+  paid prudente.
 - **Verdetti prudenti** — niente nuovi FORSE: SÌ/NO solo con elementi sufficienti,
   altrimenti NON LO SO, senza quota consumata, penalità sul premio o turno valido.
   Nessun secondo giudice né fallback paid per la sola incertezza. Dati storici

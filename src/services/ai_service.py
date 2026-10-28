@@ -59,6 +59,13 @@ def parse_model_list(raw: str) -> tuple[str, ...]:
     return models
 
 
+def gemini_generation_policy(model: str, level: str, answer_tokens: int) -> tuple[str, int]:
+    """Separate visible output from thinking on models without minimal effort."""
+    if model.startswith(("gemini-3.7-", "gemini-3.8-", "gemini-4-")):
+        return ("low" if level == "minimal" else level), answer_tokens + 1024
+    return level, answer_tokens
+
+
 def openrouter_generation_policy(
     models: tuple[str, ...], max_answer_tokens: int,
 ) -> tuple[dict[str, Any], int]:
@@ -227,7 +234,7 @@ async def generate_openrouter_completion(
                         "OpenRouter %s: status %s (model=%s).",
                         feature, response.status, models[0],
                     )
-                    raise AIServiceError(f"status {response.status}")
+                    raise AIServiceError(f"status {response.status}", status=response.status)
                 data = await response.json()
     except asyncio.CancelledError:
         # Graceful shutdown can cancel a request after the provider accepted it.
@@ -246,6 +253,11 @@ async def generate_openrouter_completion(
             reservation, status="uncertain", actual_microusd=None,
         )
         raise AIServiceError("OpenRouter network error") from exc
+    except ValueError as exc:
+        await _settle_openrouter(
+            reservation, status="malformed", actual_microusd=None,
+        )
+        raise AIServiceError("malformed OpenRouter response") from exc
 
     metrics, actual_microusd = _openrouter_usage(data)
     try:
@@ -317,12 +329,13 @@ async def generate_groq_completion(
             async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
                 if resp.status != 200:
                     await resp.read()
-                    logger.error(
+                    logger.log(
+                        logging.INFO if resp.status in {429, 500, 502, 503, 504} else logging.ERROR,
                         "Groq ha risposto con status %s (model=%s).",
                         resp.status,
                         settings.groq_model,
                     )
-                    raise AIServiceError(f"status {resp.status}")
+                    raise AIServiceError(f"status {resp.status}", status=resp.status)
                 data = await resp.json()
     except asyncio.TimeoutError as exc:
         logger.warning("Timeout nella chiamata a Groq.")
@@ -330,6 +343,8 @@ async def generate_groq_completion(
     except aiohttp.ClientError as exc:
         logger.warning("Errore di rete nella chiamata a Groq (model=%s).", settings.groq_model)
         raise AIServiceError("network error") from exc
+    except ValueError as exc:
+        raise AIServiceError("malformed response") from exc
 
     try:
         content = data["choices"][0]["message"]["content"]
@@ -358,20 +373,20 @@ async def generate_completion(
     temperature: float | None = None,
 ) -> str:
     """Route one-shot entertainment without affecting the strict judge lane."""
+    async def paid() -> str:
+        text = await generate_openrouter_completion(
+            system_prompt, user_text, max_tokens, temperature=temperature,
+            feature="entertainment",
+            models=parse_model_list(settings.openrouter_fun_models),
+            require_zdr=False,
+        )
+        return text if len(text) <= 600 else text[:599].rstrip() + "…"
+
     if settings.ai_entertainment_provider == "auto":
         async def groq() -> str:
             return await generate_groq_completion(
                 system_prompt, user_text, max_tokens, temperature=temperature,
             )
-
-        async def paid() -> str:
-            text = await generate_openrouter_completion(
-                system_prompt, user_text, max_tokens, temperature=temperature,
-                feature="entertainment",
-                models=parse_model_list(settings.openrouter_fun_models),
-                require_zdr=False,
-            )
-            return text if len(text) <= 600 else text[:599].rstrip() + "…"
 
         attempts = [ProviderAttempt(
             "groq", settings.groq_model, groq,
@@ -390,16 +405,7 @@ async def generate_completion(
         except ProviderUnavailable as exc:
             raise AIServiceError("entertainment providers unavailable") from exc
     if settings.ai_entertainment_provider == "openrouter":
-        text = await generate_openrouter_completion(
-            system_prompt,
-            user_text,
-            max_tokens,
-            temperature=temperature,
-            feature="entertainment",
-            models=parse_model_list(settings.openrouter_fun_models),
-            require_zdr=False,
-        )
-        return text if len(text) <= 600 else text[:599].rstrip() + "…"
+        return await paid()
     return await generate_groq_completion(
         system_prompt, user_text, max_tokens, temperature=temperature,
     )
@@ -454,6 +460,8 @@ def _log_judge_http_failure(status: int, body: str) -> None:
     """
     try:
         error = json.loads(body).get("error", {})
+        if not isinstance(error, dict):
+            error = {}
     except (ValueError, TypeError, AttributeError):
         error = {}
 
@@ -513,7 +521,7 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
                     body = await resp.text()
                     _log_judge_http_failure(resp.status, body)
                     if resp.status not in _JUDGE_RETRY_STATUSES or attempt == 2:
-                        raise AIServiceError(f"status {resp.status}")
+                        raise AIServiceError(f"status {resp.status}", status=resp.status)
         except asyncio.TimeoutError as exc:
             logger.warning("Timeout nella chiamata al giudice (tentativo %s).", attempt)
             if attempt == 2:
@@ -525,6 +533,8 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
             )
             if attempt == 2:
                 raise AIServiceError("network error") from exc
+        except ValueError as exc:
+            raise AIServiceError("malformed verdict") from exc
         await asyncio.sleep(_JUDGE_RETRY_DELAY)
 
     try:

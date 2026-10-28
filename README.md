@@ -89,7 +89,7 @@ Per usare l'immagine pubblicata da CI invece di buildare in locale, imposta
 ```bash
 pip install -r requirements-dev.txt
 
-pytest                                   # tutta la suite (~776 test, ~25s)
+pytest                                   # tutta la suite
 pytest --cov=src --cov-report=term-missing
 pytest tests/unit/                       # solo unit (senza DB)
 pytest tests/integration/                # solo integration (SQLite in-memory)
@@ -102,7 +102,7 @@ I test non richiedono token Telegram reali né un server in esecuzione: le env v
 necessarie sono impostate da `tests/conftest.py`, e `pyproject.toml` espone `src/`
 al path di import (`pythonpath = ["src"]`).
 
-La coverage ha un **ratchet**: `fail_under = 59` in `pyproject.toml`. Si alza, non si abbassa.
+La coverage ha un **ratchet**: `fail_under = 99` in `pyproject.toml`. Si alza, non si abbassa.
 
 ### Test su PostgreSQL reale (opzionali, marker `pg`)
 
@@ -238,7 +238,7 @@ bounded, ma non ricevono questi messaggi ambientali. GLM è il fallback paid anc
 per i comandi comici (`AI_ENTERTAINMENT_PROVIDER=auto`: Groq → GLM).
 I tentativi gratuiti della chat e dei comandi fun hanno un timeout di 10 s ciascuno;
 ogni route ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
-di riprovare per 60 s un provider appena fallito. Il ledger costi salva modello, token e costo, mai prompt o
+di riprovare per 60 s un provider appena fallito (15 minuti per errori HTTP di configurazione). Il ledger costi salva modello, token e costo, mai prompt o
 risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
 limite e dal prezzo massimo del provider.
 
@@ -278,6 +278,22 @@ Per ricevere i messaggi ordinari devi disattivare la privacy del bot da BotFathe
 `/setprivacy` → scegli il bot → **Disable**. Se Telegram non applica il cambio a un
 gruppo esistente, rimuovi e riaggiungi il bot. Senza questo passaggio Alduino continua
 a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
+
+### Modelli e alert (aggiornamento ottobre 2026)
+
+Groq usa `qwen/qwen3.8-27b`; il precedente default `qwen/qwen3.6-27b`, ritirato,
+viene migrato anche se resta selezionato in un `.env` esistente. Chat e gioco
+strutturato usano `gemini-3.8-flash`: `minimal` diventa `low` nell'adapter, con
+1024 token di margine per il ragionamento oltre al limite della risposta.
+Gli altri modelli selezionati restano GPT-OSS per giudizi strict e GLM 5.3 Flash
+per il fallback paid, con gli stessi cap e vincoli di privacy.
+
+I 503 indicano indisponibilità del provider: un fallback riuscito resta nei log
+INFO, mentre l'esaurimento della route produce un WARNING. I 400/401/403/404
+aprono il circuit breaker testuale per 15 minuti, i guasti temporanei per 60 s.
+I reset brevi del polling Telegram restano nei log senza duplicare i DM; se una
+sequenza di errori di rete dura almeno 60 s arriva l'alert. Autenticazione,
+conflitti e gli altri errori mantengono gli alert immediati.
 
 ### Quiz a premi
 
@@ -460,13 +476,13 @@ gaming-community-bot/
 | `GEMINI_API_KEY` | — | primo provider gratuito per giochi AI e chat di Alduino |
 | `TWENTYQ_V2_ENABLED` | `false` | mantiene disabilitate le nuove partite premianti finché il rollout non è approvato |
 | `TWENTYQ_PROVIDER_ORDER` | `gemini,groq,openrouter` | fallback gratuito → paid, deadline assoluta 25 s |
-| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.5-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
+| `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.8-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
 | `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
 | `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
 | `ALDUINO_PROVIDER` | `auto` | Groq gratuito → Gemini gratuito → GLM paid; provider espliciti per A/B |
 | `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `10` / `30` | timeout per tentativo free / deadline totale chat |
-| `ALDUINO_GEMINI_MODEL` | `gemini-3.6-flash` | modello conversazionale, separato dai giochi strutturati |
-| `ALDUINO_THINKING_LEVEL` | `minimal` | thinking breve per risposte rapide da chat |
+| `ALDUINO_GEMINI_MODEL` | `gemini-3.8-flash` | modello conversazionale, separato dai giochi strutturati |
+| `ALDUINO_THINKING_LEVEL` | `low` | Gemini 3.8: `minimal` legacy viene adattato a `low` |
 | `ALDUINO_FALLBACK_TO_GROQ` | `true` | include Groq gratuito dopo Gemini in auto; fallback legacy nei modi espliciti |
 | `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
 | `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from aiogram import Router
 from aiogram.types import Message
 
+from utils.text import too_long as too_long
+
 log = logging.getLogger(__name__)
 router = Router()
 
@@ -81,18 +83,6 @@ def kind_of(key: str) -> KindSpec:
     """The spec for a kind. Raises ``KeyError`` on an unknown one: a typo in a
     callback must fail loudly here, not quietly render the wrong game."""
     return KINDS[key]
-
-
-def too_long(text: str, cap: int, subject: str) -> str | None:
-    """Error message if `text` exceeds `cap`, else None. `subject` is the already
-    gender-agreed Italian phrase. Reports the real length and how much to cut, so
-    the admin doesn't have to count."""
-    if len(text) <= cap:
-        return None
-    return (
-        f"⚠️ {subject}: <b>{len(text)}/{cap}</b> caratteri.\n"
-        f"Accorcia di {len(text) - cap} e reinvia."
-    )
 
 
 def extract_media(message: Message) -> tuple[str, str] | None:

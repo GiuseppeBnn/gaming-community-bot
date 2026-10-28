@@ -90,3 +90,15 @@ def test_chunk_blocks_default_limit_under_telegram_max():
     blocks = [f"<b>Trofeo {i}</b> — descrizione di esempio" for i in range(200)]
     for chunk in chunk_blocks(blocks, sep="\n\n"):
         assert len(chunk) <= TELEGRAM_MESSAGE_LIMIT
+
+
+def test_chunk_blocks_counts_emoji_as_two_utf16_units():
+    blocks = ["🎮" * 1000, "🎮" * 1000, "fine"]
+    chunks = chunk_blocks(blocks)
+    assert len(chunks) == 2
+    assert all(len(chunk.encode("utf-16-le")) // 2 <= 3900 for chunk in chunks)
+    assert "\n".join(chunks) == "\n".join(blocks)
+
+
+def test_chunk_blocks_counts_utf16_in_separator():
+    assert chunk_blocks(["ab", "cd"], sep="🎮", limit=5) == ["ab", "cd"]

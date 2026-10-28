@@ -65,11 +65,41 @@ def _min_level() -> int:
     return level if isinstance(level, int) else logging.WARNING
 
 
+class _PollingAlertFilter(logging.Filter):
+    """Keep polling diagnostics in logs; alert only on sustained network outages."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failed_at: float | None = None
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.msg == "Connection established (tryings = %d, bot id = %d)":
+            self.failed_at = None
+        elif record.msg == "Sleep for %f seconds and try again... (tryings = %d, bot id = %d)":
+            record.suppress_telegram_alert = True
+        elif (
+            record.msg == "Failed to fetch updates - %s: %s"
+            and isinstance(record.args, tuple)
+            and bool(record.args)
+            and record.args[0] == "TelegramNetworkError"
+        ):
+            now = time.monotonic()
+            if self.failed_at is None:
+                self.failed_at = now
+            record.suppress_telegram_alert = now - self.failed_at < 60
+        return True
+
+
+_polling_filter = _PollingAlertFilter()
+
+
 class TelegramAlertHandler(logging.Handler):
     """Buffers records for `alert_loop`. Does no I/O, so it cannot block."""
 
     def emit(self, record: logging.LogRecord) -> None:
         global _dropped
+        if getattr(record, "suppress_telegram_alert", False):
+            return
         if record.name == __name__ or record.name.startswith(__name__ + "."):
             # Our own failures must never become alerts about themselves. A bare
             # startswith() would also swallow an unrelated `utils.alerts_v2` —
@@ -132,6 +162,7 @@ def format_alert(record: logging.LogRecord, suppressed: int = 0) -> str:
 
 def install() -> TelegramAlertHandler:
     """Attach the handler to the root logger. Called once, from `main()`."""
+    logging.getLogger("aiogram.dispatcher").addFilter(_polling_filter)
     handler = TelegramAlertHandler()
     handler.setLevel(_min_level())
     logging.getLogger().addHandler(handler)
@@ -143,6 +174,7 @@ def reset() -> None:
     global _dropped, _undelivered
     _buffer.clear()
     _seen.clear()
+    _polling_filter.failed_at = None
     _dropped = 0
     _undelivered = 0
 

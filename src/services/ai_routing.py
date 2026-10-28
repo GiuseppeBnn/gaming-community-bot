@@ -16,6 +16,10 @@ T = TypeVar("T")
 class ProviderUnavailable(RuntimeError):
     """An expected provider failure, safe to handle through failover."""
 
+    def __init__(self, message: str = "provider unavailable", *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
 
 @dataclass(frozen=True, slots=True)
 class ProviderAttempt(Generic[T]):
@@ -59,8 +63,13 @@ class TextAIRouter:
                 last_error = exc
             # Cancellation and programming errors must propagate, never trigger
             # an extra paid call. Log only configured metadata, not error bodies.
-            self._open_until[key] = self._clock() + 60
-            log.warning("AI provider unavailable workload=%s provider=%s", workload, attempt.name)
+            delay = 900 if last_error.status in {400, 401, 403, 404} else 60
+            self._open_until[key] = max(self._open_until.get(key, 0), self._clock() + delay)
+            log.info(
+                "AI attempt unavailable workload=%s provider=%s model=%s status=%s",
+                workload, attempt.name, attempt.model, last_error.status,
+            )
+        log.warning("AI route exhausted workload=%s; no provider produced a reply", workload)
         raise ProviderUnavailable("all text providers unavailable") from last_error
 
     def reset(self) -> None:

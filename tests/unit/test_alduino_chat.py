@@ -331,3 +331,23 @@ def test_chat_cache_prefix_preserves_all_data_and_puts_variable_fields_last():
 
 def test_reply_has_a_hard_character_cap():
     assert len(alduino_chat._clip_reply("x" * 900)) == alduino_chat._MAX_REPLY_CHARS
+
+
+async def test_gemini_invalid_json_is_a_provider_failure():
+    with aioresponses() as mocked:
+        mocked.post(
+            alduino_chat.GEMINI_INTERACTIONS_URL, status=200,
+            body="{broken", content_type="application/json",
+        )
+        with pytest.raises(AlduinoAIError, match="malformed response"):
+            await alduino_chat._gemini_post({})
+
+
+async def test_gemini_38_migrates_minimal_and_reserves_thinking_headroom(gemini_settings, monkeypatch):
+    monkeypatch.setattr(alduino_chat.settings, "alduino_gemini_model", "gemini-3.8-flash")
+    with aioresponses() as mocked:
+        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, payload=_response())
+        await alduino_chat.generate_reply(system_prompt="s", current="ciao")
+    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
+    assert sent["generation_config"]["thinking_level"] == "low"
+    assert sent["generation_config"]["max_output_tokens"] == 280 + 1024
