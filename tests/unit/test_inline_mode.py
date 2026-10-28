@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 from database.models import BettingEvent, PollTemplate, Quiz, QuizQuestion, ScheduledTask
 from handlers import event_types
@@ -142,3 +143,43 @@ class TestArticle:
 
         assert poll.reply_markup is None
         assert (await _call("", session))["is_personal"] is True
+
+
+@pytest.mark.parametrize("payload", ["{", "null", "[]", '"start"', "42"])
+async def test_malformed_timer_does_not_hide_healthy_public_events(session, payload):
+    await _seed(session)
+    session.add(ScheduledTask(
+        task_type="quiz", ref_id=999, status="pending", created_by_tg_id=1,
+        run_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1),
+        payload_json=payload,
+    ))
+    await session.commit()
+
+    results = (await _call("", session))["results"]
+
+    assert len(results) == 3
+    assert results[0].id.startswith("open:quiz:")
+
+
+async def test_internal_start_timer_is_not_a_public_event(session):
+    await _seed(session)
+    ready = await session.scalar(select(Quiz).where(Quiz.title == "Domani"))
+    session.add(ScheduledTask(
+        task_type="quiz", ref_id=ready.id, status="pending", created_by_tg_id=1,
+        run_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1),
+        payload_json='{"internal": true, "action": "start"}',
+    ))
+    await session.commit()
+
+    assert len((await _call("soon", session))["results"]) == 2
+
+
+async def test_timer_for_an_unregistered_event_type_does_not_hide_known_events(session):
+    await _seed(session)
+    session.add(ScheduledTask(
+        task_type="removed_plugin", ref_id=1, status="pending", created_by_tg_id=1,
+        run_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1),
+    ))
+    await session.commit()
+
+    assert len((await _call("", session))["results"]) == 3

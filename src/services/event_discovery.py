@@ -9,7 +9,7 @@ plugin boundary used by the admin hub and scheduler.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy import select
@@ -18,10 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import ScheduledTask
 from services import schedule_service
 from services.public_event import PublicEvent
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def list_public_events(
@@ -37,7 +33,7 @@ async def list_public_events(
     ``mode`` is ``all``, ``open`` or ``soon``. Unknown values deliberately act
     like ``all`` so arbitrary inline text never turns into a hidden query API.
     """
-    now = now or _utcnow()
+    now = now or schedule_service.utcnow()
     include_open = mode != "soon"
     include_soon = mode != "open"
     found: list[PublicEvent] = []
@@ -63,7 +59,11 @@ async def list_public_events(
         for task in tasks:
             # Follow-up closures/locks are operational details, not a new public
             # event about to start.
-            if schedule_service.task_payload(task).get("action") not in (None, "start"):
+            try:
+                payload = schedule_service.task_payload(task)
+            except (TypeError, ValueError):
+                continue  # One corrupt timer must not hide all public events.
+            if payload.get("internal") or payload.get("action") not in (None, "start"):
                 continue
             scheduled_type = by_key.get(task.task_type)
             describe = getattr(scheduled_type, "describe_scheduled", None)

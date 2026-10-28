@@ -80,3 +80,25 @@ async def test_legacy_seed_migrates_single_tag(session, user_factory):
     await session.commit()
     user = await _user(session, 1)
     assert shop_svc.active_tag_keys(user) == [k1]
+
+
+async def test_owned_tags_use_one_query_and_keep_catalog_order(session, user_factory, engine):
+    from sqlalchemy import event
+
+    await user_factory(1, "u1")
+    first, second, third = _catalog_keys(3)
+    await _own(session, 1, third, first, first, "cons_unrelated")
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", record)
+    try:
+        owned = await shop_svc.owned_tag_keys(session, 1)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", record)
+
+    assert owned == [first, third]
+    assert second not in owned
+    assert len(statements) == 1

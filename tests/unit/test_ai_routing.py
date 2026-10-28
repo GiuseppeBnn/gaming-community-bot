@@ -85,3 +85,30 @@ async def test_all_providers_down_raise_sanitized_error(caplog):
         with pytest.raises(ProviderUnavailable, match="all text providers"):
             await router.generate(chain, workload="chat", deadline_seconds=1)
     assert "secret" not in caplog.text
+
+
+async def test_retired_or_inaccessible_model_is_not_retried_every_minute():
+    now = [0.0]
+    router = TextAIRouter(clock=lambda: now[0])
+    free = AsyncMock(side_effect=ProviderUnavailable("model unavailable", status=404))
+    paid = AsyncMock(return_value="ok")
+    chain = [attempt("free", free), attempt("paid", paid)]
+    await router.generate(chain, workload="chat", deadline_seconds=2)
+    now[0] = 61
+    await router.generate(chain, workload="chat", deadline_seconds=2)
+    assert free.await_count == 1
+    now[0] = 900
+    await router.generate(chain, workload="chat", deadline_seconds=2)
+    assert free.await_count == 2
+
+
+async def test_recovered_attempt_does_not_create_warning_alerts(caplog):
+    with caplog.at_level("INFO"):
+        assert await TextAIRouter().generate(
+            [attempt("free", AsyncMock(side_effect=ProviderUnavailable("secret", status=503))),
+             attempt("fallback", AsyncMock(return_value="ok"))],
+            workload="chat", deadline_seconds=2,
+        ) == "ok"
+    assert not [record for record in caplog.records if record.levelno >= 30]
+    assert "status=503" in caplog.text
+    assert "secret" not in caplog.text

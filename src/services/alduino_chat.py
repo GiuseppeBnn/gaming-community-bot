@@ -41,8 +41,7 @@ class AlduinoAIError(ProviderUnavailable):
 
 class _GeminiHTTPError(AlduinoAIError):
     def __init__(self, status: int):
-        super().__init__(f"status {status}")
-        self.status = status
+        super().__init__(f"status {status}", status=status)
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,7 +245,10 @@ async def _gemini_post(payload: dict[str, Any]) -> dict[str, Any]:
                         if not isinstance(data, dict):
                             raise AlduinoAIError("malformed response")
                         return data
-                    log.warning("Gemini Alduino ha risposto con status %s.", response.status)
+                    log.log(
+                        logging.INFO if response.status in _RETRYABLE else logging.WARNING,
+                        "Gemini Alduino ha risposto con status %s.", response.status,
+                    )
                     if response.status not in _RETRYABLE or attempt == 2:
                         raise _GeminiHTTPError(response.status)
         except asyncio.TimeoutError as exc:
@@ -255,6 +257,8 @@ async def _gemini_post(payload: dict[str, Any]) -> dict[str, Any]:
         except aiohttp.ClientError as exc:
             if attempt == 2:
                 raise AlduinoAIError("network error") from exc
+        except ValueError as exc:
+            raise AlduinoAIError("malformed response") from exc
         await asyncio.sleep(_RETRY_DELAY_SECONDS)
     raise AlduinoAIError("unreachable")  # pragma: no cover - loop always returns/raises
 
@@ -294,6 +298,10 @@ async def _gemini_reply(
     if not settings.gemini_api_key:
         raise AlduinoAIError("missing Gemini api key")
 
+    thinking, total_tokens = ai_service.gemini_generation_policy(
+        settings.alduino_gemini_model, settings.alduino_thinking_level, 280,
+    )
+
     def payload(*, stateful: bool) -> dict[str, Any]:
         value: dict[str, Any] = {
             "model": settings.alduino_gemini_model,
@@ -308,8 +316,8 @@ async def _gemini_reply(
             "system_instruction": system_prompt,
             "store": True,
             "generation_config": {
-                "max_output_tokens": 280,
-                "thinking_level": settings.alduino_thinking_level,
+                "max_output_tokens": total_tokens,
+                "thinking_level": thinking,
                 "thinking_summaries": "none",
             },
         }
@@ -346,7 +354,7 @@ async def _groq_reply(
             system_prompt, prompt, max_tokens=280,
         )
     except ai_service.AIServiceError as exc:
-        raise AlduinoAIError("Groq unavailable") from exc
+        raise AlduinoAIError("Groq unavailable", status=exc.status) from exc
     return GeneratedReply(text=_clip_reply(text), provider="groq")
 
 
@@ -376,7 +384,7 @@ async def _openrouter_reply(
             require_zdr=True,
         )
     except ai_service.AIServiceError as exc:
-        raise AlduinoAIError("OpenRouter unavailable") from exc
+        raise AlduinoAIError("OpenRouter unavailable", status=exc.status) from exc
     return GeneratedReply(text=_clip_reply(text), provider="openrouter")
 
 

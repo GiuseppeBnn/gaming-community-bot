@@ -11,11 +11,8 @@ from __future__ import annotations
 import html
 from collections.abc import Iterable
 
-# Telegram rejects a single message longer than 4096 chars ("Bad Request:
-# message is too long"). We chunk well below it: HTML tags in our text are
-# stripped before Telegram counts length (so len() over-estimates, which is
-# safe), but emoji cost 2 UTF-16 units while Python len() counts 1, so we keep
-# a margin to stay safe even on emoji-dense listings.
+# Count UTF-16 units conservatively, including HTML markup. This also bounds
+# emoji-heavy messages, where a Python character may take two Telegram units.
 TELEGRAM_MESSAGE_LIMIT = 4096
 _CHUNK_LIMIT = 3900
 
@@ -42,13 +39,14 @@ def chunk_blocks(
     chunks: list[str] = []
     current: list[str] = []
     current_len = 0
-    sep_len = len(sep)
+    sep_len = len(sep.encode("utf-16-le")) // 2
     for block in blocks:
-        add_len = len(block) + (sep_len if current else 0)
+        block_len = len(block.encode("utf-16-le")) // 2
+        add_len = block_len + (sep_len if current else 0)
         if current and current_len + add_len > limit:
             chunks.append(sep.join(current))
             current = [block]
-            current_len = len(block)
+            current_len = block_len
         else:
             current.append(block)
             current_len += add_len
@@ -85,3 +83,14 @@ def format_seconds_short(seconds: int) -> str:
     if minutes:
         return f"{minutes}m {secs}s"
     return f"{secs}s"
+
+
+def too_long(text: str, cap: int, subject: str) -> str | None:
+    """Italian length error for a free-text field, including how much to cut."""
+    length = len(text)
+    if length <= cap:
+        return None
+    return (
+        f"⚠️ {subject}: <b>{length}/{cap}</b> caratteri.\n"
+        f"Accorcia di {length - cap} e reinvia."
+    )

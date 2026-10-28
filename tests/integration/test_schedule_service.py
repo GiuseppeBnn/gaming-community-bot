@@ -321,3 +321,59 @@ async def test_run_due_task_marks_done_on_success(session, monkeypatch):
     finally:
         _REGISTRY.clear()
         _REGISTRY.update(snapshot)
+
+
+@pytest.mark.parametrize("status", ["done", "failed", "cancelled"])
+async def test_cancel_does_not_overwrite_a_terminal_task_cached_as_pending(session, status):
+    from sqlalchemy import update
+
+    task = await sch.schedule_task(session, "quiz", sch.utcnow(), 9, -100, ref_id=5)
+    await session.commit()
+    await session.execute(
+        update(ScheduledTask).where(ScheduledTask.id == task.id)
+        .values(status=status).execution_options(synchronize_session=False)
+    )
+    assert task.status == "pending"  # A retained ORM instance can be stale.
+
+    assert await sch.cancel(session, task.id) is False
+    stored_status = await session.scalar(
+        select(ScheduledTask.status).where(ScheduledTask.id == task.id)
+    )
+    assert stored_status == status
+
+
+async def test_cancel_accepts_pending_task_cached_as_terminal(session):
+    from sqlalchemy import update
+
+    task = await sch.schedule_task(session, "quiz", sch.utcnow(), 9, -100, ref_id=5)
+    task.status = "failed"
+    await session.commit()
+    await session.execute(
+        update(ScheduledTask).where(ScheduledTask.id == task.id)
+        .values(status="pending").execution_options(synchronize_session=False)
+    )
+
+    assert await sch.cancel(session, task.id) is True
+    assert task.status == "cancelled"
+
+
+@pytest.mark.pg
+async def test_concurrent_cancellation_has_exactly_one_winner(pg_sessions):
+    import asyncio
+
+    async with pg_sessions() as seed:
+        task = await sch.schedule_task(seed, "quiz", sch.utcnow(), 9, -100, ref_id=5)
+        await seed.commit()
+        task_id = task.id
+
+    async def cancel_once():
+        async with pg_sessions() as worker:
+            changed = await sch.cancel(worker, task_id)
+            await worker.commit()
+            return changed
+
+    assert sorted(await asyncio.gather(cancel_once(), cancel_once())) == [False, True]
+    async with pg_sessions() as observer:
+        assert await observer.scalar(
+            select(ScheduledTask.status).where(ScheduledTask.id == task_id)
+        ) == "cancelled"

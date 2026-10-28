@@ -15,6 +15,8 @@ import logging
 
 from aiogram import Router
 
+from utils.text import too_long as _too_long  # noqa: F401 — shared flow helper
+
 log = logging.getLogger(__name__)
 router = Router()
 
@@ -39,18 +41,6 @@ _MAX_EXPLANATION = 200
 # Quiz management (list/start/close) is admin-only AND private-only: in a group it
 # redirects to the private dashboard. Creation already redirects via /crea_quiz.
 _QUIZ_PRIVATE_NOTICE = "🧠 Gestisci i quiz in chat privata col bot."
-
-
-def _too_long(text: str, cap: int, subject: str) -> str | None:
-    """Error message if `text` exceeds `cap`, else None. `subject` is the already
-    gender-agreed Italian phrase (e.g. "Il titolo è troppo lungo"). Reports the
-    actual length and how much to cut, so the admin doesn't have to count."""
-    if len(text) <= cap:
-        return None
-    return (
-        f"⚠️ {subject}: <b>{len(text)}/{cap}</b> caratteri.\n"
-        f"Accorcia di {len(text) - cap} e reinvia."
-    )
 
 
 def _options_error(options: list[str]) -> str | None:

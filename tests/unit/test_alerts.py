@@ -357,3 +357,59 @@ async def test_alert_loop_survives_a_failing_drain_without_logging(monkeypatch, 
 
     ours = [r for r in caplog.records if r.name.startswith("utils.alerts")]
     assert not ours, "a logged failure would feed back into the buffer it drains"
+
+
+def test_polling_network_hiccup_stays_in_logs_without_a_dm(monkeypatch, caplog):
+    now = [0.0]
+    monkeypatch.setattr(alerts.time, "monotonic", lambda: now[0])
+    handler = alerts.install()
+    logger = logging.getLogger("aiogram.dispatcher")
+    try:
+        with caplog.at_level(logging.INFO):
+            logger.error("Failed to fetch updates - %s: %s", "TelegramNetworkError", "reset")
+            logger.warning(
+                "Sleep for %f seconds and try again... (tryings = %d, bot id = %d)", 1., 0, 1,
+            )
+            now[0] = 2
+            logger.info("Connection established (tryings = %d, bot id = %d)", 1, 1)
+        assert not alerts._buffer
+        assert "reset" in caplog.text
+        assert "Connection established" in caplog.text
+    finally:
+        logging.getLogger().removeHandler(handler)
+
+
+def test_persistent_polling_outage_alerts_and_recovery_resets_grace(monkeypatch):
+    now = [100.0]
+    monkeypatch.setattr(alerts.time, "monotonic", lambda: now[0])
+    handler = alerts.install()
+    logger = logging.getLogger("aiogram.dispatcher")
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    try:
+        for moment in (100, 159):
+            now[0] = moment
+            logger.error("Failed to fetch updates - %s: %s", "TelegramNetworkError", "reset")
+        assert not alerts._buffer
+        now[0] = 160
+        logger.error("Failed to fetch updates - %s: %s", "TelegramNetworkError", "reset")
+        assert len(alerts._buffer) == 1
+        alerts._buffer.clear()
+        logger.info("Connection established (tryings = %d, bot id = %d)", 10, 1)
+        now[0] = 200
+        logger.error("Failed to fetch updates - %s: %s", "TelegramNetworkError", "reset")
+        assert not alerts._buffer
+    finally:
+        logger.setLevel(previous_level)
+        logging.getLogger().removeHandler(handler)
+
+
+def test_polling_auth_and_conflict_errors_still_alert_immediately():
+    handler = alerts.install()
+    logger = logging.getLogger("aiogram.dispatcher")
+    try:
+        for error in ("TelegramUnauthorizedError", "TelegramConflictError"):
+            logger.error("Failed to fetch updates - %s: %s", error, "failure")
+        assert len(alerts._buffer) == 2
+    finally:
+        logging.getLogger().removeHandler(handler)

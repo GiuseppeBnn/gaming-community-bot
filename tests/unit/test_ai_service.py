@@ -141,3 +141,27 @@ async def test_an_empty_reasoning_setting_omits_the_field(with_api_key, monkeypa
 
         sent = next(iter(m.requests.values()))[0].kwargs["json"]
         assert "reasoning_effort" not in sent
+
+
+async def test_invalid_json_is_a_provider_failure(with_api_key, monkeypatch):
+    monkeypatch.setattr(ai_service.settings, "ai_entertainment_provider", "groq")
+    with aioresponses() as mocked:
+        mocked.post(GROQ_URL, status=200, body="{broken", content_type="application/json")
+        with pytest.raises(AIServiceError, match="malformed response"):
+            await generate_completion("sys", "user")
+
+
+@pytest.mark.parametrize("level", ["minimal", "low", "medium", "high"])
+def test_current_gemini_generation_policy_reserves_reasoning(level):
+    thinking, tokens = ai_service.gemini_generation_policy("gemini-3.8-flash", level, 32)
+    assert thinking == ("low" if level == "minimal" else level)
+    assert tokens == 1056
+
+
+async def test_groq_retired_model_error_keeps_http_status_for_breaker(with_api_key, monkeypatch):
+    monkeypatch.setattr(ai_service.settings, "ai_entertainment_provider", "groq")
+    with aioresponses() as mocked:
+        mocked.post(GROQ_URL, status=404, body="unavailable")
+        with pytest.raises(AIServiceError) as raised:
+            await generate_completion("s", "u")
+    assert raised.value.status == 404

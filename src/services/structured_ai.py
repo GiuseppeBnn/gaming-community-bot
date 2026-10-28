@@ -519,7 +519,11 @@ class GeminiStructuredProvider:
                 kind=StructuredAIErrorKind.missing_key,
                 provider=self.name,
             )
-        payload = {
+        thinking, total_tokens = ai_service.gemini_generation_policy(
+            self.model, request.thinking_level or _DEFAULT_GEMINI_THINKING_LEVEL,
+            request.max_output_tokens,
+        )
+        payload: dict[str, Any] = {
             "systemInstruction": {"parts": [{"text": request.system_prompt}]},
             "contents": [{
                 "role": "user",
@@ -527,16 +531,17 @@ class GeminiStructuredProvider:
             }],
             "generationConfig": {
                 "temperature": request.temperature,
-                "maxOutputTokens": request.max_output_tokens,
+                "maxOutputTokens": total_tokens,
                 "responseMimeType": "application/json",
                 "responseJsonSchema": request.schema,
                 "thinkingConfig": {
-                    "thinkingLevel": (
-                        request.thinking_level or _DEFAULT_GEMINI_THINKING_LEVEL
-                    ),
+                    "thinkingLevel": thinking,
                 },
             },
         }
+        if self.model.startswith(("gemini-3.", "gemini-4-")):
+            # Current Gemini models reject legacy sampling knobs.
+            payload["generationConfig"].pop("temperature")
         data = await _post_json_once(
             provider=self.name,
             model=self.model,

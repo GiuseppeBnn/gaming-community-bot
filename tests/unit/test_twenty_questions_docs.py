@@ -40,7 +40,7 @@ def test_public_docs_and_env_describe_the_v2_contract():
     for line in (
         "TWENTYQ_V2_ENABLED=false",
         "TWENTYQ_PROVIDER_ORDER=gemini,groq,openrouter",
-        "TWENTYQ_GEMINI_MODEL=gemini-3.5-flash",
+        "TWENTYQ_GEMINI_MODEL=gemini-3.8-flash",
         "TWENTYQ_GROQ_MODEL=openai/gpt-oss-20b",
         "TWENTYQ_OPENROUTER_MODEL=z-ai/glm-5.3-flash",
         "TWENTYQ_GEMINI_TIMEOUT_SECONDS=8",

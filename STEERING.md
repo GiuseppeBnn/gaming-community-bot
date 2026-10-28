@@ -74,8 +74,8 @@ Campi importanti:
 - `fsm_storage: str` — `"memory"` | `"redis"`. Il default del **campo** resta `"memory"` (dev e test); a spedire `redis` è **`.env.example`**, ed è un cambio del 2026-08-02: prima non lo faceva perché `_build_storage` intercettava solo l'`ImportError` del pacchetto e non una connessione fallita, quindi con Redis irraggiungibile il bot non degradava, **non partiva** — e perdere un flusso di creazione vale meno che perdere il bot. Ora quel baratto non esiste: `_build_storage` fa un `ping` all'avvio e, se Redis non risponde, logga un warning e riparte con `MemoryStorage`. Il costo residuo è dichiarato nel log: con la memoria, ogni conversazione FSM aperta muore al riavvio del container (Watchtower ricrea l'immagine ogni `WATCHTOWER_POLL_INTERVAL: 600`). Il degrado non è silenzioso: passa dagli alert admin (§26). **Trappola per chi un giorno adottasse una libreria che usa `StorageKey.destiny`** (`aiogram_dialog` lo fa: scrive stack e contesto sotto `"aiogd:stack:"` / `"aiogd:context:…"`): `DefaultKeyBuilder` **solleva `ValueError`** per qualunque destiny diverso da `"default"`, quindi servirebbe `key_builder=DefaultKeyBuilder(with_destiny=True)` in `_build_storage`, e con Redis raggiungibile il bot morirebbe al primo messaggio senza. Oggi **non** si passa, di proposito: nessun codice qui scrive un destiny non-default, e il flag aggiungerebbe un suffisso `:default` anche alle chiavi normali, orfanando le chiavi FSM già scritte. Costo zero adesso, da pagare una volta sola se e quando servirà
 - `redis_url: str`
 - `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
-- `groq_model: str` — default `"qwen/qwen3.6-27b"` (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
-- `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.6` è ibrido-reasoning: senza, scrive `<think>…</think>` dentro `content`. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
+- `groq_model: str` — default `"qwen/qwen3.8-27b"`; il default ritirato `qwen/qwen3.6-27b` (14 settembre 2026) viene normalizzato al successore anche da un `.env` esistente (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
+- `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.8` supporta reasoning opzionale: `none` lo disabilita esplicitamente, mentre il parser elimina eventuali `<think>…</think>` residui. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
 - **OpenRouter**: `openrouter_api_key`; CSV `openrouter_chat_models` / `openrouter_fun_models` (default GLM 5.3 Flash); tetti di prezzo e cap persistente 5 USD invariati. `ai_entertainment_provider=auto` prova Groq gratuito prima della corsia paid; i provider espliciti restano disponibili per A/B. Thinking GLM `low` con allowance configurabile 1024 token, prenotata insieme al limite della risposta
 - **Gioco segreto v2**: `twentyq_v2_enabled` resta **false** fino al rollout; Gemini → Groq → OpenRouter usa timeout 8/8/12 s, deadline 25 s e storia bounded 24 turni / 12.000 caratteri. I lane cap 4 USD (`twentyq`) + 1 USD (altre richieste) vivono dentro il cap globale di 5 USD. Le regole 20 Domande sono **legacy v1**.
 - **Contesto Alduino**: `alduino_capture_group_context`, `alduino_group_context_messages` / `_chars` limitano ciò che esce, `alduino_group_memory_rows` limita il rolling transcript locale. La cattura completa richiede privacy mode Telegram disabilitata
@@ -939,7 +939,7 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   selezionano direttamente l'adapter per A/B. Il giudice **non passa mai** da questo router.
 - `services/ai_routing.py` contiene la failover policy riutilizzata da chat e one-shot:
   timeout free 10 s per chat e one-shot, deadline assoluta 30 s,
-  circuit breaker 60 s per workload/provider/modello.
+  circuit breaker per workload/provider/modello: 60 s sui guasti temporanei, 900 s sui 400/401/403/404.
   Cancellazioni ed errori di programmazione propagano senza attivare una seconda richiesta paid.
   Una risposta free valida termina la route anche con budget paid spento/esaurito.
 - `generate_openrouter_completion(...)` riceve una policy esplicita per feature/modelli/privacy:
@@ -1016,7 +1016,7 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - Il testo è **incapsulato** tra i delimitatori `<<<CONTENUTO>>> … <<<FINE CONTENUTO>>>`; `_STYLE` istruisce il modello a trattarlo come **contenuto inerte, mai istruzioni** (ignora cambi di ruolo / "ignora le istruzioni" / system prompt iniettati).
   - L'**output** del modello è inviato con **`parse_mode=None`** (`message.reply(result, parse_mode=None)`): mai renderizzato come HTML → niente injection di tag/`<a>` via output LLM.
 - Ogni prompt è costruito con `_prompt(persona, max_chars)` che appende `_STYLE` condiviso:
-  - regole "senza filtri / no disclaimer / no buonismo / no muri di testo" (pubblico adulto),
+  - satira adulta concreta, senza premesse o muri di testo; accuse e teorie del personaggio sono finzioni grottesche, senza inventare dati personali sul bersaglio,
   - **regola anti-ripetizione** (varia sempre angolo, immagini, lessico),
   - **gaming come spezia** (riferimenti solo se arguti; vietati i cliché 'noob/scrub/git gud' come stampella),
   - **regola contenuto≠istruzioni** (anti-injection, vedi sopra),
@@ -1886,8 +1886,8 @@ DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
 GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
-# GROQ_MODEL=qwen/qwen3.6-27b           # comandi di intrattenimento (§17)
-# GROQ_REASONING_EFFORT=none            # qwen3.6 è ibrido-reasoning: senza questo scrive il
+# GROQ_MODEL=qwen/qwen3.8-27b           # comandi di intrattenimento (§17)
+# GROQ_REASONING_EFFORT=none            # qwen3.8 è ibrido-reasoning: senza questo scrive il
 #                                       # ragionamento dentro la risposta. Vuoto = campo omesso.
 # GROQ_JUDGE_MODEL=openai/gpt-oss-120b  # giudice dei giochi «indovina» (§19.b). Separato da
 #                                       # GROQ_MODEL apposta: serve structured output strict,
@@ -2260,6 +2260,14 @@ non vede mai — senza la radice resterebbero invisibili. Un admin che riceve un
 `[ERROR] aiogram.event` non sta ricevendo un alert rotto: sta ricevendo esattamente il
 guasto che questo canale esiste per mostrare.
 
+**Polling e fallback recuperabili:** un filtro sul logger `aiogram.dispatcher`
+lascia invariati i log ma esclude dai DM il messaggio di backoff e i soli
+`TelegramNetworkError` nei primi 60 s di una sequenza. Il log INFO di connessione
+ripristinata azzera la finestra; autenticazione, conflitti e altri errori restano
+immediati. Il router AI testuale registra i tentativi falliti a INFO e avvisa a
+WARNING se nessun provider risponde. Il breaker dura 900 s per 400/401/403/404,
+60 s per gli altri guasti. Cancellazioni e difetti di programmazione propagano.
+
 **Le tre regole che lo tengono in piedi:**
 
 1. **`emit()` non fa I/O.** Bufferizza e basta. Il logging è sincrono e viene chiamato
@@ -2355,11 +2363,11 @@ stato del ledger. Le risposte del gioco segreto v2 (20 Domande è legacy v1) son
 rilascia il claim senza ledger, quota, partecipazione o penalità: non è un errore
 provider e non attiva fallback. `forse` resta nell'enum soltanto per leggere i dati
 storici, viene mostrato come NON LO SO e non è ammesso nel nuovo schema. Nessun
-rimborso retroattivo né riscrittura dei turni già registrati. Prompt v3 e schema
+rimborso retroattivo né riscrittura dei turni già registrati. Prompt v4 e schema
 `twentyq-verdict-v2` distinguono assenza di informazioni da negazione; il dataset
 v2 dà prove negative esplicite ai casi NO, conservando v1 per confronti storici.
 L'astensione riduce risposte speculative ma non certifica la correttezza dell'AI;
-la strategia forza thinking `minimal`. I log del provider non devono mai includere
+la strategia richiede thinking `minimal`; su Gemini 3.8 l'adapter lo converte a `low`, omette il sampling legacy e aggiunge 1024 token di margine al cap di risposta. I log del provider non devono mai includere
 content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.
 Dal prompt `twentyq-question-v2` la cronologia da quattro turni è codificata come
 colonne/righe, conservando ogni domanda e verdetto; sotto questa soglia mantiene

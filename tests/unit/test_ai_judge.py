@@ -323,3 +323,20 @@ class TestTransportFailures:
             await ai_service.judge_equivalence("sys", "x")
 
         assert calls["n"] == 2
+
+
+@pytest.mark.parametrize("error", [None, [], "bad", 42])
+async def test_malformed_error_detail_is_a_provider_failure(groq, error):
+    groq(_FakeResponse(400, {"error": error}))
+    with pytest.raises(ai_service.AIServiceError, match="status 400"):
+        await ai_service.judge_equivalence("sys", "guess")
+
+
+async def test_invalid_response_json_is_a_provider_failure(groq):
+    class InvalidJSONResponse(_FakeResponse):
+        async def json(self):
+            raise ValueError("invalid JSON")
+
+    groq(InvalidJSONResponse(200, "{broken"))
+    with pytest.raises(ai_service.AIServiceError, match="malformed verdict"):
+        await ai_service.judge_equivalence("sys", "guess")

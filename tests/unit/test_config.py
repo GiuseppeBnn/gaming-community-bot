@@ -263,7 +263,7 @@ class TestTwentyQuestionsProviderSettings:
 
         configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
 
-        assert configured.twentyq_gemini_model == "gemini-3.5-flash"
+        assert configured.twentyq_gemini_model == "gemini-3.8-flash"
         assert configured.twentyq_groq_model == "openai/gpt-oss-20b"
         assert configured.twentyq_openrouter_model == "z-ai/glm-5.3-flash"
         assert configured.twentyq_gemini_timeout_seconds == 8
@@ -387,3 +387,31 @@ class TestTwentyQuestionsContextSettings:
         ):
             with pytest.raises(ValidationError):
                 Settings(bot_token="x", _env_file=None, **{field: value})  # type: ignore[call-arg]
+
+
+def test_retired_groq_default_is_migrated_even_with_existing_env_selection():
+    from config_data.config import Settings
+
+    configured = Settings(  # type: ignore[call-arg]
+        bot_token="x", groq_model="qwen/qwen3.6-27b", _env_file=None,
+    )
+    assert configured.groq_model == "qwen/qwen3.8-27b"
+    assert configured.groq_reasoning_effort == "none"
+
+
+def test_custom_groq_selection_is_preserved():
+    from config_data.config import Settings
+
+    configured = Settings(  # type: ignore[call-arg]
+        bot_token="x", groq_model=" custom/model ", groq_reasoning_effort="", _env_file=None,
+    )
+    assert configured.groq_model == "custom/model"
+    assert configured.groq_reasoning_effort == ""
+
+
+def test_invalid_groq_model_still_raises_a_validation_error():
+    from pydantic import ValidationError
+    from config_data.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(bot_token="x", groq_model=None, _env_file=None)  # type: ignore[call-arg, arg-type]
