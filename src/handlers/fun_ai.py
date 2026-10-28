@@ -33,7 +33,7 @@ from database.models import AlduinoTurn
 from filters.admin_filter import is_admin
 from handlers import event_types
 from handlers.help_content import render_alduino_reference
-from services import ai_service, alduino_chat, event_discovery, group_context
+from services import ai_service, alduino_chat, event_discovery, group_context, schedule_service
 from utils import cooldown
 
 _GROUP_TYPES = (ChatType.GROUP, ChatType.SUPERGROUP)
@@ -392,7 +392,11 @@ async def _live_context(session: AsyncSession) -> str:
     events = await event_discovery.list_public_events(
         session, event_types=event_types.all_types(), limit=10,
     )
-    return alduino_chat.render_public_events(events)
+    now = schedule_service.to_local(schedule_service.utcnow())
+    return (
+        f"Data e ora locale: {now:%d/%m/%Y alle %H:%M} ({settings.scheduler_timezone}).\n"
+        + alduino_chat.render_public_events(events)
+    )
 
 
 async def _generate_alduino_reply(

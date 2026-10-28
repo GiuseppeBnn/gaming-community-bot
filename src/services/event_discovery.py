@@ -46,35 +46,42 @@ async def list_public_events(
             if discover is not None:
                 found.extend(await discover(session))
 
-    if include_soon:
-        tasks = list((await session.execute(
-            select(ScheduledTask)
-            .where(
-                ScheduledTask.status == "pending",
-                ScheduledTask.run_at > now,
-                ScheduledTask.ref_id.is_not(None),
-            )
-            .order_by(ScheduledTask.run_at.asc(), ScheduledTask.id.asc())
-        )).scalars().all())
-        for task in tasks:
-            # Follow-up closures/locks are operational details, not a new public
-            # event about to start.
-            try:
-                payload = schedule_service.task_payload(task)
-            except (TypeError, ValueError):
-                continue  # One corrupt timer must not hide all public events.
-            if payload.get("internal") or payload.get("action") not in (None, "start"):
-                continue
-            scheduled_type = by_key.get(task.task_type)
-            describe = getattr(scheduled_type, "describe_scheduled", None)
-            if describe is None:
-                continue
-            event = await describe(session, task.ref_id)
-            if event is not None:
-                found.append(replace(event, starts_at=task.run_at, schedule_id=task.id))
+    endings: dict[tuple[str, int | None], datetime] = {}
+    tasks = list((await session.execute(
+        select(ScheduledTask)
+        .where(
+            ScheduledTask.status == "pending",
+            ScheduledTask.ref_id.is_not(None),
+        )
+        .order_by(ScheduledTask.run_at.asc(), ScheduledTask.id.asc())
+    )).scalars().all())
+    for task in tasks:
+        # Follow-up closures/locks are operational details, not a new public
+        # event about to start.
+        try:
+            payload = schedule_service.task_payload(task)
+        except (TypeError, ValueError):
+            continue  # One corrupt timer must not hide all public events.
+        action = payload.get("action")
+        if action in ("close", "lock", "expire"):
+            endings.setdefault((task.task_type, task.ref_id), task.run_at)
+            continue
+        if (
+            not include_soon or task.run_at <= now or payload.get("internal")
+            or action not in (None, "start")
+        ):
+            continue
+        scheduled_type = by_key.get(task.task_type)
+        describe = getattr(scheduled_type, "describe_scheduled", None)
+        if describe is None:
+            continue
+        event = await describe(session, task.ref_id)
+        if event is not None:
+            found.append(replace(event, starts_at=task.run_at, schedule_id=task.id))
 
     open_events = sorted(
-        (event for event in found if event.is_open),
+        (replace(event, ends_at=event.ends_at or endings.get((event.key, event.item_id)))
+         for event in found if event.is_open),
         key=lambda event: (event.key, event.item_id),
     )
     scheduled = sorted(

@@ -175,9 +175,14 @@ def render_public_events(events: Iterable[PublicEvent]) -> str:
             timing = "programmato " + schedule_service.to_local(event.starts_at).strftime(
                 "%d/%m/%Y alle %H:%M"
             )
+        ending = (
+            " · chiusura programmata "
+            + schedule_service.to_local(event.ends_at).strftime("%d/%m/%Y alle %H:%M")
+            if event.ends_at is not None else ""
+        )
         lines.append(
             f"- {clip_text(event.title, 120)} ({timing}): "
-            f"{clip_text(event.summary, 180)}"
+            f"{clip_text(event.summary, 180)}{ending}"
         )
     return "\n".join(lines) if lines else "Nessun evento pubblico aperto o programmato."
 

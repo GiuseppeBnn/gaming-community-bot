@@ -132,6 +132,8 @@ async def test_live_context_uses_the_public_event_projection(session, monkeypatc
 
     assert seen == {"session": session, "event_types": ("registry",), "limit": 10}
     assert "Quiz aperto (aperto adesso)" in rendered
+    assert "Data e ora locale:" in rendered
+    assert "Europe/Rome" in rendered
 
 
 async def test_context_db_failure_degrades_to_memoryless_reply(session, monkeypatch):

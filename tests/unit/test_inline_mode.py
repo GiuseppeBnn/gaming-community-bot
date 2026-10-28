@@ -183,3 +183,61 @@ async def test_timer_for_an_unregistered_event_type_does_not_hide_known_events(s
     await session.commit()
 
     assert len((await _call("", session))["results"]) == 3
+
+
+@pytest.mark.parametrize("mode", ["all", "open"])
+async def test_open_event_exposes_earliest_pending_closure_in_its_own_scope(session, mode):
+    from services import event_discovery
+
+    await _seed(session)
+    live = await session.scalar(select(Quiz).where(Quiz.status == "running"))
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    closes = now + timedelta(hours=2)
+    session.add_all([
+        ScheduledTask(task_type="quiz", ref_id=live.id, run_at=closes, status="pending",
+                      created_by_tg_id=1, payload_json='{"action":"close"}'),
+        ScheduledTask(task_type="quiz", ref_id=live.id, run_at=now, status="cancelled",
+                      created_by_tg_id=1, payload_json='{"action":"close"}'),
+        ScheduledTask(task_type="poll", ref_id=live.id, run_at=now, status="pending",
+                      created_by_tg_id=1, payload_json='{"action":"close"}'),
+    ])
+    await session.commit()
+
+    events = await event_discovery.list_public_events(
+        session, event_types=event_types.all_types(), mode=mode, now=now,
+    )
+    event = next(e for e in events if e.key == "quiz" and e.item_id == live.id)
+    assert event.ends_at == closes
+    assert event.is_open
+    assert all(e.schedule_id is None or e.starts_at > now for e in events)
+
+
+async def test_running_poll_is_visible_with_its_deadline_without_fake_private_action(session):
+    closes = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=1)
+    session.add(PollTemplate(
+        question="Sondaggio attivo", options_json='["Sì","No"]',
+        creator_tg_id=1, status="running", closes_at=closes,
+    ))
+    await session.commit()
+
+    results = (await _call("aperti", session))["results"]
+    assert len(results) == 1
+    assert "Sondaggio attivo" in results[0].title
+    assert results[0].reply_markup is None
+
+    from services import event_discovery
+    event = (await event_discovery.list_public_events(
+        session, event_types=event_types.all_types(), mode="open",
+    ))[0]
+    assert event.ends_at == closes
+
+
+async def test_overdue_start_is_not_announced_as_upcoming(session):
+    await _seed(session)
+    ready = await session.scalar(select(Quiz).where(Quiz.status == "ready"))
+    session.add(ScheduledTask(
+        task_type="quiz", ref_id=ready.id, status="pending", created_by_tg_id=1,
+        run_at=datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1),
+    ))
+    await session.commit()
+    assert len((await _call("soon", session))["results"]) == 2

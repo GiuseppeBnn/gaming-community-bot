@@ -17,6 +17,10 @@ Modifiche rilevanti al bot. Formato ispirato a
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **Attività nel contesto di Alduino** — scadenze dai task di chiusura/lock/expiry
+  associate all'evento corretto e rese in ora locale; data corrente esplicita nel
+  dossier live. I sondaggi in corso entrano nella discovery pubblica, senza link
+  privati fittizi. I timer operativi restano esclusi dagli avvii in programma.
 - **Modelli AI aggiornati** — Qwen 3.8 27B su Groq e Gemini 3.8 Flash per chat
   e giudizi del gioco segreto; il vecchio default Groq viene migrato anche con
   `.env` preesistente. Gemini usa thinking compatibile, margine di ragionamento

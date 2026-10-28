@@ -351,3 +351,14 @@ async def test_gemini_38_migrates_minimal_and_reserves_thinking_headroom(gemini_
     sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
     assert sent["generation_config"]["thinking_level"] == "low"
     assert sent["generation_config"]["max_output_tokens"] == 280 + 1024
+
+
+def test_public_event_context_includes_local_closing_time(monkeypatch):
+    monkeypatch.setattr(alduino_chat.settings, "scheduler_timezone", "Europe/Rome")
+    event = PublicEvent(
+        "quiz", 25, "Quiz attivo", "5 domande", "🧠",
+        ends_at=datetime(2026, 10, 28, 19, 30),
+    )
+    context = alduino_chat.render_public_events([event])
+    assert "Quiz attivo (aperto adesso)" in context
+    assert "chiusura programmata 28/10/2026 alle 20:30" in context

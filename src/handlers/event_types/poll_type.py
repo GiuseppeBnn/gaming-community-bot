@@ -259,6 +259,13 @@ class PollType:
     #: so it is worth scheduling on its own clock (STEERING §20).
     closable = True
 
+    async def discover_open(self, db_session: AsyncSession) -> list[PublicEvent]:
+        return [PublicEvent(
+            key=self.key, item_id=poll.id, title=poll.question,
+            summary=f"{len(poll_service.options_of(poll))} opzioni · vota nel gruppo",
+            emoji="📊", ends_at=poll.closes_at,
+        ) for poll in await poll_service.list_manageable(db_session) if poll.status == "running"]
+
     async def describe_scheduled(
         self, db_session: AsyncSession, item_id: int
     ) -> PublicEvent | None:

@@ -2304,6 +2304,16 @@ opzionali `discover_open` / `describe_scheduled` dei tipi registrati: vietati
 rami per tipo dentro l'handler inline. Le task con payload `close`/`lock` non sono
 "coming soon". Il vecchio picker di utenti è storico e non va ripristinato.
 
+La proiezione `PublicEvent.ends_at` aggiunge le scadenze senza confonderle con
+nuovi avvii: la discovery associa il primo task pending `close`/`lock`/`expire`
+alla coppia `(tipo, id)`, anche quando una chiusura è già scaduta, e mantiene
+esclusi gli avvii passati. I sondaggi running partecipano a `discover_open`.
+Il dossier live di Alduino include data/ora della community e scadenze locali.
+La chat può usare il transcript ambientale solo sulla route OpenRouter ZDR;
+`ALDUINO_PROVIDER=openrouter` la seleziona direttamente, sempre entro il cap
+`OPENROUTER_OTHER_BUDGET_USD`. Gli adapter gratuiti mantengono il contesto del
+ramo e i dati live, senza ricevere il transcript ambientale.
+
 I giochi AI persistenti condividono `AIGameSession` (aggregate e lifecycle) e
 `AIGameTurn` (ledger append-only), mentre ogni strategia possiede una tabella di
 stato (`TwentyQuestionsGame`; in futuro misteri). Il tipo-evento `twentyq` pubblica

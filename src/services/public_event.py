@@ -16,6 +16,7 @@ class PublicEvent:
     deep_link_payload: str | None = None
     starts_at: datetime | None = None
     schedule_id: int | None = None
+    ends_at: datetime | None = None
 
     @property
     def is_open(self) -> bool:
