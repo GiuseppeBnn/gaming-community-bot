@@ -210,9 +210,18 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 
 ### Alduino conversazionale
 
-`/alduino` ha una corsia provider indipendente. Il default `ALDUINO_PROVIDER=auto`
-prova Groq gratuito, poi Gemini gratuito, infine GLM 5.3 Flash via OpenRouter.
-Una risposta gratuita valida termina la route senza prenotare o spendere budget paid.
+`/alduino`, comandi comici e giochi usano **solo OpenRouter**, con corsie per compito:
+
+| Uso | Modello | Thinking |
+| --- | --- | --- |
+| `/maestro`, `/drama`, `/insulta` | Ling 3.0 Flash | disabilitato |
+| `/complotto`, `/difendi`, `/accusa`, `/dialetto` | GLM 5.3 Flash | low |
+| Chat Alduino e reply | GLM 5.3 Flash | high, allowance 2048 |
+| Gioco segreto | GLM 5.3 Flash | low |
+| Giudice Guess/Sound | GPT-OSS 120B | low |
+
+Ogni utilizzo AI rientra nel budget persistente. Nessun tentativo gratuito.
+Cooldown condiviso per utente: **10 secondi**, admin esenti.
 Dopo la prima risposta non serve ripetere il comando:
 una normale risposta Telegram a una risposta conversazionale di Alduino continua
 il ramo corretto. Anche le risposte riuscite ai comandi fun (`/drama`, `/maestro`,
@@ -231,20 +240,21 @@ aperti/in programma. Non spedisce l'archivio intero solo perché un modello acce
 rumore, latenza e costo restano bassi. Il transcript locale viene potato
 automaticamente; al provider arrivano nomi visualizzati e testo, non i Telegram ID.
 
-Il ramo dei reply e i dati live del bot accompagnano ogni tentativo. Il transcript
-ambientale del gruppo esce soltanto sulla corsia OpenRouter che forza `zdr=true`
-e `data_collection=deny`: Gemini/Groq conservano il loro contesto conversazionale
-bounded, ma non ricevono questi messaggi ambientali. GLM è il fallback paid anche
-per i comandi comici (`AI_ENTERTAINMENT_PROVIDER=auto`: Groq → GLM).
-I tentativi gratuiti della chat e dei comandi fun hanno un timeout di 10 s ciascuno;
-ogni route ha una deadline di 30 s. Un circuit breaker per workload/provider/modello evita
-di riprovare per 60 s un provider appena fallito (15 minuti per errori HTTP di configurazione). Il ledger costi salva modello, token e costo, mai prompt o
-risposte. Ogni richiesta è protetta sia dal cap mensile persistente del bot sia dal
-limite e dal prezzo massimo del provider.
+Il ramo dei reply, i dati live e il transcript ambientale viaggiano su OpenRouter:
+la chat forza `zdr=true` e `data_collection=deny`. La memoria locale continua anche
+i rami salvati in passato con Gemini/Groq: nessun upstream interaction ID è necessario.
+Chat e fun hanno una deadline di 30 s e un solo tentativo applicativo, con circuit
+breaker per workload/modello (60 s per guasti temporanei, 15 minuti per 400/401/403/404).
+OpenRouter può cambiare endpoint dello stesso modello, ma sempre entro privacy,
+schema e prezzi massimi. Nessun retry applicativo dopo timeout ambiguo.
+Il ledger salva solo modello/token/costo, mai prompt o risposte. Ogni chiamata,
+giudici inclusi, prenota il costo massimo prima della rete; il cap è fail-closed.
 
-GLM 5.3 Flash ha thinking obbligatorio: usiamo `low`, nascondiamo il ragionamento
-e aggiungiamo 1024 token al limite della risposta. Il totale è prenotato nel budget
+GLM 5.3 Flash ha thinking obbligatorio: `high` e allowance 2048 solo per la chat,
+`low` e allowance 1024 per il resto. Il totale risposta + allowance è prenotato
 prima della rete, inclusi i token di thinking; l'output pubblico rimane corto.
+Il modello leggero non riceve allowance né thinking. Nessun ritardo artificiale.
+Il confronto sintetico e i suoi limiti sono in [profili AI](docs/ai-workload-profiles-2026-11-11.md).
 Non mescolare GLM e modelli non-thinking nella stessa lista OpenRouter.
 Per GLM usiamo il routing adattivo costo/uptime di OpenRouter, senza preferenza
 esplicita per la latenza e sempre entro gli stessi tetti di prezzo, budget e
@@ -258,9 +268,10 @@ nei `cached_tokens` del ledger; la prenotazione resta sempre conservativa.
 Il catalogo autorevole dei comandi nel prompt omette solo la ripetizione della
 sintassi senza argomenti: nomi, sintassi con parametri, alias e manuali completi
 restano disponibili. Le schermate `/comandi` e `/spiega_comando` sono invariate.
-I provider espliciti restano disponibili per confronti A/B; `openrouter` esplicito
-usa direttamente la corsia paid. Su un `.env` esistente imposta `auto` e aggiorna
-le liste dei modelli: `git pull` non sovrascrive la configurazione della macchina.
+I vecchi selettori di provider (`auto`, `groq`, `gemini`) e le catene nel `.env`
+vengono riconosciuti e scartati per compatibilità, senza riattivare i gratuiti. Le vecchie chiavi non vengono cancellate.
+Gli adapter gratuiti restano disponibili solo negli harness offline esplicitamente
+invocati, non dagli handler o dal factory runtime.
 
 Per il confronto reale in locale o sulla macchina **di test**, lo script seguente
 prova gli otto prompt effettivi con dati sintetici, senza leggere chat o inviare
@@ -279,14 +290,14 @@ Per ricevere i messaggi ordinari devi disattivare la privacy del bot da BotFathe
 gruppo esistente, rimuovi e riaggiungi il bot. Senza questo passaggio Alduino continua
 a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
 
-### Modelli e alert (aggiornamento ottobre 2026)
+### Modelli e alert (aggiornamento novembre 2026)
 
-Groq usa `qwen/qwen3.8-27b`; il precedente default `qwen/qwen3.6-27b`, ritirato,
-viene migrato anche se resta selezionato in un `.env` esistente. Chat e gioco
-strutturato usano `gemini-3.8-flash`: `minimal` diventa `low` nell'adapter, con
-1024 token di margine per il ragionamento oltre al limite della risposta.
-Gli altri modelli selezionati restano GPT-OSS per giudizi strict e GLM 5.3 Flash
-per il fallback paid, con gli stessi cap e vincoli di privacy.
+Modelli, costi verificati, limiti dello scan e migrazione:
+[OpenRouter-only](docs/openrouter-only-2026-11-11.md).
+Il giudice strict resta `openai/gpt-oss-120b`, selezionabile con
+`OPENROUTER_JUDGE_MODEL`. Thinking `low`, schema booleano invariato, 32 token
+risposta più allowance di reasoning (default 1024), prenotati prima della rete.
+Giudizi non verificabili non consumano tentativi veri; non si ritenta sul provider gratuito.
 
 I 503 indicano indisponibilità del provider: un fallback riuscito resta nei log
 INFO, mentre l'esaurimento della route produce un WARNING. I 400/401/403/404
@@ -465,25 +476,24 @@ gaming-community-bot/
 | `GROUP_ID` | `0` | supergruppo in forma `-100…`; `0` = guard disattivato |
 | `ADMIN_IDS` | `[]` | lista separata da virgole |
 | `FSM_STORAGE` | `memory` | `redis` in produzione (`REDIS_URL`) |
-| `GROQ_API_KEY` | — | giudice, intrattenimento gratuito e secondo tentativo free di Alduino |
-| `GROQ_JUDGE_MODEL` | `openai/gpt-oss-120b` | giudice di Guess The Game / Sound Quest |
-| `OPENROUTER_API_KEY` | — | fallback paid GLM; vuota = nessuna chiamata OpenRouter |
+| `OPENROUTER_API_KEY` | — | unica chiave runtime AI; vuota = AI non disponibile |
 | `AI_MONTHLY_BUDGET_USD` | `5.00` | hard cap interno persistente per mese UTC (`0` lo disabilita esplicitamente) |
-| `AI_ENTERTAINMENT_PROVIDER` | `auto` | Groq gratuito → GLM paid; provider espliciti per A/B |
 | `OPENROUTER_CHAT_MODELS` | `z-ai/glm-5.3-flash` | fallback ZDR della chat |
 | `OPENROUTER_FUN_MODELS` | `z-ai/glm-5.3-flash` | fallback one-shot, senza memoria |
 | `OPENROUTER_REASONING_TOKEN_ALLOWANCE` | `1024` | thinking GLM aggiuntivo, incluso nel tetto totale e nella prenotazione |
+| `OPENROUTER_LIGHT_MODELS` | `inclusionai/ling-3.0-flash` | corsia di maestro/drama/insulta, senza thinking |
+| `OPENROUTER_CHAT_REASONING_EFFORT` | `high` | solo chat, `low`/`high` compatibili con GLM |
+| `OPENROUTER_CHAT_REASONING_TOKEN_ALLOWANCE` | `2048` | margine chat prenotato prima della rete |
+| `AI_COOLDOWN_SECONDS` | `10` | cooldown AI condiviso per utente, admin esenti |
 | `GEMINI_API_KEY` | — | primo provider gratuito per giochi AI e chat di Alduino |
 | `TWENTYQ_V2_ENABLED` | `false` | mantiene disabilitate le nuove partite premianti finché il rollout non è approvato |
-| `TWENTYQ_PROVIDER_ORDER` | `gemini,groq,openrouter` | fallback gratuito → paid, deadline assoluta 25 s |
+| `TWENTYQ_PROVIDER_DEADLINE_SECONDS` | `25` | deadline del gioco; unico adapter runtime OpenRouter |
 | `TWENTYQ_GEMINI_MODEL` / `_GROQ_MODEL` / `_OPENROUTER_MODEL` | `gemini-3.8-flash` / `openai/gpt-oss-20b` / `z-ai/glm-5.3-flash` | modelli strutturati del gioco segreto v2 |
 | `TWENTYQ_OPENROUTER_BUDGET_USD` / `OPENROUTER_OTHER_BUDGET_USD` | `4.00` / `1.00` | lane cap mensili dentro `AI_MONTHLY_BUDGET_USD=5.00` |
 | `TWENTYQ_MAX_COINS_PER_PARTICIPANT` | `1000` | cap hard del massimo CoInn scelto dall'admin |
-| `ALDUINO_PROVIDER` | `auto` | Groq gratuito → Gemini gratuito → GLM paid; provider espliciti per A/B |
-| `ALDUINO_FREE_TIMEOUT_SECONDS` / `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `10` / `30` | timeout per tentativo free / deadline totale chat |
+| `ALDUINO_PROVIDER_DEADLINE_SECONDS` | `30` | deadline totale chat; timeout richiesta `OPENROUTER_TIMEOUT_SECONDS` |
 | `ALDUINO_GEMINI_MODEL` | `gemini-3.8-flash` | modello conversazionale, separato dai giochi strutturati |
-| `ALDUINO_THINKING_LEVEL` | `low` | Gemini 3.8: `minimal` legacy viene adattato a `low` |
-| `ALDUINO_FALLBACK_TO_GROQ` | `true` | include Groq gratuito dopo Gemini in auto; fallback legacy nei modi espliciti |
+| `OPENROUTER_JUDGE_MODEL` | `openai/gpt-oss-120b` | stesso giudice strict, budget lane `openrouter_other` |
 | `ALDUINO_HISTORY_TURNS` / `_CHARS` | `10` / `8000` | limiti della memoria per ramo |
 | `ALDUINO_MEMORY_ROWS_PER_GROUP` | `1000` | cap persistente per gruppo, con potatura automatica |
 | `ALDUINO_GROUP_CONTEXT_MESSAGES` / `_CHARS` | `80` / `24000` | finestra ambientale inviata al modello |

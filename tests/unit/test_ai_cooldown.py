@@ -63,6 +63,21 @@ async def test_window_expired_allows_again(monkeypatch):
     assert await fun_ai._check_cooldown(msg) is True
 
 
+async def test_ten_second_cooldown_expires_at_the_exact_boundary(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    now = [100.0]
+    monkeypatch.setattr(fun_ai, "is_admin", AsyncMock(return_value=False))
+    monkeypatch.setattr(fun_ai.settings, "ai_cooldown_seconds", 10)
+    monkeypatch.setattr(cooldown.time, "monotonic", lambda: now[0])
+    msg = _FakeMessage(5)
+    fun_ai._mark_used(msg)
+    now[0] = 109.9
+    assert not await fun_ai._check_cooldown(msg)
+    now[0] = 110.0
+    assert await fun_ai._check_cooldown(msg)
+
+
 async def test_a_check_alone_does_not_consume_the_cooldown(monkeypatch):
     """The check and the mark are deliberately **separate** calls.
 

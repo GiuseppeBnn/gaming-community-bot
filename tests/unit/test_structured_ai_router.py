@@ -784,54 +784,27 @@ async def test_factory_is_cached_preserves_breaker_and_has_explicit_reset(
     monkeypatch, structured_request,
 ):
     module = _module()
-    gemini = FakeProvider(
-        "gemini",
-        structured_ai.StructuredAIError(
-            "down", kind=structured_ai.StructuredAIErrorKind.network,
-            provider="gemini",
-        ),
-    )
-    groq = FakeProvider("groq", {"verdetto": "si"})
-    paid = FakeProvider("openrouter", configured=False)
-    monkeypatch.setattr(module, "GeminiStructuredProvider", lambda: gemini)
-    monkeypatch.setattr(module, "GroqStructuredProvider", lambda: groq)
+    paid = FakeProvider("openrouter", {"verdetto": "si"})
     monkeypatch.setattr(module, "OpenRouterStructuredProvider", lambda: paid)
-    monkeypatch.setattr(module.settings, "twentyq_provider_order", "gemini,groq,openrouter")
-    monkeypatch.setattr(module.settings, "twentyq_provider_deadline_seconds", 25)
     module._reset_twenty_questions_router_for_tests()
-
     first = module.get_twenty_questions_router()
     await first.generate(structured_request, session_id=None, validate=parse_verdict, audit=False)
     second = module.get_twenty_questions_router()
     await second.generate(structured_request, session_id=None, validate=parse_verdict, audit=False)
-
     assert first is second
-    assert (gemini.calls, groq.calls, paid.calls) == (1, 2, 0)
+    assert paid.calls == 2
     module._reset_twenty_questions_router_for_tests()
     assert module.get_twenty_questions_router() is not first
 
 
-def test_factory_follows_normalized_settings_order_and_configuration(monkeypatch):
+def test_factory_ignores_legacy_free_order_and_only_checks_openrouter(monkeypatch):
     module = _module()
-    providers = {
-        "gemini": FakeProvider("gemini", configured=False),
-        "groq": FakeProvider("groq", configured=True),
-        "openrouter": FakeProvider("openrouter", configured=False),
-    }
-    monkeypatch.setattr(module, "GeminiStructuredProvider", lambda: providers["gemini"])
-    monkeypatch.setattr(module, "GroqStructuredProvider", lambda: providers["groq"])
-    monkeypatch.setattr(
-        module, "OpenRouterStructuredProvider", lambda: providers["openrouter"],
-    )
-    monkeypatch.setattr(module.settings, "twentyq_provider_order", "groq,gemini,openrouter")
+    paid = FakeProvider("openrouter", configured=False)
+    monkeypatch.setattr(module, "OpenRouterStructuredProvider", lambda: paid)
     module._reset_twenty_questions_router_for_tests()
-
     router = module.get_twenty_questions_router()
-
-    assert [provider.name for provider in router.providers] == [
-        "groq", "gemini", "openrouter",
-    ]
-    assert module.has_configured_twenty_questions_provider() is True
+    assert [provider.name for provider in router.providers] == ["openrouter"]
+    assert module.has_configured_twenty_questions_provider() is False
 
 
 @pytest.mark.parametrize("error_type", [TypeError, ValueError, RuntimeError])

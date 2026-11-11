@@ -1,5 +1,5 @@
 """
-AI entertainment service — async free-first Groq/OpenRouter routing.
+AI gateway — OpenRouter runtime with budgeted text and strict structured output.
 
 All LLM traffic goes through `aiohttp` (never blocking libraries) so the
 aiogram event loop is never stalled. Failures (timeout, network, non-200,
@@ -15,10 +15,9 @@ from __future__ import annotations
 
 import asyncio
 from decimal import Decimal, DecimalException, ROUND_CEILING
-import json
 import logging
 import re
-from typing import Any
+from typing import Any, Literal
 
 import aiohttp
 
@@ -68,16 +67,23 @@ def gemini_generation_policy(model: str, level: str, answer_tokens: int) -> tupl
 
 def openrouter_generation_policy(
     models: tuple[str, ...], max_answer_tokens: int,
+    *, profile: Literal["default", "chat"] = "default",
 ) -> tuple[dict[str, Any], int]:
-    """Keep mandatory-thinking GLM routes separate from non-thinking routes."""
-    mandatory = [model == "z-ai/glm-5.3-flash" for model in models]
+    """Keep mandatory-thinking GLM/GPT-OSS separate from non-thinking routes."""
+    mandatory = [
+        model in {"z-ai/glm-5.3-flash", "z-ai/glm-5.3"}
+        or model.startswith("openai/gpt-oss-")
+        for model in models
+    ]
     if any(mandatory):
         if not all(mandatory):
             raise AIServiceError("mixed reasoning policies in model route")
-        return (
-            {"effort": "low", "exclude": True},
-            max_answer_tokens + settings.openrouter_reasoning_token_allowance,
+        effort = settings.openrouter_chat_reasoning_effort if profile == "chat" else "low"
+        allowance = (
+            settings.openrouter_chat_reasoning_token_allowance
+            if profile == "chat" else settings.openrouter_reasoning_token_allowance
         )
+        return {"effort": effort, "exclude": True}, max_answer_tokens + allowance
     return {"effort": "none", "exclude": True}, max_answer_tokens
 
 
@@ -176,6 +182,7 @@ async def generate_openrouter_completion(
     feature: str,
     models: tuple[str, ...],
     require_zdr: bool,
+    reasoning_profile: Literal["default", "chat"] | None = None,
 ) -> str:
     """Call an ordered OpenRouter route with privacy, price and budget guards."""
     if not settings.openrouter_api_key:
@@ -183,7 +190,10 @@ async def generate_openrouter_completion(
         raise AIServiceError("missing OpenRouter api key")
     if not models:
         raise AIServiceError("empty model route")
-    reasoning, total_tokens = openrouter_generation_policy(models, max_tokens)
+    reasoning, total_tokens = openrouter_generation_policy(
+        models, max_tokens,
+        profile=reasoning_profile or ("chat" if feature == "alduino_chat" else "default"),
+    )
     try:
         reservation = await ai_budget.reserve(
             feature=feature,
@@ -289,7 +299,7 @@ async def generate_groq_completion(
     *,
     temperature: float | None = None,
 ) -> str:
-    """Send a system + user prompt to Groq and return the assistant text.
+    """Offline eval adapter only; never selected by the bot's runtime gateways.
 
     `max_tokens` is a hard cap on the reply length (per-command) to avoid
     walls of text even if the model ignores the prompt instructions.
@@ -371,44 +381,33 @@ async def generate_completion(
     max_tokens: int = _DEFAULT_MAX_TOKENS,
     *,
     temperature: float | None = None,
+    tier: Literal["standard", "light"] = "standard",
 ) -> str:
-    """Route one-shot entertainment without affecting the strict judge lane."""
+    """One OpenRouter request; upstream endpoint failover stays price bounded."""
+    model_route = (
+        settings.openrouter_light_models if tier == "light" else settings.openrouter_fun_models
+    )
+
     async def paid() -> str:
         text = await generate_openrouter_completion(
             system_prompt, user_text, max_tokens, temperature=temperature,
-            feature="entertainment",
-            models=parse_model_list(settings.openrouter_fun_models),
+            feature="entertainment_light" if tier == "light" else "entertainment",
+            models=parse_model_list(model_route),
             require_zdr=False,
         )
         return text if len(text) <= 600 else text[:599].rstrip() + "…"
 
-    if settings.ai_entertainment_provider == "auto":
-        async def groq() -> str:
-            return await generate_groq_completion(
-                system_prompt, user_text, max_tokens, temperature=temperature,
-            )
-
-        attempts = [ProviderAttempt(
-            "groq", settings.groq_model, groq,
-            settings.ai_entertainment_free_timeout_seconds,
-        )]
-        if settings.openrouter_api_key:
-            attempts.append(ProviderAttempt(
-                "openrouter", settings.openrouter_fun_models, paid,
+    try:
+        return await text_router.generate(
+            [ProviderAttempt(
+                "openrouter", model_route, paid,
                 settings.openrouter_timeout_seconds,
-            ))
-        try:
-            return await text_router.generate(
-                attempts, workload="entertainment",
-                deadline_seconds=settings.ai_entertainment_deadline_seconds,
-            )
-        except ProviderUnavailable as exc:
-            raise AIServiceError("entertainment providers unavailable") from exc
-    if settings.ai_entertainment_provider == "openrouter":
-        return await paid()
-    return await generate_groq_completion(
-        system_prompt, user_text, max_tokens, temperature=temperature,
-    )
+            )],
+            workload="entertainment",
+            deadline_seconds=settings.ai_entertainment_deadline_seconds,
+        )
+    except ProviderUnavailable as exc:
+        raise AIServiceError("entertainment providers unavailable") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -431,127 +430,37 @@ JUDGE_SCHEMA: dict = {
     },
 }
 
-#: The judge model reasons before it answers, and on `openai/gpt-oss-*` those
-#: reasoning tokens are drawn from THIS budget. Sizing it for the answer alone
-#: (`{"corretta": true}` is ~10 tokens) leaves the content channel empty, Groq
-#: validates that empty generation against the strict schema, and every call comes
-#: back `400 json_validate_failed` — which is correctly not retried, so every
-#: answer that reached the model was `unverified`. That was the production bug.
-_JUDGE_MAX_TOKENS = 512
-#: Short chains, not no chains: the question is binary and about two short
-#: strings, and every reasoning token is latency a player waits through.
-_JUDGE_REASONING_EFFORT = "low"
-_JUDGE_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-_JUDGE_RETRY_DELAY = 1.0
-
-
-def _log_judge_http_failure(status: int, body: str) -> None:
-    """Say what actually went wrong, at the level it deserves.
-
-    `json_validate_failed` with an EMPTY `failed_generation` has exactly one
-    cause: the token budget ran out inside the model's reasoning, so nothing
-    reached the content channel and Groq validated an empty string against the
-    strict schema. That diagnosis cost real time to make once, from logs that
-    only said "status 400"; it must not cost it twice.
-
-    This is for whoever reads the logs. The caller still gets a plain
-    `AIServiceError`, because for the game "I have no verdict" is one thing and
-    splitting it would only add a branch nothing acts on differently.
-    """
-    try:
-        error = json.loads(body).get("error", {})
-        if not isinstance(error, dict):
-            error = {}
-    except (ValueError, TypeError, AttributeError):
-        error = {}
-
-    if error.get("code") == "json_validate_failed" and not error.get("failed_generation"):
-        logger.error(
-            "Giudice: generazione VUOTA rifiutata dallo schema (modello=%s, "
-            "max_tokens=%s). Il budget di token non basta per il reasoning del "
-            "modello: alzalo, oppure passa a un modello non-reasoning.",
-            settings.groq_judge_model, _JUDGE_MAX_TOKENS,
-        )
-        return
-    logger.warning("Giudice: status %s (model=%s).", status, settings.groq_judge_model)
-
 
 async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
-    """Ask the judge model a single yes/no question and return its boolean.
+    """Preserve the strict boolean judge, now on the metered OpenRouter lane.
 
-    Raises `AIServiceError` on a missing key, a transport failure, an exhausted
-    retry, or a body that is not exactly one boolean. There is deliberately no
-    third value: the caller must treat a raise as "not proven correct", never as
-    "correct".
-
-    Retries **once** on 429/5xx because a rate limit is the expected failure on
-    the Groq free tier and charging it to a player's attempt would be our bug
-    billed to them. A 4xx other than 429 means the request itself is wrong —
-    sending it again would only burn quota.
+    No application retry after an ambiguous timeout: the reservation remains
+    charged and the game treats the answer as unverified, never as incorrect.
     """
-    if not settings.groq_api_key:
-        logger.error("GROQ_API_KEY non configurata — impossibile interpellare il giudice.")
-        raise AIServiceError("missing api key")
+    # Local import avoids a cycle: structured adapters share the usage/policy
+    # helpers in this module.
+    from services.structured_ai import (
+        OpenRouterStructuredProvider, StructuredAIError, StructuredRequest,
+    )
 
-    payload = {
-        "model": settings.groq_judge_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ],
-        "temperature": 0,
-        "max_tokens": _JUDGE_MAX_TOKENS,
-        "reasoning_effort": _JUDGE_REASONING_EFFORT,
-        "response_format": {"type": "json_schema", "json_schema": JUDGE_SCHEMA},
-    }
-    headers = {
-        "Authorization": f"Bearer {settings.groq_api_key}",
-        "Content-Type": "application/json",
-    }
-    timeout = aiohttp.ClientTimeout(total=settings.guess_judge_timeout_seconds)
-
-    data: dict | None = None
-    for attempt in (1, 2):
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(GROQ_URL, headers=headers, json=payload) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        break
-                    body = await resp.text()
-                    _log_judge_http_failure(resp.status, body)
-                    if resp.status not in _JUDGE_RETRY_STATUSES or attempt == 2:
-                        raise AIServiceError(f"status {resp.status}", status=resp.status)
-        except asyncio.TimeoutError as exc:
-            logger.warning("Timeout nella chiamata al giudice (tentativo %s).", attempt)
-            if attempt == 2:
-                raise AIServiceError("timeout") from exc
-        except aiohttp.ClientError as exc:
-            logger.warning(
-                "Errore di rete verso il giudice (model=%s).",
-                settings.groq_judge_model,
-            )
-            if attempt == 2:
-                raise AIServiceError("network error") from exc
-        except ValueError as exc:
-            raise AIServiceError("malformed verdict") from exc
-        await asyncio.sleep(_JUDGE_RETRY_DELAY)
-
+    provider = OpenRouterStructuredProvider(
+        model=settings.openrouter_judge_model,
+        timeout_seconds=settings.guess_judge_timeout_seconds,
+        budget_lane="openrouter_other",
+    )
+    request = StructuredRequest(
+        operation="guess_judge",
+        system_prompt=system_prompt,
+        user_prompt=user_text,
+        schema_name=JUDGE_SCHEMA["name"],
+        schema=JUDGE_SCHEMA["schema"],
+        prompt_version="guess-equivalence-v1",
+        schema_version="boolean-v1",
+        max_output_tokens=32,
+        temperature=0,
+    )
     try:
-        content = data["choices"][0]["message"]["content"]  # type: ignore[index]
-        verdict = json.loads(content)["corretta"]
-    except (KeyError, IndexError, TypeError, AttributeError, ValueError) as exc:
-        logger.error(
-            "Verdetto del giudice illeggibile (model=%s).",
-            settings.groq_judge_model,
-        )
-        raise AIServiceError("malformed verdict") from exc
-    # `isinstance(True, int)` is True in Python, so an int would slip past a
-    # bool() cast. Only a real boolean counts as a verdict.
-    if not isinstance(verdict, bool):
-        logger.error(
-            "Verdetto del giudice non booleano (model=%s).",
-            settings.groq_judge_model,
-        )
-        raise AIServiceError("non-boolean verdict")
-    return verdict
+        result = await provider.generate_json(request)
+    except StructuredAIError as exc:
+        raise AIServiceError("OpenRouter judge unavailable", status=exc.status) from exc
+    return result.value["corretta"]

@@ -17,8 +17,7 @@ from services.ai_game_types import (
     TurnView,
     TwentyQuestionsPolicy,
 )
-from services.twenty_questions_rules import compute_reward_projection
-from utils.text import esc, format_duration
+from utils.text import esc
 
 _CARD_TURN_INPUT_CHARS = 96
 
@@ -77,15 +76,11 @@ def _turn_line(turn: TurnView) -> str:
     return f"{icon} Tentativo: {esc(visible_input)}"
 
 
-def _expiry_lines(expires_at: datetime | None, now: datetime) -> list[str]:
+def _expiry_lines(expires_at: datetime | None) -> list[str]:
+    # Absolute expiry is useful; a static countdown becomes stale immediately.
     if expires_at is None:
-        return ["🕰️ Scadenza: <b>non disponibile</b>"]
-    seconds_left = int((expires_at - now).total_seconds())
-    residual = "scaduto" if seconds_left <= 0 else format_duration(seconds_left)
-    return [
-        f"🕰️ Scade: <b>{expires_at.strftime('%d/%m/%Y %H:%M UTC')}</b>",
-        f"⏳ Tempo residuo: <b>{residual}</b>",
-    ]
+        return []
+    return [f"🗓️ Scade: <b>{expires_at.strftime('%d/%m/%Y %H:%M UTC')}</b>"]
 
 
 def render_policy(policy: TwentyQuestionsPolicy) -> str:
@@ -113,36 +108,18 @@ def render_policy(policy: TwentyQuestionsPolicy) -> str:
 
 def render_public_help(policy: TwentyQuestionsPolicy) -> str:
     """Render reusable public instructions from the same persisted policy."""
-    example = compute_reward_projection(
-        policy,
-        participants=5,
-        questions=0,
-        wrong_guesses=0,
-    )
     return "\n\n".join((
         "🐲 <b>Il gioco segreto di Alduino</b>",
-        (
-            "Rispondi alla card o a un verdetto del gioco con una domanda. "
-            "Per provare il titolo usa <code>RISPOSTA: titolo del gioco</code>. "
-            "Può esserci una sola partita attiva per gruppo."
-        ),
-        "Alduino risponde SÌ o NO; se non ha elementi sufficienti, NON LO SO: "
-        "la domanda non viene consumata e il premio non diminuisce.",
-        (
-            "Le partite durano 2, 6, 12 o 24 ore, oppure fino a una data e ora futura. "
-            "Diventi partecipante registrando almeno un turno valido."
-        ),
+        "Indovina il videogioco segreto facendo domande: "
+        "Alduino risponde solo <b>SÌ</b> o <b>NO</b>. "
+        "Se mancano elementi, <b>NON LO SO</b>: domanda e premio restano intatti.",
+        "Rispondi alla card o a un verdetto. "
+        "Per tentare il titolo: <code>RISPOSTA: titolo del gioco</code>. "
+        "Una sola partita attiva per gruppo.",
         render_policy(policy),
-        (
-            "Esempio: con 5 partecipanti validi e nessuna penalità, la proiezione è "
-            f"<b>{example.share} CoInn</b> a persona "
-            f"({example.computed_pool} CoInn nel pool)."
-        ),
-        (
-            "Duplicati, problemi tecnici e titoli scritti senza <code>RISPOSTA:</code> "
-            "non consumano nulla. La quota mostrata è una proiezione: può crescere "
-            "con nuovi partecipanti e non è un saldo maturato."
-        ),
+        "I CoInn si ricevono solo se il gioco viene indovinato. "
+        "La quota è una proiezione, non un saldo maturato. "
+        "Duplicati, problemi tecnici e titoli senza <code>RISPOSTA:</code> non consumano nulla.",
     ))
 
 
@@ -164,7 +141,7 @@ def render_live_card(
         "🐲 <b>Il gioco segreto di Alduino</b>",
         f"<b>{esc(view.title)}</b>",
         "",
-        *_expiry_lines(view.expires_at, now),
+        *_expiry_lines(view.expires_at),
         "",
         (
             "👥 Partecipanti: "
@@ -175,24 +152,18 @@ def render_live_card(
             f"🎲 Regola: <b>{policy.questions_per_user} domande · "
             f"{policy.guesses_per_user} tentativi</b> per persona."
         ),
+        "Alduino risponde solo <b>SÌ</b> o <b>NO</b>. "
+        "<b>NON LO SO</b> non consuma la domanda.",
         (
-            f"🎁 Massimo: <b>{policy.max_coins_per_participant} CoInn</b> per partecipante · "
-            f"minimo attuale: {minimum_text} "
-            f"({_percentage(policy.minimum_bps)} del pool base)."
+            f"💰 Quota stimata: <b>{projection.share} CoInn</b> a persona. "
+            f"Massimo <b>{policy.max_coins_per_participant}</b> · minimo attuale: {minimum_text}."
         ),
         (
-            "📉 Penalità: "
+            "📉 Penalità sul pool: "
             f"{_percentage(policy.question_penalty_bps)} per domanda valida · "
             f"{_percentage(policy.wrong_guess_penalty_bps)} per tentativo errato."
         ),
-        (
-            f"💰 Quota stimata: <b>{projection.share} CoInn</b> a partecipante "
-            f"(pool previsto {projection.computed_pool} CoInn · resto {projection.remainder} CoInn)."
-        ),
-        (
-            "La quota è una <b>proiezione se si vincesse ora</b>: può crescere con "
-            "nuovi partecipanti e non è un saldo maturato."
-        ),
+        "CoInn solo se indovinate. La quota è una proiezione, non è un saldo maturato.",
         f"✨ Partecipare vale <b>{policy.xp_per_participant} XP</b> alla chiusura.",
     ]
     recent = view.recent_turns[-6:]
@@ -202,9 +173,8 @@ def render_live_card(
     if view.status == "running" or open_preview:
         lines.extend((
             "",
-            "Rispondi <b>a questo messaggio</b> con una domanda.",
+            "Rispondi a questa card o a un verdetto con una domanda.",
             "Per tentare: <code>RISPOSTA: titolo del gioco</code>",
-            "Puoi rispondere anche ai verdetti del gioco.",
         ))
     return "\n".join(lines)
 

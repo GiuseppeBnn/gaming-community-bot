@@ -16,7 +16,7 @@ suite admin, moderazione, backup.
 
 **Stack vincolante** (§1): Python **3.12** · aiogram **3.30.0** (mai 2.x) · SQLAlchemy 2.0 async ·
 pydantic-settings 2.x · PostgreSQL 16/asyncpg in prod, SQLite/aiosqlite in dev e test ·
-aiohttp per le chiamate LLM (**mai** HTTP bloccante) · OpenRouter/Groq/Gemini (opzionali).
+aiohttp per le chiamate LLM (**mai** HTTP bloccante) · OpenRouter (opzionale; Groq/Gemini solo eval offline).
 
 ---
 

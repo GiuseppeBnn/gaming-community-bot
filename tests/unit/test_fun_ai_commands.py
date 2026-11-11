@@ -44,6 +44,11 @@ class _StubBot:
         raise RuntimeError("no telegram in tests")
 
 
+async def test_insulta_uses_the_light_model_tier(llm):
+    await fun_ai.cmd_insulta(_StubMessage(), _command("@vittima"))
+    assert llm[0]["tier"] == "light"
+
+
 class _StubMessage:
     def __init__(self, *, chat_type: str = "supergroup", reply_to=None,
                  user_id: int = USER_ID, text: str | None = None,
@@ -92,12 +97,14 @@ def llm(monkeypatch):
     as much as on what with."""
     calls: list[dict] = []
 
-    async def _fake(system_prompt, user_text, max_tokens, *, temperature=None):
+    async def _fake(system_prompt, user_text, max_tokens, *, temperature=None, **_policy):
         calls.append({"prompt": system_prompt, "text": user_text,
-                      "max_tokens": max_tokens, "temperature": temperature})
+                      "max_tokens": max_tokens, "temperature": temperature,
+                      "tier": _policy.get("tier")})
         return "risposta del modello"
 
-    monkeypatch.setattr(ai_service, "generate_groq_completion", _fake)
+    monkeypatch.setattr(ai_service, "generate_completion", _fake)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", _fake)
     return calls
 
 
@@ -105,7 +112,6 @@ def llm(monkeypatch):
 def _no_admin_no_cooldown(monkeypatch):
     """Nobody is an admin (admins bypass the cooldown), and no cooldown leaks in."""
     monkeypatch.setattr(admin_filter.settings, "admin_ids", [])
-    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     admin_filter._cache.clear()
     cooldown.reset()
     yield
@@ -196,6 +202,9 @@ class TestCommandWiring:
 
         assert llm[0]["prompt"] == getattr(fun_ai, prompt_name)
         assert llm[0]["max_tokens"] == max_tokens
+        assert llm[0]["tier"] == (
+            "light" if handler in {"cmd_maestro", "cmd_drama"} else "standard"
+        )
 
     async def test_only_dialetto_lowers_the_temperature(self, llm):
         """Catanese at the default temperature comes back as invented words."""

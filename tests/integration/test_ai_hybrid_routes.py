@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from aioresponses import aioresponses
 import pytest
@@ -20,8 +19,6 @@ def hybrid_db(engine, monkeypatch):
     monkeypatch.setattr(ai_budget, "async_session_maker", factory)
     monkeypatch.setattr(ai_budget.settings, "ai_monthly_budget_usd", Decimal("5"))
     monkeypatch.setattr(ai_budget.settings, "openrouter_other_budget_usd", Decimal("1"))
-    monkeypatch.setattr(ai_service.settings, "alduino_provider", "auto")
-    monkeypatch.setattr(ai_service.settings, "alduino_fallback_to_groq", True)
     monkeypatch.setattr(ai_service.settings, "openrouter_api_key", "test-key")
     monkeypatch.setattr(ai_service.settings, "gemini_api_key", "test-key")
     monkeypatch.setattr(ai_service.settings, "openrouter_chat_models", "z-ai/glm-5.3-flash")
@@ -29,21 +26,18 @@ def hybrid_db(engine, monkeypatch):
     return factory
 
 
-async def test_free_chat_succeeds_even_when_paid_budget_is_off(hybrid_db, monkeypatch):
+async def test_paid_budget_off_blocks_even_when_free_credentials_exist(hybrid_db, monkeypatch):
     monkeypatch.setattr(ai_budget.settings, "openrouter_other_budget_usd", Decimal("0"))
-    monkeypatch.setattr(alduino_chat, "_gemini_reply", AsyncMock(return_value=GeneratedReply("ok", "gemini")))
-    paid = AsyncMock()
-    monkeypatch.setattr(alduino_chat, "_openrouter_reply", paid)
-    assert await alduino_chat.generate_reply(system_prompt="s", current="u") == GeneratedReply("ok", "gemini")
-    paid.assert_not_awaited()
+    with aioresponses() as mocked:
+        with pytest.raises(AlduinoAIError):
+            await alduino_chat.generate_reply(system_prompt="s", current="u")
+        assert not mocked.requests
     assert await ai_budget.snapshot() is None
     async with hybrid_db() as session:
         assert (await session.execute(select(AIUsageLog))).scalars().all() == []
 
 
 async def test_glm_fallback_keeps_branch_zdr_and_persistent_cost_accounting(hybrid_db, monkeypatch):
-    for provider in ("gemini", "groq"):
-        monkeypatch.setattr(alduino_chat, f"_{provider}_reply", AsyncMock(side_effect=AlduinoAIError("down")))
     parent = SimpleNamespace(
         provider="gemini", provider_interaction_id="old-interaction",
         history_json=alduino_chat.encode_history((DialogueTurn("Mario gioca a Doom", "ricordo"),)),
@@ -62,7 +56,7 @@ async def test_glm_fallback_keeps_branch_zdr_and_persistent_cost_accounting(hybr
     assert reply == GeneratedReply("Doom, ricordo.", "openrouter")
     sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
     assert sent["models"] == ["z-ai/glm-5.3-flash"]
-    assert sent["reasoning"]["effort"] == "low"
+    assert sent["reasoning"]["effort"] == "high"
     assert sent["provider"]["zdr"] and sent["provider"]["data_collection"] == "deny"
     assert "sort" not in sent["provider"]
     assert "Mario: Doom" in sent["messages"][1]["content"]
@@ -80,8 +74,6 @@ async def test_glm_fallback_keeps_branch_zdr_and_persistent_cost_accounting(hybr
 
 async def test_exhausted_paid_lane_blocks_glm_before_network(hybrid_db, monkeypatch):
     monkeypatch.setattr(ai_budget.settings, "openrouter_other_budget_usd", Decimal("0"))
-    for provider in ("gemini", "groq"):
-        monkeypatch.setattr(alduino_chat, f"_{provider}_reply", AsyncMock(side_effect=AlduinoAIError("down")))
     # Any accidental POST would be recorded by aioresponses and fail this check.
     with aioresponses() as mocked:
         with pytest.raises(AlduinoAIError, match="chat providers unavailable"):

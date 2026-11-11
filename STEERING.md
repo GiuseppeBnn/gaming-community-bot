@@ -32,7 +32,7 @@ Il **codice applicativo vive sotto `src/`**; i `tests/` restano nella root.
 | DB dev | SQLite (aiosqlite) | default in `.env` locale |
 | FSM storage | `MemoryStorage` (dev) / `RedisStorage` (prod) | configurabile via `.env` |
 | aiohttp | 3.10.11 | client async per tutte le chiamate LLM — **mai** librerie HTTP bloccanti |
-| LLM | OpenRouter + Groq + Gemini | Gratuiti prima: chat Groq→Gemini→GLM, one-shot Groq→GLM; GLM 5.3 Flash paid ZDR; giudice invariato su `GROQ_JUDGE_MODEL` strict |
+| LLM | OpenRouter | Ling 3.0 Flash per fun leggeri; GLM 5.3 Flash chat/fun/gioco, GPT-OSS 120B giudice strict; tutto nel budget |
 | ruff | 0.16.0 (dev) | **gate CI** su `src/`, ruleset `E9,F,B,ASYNC` — vedi sotto |
 | mypy | 2.3.0 (dev) | **gate CI**, non-strict, plugin `pydantic.mypy` — vedi sotto |
 
@@ -73,13 +73,13 @@ Campi importanti:
 - `daily_min_hours: int` (default 6) — gap minimo dall'ultima riscossione, **in AND** con il reset di mezzanotte del `/daily` (§10.a). Tenere **< 24**
 - `fsm_storage: str` — `"memory"` | `"redis"`. Il default del **campo** resta `"memory"` (dev e test); a spedire `redis` è **`.env.example`**, ed è un cambio del 2026-08-02: prima non lo faceva perché `_build_storage` intercettava solo l'`ImportError` del pacchetto e non una connessione fallita, quindi con Redis irraggiungibile il bot non degradava, **non partiva** — e perdere un flusso di creazione vale meno che perdere il bot. Ora quel baratto non esiste: `_build_storage` fa un `ping` all'avvio e, se Redis non risponde, logga un warning e riparte con `MemoryStorage`. Il costo residuo è dichiarato nel log: con la memoria, ogni conversazione FSM aperta muore al riavvio del container (Watchtower ricrea l'immagine ogni `WATCHTOWER_POLL_INTERVAL: 600`). Il degrado non è silenzioso: passa dagli alert admin (§26). **Trappola per chi un giorno adottasse una libreria che usa `StorageKey.destiny`** (`aiogram_dialog` lo fa: scrive stack e contesto sotto `"aiogd:stack:"` / `"aiogd:context:…"`): `DefaultKeyBuilder` **solleva `ValueError`** per qualunque destiny diverso da `"default"`, quindi servirebbe `key_builder=DefaultKeyBuilder(with_destiny=True)` in `_build_storage`, e con Redis raggiungibile il bot morirebbe al primo messaggio senza. Oggi **non** si passa, di proposito: nessun codice qui scrive un destiny non-default, e il flag aggiungerebbe un suffisso `:default` anche alle chiavi normali, orfanando le chiavi FSM già scritte. Costo zero adesso, da pagare una volta sola se e quando servirà
 - `redis_url: str`
-- `groq_api_key: str` — chiave API Groq per il modulo AI (vuota = AI disattivato, fallback)
+- `groq_api_key: str` — solo harness eval espliciti, non attiva traffico runtime
 - `groq_model: str` — default `"qwen/qwen3.8-27b"`; il default ritirato `qwen/qwen3.6-27b` (14 settembre 2026) viene normalizzato al successore anche da un `.env` esistente (`llama-3.3-70b-versatile` è **spento** dal 16 agosto 2026, come il `llama3-70b-8192` prima di lui)
 - `groq_reasoning_effort: str` — default `"none"`, mandato **solo se non vuoto**. `qwen3.8` supporta reasoning opzionale: `none` lo disabilita esplicitamente, mentre il parser elimina eventuali `<think>…</think>` residui. È specifico del modello (`openai/gpt-oss-*` rifiuta `"none"`), quindi si cambia insieme a `GROQ_MODEL`; svuotarlo omette il campo
-- **OpenRouter**: `openrouter_api_key`; CSV `openrouter_chat_models` / `openrouter_fun_models` (default GLM 5.3 Flash); tetti di prezzo e cap persistente 5 USD invariati. `ai_entertainment_provider=auto` prova Groq gratuito prima della corsia paid; i provider espliciti restano disponibili per A/B. Thinking GLM `low` con allowance configurabile 1024 token, prenotata insieme al limite della risposta
-- **Gioco segreto v2**: `twentyq_v2_enabled` resta **false** fino al rollout; Gemini → Groq → OpenRouter usa timeout 8/8/12 s, deadline 25 s e storia bounded 24 turni / 12.000 caratteri. I lane cap 4 USD (`twentyq`) + 1 USD (altre richieste) vivono dentro il cap globale di 5 USD. Le regole 20 Domande sono **legacy v1**.
+- **OpenRouter**: `openrouter_api_key`; CSV `openrouter_chat_models` / `openrouter_fun_models` (default GLM 5.3 Flash); tetti di prezzo e cap persistente 5 USD invariati. I selettori legacy vengono ritirati e ignorati in modo compatibile; non esistono route runtime gratuite. Thinking chat `high`/2048 indipendente dal profilo standard `low`/1024, sempre prenotato insieme alla risposta
+- **Gioco segreto v2**: `twentyq_v2_enabled` resta **false** fino al rollout; Solo OpenRouter usa timeout 12 s, deadline 25 s e storia bounded 24 turni / 12.000 caratteri. I lane cap 4 USD (`twentyq`) + 1 USD (altre richieste) vivono dentro il cap globale di 5 USD. Le regole 20 Domande sono **legacy v1**.
 - **Contesto Alduino**: `alduino_capture_group_context`, `alduino_group_context_messages` / `_chars` limitano ciò che esce, `alduino_group_memory_rows` limita il rolling transcript locale. La cattura completa richiede privacy mode Telegram disabilitata
-- `ai_cooldown_seconds: int` (default 60) — anti-spam comandi AI per non-admin
+- `ai_cooldown_seconds: int` (default 10) — cooldown condiviso comandi AI/chat per non-admin
 - `warn_mute_threshold: int` (default 3), `warn_ban_threshold: int` (default 5), `warn_mute_duration_seconds: int` (default 3600) — sistema warn admin
 - **XP quiz** (evento, uncapped): `quiz_xp_participation` (20, per ≥1 risposta), `quiz_xp_per_correct` (10, per risposta giusta), `quiz_xp_podium_first/second/third` (50/30/20, bonus podio)
 - **Premi quiz per-rango**: `quiz_default_first` (1000), `quiz_default_second` (500), `quiz_default_third` (250), `quiz_default_consolation` (100) — default suggeriti nella creazione; `quiz_participation_floor_ratio` (0.2) + `quiz_participation_floor_min` (25) → minimo garantito = `max(floor_min, round(consolation*ratio))` (limitato alla consolazione), condiviso da quiz e guess/sound
@@ -931,17 +931,16 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 **File:** `services/ai_service.py` (Service Layer), `handlers/fun_ai.py` (handler).
 
-### ai_service — gateway Groq/OpenRouter
+### ai_service — gateway OpenRouter-only
 
-- **Sempre `aiohttp` async** — mai librerie bloccanti (non bloccare l'event loop di aiogram).
-- `generate_completion(...)` è il router one-shot: default `AI_ENTERTAINMENT_PROVIDER=auto`
-  prova Groq gratuito → OpenRouter paid (GLM 5.3 Flash). `groq` e `openrouter` espliciti
-  selezionano direttamente l'adapter per A/B. Il giudice **non passa mai** da questo router.
-- `services/ai_routing.py` contiene la failover policy riutilizzata da chat e one-shot:
-  timeout free 10 s per chat e one-shot, deadline assoluta 30 s,
-  circuit breaker per workload/provider/modello: 60 s sui guasti temporanei, 900 s sui 400/401/403/404.
-  Cancellazioni ed errori di programmazione propagano senza attivare una seconda richiesta paid.
-  Una risposta free valida termina la route anche con budget paid spento/esaurito.
+- Runtime solo OpenRouter: chat, fun, gioco segreto v2 e legacy v1, giudice Guess/Sound.
+  Nessun tentativo Gemini/Groq, nemmeno con chiavi legacy presenti o dopo errore paid.
+- Selettori legacy in `.env` riconosciuti e normalizzati a `openrouter`.
+  Campi di routing ritirati e scartati da una whitelist di compatibilità; adapter free solo negli harness opt-in.
+- Chat/fun: un tentativo applicativo e circuit breaker per workload/modello (60 s
+  transitori, 900 s sui 400/401/403/404), deadline totale 30 s. Cancellation e bug propagano.
+  OpenRouter può fare failover tra endpoint entro gli stessi vincoli, senza retry paid locali.
+- Solo `aiohttp` async, mai HTTP bloccante. Il giudice non passa dal router creativo.
 - `generate_openrouter_completion(...)` riceve una policy esplicita per feature/modelli/privacy:
   - `provider.data_collection=deny`, `allow_fallbacks=true`, `require_parameters=true`;
   - la chat Alduino forza anche `zdr=true`; la sua lista contiene soltanto modelli con endpoint ZDR;
@@ -961,9 +960,10 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   - la reference autorevole di Alduino omette solo l'uso bare duplicato del comando
     già scritto a inizio riga; sintassi con argomenti, alias, summary e details sono
     preservati integralmente. I renderer della guida Telegram non cambiano;
-  - GLM 5.3 Flash ha thinking obbligatorio: `reasoning.effort=low`, `exclude=true`, cap totale
-    = limite risposta + `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (1024), prenotato e contabilizzato.
-    Altri modelli mantengono `none`; una lista con policy miste è rifiutata prima della rete.
+  - GLM 5.3 Flash ha thinking obbligatorio: chat `high` con allowance 2048, resto `low`
+    con `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (1024); sempre `exclude=true`.
+    Cap totale = risposta + allowance, interamente prenotato. GPT-OSS del giudice resta low/1024.
+    Altri modelli mantengono `none`; liste con policy miste sono rifiutate prima della rete.
     Anche l'adapter structured usa questa policy senza cambiare lo schema strict;
   - timeout/network ambiguo viene contabilizzato al costo massimo prenotato; un non-200 noto costa 0.
 - Prima della rete `ai_budget.reserve` fa un `UPDATE ... WHERE spent + reserved + estimate <= cap`
@@ -972,11 +972,14 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
   un guasto di settlement conserva la prenotazione, quindi non apre spesa aggiuntiva.
 - Il limite interno non sostituisce quello della API key OpenRouter: in produzione vanno impostati
   entrambi allo stesso valore (o la key più bassa). Sono due barriere indipendenti.
-- Groq resta OpenAI-compatible su `https://api.groq.com/openai/v1/chat/completions`:
-  - chiave vuota → `AIServiceError` (niente chiamata di rete);
-  - timeout / rete / status≠200 / body malformato → tutti normalizzati in **`AIServiceError`**;
-  - `temperature` **per-comando**: `None` ⇒ default `_TEMPERATURE` (0.9, alto → risposte varie/creative); un valore più basso rende il modello conservativo (meno parole inventate). Usato da `/dialetto` (`_DIALETTO_TEMPERATURE = 0.5`) per tenere il catanese autentico.
-  - Payload: solo `model` + `messages` (system+user) + `temperature` + `max_tokens` + `reasoning_effort` (se valorizzato). **Nessun campo di moderazione** (requisito di design).
+- `temperature` resta per-comando; default 0.9 e override /dialetto 0.5.
+  Il profilo chat non aumenta thinking, timeout o riserve dei giudici e del gioco.
+- Tier fun espliciti: `/maestro`, `/drama`, `/insulta` passano `tier=light`, selezionano
+  `OPENROUTER_LIGHT_MODELS` (Ling 3.0 Flash, reasoning none, nessuna allowance) e registrano
+  `entertainment_light` nella stessa lane budget `openrouter_other`. Gli altri comandi restano
+  standard/GLM. Nessun classificatore AI per scegliere la corsia e nessun retry verso il modello
+  grande dopo un timeout ambiguo. Lo smoke harness usa gli stessi tier e il profilo chat anche
+  nel preflight del costo. Ragionamento alto non implica una latenza minima o qualità garantita.
 - Costante `AI_FALLBACK_MESSAGE = "I server sono a fuoco, riprova dopo."` — usata dagli handler su `AIServiceError`.
 
 ### fun_ai — handler
@@ -984,7 +987,7 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 - **Solo gruppo** (`ChatType.GROUP/SUPERGROUP`): in privato il bot invita a usarli nel gruppo.
 - Comandi **reply-based** (`/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto`): operano sul testo del `reply_to_message`; helper `_run_ai_command` (accetta `temperature` per-comando opzionale). `/insulta` invece prende un target taggato (`@user`/reply).
 - **Tono**: gruppo di **soli adulti** → satira nera, volgare, politicamente scorretta, senza buonismo né disclaimer. I prompt impongono **varietà anti-ripetizione** (mai riciclare aperture/battute/schema; ogni risposta diversa e fantasiosa, es. `/difendi` inventa ogni volta una strategia difensiva nuova) e **vietano i cliché da gamer** ('noob', 'scrub', 'git gud'…) come riempitivi — i riferimenti gaming solo se arguti.
-- `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — con `GROQ_REASONING_EFFORT=none` (default) non c'è ragionamento visibile, l'autenticità si forza così.
+- `/dialetto` traduce in **catanese stretto autentico** (non siciliano generico/macchiettistico): few-shot di lessico catanese + **regola anti-invenzione** (usa solo parole reali, in dubbio lascia l'italiano) + **temperatura abbassata** (`_DIALETTO_TEMPERATURE`) per ridurre le parole inesistenti — il reasoning è escluso dall'output e il parametro temperatura è preservato.
 - `/alduino` è **l'unico comando in cui il bot parla di sé**: una chat diretta col mascotte **Alduino** (draghetto viola, gamer). Prende il testo dopo il comando (fallback: il `reply_to_message`), che è il messaggio *dell'utente ad Alduino*. Usa un prompt **a sé** (`_PROMPT_ALDUINO`) che **NON** include `_STYLE`: carattere gentile/furbo/sarcastico/tenero **con ordine di priorità esplicito** e regola "**una risposta = un tono solo**" (niente satira nera né volgarità gratuita), **self-aware** (sa di chiamarsi Alduino: i riferimenti ad "Alduino" nel CONTENUTO sono a lui) e con **guardia anti-injection + cap** propri. Il prompt è tenuto **volutamente asciutto**: un tentativo precedente (eroe shonen + goffo + tormentoni + descrizione fisica) accumulava troppi tratti per i pochi caratteri di output → voce incoerente tra una risposta e l'altra, e i dettagli fisici spingevano il modello alla narrazione da roleplay (`*svolazza*`), cioè il cringe. Da qui i **divieti espliciti** (asterischi/azioni, presentarsi, esclamativi a raffica, sdolcinato, emoji in serie, tormentoni). I comandi roast restano invariati.
 - Il contesto Alduino fonde quattro proiezioni bounded: eventi pubblici live, rolling transcript del
   gruppo, ramo dei reply persistito in `alduino_turns`, eventuale messaggio bot citato. Il messaggio
@@ -1003,11 +1006,10 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 - `GroupContextMiddleware` cattura prima del handler solo messaggi umani non-command nel gruppo
   effettivo e pota a `ALDUINO_GROUP_MEMORY_ROWS`; senza BotFather privacy mode disabilitata Telegram
   non consegna il traffico ordinario, quindi il sistema degrada al solo contesto visibile al bot.
-- Routing privacy: default `ALDUINO_PROVIDER=auto` prova Groq (se abilitato) → Gemini → GLM paid.
-  Ogni adapter riceve il ramo locale e i dati live; il transcript ambientale va soltanto alla
-  route OpenRouter ZDR. I provider espliciti conservano il comportamento legacy per A/B.
-  La risposta della chat resta ≤500 caratteri; la corsia paid one-shot resta ≤600 caratteri.
-  Il router structured rimane separato; la config vieta OpenRouter prima dei provider gratuiti.
+- Routing privacy: solo OpenRouter ZDR per ramo locale, dati live e transcript ambientale.
+  La risposta chat resta ≤500 caratteri; i comandi one-shot restano ≤600 caratteri.
+  Il factory structured è separato e costruisce soltanto OpenRouter. Nessun selettore
+  o chiave gratuita legacy può riattivare i tentativi gratuiti.
 - **Cooldown anti-spam** (`_check_cooldown`): max 1 comando AI / `settings.ai_cooldown_seconds` per utente; **admin esenti** (via `is_admin`). Usa lo store condiviso `utils.cooldown` (bucket `"ai"`), quindi il pruning e la semantica in-memory sono quelli di ogni altro bucket — non c'è più una seconda implementazione di throttle nel repo.
   > **Non usa `cooldown.guard()`**, che marca mentre controlla. Qui check e mark sono due chiamate separate di proposito: l'handler controlla, *poi* valida (serve un reply-to, il bersaglio deve parsare), e solo `_dispatch` marca. Così un `/insulta` malformato non costa niente e si può riprovare subito, invece di bruciare 60s di cooldown per un errore di battitura. Fissato da `tests/unit/test_ai_cooldown.py`.
 - `send_chat_action(chat_id, ChatAction.TYPING)` prima della generazione.
@@ -1024,10 +1026,10 @@ Comandi comici "one-shot" che rielaborano un messaggio via LLM. Tono edgy/satiri
 
 ### Regole
 
-- Per cambiare modello Groq: `GROQ_MODEL` insieme a `GROQ_REASONING_EFFORT`. Per OpenRouter si cambia
-  l'ordine CSV della corsia corretta senza codice, ma un modello non-ZDR non entra nella chat raw.
+- Per cambiare modello OpenRouter si modifica la corsia corretta, verificando policy di reasoning,
+  schema e prezzi. Un modello non-ZDR non entra nella chat raw; nessun ripiego verso gratuiti.
 - **Un modello che rifiuta non è utilizzabile qui.** `openai/gpt-oss-120b`, provato sugli otto prompt veri, ha risposto «I'm sorry, but I can't comply with that.» a `/complotto` e `/insulta`: il `_STYLE` condiviso è satira nera per contratto. Prima di sostituire il modello, fallo girare su tutti e otto i comandi e leggi le risposte — un modello si sceglie sull'output, non sul benchmark.
-- `generate_completion` **ripulisce** un eventuale `<think>…</think>` dalla risposta e alza `AIServiceError` se non resta niente. Groq ignora in silenzio i parametri non supportati, quindi il flag da solo non basta: la rete sta nel parsing.
+- `generate_completion` **ripulisce** un eventuale `<think>…</think>` dalla risposta e alza `AIServiceError` se non resta niente. Il solo flag di esclusione non basta: la rete sta anche nel parsing.
 - Nuovi comandi AI vanno aggiunti a `_GROUP_COMMANDS` (`main.py`) e alla sezione 🤖 di `/help` (`common.py`).
 
 ---
@@ -1445,7 +1447,7 @@ stringhe che oggi coincidono, prima o poi divergono.
 
 > **L'ordine non è un'ottimizzazione, è la garanzia.** L'accettazione locale viene prima ed è
 > autorevole: il modello può solo *promuovere* un match mancato, mai ribaltarne uno riuscito.
-> È questo che tiene il gioco giocabile con Groq irraggiungibile — la risposta giusta scritta
+> È questo che tiene il gioco giocabile con OpenRouter irraggiungibile — la risposta giusta scritta
 > bene vince sempre. Gli alias dell'admin sono la rete di sicurezza, non una comodità.
 
 Il **gate di forma** è una regola onesta («una risposta deve avere la forma di un titolo») che
@@ -1462,37 +1464,23 @@ giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`
 decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
 che possa riportare indietro la soluzione a chi provi a farsela dire.
 
-`GROQ_JUDGE_MODEL` è separato da `GROQ_MODEL`, e i due non convergeranno: un verdetto ha bisogno
-dello structured output **strict**, che Groq offre solo su `openai/gpt-oss-*`; i comandi di
-intrattenimento (§17) hanno bisogno dell'opposto — un modello che stia al gioco della satira
-nera — e `gpt-oss` quei prompt li rifiuta. Due mestieri, due modelli. `judge_equivalence` è
-una funzione **nuova** in `ai_service`, non una modifica a `generate_completion`.
-
-> **Cambiando `GROQ_JUDGE_MODEL` si ricontrolla `_JUDGE_MAX_TOKENS`.** I due sono legati: un
-> modello di reasoning paga il ragionamento dallo stesso budget della risposta (vedi sotto).
+`OPENROUTER_JUDGE_MODEL=openai/gpt-oss-120b` resta separato dal modello creativo.
+Il modello e i prompt del giudice non cambiano: si migra solo il trasporto.
+`judge_equivalence` riutilizza `OpenRouterStructuredProvider` con temperatura 0,
+schema booleano strict, ZDR, tetti di prezzo e lane `openrouter_other`.
+Non crea una seconda implementazione della contabilizzazione.
 
 ### Il budget di token del giudice — la regressione da non rifare
 
-`GROQ_JUDGE_MODEL` è un modello di **reasoning**, e su `openai/gpt-oss-*` i token di
-ragionamento escono dallo **stesso** `max_tokens` della risposta. Dimensionarlo sulla sola
-risposta (`{"corretta": true}` sono ~10 token) lascia il canale `content` vuoto, Groq valida
-la generazione vuota contro lo schema strict e risponde **400 `json_validate_failed`** — che
-correttamente *non* viene ritentato, perché una 4xx significa «la richiesta è sbagliata».
-
-Con `_JUDGE_MAX_TOKENS = 20` questo succedeva **a ogni chiamata**: ogni risposta che
-raggiungeva il modello tornava `unverified`, e il gioco era vincibile solo scrivendo la
-risposta carattere per carattere. Oggi il budget è **512** con `reasoning_effort: "low"`, e
-un test lo àncora — perché nessuno dei test esistenti poteva prenderlo: costruivano tutti un
-corpo di risposta ben formato, quindi verificavano cosa facciamo di un verdetto, mai se la
-richiesta potesse produrne uno.
-
-Un `failed_generation` **vuoto** viene loggato nominando il budget, non come «giudice
-irraggiungibile». Quella diagnosi è costata tempo una volta e non deve costarlo due.
+GPT-OSS ha reasoning obbligatorio: il limite include sia reasoning sia JSON.
+32 token per la risposta più `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (default 1024),
+effort `low`, ragionamento escluso dalla risposta. Tutto il tetto è prenotato
+prima della rete. Schema/parsing rifiutano numeri, stringhe, prose o campi extra.
 
 ### Quando il giudice non risponde
 
-Un retry su 429/5xx (il rate limit è il fallimento *atteso* del free tier), poi verdetto
-`unverified`. Il tentativo **viene registrato ma non costa mai un tentativo vero** — non «fino
+Un solo tentativo OpenRouter, senza retry applicativo: qualsiasi guasto porta a
+`unverified`. Timeout/cancellazioni ambigui mantengono la prenotazione conservativa. Il tentativo **viene registrato ma non costa mai un tentativo vero** — non «fino
 a un cap»: mai.
 
 Il cap `guess_max_unverified` (default 3) esiste ancora ma fa un altro mestiere: limita
@@ -1517,7 +1505,7 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
   con cui un brute-forcer non può discutere.
 - **L'ordine delle guardie è portante**: **comando** → cooldown → già risolto → scadenza →
   tentativi → **quota non-giudicati** → giudice. Un messaggio già rifiutato da una guardia non
-  deve costare quota Groq. Otto test contano le chiamate al modello per tenerlo fermo — la
+  deve costare token OpenRouter. Otto test contano le chiamate al modello per tenerlo fermo — la
   mutazione che sposta il controllo tentativi dopo il giudice era passata verde prima che ci
   fossero.
 - **Un comando (testo che inizia con `/`) non è mai un tentativo**: `fsm_answer` lo **ignora**
@@ -1885,16 +1873,15 @@ ADMIN_IDS=123456789,987654321
 DAILY_REWARD_COINS=100
 FSM_STORAGE=redis
 REDIS_URL=redis://redis:6379/0
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxx   # opzionale: senza chiave i comandi AI rispondono col fallback
-# GROQ_MODEL=qwen/qwen3.8-27b           # comandi di intrattenimento (§17)
-# GROQ_REASONING_EFFORT=none            # qwen3.8 è ibrido-reasoning: senza questo scrive il
-#                                       # ragionamento dentro la risposta. Vuoto = campo omesso.
-# GROQ_JUDGE_MODEL=openai/gpt-oss-120b  # giudice dei giochi «indovina» (§19.b). Separato da
-#                                       # GROQ_MODEL apposta: serve structured output strict,
-#                                       # che gpt-oss ha e qwen no — e gpt-oss in cambio rifiuta
-#                                       # i prompt di §17.
-#                                       # Senza chiave i giochi restano giocabili: vince chi
-#                                       # scrive la risposta esatta o un alias (§19.b, stadio 2).
+OPENROUTER_API_KEY=...                 # unica chiave LLM runtime, mai pubblicarla
+OPENROUTER_CHAT_MODELS=z-ai/glm-5.3-flash
+OPENROUTER_FUN_MODELS=z-ai/glm-5.3-flash
+OPENROUTER_JUDGE_MODEL=openai/gpt-oss-120b
+TWENTYQ_OPENROUTER_MODEL=z-ai/glm-5.3-flash
+AI_MONTHLY_BUDGET_USD=5.00
+TWENTYQ_OPENROUTER_BUDGET_USD=4.00
+OPENROUTER_OTHER_BUDGET_USD=1.00
+# Senza AI: match esatti e alias dei giochi continuano a funzionare localmente.
 # Backup & export (§25) — tutto opzionale. Senza i 3 TELEGRAM_* l'archivio chat
 # è disattivato (lo state export funziona comunque, non serve Telegram).
 # TELEGRAM_API_ID=1234567               # da my.telegram.org
@@ -1922,7 +1909,7 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 10. **Non aggiungere colonne a `User` senza aggiornare `badge_service.check_and_award_milestones`**
 11. **Comandi admin** non vanno in `_PRIVATE_COMMANDS`/`_GROUP_COMMANDS` — solo nella sezione admin di `/help`
 12. **Chiamate LLM** solo via `aiohttp` async attraverso `ai_service`; **nessun** campo di moderazione
-    nel payload Groq. Contesto gruppo solo su policy ZDR + `data_collection=deny`; paid call solo dopo
+    nel payload. Runtime solo OpenRouter; contesto gruppo solo su policy ZDR + `data_collection=deny`; paid call solo dopo
     prenotazione atomica in `ai_budget`
 13. **Azioni admin mutanti** (valuta/moderazione) → sempre `admin_service.log_action` prima del commit
 14. **Service no-commit** vale anche per `admin_service`/`quiz_service`/`schedule_service`; `moderation_service` non tocca il DB (solo Bot API)
@@ -2377,16 +2364,16 @@ rimborso retroattivo né riscrittura dei turni già registrati. Prompt v4 e sche
 `twentyq-verdict-v2` distinguono assenza di informazioni da negazione; il dataset
 v2 dà prove negative esplicite ai casi NO, conservando v1 per confronti storici.
 L'astensione riduce risposte speculative ma non certifica la correttezza dell'AI;
-la strategia richiede thinking `minimal`; su Gemini 3.8 l'adapter lo converte a `low`, omette il sampling legacy e aggiunge 1024 token di margine al cap di risposta. I log del provider non devono mai includere
+il runtime OpenRouter applica thinking `low` e aggiunge 1024 token di margine al cap di risposta. I log del provider non devono mai includere
 content, reasoning o `thoughtSignature`, ma solo metadati operativi e conteggi token.
 Dal prompt `twentyq-question-v2` la cronologia da quattro turni è codificata come
 colonne/righe, conservando ogni domanda e verdetto; sotto questa soglia mantiene
-gli oggetti originali. Groq structured aggiunge 512 token di margine al limite
+gli oggetti originali. L'adapter Groq, solo per eval offline, aggiunge 512 token di margine al limite
 di risposta perché GPT-OSS conta il reasoning nello stesso tetto. Il codice
 esatto `json_validate_failed` su HTTP 400 è `invalid_schema`, così un errore di
 generazione non apre il breaker di configurazione per 15 minuti. Gli altri 400
 restano `configuration`. Vedi `docs/ai-token-audit-2026-09-15.md` per misure e fonti.
-Gemini e Groq sono le corsie gratuite; OpenRouter è l'ultimo fallback, soggetto al cap
+Il factory runtime costruisce soltanto OpenRouter, anche con vecchie catene nel `.env`, soggetto al cap
 globale e al lane cap. Budget e audit usano sessioni tecniche prompt-free: sono l'eccezione
 esplicita al normale owner handler. `scripts/eval_twenty_questions.py` è un harness opt-in
 separato dal runtime.

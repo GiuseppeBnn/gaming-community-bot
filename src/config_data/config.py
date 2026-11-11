@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     fsm_storage: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
 
-    # Groq LLM (AI entertainment module)
+    # Legacy adapters: offline evaluation only, never runtime routing.
     groq_api_key: str = ""
     groq_model: str = "qwen/qwen3.8-27b"
     # Disable Qwen's optional reasoning explicitly for fast, short replies.
@@ -62,27 +62,26 @@ class Settings(BaseSettings):
     openrouter_fun_models: str = (
         "z-ai/glm-5.3-flash"
     )
+    openrouter_light_models: str = "inclusionai/ling-3.0-flash"
     openrouter_timeout_seconds: int = Field(default=20, ge=1)
     openrouter_max_prompt_price: Decimal = Field(default=Decimal("0.25"), gt=0)
     openrouter_max_completion_price: Decimal = Field(default=Decimal("0.60"), gt=0)
     # GLM 5.3 always thinks: its LOW effort needs room beyond the short answer.
     # The total (answer + allowance) is reserved before the network call.
     openrouter_reasoning_token_allowance: int = Field(default=1024, ge=256, le=4096)
+    # Chat can spend more thinking without increasing game/judge/fun ceilings.
+    # GLM accepts low/high/max, not medium; keep the two useful bounded choices.
+    openrouter_chat_reasoning_effort: Literal["low", "high"] = "high"
+    openrouter_chat_reasoning_token_allowance: int = Field(default=2048, ge=256, le=8192)
     # Calendar-month application cap, in addition to the limit on the OpenRouter
     # key itself. Its two paid lanes may partition less than the global cap, but
     # never more. Setting all three to zero is an explicit emergency shutdown.
     ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
     openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
-    ai_entertainment_provider: Literal["auto", "groq", "openrouter"] = "auto"
-    ai_entertainment_free_timeout_seconds: int = Field(default=10, ge=1)
     ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
-    # Judge model for the guess games. Deliberately separate from `groq_model`:
-    # a verdict needs STRICT structured output (constrained decoding), which Groq
-    # supports only on `openai/gpt-oss-*`, so it cannot come back as prose. The
-    # entertainment commands need the opposite — a model that plays along with
-    # black satire — and gpt-oss refuses them outright. Two jobs, two models.
-    groq_judge_model: str = "openai/gpt-oss-120b"
+    # Preserve the strict judge model; only its transport changes to OpenRouter.
+    openrouter_judge_model: str = "openai/gpt-oss-120b"
     # ge=1: a 0 s timeout makes every judge call fail instantly, which the game
     # would report to players as "non verificata" forever.
     guess_judge_timeout_seconds: int = Field(default=12, ge=1)
@@ -96,7 +95,6 @@ class Settings(BaseSettings):
     twentyq_gemini_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_groq_timeout_seconds: int = Field(default=8, ge=1)
     twentyq_openrouter_timeout_seconds: int = Field(default=12, ge=1)
-    twentyq_provider_order: str = "gemini,groq,openrouter"
     twentyq_provider_deadline_seconds: int = Field(default=25, ge=1)
     # Bounded, local history sent with one secret-game question. These limits cap
     # both the number of projected turns and the serialized UTF-8 context size.
@@ -106,14 +104,7 @@ class Settings(BaseSettings):
     # enabled. Existing version-one games intentionally ignore this switch.
     twentyq_v2_enabled: bool = False
     twentyq_max_coins_per_participant: int = Field(default=1_000, ge=1)
-    # Alduino chat is intentionally independent from structured AI games: it can
-    # move provider/model without changing 20 Domande.
-    alduino_provider: Literal["auto", "openrouter", "gemini", "groq"] = "auto"
-    alduino_gemini_model: str = "gemini-3.8-flash"
-    alduino_thinking_level: Literal["minimal", "low", "medium", "high"] = "low"
-    alduino_fallback_to_groq: bool = True
-    alduino_timeout_seconds: int = Field(default=15, ge=1)
-    alduino_free_timeout_seconds: int = Field(default=10, ge=1)
+    # Alduino memory is independent from the structured games and their model.
     alduino_provider_deadline_seconds: int = Field(default=30, ge=1)
     alduino_history_turns: int = Field(default=10, ge=1, le=30)
     alduino_history_chars: int = Field(default=8000, ge=2000, le=30000)
@@ -138,7 +129,7 @@ class Settings(BaseSettings):
     igdb_min_catalog_entries: int = Field(default=50, ge=10, le=2000)
     igdb_sync_interval_hours: int = Field(default=24, ge=1)
     igdb_timeout_seconds: int = Field(default=20, ge=1)
-    ai_cooldown_seconds: int = 60   # anti-spam: 1 AI command / N s per non-admin
+    ai_cooldown_seconds: int = Field(default=10, ge=0)  # shared AI cooldown per non-admin
     # Per-command anti-spam cooldown (on top of the global rate-limit middleware).
     command_cooldown_seconds: int = 3        # heavier user commands, per non-admin
     event_create_cooldown_seconds: int = 5   # starting a quiz/poll/bet creation flow
@@ -285,32 +276,52 @@ class Settings(BaseSettings):
             return [int(i) for i in v]
         return [int(x.strip()) for x in str(v).split(",") if x.strip()]
 
-    @field_validator("twentyq_provider_order", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def normalize_twentyq_provider_order(cls, value: object) -> str:
-        providers = [part.strip().lower() for part in str(value).split(",")]
-        allowed = {"gemini", "groq", "openrouter"}
-        if not providers or any(not provider for provider in providers):
-            raise ValueError("twentyq provider order cannot be empty")
-        if any(provider not in allowed for provider in providers):
-            raise ValueError("twentyq provider order contains an unknown provider")
-        if len(set(providers)) != len(providers):
-            raise ValueError("twentyq provider order contains duplicates")
-        if "openrouter" in providers and providers[-1] != "openrouter":
-            raise ValueError("paid OpenRouter must follow free providers")
-        return ",".join(providers)
+    def discard_retired_ai_routing(cls, data: object) -> object:
+        """Accept old dotenv files, without publishing nonfunctional settings.
 
-    @model_validator(mode="after")
-    def validate_twentyq_provider_models(self) -> Self:
-        model_fields = {
-            "gemini": "twentyq_gemini_model",
-            "groq": "twentyq_groq_model",
-            "openrouter": "twentyq_openrouter_model",
+        Only this finite retired-key list is ignored; unknown keys still fail
+        validation. Never include values in errors: they can contain secrets.
+        """
+        if not isinstance(data, dict):
+            return data
+        retired = {
+            "ai_entertainment_provider", "ai_entertainment_free_timeout_seconds",
+            "alduino_provider", "alduino_fallback_to_groq",
+            "alduino_free_timeout_seconds", "alduino_gemini_model",
+            "alduino_thinking_level", "alduino_timeout_seconds",
+            "groq_judge_model", "twentyq_provider_order",
         }
-        for provider in self.twentyq_provider_order.split(","):
-            if not getattr(self, model_fields[provider]).strip():
-                raise ValueError(f"{provider} model cannot be empty")
-        return self
+        migrated = dict(data)
+        for key in list(migrated):
+            name = key.lower()
+            if name not in retired:
+                continue
+            value = migrated.pop(key)
+            if name == "groq_judge_model" and not any(
+                str(candidate).lower() == "openrouter_judge_model" for candidate in migrated
+            ):
+                migrated["openrouter_judge_model"] = value
+            if name in {"ai_entertainment_provider", "alduino_provider"}:
+                if str(value).strip().lower() not in {"auto", "groq", "gemini", "openrouter"}:
+                    raise ValueError("unknown AI provider")
+            if name == "twentyq_provider_order":
+                providers = [part.strip().lower() for part in str(value).split(",")]
+                if not providers or any(not provider for provider in providers):
+                    raise ValueError("twentyq provider order cannot be empty")
+                if any(provider not in {"gemini", "groq", "openrouter"} for provider in providers):
+                    raise ValueError("twentyq provider order contains an unknown provider")
+                if len(set(providers)) != len(providers):
+                    raise ValueError("twentyq provider order contains duplicates")
+        return migrated
+
+    @field_validator("twentyq_openrouter_model", "openrouter_judge_model")
+    @classmethod
+    def validate_structured_model(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("OpenRouter model cannot be empty")
+        return value.strip()
 
     @model_validator(mode="after")
     def validate_igdb_catalog_bounds(self) -> Self:

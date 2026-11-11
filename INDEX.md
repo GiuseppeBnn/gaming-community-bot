@@ -7,7 +7,7 @@ né istruzioni di setup (quelle stanno in [README.md](README.md)).
 Bot Telegram per una community di gaming: economia in **CoInn**, scommesse stile Twitch,
 quiz e giochi «indovina» a premi, XP/ranghi/trofei, negozio cosmetici, suite admin,
 moderazione, backup. Stack: **Python 3.12** · aiogram 3.30.0 · SQLAlchemy 2.0 async ·
-PostgreSQL 16 (prod) / SQLite (dev-test) · OpenRouter/Groq/Gemini LLM (opzionali).
+PostgreSQL 16 (prod) / SQLite (dev-test) · OpenRouter LLM (opzionale).
 
 Dimensioni e conteggi dei test cambiano con le feature: usa `pytest --collect-only -q` per il
 dato corrente, non questo indice come metrica verificabile.
@@ -28,6 +28,9 @@ dato corrente, non questo indice come metrica verificabile.
 | [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |
 | [tests/unit/test_twenty_questions_docs.py](tests/unit/test_twenty_questions_docs.py) | Gate del contratto pubblico, template e navigazione v2 | Modifichi documentazione o configurazione del gioco segreto |
+| [docs/openrouter-only-2026-11-11.md](docs/openrouter-only-2026-11-11.md) | Scan costi, migrazione solo OpenRouter, privacy e budget | Valuti la configurazione AI attuale |
+| [docs/ai-workload-profiles-2026-11-11.md](docs/ai-workload-profiles-2026-11-11.md) | Corsie leggere/standard/chat, studio thinking, cooldown e card compatta | Valuti i profili AI e i test sintetici attuali |
+| [docs/ai-activities-ideas-2026-11-11.md](docs/ai-activities-ideas-2026-11-11.md) | Proposte non approvate di attività AI, costi e condizioni di riuscita | Scegli una nuova attività |
 | [docs/ai-token-audit-2026-09-15.md](docs/ai-token-audit-2026-09-15.md) | Ottimizzazioni token fuori dalla chat, modelli verificati e misure live sintetiche | Valuti consumi e limiti delle ottimizzazioni AI |
 
 ### Sezioni di STEERING.md
@@ -123,8 +126,8 @@ src/                                  # src-layout: i package restano top-level 
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |
 | `schedule_service.py` | `parse_run_at` `schedule_task` `due_tasks` `mark_done/failed` — timestamp UTC naive |
 | `group_registry.py` | Id gruppo **effettivo** (sopravvive alle migrazioni chat) + `send_group_message` |
-| `ai_service.py` | Gateway async Groq/OpenRouter: routing entertainment/chat; giudice Groq separato e strict |
-| `ai_routing.py` | Failover text free→paid condiviso: deadline, timeout e circuit breaker per workload/provider/modello |
+| `ai_service.py` | Gateway OpenRouter-only: chat/fun e giudice Guess/Sound strict e metered |
+| `ai_routing.py` | Guardia text OpenRouter condivisa: deadline, timeout e circuit breaker per workload/provider/modello |
 | `scripts/eval_text_ai.py` | Smoke test degli otto prompt reali su input sintetici, con limite di costo preflight e ledger per run |
 | `ai_budget.py` | Prenotazione atomica, hard cap mensile e ledger costi senza prompt/completion |
 | `alduino_chat.py` | Adapter conversazionali + memoria branch-aware e costruzione del prompt |
@@ -137,7 +140,7 @@ src/                                  # src-layout: i package restano top-level 
 | `twenty_questions_rules.py` | Policy v2, formula del pool e proiezioni di quota |
 | `twenty_questions_ai.py` | Prompt/schema strutturato, normalizzazione e cache duplicati |
 | `twenty_questions_eval.py` | Costruzione route eval/provider, separata dal runtime |
-| `structured_ai.py` | Porta JSON Schema + adapter Gemini/Groq/OpenRouter per i giochi AI persistenti |
+| `structured_ai.py` | Porta JSON Schema + OpenRouter runtime; adapter free per eval offline |
 | `igdb_catalog.py` | OAuth/fetch IGDB, quality gate, cache DB atomica e loop di sincronizzazione |
 | `twenty_questions_catalog.py` | CSV e 24 dossier integrati usati come fallback del gioco segreto v2 (20 Domande è legacy v1) |
 | `backup/state_export.py` | Export/import logico dell'intero DB (streaming, atomico) |

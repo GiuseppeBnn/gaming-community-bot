@@ -303,7 +303,6 @@ def test_explicit_provider_is_built_even_when_runtime_order_omits_it(monkeypatch
     """Filtering a configured runtime order would make an explicit eval provider silently do nothing."""
     from services.structured_ai_router import _reset_twenty_questions_router_for_tests
 
-    monkeypatch.setattr(twenty_questions_eval.settings, "twentyq_provider_order", "groq")
     _reset_twenty_questions_router_for_tests()
     try:
         router = twenty_questions_eval.build_runtime_router(("gemini",))

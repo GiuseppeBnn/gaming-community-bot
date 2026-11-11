@@ -84,12 +84,14 @@ class TestDefaults:
         s = Settings(bot_token="x", fsm_storage="redis")  # type: ignore[call-arg]
         assert s.fsm_storage == "redis"
 
-    def test_alduino_free_timeout_favors_free_providers(self):
+    def test_runtime_uses_openrouter_timeout_without_free_attempt_settings(self):
         from config_data.config import Settings
 
         s = Settings(bot_token="x", _env_file=None)
-        assert s.alduino_free_timeout_seconds == 10
-        assert s.ai_entertainment_free_timeout_seconds == 10
+        assert s.openrouter_timeout_seconds == 20
+        assert s.alduino_provider_deadline_seconds == 30
+        assert not hasattr(s, "alduino_free_timeout_seconds")
+        assert not hasattr(s, "ai_entertainment_free_timeout_seconds")
 
     def test_twenty_questions_v2_is_opt_in_and_caps_each_participant_reward(self):
         """A deploy must not create reward-bearing games until an admin opts in."""
@@ -295,7 +297,7 @@ class TestTwentyQuestionsProviderSettings:
 
         configured = Settings(bot_token="x", _env_file=None)  # type: ignore[call-arg]
 
-        assert configured.twentyq_provider_order == "gemini,groq,openrouter"
+        assert "twentyq_provider_order" not in type(configured).model_fields
         assert configured.twentyq_provider_deadline_seconds == 25
 
     def test_provider_order_is_normalized_once(self):
@@ -307,7 +309,7 @@ class TestTwentyQuestionsProviderSettings:
             twentyq_provider_order=" GROQ, gemini , OPENROUTER ",
         )
 
-        assert configured.twentyq_provider_order == "groq,gemini,openrouter"
+        assert "twentyq_provider_order" not in type(configured).model_fields
 
     @pytest.mark.parametrize(
         "order",
@@ -326,8 +328,6 @@ class TestTwentyQuestionsProviderSettings:
     @pytest.mark.parametrize(
         ("order", "field"),
         [
-            ("gemini", "twentyq_gemini_model"),
-            ("groq", "twentyq_groq_model"),
             ("openrouter", "twentyq_openrouter_model"),
         ],
     )
@@ -354,7 +354,7 @@ class TestTwentyQuestionsProviderSettings:
             twentyq_gemini_model="",
         )
 
-        assert configured.twentyq_provider_order == "groq"
+        assert "twentyq_provider_order" not in type(configured).model_fields
 
     def test_total_provider_deadline_rejects_zero(self):
         from pydantic import ValidationError

@@ -13,8 +13,6 @@ from typing import Any, Generic, TypeVar, cast
 from config_data.config import settings
 from services import ai_budget
 from services.structured_ai import (
-    GeminiStructuredProvider,
-    GroqStructuredProvider,
     OpenRouterStructuredProvider,
     ProviderName,
     StructuredAIError,
@@ -280,17 +278,8 @@ class StructuredAIRouter:
 
 @lru_cache(maxsize=1)
 def get_twenty_questions_router() -> StructuredAIRouter:
-    providers: dict[ProviderName, StructuredAIProvider] = {
-        "gemini": cast(StructuredAIProvider, GeminiStructuredProvider()),
-        "groq": cast(StructuredAIProvider, GroqStructuredProvider()),
-        "openrouter": cast(StructuredAIProvider, OpenRouterStructuredProvider()),
-    }
-    order = cast(
-        tuple[ProviderName, ...],
-        tuple(settings.twentyq_provider_order.split(",")),
-    )
     return StructuredAIRouter(
-        providers=tuple(providers[name] for name in order),
+        providers=(cast(StructuredAIProvider, OpenRouterStructuredProvider()),),
         deadline_seconds=settings.twentyq_provider_deadline_seconds,
     )
 

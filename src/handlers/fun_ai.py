@@ -18,6 +18,7 @@ NOT use the shared edgy _STYLE — see _PROMPT_ALDUINO.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
@@ -222,8 +223,9 @@ async def _generate_and_reply(
     *,
     temperature: float | None = None,
     db_session: AsyncSession | None = None,
+    tier: Literal["standard", "light"] = "standard",
 ) -> None:
-    """Send the typing action, call Groq, and reply (fallback on error).
+    """Send the typing action, call the selected OpenRouter tier, then reply.
 
     `temperature` is per-command (None → service default); /dialetto lowers it
     to keep the model from inventing fake-dialect words.
@@ -235,7 +237,7 @@ async def _generate_and_reply(
     wrapped = f"{_CONTENT_OPEN}\n{clip_source(source)}\n{_CONTENT_CLOSE}"
     try:
         result = await ai_service.generate_completion(
-            system_prompt, wrapped, max_tokens, temperature=temperature
+            system_prompt, wrapped, max_tokens, temperature=temperature, tier=tier,
         )
     except ai_service.AIServiceError:
         await message.reply(ai_service.AI_FALLBACK_MESSAGE)
@@ -264,6 +266,7 @@ async def _run_ai_command(
     *,
     temperature: float | None = None,
     db_session: AsyncSession | None = None,
+    tier: Literal["standard", "light"] = "standard",
 ) -> None:
     """Reply-based flow: guards (group + reply + has text) → typing → AI → reply."""
     if not await _require_group(message):
@@ -288,13 +291,13 @@ async def _run_ai_command(
 
     await _generate_and_reply(
         message, system_prompt, source, max_tokens, temperature=temperature,
-        db_session=db_session,
+        db_session=db_session, tier=tier,
     )
 
 
 @router.message(Command("maestro"))
 async def cmd_maestro(message: Message, db_session: AsyncSession | None = None) -> None:
-    await _run_ai_command(message, _PROMPT_MAESTRO, max_tokens=160, db_session=db_session)
+    await _run_ai_command(message, _PROMPT_MAESTRO, max_tokens=160, db_session=db_session, tier="light")
 
 
 @router.message(Command("complotto"))
@@ -314,7 +317,7 @@ async def cmd_accusa(message: Message, db_session: AsyncSession | None = None) -
 
 @router.message(Command("drama"))
 async def cmd_drama(message: Message, db_session: AsyncSession | None = None) -> None:
-    await _run_ai_command(message, _PROMPT_DRAMA, max_tokens=260, db_session=db_session)
+    await _run_ai_command(message, _PROMPT_DRAMA, max_tokens=260, db_session=db_session, tier="light")
 
 
 @router.message(Command("dialetto"))
@@ -351,7 +354,7 @@ async def cmd_insulta(
         return
 
     await _generate_and_reply(
-        message, _PROMPT_INSULTA, target, max_tokens=120, db_session=db_session,
+        message, _PROMPT_INSULTA, target, max_tokens=120, db_session=db_session, tier="light",
     )
 
 

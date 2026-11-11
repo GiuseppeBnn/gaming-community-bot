@@ -5,7 +5,7 @@ Four stages, cheapest first. The ordering *is* the design:
 1. **normalise** — case, accents, punctuation, roman numerals, edition noise;
 2. **accept locally** — an exact match against the canonical answer or an
    admin-written alias is CORRECT, full stop, no API call. This is what keeps the
-   game playable when Groq is unreachable: the right answer typed properly always
+   game playable when OpenRouter is unreachable: the right answer typed properly always
    wins, and the model can only ever promote a local miss, never overturn a hit;
 3. **reject locally by shape** — a game title is short. Under 2 characters, over
    60, or over 8 words is not a title, and loses without asking anyone;
