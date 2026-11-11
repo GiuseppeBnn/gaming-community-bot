@@ -17,6 +17,16 @@ Modifiche rilevanti al bot. Formato ispirato a
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **AI per compito** — Ling 3.0 Flash senza thinking per maestro/drama/insulta;
+  GLM invariato per gli altri fun e giochi, chat con profilo high/allowance 2048
+  indipendente dai giudici. Cooldown AI a 10 s. Ling Tiny provato e scartato per qualità.
+- **Card del gioco più snella** — SÌ/NO espliciti, NON LO SO senza consumo,
+  nessun nuovo FORSE, eliminato il tempo residuo statico mantenendo la scadenza.
+- **OpenRouter-only** — tolte le catene gratuite dal runtime chat/fun/gioco, anche
+  con vecchi `.env`. Giudice Guess/Sound sullo stesso GPT-OSS 120B via adapter
+  structured condiviso, ora contabilizzato nel cap; niente retry applicativi
+  dopo timeout ambiguo. Memoria locale, regole, quote, privacy e premi invariati.
+  Scan prezzi e proposte di attività separati dalle decisioni di prodotto approvate.
 - **Modelli AI aggiornati** — Qwen 3.8 27B su Groq e Gemini 3.8 Flash per chat
   e giudizi del gioco segreto; il vecchio default Groq viene migrato anche con
   `.env` preesistente. Gemini usa thinking compatibile, margine di ragionamento

@@ -58,6 +58,7 @@ def build_cases() -> tuple[Case, ...]:
 
 def run_estimate(
     cases: tuple[Case, ...], models: tuple[str, ...], chat_models: tuple[str, ...],
+    light_models: tuple[str, ...] | None = None,
 ) -> int:
     from config_data.config import settings
     from services import ai_budget, ai_service
@@ -65,11 +66,23 @@ def run_estimate(
     return sum(ai_budget.estimate_cost_microusd(
         ai_budget.estimate_input_tokens(case.system, case.user),
         ai_service.openrouter_generation_policy(
-            chat_models if case.command == "alduino" else models, case.answer_tokens,
+            _case_models(case, models, chat_models, light_models), case.answer_tokens,
+            profile="chat" if case.command == "alduino" else "default",
         )[1],
         max_prompt_price=settings.openrouter_max_prompt_price,
         max_completion_price=settings.openrouter_max_completion_price,
     ) for case in cases)
+
+
+def _case_models(
+    case: Case, models: tuple[str, ...], chat_models: tuple[str, ...],
+    light_models: tuple[str, ...] | None,
+) -> tuple[str, ...]:
+    if case.command == "alduino":
+        return chat_models
+    if light_models is not None and case.command in {"maestro", "drama", "insulta"}:
+        return light_models
+    return models
 
 
 async def run(args: argparse.Namespace) -> bool:
@@ -79,6 +92,7 @@ async def run(args: argparse.Namespace) -> bool:
     cases = build_cases()
     models = ai_service.parse_model_list(settings.openrouter_fun_models)
     chat_models = ai_service.parse_model_list(settings.openrouter_chat_models)
+    light_models = ai_service.parse_model_list(settings.openrouter_light_models)
     feature = "text_eval_" + uuid4().hex[:16]
     if args.provider == "openrouter":
         if not args.allow_paid_openrouter:
@@ -88,7 +102,7 @@ async def run(args: argparse.Namespace) -> bool:
         limit = Decimal(args.max_cost_usd)
         if not limit.is_finite() or not 0 < limit <= Decimal("0.05"):
             raise ValueError("max-cost-usd must be >0 and <=0.05")
-        estimate = run_estimate(cases, models, chat_models)
+        estimate = run_estimate(cases, models, chat_models, light_models)
         if estimate > ai_budget.usd_to_microusd(limit):
             raise ValueError("run estimate exceeds max-cost-usd; no requests sent")
         # Use a local/test DB_URL as documented; never start polling or Telegram.
@@ -106,8 +120,9 @@ async def run(args: argparse.Namespace) -> bool:
                 text = await ai_service.generate_openrouter_completion(
                     case.system, case.user, case.answer_tokens,
                     temperature=case.temperature, feature=feature,
-                    models=chat_models if case.command == "alduino" else models,
+                    models=_case_models(case, models, chat_models, light_models),
                     require_zdr=True,
+                    reasoning_profile="chat" if case.command == "alduino" else "default",
                 )
             else:
                 text = await ai_service.generate_groq_completion(

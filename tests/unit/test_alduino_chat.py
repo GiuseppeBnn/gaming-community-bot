@@ -2,150 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import aiohttp
-from aioresponses import aioresponses
 import pytest
 
 from services import ai_service, alduino_chat
 from services.alduino_chat import AlduinoAIError, DialogueTurn, GeneratedReply
 from services.public_event import PublicEvent
-
-
-def _response(text: str = "Ciao.", interaction_id: str = "turn-1", status: str = "completed"):
-    return {
-        "id": interaction_id,
-        "status": status,
-        "steps": [{"type": "model_output", "content": [{"type": "text", "text": text}]}],
-    }
-
-
-@pytest.fixture
-def gemini_settings(monkeypatch):
-    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "gemini")
-    monkeypatch.setattr(alduino_chat.settings, "gemini_api_key", "test-key")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_gemini_model", "gemini-chat-test")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_thinking_level", "minimal")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", False)
-
-
-async def test_gemini_interaction_has_chat_optimized_contract(gemini_settings):
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=200, payload=_response())
-        result = await alduino_chat.generate_reply(
-            system_prompt="persona + manuale",
-            current="come va?",
-            live_context="evento live",
-            group_context="non inviare al provider legacy",
-        )
-
-    assert result == GeneratedReply("Ciao.", "gemini", "turn-1")
-    request = next(iter(mocked.requests.values()))[0]
-    sent = request.kwargs["json"]
-    assert sent["model"] == "gemini-chat-test"
-    assert sent["system_instruction"] == "persona + manuale"
-    assert sent["store"] is True
-    assert sent["generation_config"] == {
-        "max_output_tokens": 280,
-        "thinking_level": "minimal",
-        "thinking_summaries": "none",
-    }
-    assert "evento live" in sent["input"]
-    assert "non inviare al provider legacy" not in sent["input"]
-    assert request.kwargs["headers"]["Api-Revision"] == alduino_chat._API_REVISION
-
-
-async def test_gemini_continues_server_side_branch_without_resending_history(
-    gemini_settings,
-):
-    parent = type("Parent", (), {
-        "provider": "gemini",
-        "provider_interaction_id": "parent-interaction",
-        "history_json": alduino_chat.encode_history((
-            DialogueTurn("messaggio vecchio", "risposta vecchia"),
-        )),
-    })()
-    with aioresponses() as mocked:
-        mocked.post(
-            alduino_chat.GEMINI_INTERACTIONS_URL,
-            status=200,
-            payload=_response(interaction_id="child"),
-        )
-        result = await alduino_chat.generate_reply(
-            system_prompt="s", current="e perché?", parent=parent,
-        )
-
-    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
-    assert result.interaction_id == "child"
-    assert sent["previous_interaction_id"] == "parent-interaction"
-    assert "messaggio vecchio" not in sent["input"]
-    assert "e perché?" in sent["input"]
-
-
-async def test_expired_server_state_rebuilds_the_local_branch(gemini_settings):
-    parent = type("Parent", (), {
-        "provider": "gemini",
-        "provider_interaction_id": "expired",
-        "history_json": alduino_chat.encode_history((DialogueTurn("prima", "risposta"),)),
-    })()
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=404, body="gone")
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=200, payload=_response())
-        await alduino_chat.generate_reply(system_prompt="s", current="dopo", parent=parent)
-
-    requests = list(mocked.requests.values())[0]
-    assert len(requests) == 2
-    assert requests[0].kwargs["json"]["previous_interaction_id"] == "expired"
-    retry = requests[1].kwargs["json"]
-    assert "previous_interaction_id" not in retry
-    assert "UTENTE: prima" in retry["input"]
-    assert "ALDUINO: risposta" in retry["input"]
-
-
-async def test_retryable_gemini_failure_recovers_once(gemini_settings, monkeypatch):
-    async def no_sleep(_):
-        return None
-
-    monkeypatch.setattr(alduino_chat.asyncio, "sleep", no_sleep)
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=503)
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=200, payload=_response())
-        result = await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-    assert result.provider == "gemini"
-
-
-@pytest.mark.parametrize("failure", [TimeoutError(), aiohttp.ClientConnectionError("down")])
-async def test_gemini_transport_failure_falls_back_to_groq(
-    gemini_settings, monkeypatch, failure,
-):
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", True)
-
-    async def no_sleep(_):
-        return None
-
-    async def groq(*args, **kwargs):
-        return "risposta di scorta"
-
-    monkeypatch.setattr(alduino_chat.asyncio, "sleep", no_sleep)
-    monkeypatch.setattr(ai_service, "generate_groq_completion", groq)
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, exception=failure)
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, exception=failure)
-        result = await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-    assert result == GeneratedReply("risposta di scorta", "groq")
-
-
-async def test_missing_both_providers_is_one_normalized_error(gemini_settings, monkeypatch):
-    monkeypatch.setattr(alduino_chat.settings, "gemini_api_key", "")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", True)
-
-    async def down(*args, **kwargs):
-        raise ai_service.AIServiceError("down")
-
-    monkeypatch.setattr(ai_service, "generate_groq_completion", down)
-    with pytest.raises(AlduinoAIError, match="Groq unavailable"):
-        await alduino_chat.generate_reply(system_prompt="s", current="u")
 
 
 async def test_openrouter_chat_uses_zdr_deepseek_route_and_group_context(monkeypatch):
@@ -155,8 +16,6 @@ async def test_openrouter_chat_uses_zdr_deepseek_route_and_group_context(monkeyp
         captured.update(system=system, user=user, **kwargs)
         return "sono nel discorso"
 
-    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", False)
     monkeypatch.setattr(
         alduino_chat.settings, "openrouter_chat_models", "deepseek/first,deepseek/second",
     )
@@ -171,86 +30,13 @@ async def test_openrouter_chat_uses_zdr_deepseek_route_and_group_context(monkeyp
     assert "Mario: Elden Ring" in captured["user"]
 
 
-async def test_openrouter_failure_has_explicit_groq_fallback(monkeypatch):
-    captured = {}
-
-    async def down(*args, **kwargs):
-        raise ai_service.AIServiceError("down")
-
-    async def groq(_system, prompt, **kwargs):
-        captured["prompt"] = prompt
-        return "scorta"
-
-    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", True)
-    monkeypatch.setattr(ai_service, "generate_openrouter_completion", down)
-    monkeypatch.setattr(ai_service, "generate_groq_completion", groq)
-    assert await alduino_chat.generate_reply(
-        system_prompt="s", current="u", group_context="messaggio ambientale privato",
-    ) == GeneratedReply("scorta", "groq")
-    assert "messaggio ambientale privato" not in captured["prompt"]
-
-
 async def test_openrouter_failure_can_be_fail_closed(monkeypatch):
     async def down(*args, **kwargs):
         raise ai_service.AIServiceError("down")
 
-    monkeypatch.setattr(alduino_chat.settings, "alduino_provider", "openrouter")
-    monkeypatch.setattr(alduino_chat.settings, "alduino_fallback_to_groq", False)
     monkeypatch.setattr(ai_service, "generate_openrouter_completion", down)
-    with pytest.raises(AlduinoAIError, match="OpenRouter unavailable"):
+    with pytest.raises(AlduinoAIError, match="chat providers unavailable"):
         await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-
-async def test_incomplete_or_empty_gemini_response_is_rejected(gemini_settings):
-    with aioresponses() as mocked:
-        mocked.post(
-            alduino_chat.GEMINI_INTERACTIONS_URL,
-            status=200,
-            payload=_response(status="incomplete"),
-        )
-        with pytest.raises(AlduinoAIError, match="incomplete"):
-            await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-    with aioresponses() as mocked:
-        mocked.post(
-            alduino_chat.GEMINI_INTERACTIONS_URL,
-            status=200,
-            payload=_response(text=""),
-        )
-        with pytest.raises(AlduinoAIError, match="empty"):
-            await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-
-async def test_non_object_gemini_response_is_rejected(gemini_settings):
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=200, payload=[])
-        with pytest.raises(AlduinoAIError, match="malformed response"):
-            await alduino_chat.generate_reply(system_prompt="s", current="u")
-
-
-async def test_non_stale_parent_error_is_not_rebuilt(gemini_settings, monkeypatch):
-    parent = type("Parent", (), {
-        "provider": "gemini",
-        "provider_interaction_id": "valid-parent",
-        "history_json": "[]",
-    })()
-
-    async def no_sleep(_):
-        return None
-
-    monkeypatch.setattr(alduino_chat.asyncio, "sleep", no_sleep)
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=500)
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, status=500)
-        with pytest.raises(AlduinoAIError, match="status 500"):
-            await alduino_chat.generate_reply(
-                system_prompt="s", current="u", parent=parent,
-            )
-
-    # 5xx gets the normal transport retry, never a third request rebuilt from
-    # local history. Only an actually stale parent (400/404) needs rebuilding.
-    assert len(next(iter(mocked.requests.values()))) == 2
 
 
 def test_history_is_newest_first_bounded_by_turns_and_characters():
@@ -271,14 +57,6 @@ def test_corrupt_history_shapes_are_ignored_defensively():
     assert alduino_chat.decode_history('[42,{"user":"ok","alduino":"bene"}]') == (
         DialogueTurn("ok", "bene"),
     )
-
-
-def test_gemini_parser_skips_irrelevant_steps_but_requires_an_id():
-    with pytest.raises(AlduinoAIError, match="missing interaction id"):
-        alduino_chat._parse_gemini({
-            "status": "completed",
-            "steps": [42, {"type": "tool", "content": []}],
-        })
 
 
 def test_model_input_labels_untrusted_sections_and_clips_them():
@@ -333,21 +111,32 @@ def test_reply_has_a_hard_character_cap():
     assert len(alduino_chat._clip_reply("x" * 900)) == alduino_chat._MAX_REPLY_CHARS
 
 
-async def test_gemini_invalid_json_is_a_provider_failure():
-    with aioresponses() as mocked:
-        mocked.post(
-            alduino_chat.GEMINI_INTERACTIONS_URL, status=200,
-            body="{broken", content_type="application/json",
-        )
-        with pytest.raises(AlduinoAIError, match="malformed response"):
-            await alduino_chat._gemini_post({})
+
+@pytest.mark.parametrize("prior_provider", ["gemini", "groq", "openrouter"])
+async def test_migration_preserves_local_branches_without_server_state(monkeypatch, prior_provider):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    parent = SimpleNamespace(
+        provider=prior_provider, provider_interaction_id="legacy-id",
+        history_json=alduino_chat.encode_history((DialogueTurn("prima", "risposta"),)),
+    )
+    paid = AsyncMock(return_value="ricordo")
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", paid)
+    result = await alduino_chat.generate_reply(
+        system_prompt="s", current="dopo", parent=parent,
+        group_context="ambientale", live_context="evento", quoted_bot_text="citato",
+    )
+    assert result == GeneratedReply("ricordo", "openrouter")
+    prompt = paid.call_args.args[1]
+    for value in ("prima", "risposta", "ambientale", "evento", "citato", "dopo"):
+        assert value in prompt
+    assert "legacy-id" not in prompt
 
 
-async def test_gemini_38_migrates_minimal_and_reserves_thinking_headroom(gemini_settings, monkeypatch):
-    monkeypatch.setattr(alduino_chat.settings, "alduino_gemini_model", "gemini-3.8-flash")
-    with aioresponses() as mocked:
-        mocked.post(alduino_chat.GEMINI_INTERACTIONS_URL, payload=_response())
-        await alduino_chat.generate_reply(system_prompt="s", current="ciao")
-    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
-    assert sent["generation_config"]["thinking_level"] == "low"
-    assert sent["generation_config"]["max_output_tokens"] == 280 + 1024
+async def test_empty_reply_is_rejected_without_free_fallback(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", AsyncMock(return_value=" "))
+    with pytest.raises(AlduinoAIError):
+        await alduino_chat.generate_reply(system_prompt="s", current="u")

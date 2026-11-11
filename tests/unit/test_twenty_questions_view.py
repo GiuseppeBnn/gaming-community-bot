@@ -175,10 +175,10 @@ def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
     assert "Il gioco segreto di Alduino" in card
     assert "Serata &lt;epica&gt;" in card
     assert "24/08/2026 14:30 UTC" in card
-    assert "2h 30min" in card
+    assert "Tempo residuo" not in card and "2h 30min" not in card
     assert "7 domande · 3 tentativi" in card
     assert "Partecipanti: <b>2</b> · Domande: <b>4</b> · Tentativi errati: <b>1</b>" in card
-    assert "Massimo: <b>123 CoInn</b> per partecipante" in card
+    assert "Massimo <b>123</b>" in card
     assert "minimo attuale: <b>31 CoInn</b> per partecipante" in card
     assert "Quota stimata: <b>108 CoInn</b>" in card
     assert "proiezione" in card.casefold()

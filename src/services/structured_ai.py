@@ -832,18 +832,25 @@ class OpenRouterStructuredProvider:
 
     name: ProviderName = "openrouter"
 
-    def __init__(self, *, budget_feature: str | None = None) -> None:
+    def __init__(
+        self, *, budget_feature: str | None = None, model: str | None = None,
+        timeout_seconds: float | None = None,
+        budget_lane: ai_budget.BudgetLane = "twentyq",
+    ) -> None:
         if budget_feature is not None and (not budget_feature or len(budget_feature) > 32):
             raise ValueError("invalid budget_feature")
         self._budget_feature = budget_feature
+        self._model = model
+        self._timeout_seconds = timeout_seconds
+        self._budget_lane = budget_lane
 
     @property
     def model(self) -> str:
-        return settings.twentyq_openrouter_model
+        return self._model or settings.twentyq_openrouter_model
 
     @property
     def timeout_seconds(self) -> float:
-        return settings.twentyq_openrouter_timeout_seconds
+        return self._timeout_seconds or settings.twentyq_openrouter_timeout_seconds
 
     @property
     def configured(self) -> bool:
@@ -862,7 +869,7 @@ class OpenRouterStructuredProvider:
         try:
             reservation = await ai_budget.reserve(
                 feature=self._budget_feature or request.operation,
-                budget_lane="twentyq",
+                budget_lane=self._budget_lane,
                 provider=self.name,
                 requested_model=self.model,
                 system_prompt=request.system_prompt,

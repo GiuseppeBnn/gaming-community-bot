@@ -39,12 +39,8 @@ def test_public_docs_and_env_describe_the_v2_contract():
 
     for line in (
         "TWENTYQ_V2_ENABLED=false",
-        "TWENTYQ_PROVIDER_ORDER=gemini,groq,openrouter",
-        "TWENTYQ_GEMINI_MODEL=gemini-3.8-flash",
-        "TWENTYQ_GROQ_MODEL=openai/gpt-oss-20b",
+        "OPENROUTER_JUDGE_MODEL=openai/gpt-oss-120b",
         "TWENTYQ_OPENROUTER_MODEL=z-ai/glm-5.3-flash",
-        "TWENTYQ_GEMINI_TIMEOUT_SECONDS=8",
-        "TWENTYQ_GROQ_TIMEOUT_SECONDS=8",
         "TWENTYQ_OPENROUTER_TIMEOUT_SECONDS=12",
         "TWENTYQ_PROVIDER_DEADLINE_SECONDS=25",
         "TWENTYQ_CONTEXT_TURNS=24",

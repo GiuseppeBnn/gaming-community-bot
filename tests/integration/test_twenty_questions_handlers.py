@@ -471,7 +471,7 @@ class TestPublicSecretGameCommand:
         await handler.cmd_gioco_alduino(message, session)
 
         assert "Il gioco segreto di Alduino" in message.said[-1]
-        assert "Per te" not in message.said[-1]
+        assert "📌 <b>Per te</b>:" not in message.said[-1]
         assert TARGET.title not in message.said[-1]
 
     async def test_group_reply_reports_preexisting_multiple_games_without_exposing_secrets(
@@ -1062,7 +1062,7 @@ class TestPlayHandler:
 
     async def test_question_success_and_provider_failure(self, session, monkeypatch):
         first_id = await _running(session)
-        monkeypatch.setattr(handler, "GeminiStructuredProvider", _Provider)
+        monkeypatch.setattr(handler, "OpenRouterStructuredProvider", _Provider)
         message = _Message("È in prima persona?")
         await handler.play_turn(message, session)
         assert message.said[-1] == "🐲 <b>SÌ</b>"
@@ -1073,7 +1073,7 @@ class TestPlayHandler:
 
         second_id = await _running(session, "Seconda", anchor=78)
         second = await ai_game_service.get_snapshot(session, second_id)
-        monkeypatch.setattr(handler, "GeminiStructuredProvider", _BrokenProvider)
+        monkeypatch.setattr(handler, "OpenRouterStructuredProvider", _BrokenProvider)
         failed = _Message("Ha il multiplayer?", anchor=second.session.anchor_message_id)
         await handler.play_turn(failed, session)
         assert "non è stata consumata" in failed.said[-1]
@@ -1297,7 +1297,7 @@ class TestV2PostCommitPresentation:
         monkeypatch.setattr(handler, "refresh_group_card", refresh)
         monkeypatch.setattr(
             handler,
-            "GeminiStructuredProvider",
+            "OpenRouterStructuredProvider",
             lambda: (_ for _ in ()).throw(AssertionError("v2 constructed Gemini")),
         )
         message = _Message("Domanda?")
@@ -2017,7 +2017,7 @@ class TestV2PostCommitPresentation:
 
     async def test_v1_running_game_still_uses_the_isolated_legacy_path(self, session, monkeypatch):
         await _running(session)
-        monkeypatch.setattr(handler, "GeminiStructuredProvider", _Provider)
+        monkeypatch.setattr(handler, "OpenRouterStructuredProvider", _Provider)
         message = _Message("È in prima persona?")
 
         await handler.play_turn(message, session)

@@ -1,19 +1,16 @@
 """Provider boundary and bounded, branch-aware memory for Alduino chat.
 
-OpenRouter, Gemini and Groq are swappable conversational lanes. Telegram and SQL
+OpenRouter is the only conversational provider. Telegram and SQL
 orchestration stay outside provider adapters so no network call ever holds a
 database transaction open.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 import json
-import logging
-from typing import Any, Iterable, Sequence
+from typing import Iterable, Sequence
 
-import aiohttp
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,25 +20,13 @@ from services import ai_service, schedule_service
 from services.ai_routing import ProviderAttempt, ProviderUnavailable, text_router
 from services.public_event import PublicEvent
 
-log = logging.getLogger(__name__)
-
-GEMINI_INTERACTIONS_URL = "https://generativelanguage.googleapis.com/v1beta/interactions"
-_API_REVISION = "2026-05-20"
-_RETRYABLE = frozenset({429, 500, 502, 503, 504})
-_STALE_PARENT_STATUSES = frozenset({400, 404})
 _MAX_REPLY_CHARS = 500
 _MAX_CURRENT_CHARS = 1500
 _MAX_QUOTED_CHARS = 400
-_RETRY_DELAY_SECONDS = 0.5
 
 
 class AlduinoAIError(ProviderUnavailable):
     """No configured conversational provider could produce a usable answer."""
-
-
-class _GeminiHTTPError(AlduinoAIError):
-    def __init__(self, status: int):
-        super().__init__(f"status {status}", status=status)
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,137 +212,6 @@ def render_model_input(
     return "\n\n".join(sections)
 
 
-async def _gemini_post(payload: dict[str, Any]) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=settings.alduino_timeout_seconds)
-    for attempt in (1, 2):
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as client:
-                async with client.post(
-                    GEMINI_INTERACTIONS_URL,
-                    headers={
-                        "x-goog-api-key": settings.gemini_api_key,
-                        "Api-Revision": _API_REVISION,
-                    },
-                    json=payload,
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if not isinstance(data, dict):
-                            raise AlduinoAIError("malformed response")
-                        return data
-                    log.log(
-                        logging.INFO if response.status in _RETRYABLE else logging.WARNING,
-                        "Gemini Alduino ha risposto con status %s.", response.status,
-                    )
-                    if response.status not in _RETRYABLE or attempt == 2:
-                        raise _GeminiHTTPError(response.status)
-        except asyncio.TimeoutError as exc:
-            if attempt == 2:
-                raise AlduinoAIError("timeout") from exc
-        except aiohttp.ClientError as exc:
-            if attempt == 2:
-                raise AlduinoAIError("network error") from exc
-        except ValueError as exc:
-            raise AlduinoAIError("malformed response") from exc
-        await asyncio.sleep(_RETRY_DELAY_SECONDS)
-    raise AlduinoAIError("unreachable")  # pragma: no cover - loop always returns/raises
-
-
-def _parse_gemini(data: dict[str, Any]) -> GeneratedReply:
-    if data.get("status") != "completed":
-        raise AlduinoAIError(f"interaction {data.get('status', 'malformed')}")
-    pieces: list[str] = []
-    for step in data.get("steps", []):
-        if not isinstance(step, dict) or step.get("type") != "model_output":
-            continue
-        for block in step.get("content", []):
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text")
-                if isinstance(text, str):
-                    pieces.append(text)
-    interaction_id = data.get("id")
-    if not isinstance(interaction_id, str) or not interaction_id:
-        raise AlduinoAIError("missing interaction id")
-    return GeneratedReply(
-        text=_clip_reply("".join(pieces)),
-        provider="gemini",
-        interaction_id=interaction_id[:512],
-    )
-
-
-async def _gemini_reply(
-    *,
-    system_prompt: str,
-    current: str,
-    history: Sequence[DialogueTurn],
-    live_context: str,
-    group_context: str,
-    quoted_bot_text: str,
-    previous_interaction_id: str | None,
-) -> GeneratedReply:
-    if not settings.gemini_api_key:
-        raise AlduinoAIError("missing Gemini api key")
-
-    thinking, total_tokens = ai_service.gemini_generation_policy(
-        settings.alduino_gemini_model, settings.alduino_thinking_level, 280,
-    )
-
-    def payload(*, stateful: bool) -> dict[str, Any]:
-        value: dict[str, Any] = {
-            "model": settings.alduino_gemini_model,
-            "input": render_model_input(
-                current,
-                history=history,
-                live_context=live_context,
-                group_context=group_context,
-                quoted_bot_text=quoted_bot_text,
-                include_history=not stateful,
-            ),
-            "system_instruction": system_prompt,
-            "store": True,
-            "generation_config": {
-                "max_output_tokens": total_tokens,
-                "thinking_level": thinking,
-                "thinking_summaries": "none",
-            },
-        }
-        if stateful:
-            value["previous_interaction_id"] = previous_interaction_id
-        return value
-
-    if previous_interaction_id:
-        try:
-            return _parse_gemini(await _gemini_post(payload(stateful=True)))
-        except _GeminiHTTPError as exc:
-            if exc.status not in _STALE_PARENT_STATUSES:
-                raise
-            # Free-tier server state expires after one day. The local bounded
-            # branch is authoritative, so expiration degrades to stateless chat.
-            log.info("Stato Gemini scaduto/non valido: ricostruisco il ramo locale.")
-    return _parse_gemini(await _gemini_post(payload(stateful=False)))
-
-
-async def _groq_reply(
-    *, system_prompt: str, current: str, history: Sequence[DialogueTurn],
-    live_context: str, quoted_bot_text: str,
-    group_context: str = "",
-) -> GeneratedReply:
-    prompt = render_model_input(
-        current,
-        history=history,
-        live_context=live_context,
-        group_context=group_context,
-        quoted_bot_text=quoted_bot_text,
-    )
-    try:
-        text = await ai_service.generate_groq_completion(
-            system_prompt, prompt, max_tokens=280,
-        )
-    except ai_service.AIServiceError as exc:
-        raise AlduinoAIError("Groq unavailable", status=exc.status) from exc
-    return GeneratedReply(text=_clip_reply(text), provider="groq")
-
-
 async def _openrouter_reply(
     *,
     system_prompt: str,
@@ -397,102 +251,24 @@ async def generate_reply(
     group_context: str = "",
     quoted_bot_text: str = "",
 ) -> GeneratedReply:
-    """Generate through the selected provider, with a narrow Groq failover."""
+    """Continue local reply memory through OpenRouter only, including old branches."""
     history = decode_history(parent.history_json) if parent is not None else ()
-    previous_id = (
-        parent.provider_interaction_id
-        if parent is not None and parent.provider == "gemini"
-        else None
-    )
-    if settings.alduino_provider == "auto":
-        async def gemini() -> GeneratedReply:
-            return await _gemini_reply(
-                system_prompt=system_prompt, current=current, history=history,
-                live_context=live_context, group_context="",
-                quoted_bot_text=quoted_bot_text, previous_interaction_id=previous_id,
-            )
 
-        async def groq() -> GeneratedReply:
-            return await _groq_reply(
-                system_prompt=system_prompt, current=current, history=history,
-                live_context=live_context, group_context="",
-                quoted_bot_text=quoted_bot_text,
-            )
+    async def paid() -> GeneratedReply:
+        return await _openrouter_reply(
+            system_prompt=system_prompt, current=current, history=history,
+            live_context=live_context, group_context=group_context,
+            quoted_bot_text=quoted_bot_text,
+        )
 
-        async def paid() -> GeneratedReply:
-            return await _openrouter_reply(
-                system_prompt=system_prompt, current=current, history=history,
-                live_context=live_context, group_context=group_context,
-                quoted_bot_text=quoted_bot_text,
-            )
-
-        attempts: list[ProviderAttempt[GeneratedReply]] = []
-        if settings.alduino_fallback_to_groq:
-            attempts.append(ProviderAttempt(
-                "groq", settings.groq_model, groq,
-                settings.alduino_free_timeout_seconds,
-            ))
-        if settings.gemini_api_key:
-            attempts.append(ProviderAttempt(
-                "gemini", settings.alduino_gemini_model, gemini,
-                settings.alduino_free_timeout_seconds,
-            ))
-        if settings.openrouter_api_key:
-            attempts.append(ProviderAttempt(
+    try:
+        return await text_router.generate(
+            [ProviderAttempt(
                 "openrouter", settings.openrouter_chat_models, paid,
                 settings.openrouter_timeout_seconds,
-            ))
-        try:
-            return await text_router.generate(
-                attempts, workload="alduino_chat",
-                deadline_seconds=settings.alduino_provider_deadline_seconds,
-            )
-        except ProviderUnavailable as exc:
-            raise AlduinoAIError("chat providers unavailable") from exc
-    if settings.alduino_provider == "groq":
-        return await _groq_reply(
-            system_prompt=system_prompt, current=current, history=history,
-            live_context=live_context, group_context="",
-            quoted_bot_text=quoted_bot_text,
+            )],
+            workload="alduino_chat",
+            deadline_seconds=settings.alduino_provider_deadline_seconds,
         )
-    if settings.alduino_provider == "openrouter":
-        try:
-            return await _openrouter_reply(
-                system_prompt=system_prompt,
-                current=current,
-                history=history,
-                live_context=live_context,
-                group_context=group_context,
-                quoted_bot_text=quoted_bot_text,
-            )
-        except AlduinoAIError as exc:
-            if not settings.alduino_fallback_to_groq:
-                raise
-            log.warning("OpenRouter Alduino non disponibile (%s): uso Groq.", exc)
-            return await _groq_reply(
-                system_prompt=system_prompt,
-                current=current,
-                history=history,
-                live_context=live_context,
-                group_context="",
-                quoted_bot_text=quoted_bot_text,
-            )
-    try:
-        return await _gemini_reply(
-            system_prompt=system_prompt,
-            current=current,
-            history=history,
-            live_context=live_context,
-            group_context="",
-            quoted_bot_text=quoted_bot_text,
-            previous_interaction_id=previous_id,
-        )
-    except AlduinoAIError as exc:
-        if not settings.alduino_fallback_to_groq:
-            raise
-        log.warning("Gemini Alduino non disponibile (%s): uso Groq.", exc)
-        return await _groq_reply(
-            system_prompt=system_prompt, current=current, history=history,
-            live_context=live_context, group_context="",
-            quoted_bot_text=quoted_bot_text,
-        )
+    except ProviderUnavailable as exc:
+        raise AlduinoAIError("chat providers unavailable") from exc

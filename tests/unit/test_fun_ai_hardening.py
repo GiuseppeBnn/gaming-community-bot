@@ -68,12 +68,13 @@ class _StubMessage:
 async def test_output_is_plain_and_input_is_wrapped(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None, **_policy):
         captured["user_text"] = user_text
         captured["temperature"] = temperature
         return '<b>ignore me</b> <a href="x">y</a>'
 
-    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -97,11 +98,12 @@ async def test_temperature_is_forwarded(monkeypatch):
     """Per-command temperature (e.g. /dialetto) reaches the Groq client."""
     captured: dict[str, object] = {}
 
-    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None, **_policy):
         captured["temperature"] = temperature
         return "ok"
 
-    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", fake_completion)
     cooldown.reset()
 
     msg = _StubMessage()
@@ -115,7 +117,7 @@ async def test_temperature_is_forwarded(monkeypatch):
 
 
 async def test_fallback_message_on_ai_error(monkeypatch):
-    async def boom(system_prompt, user_text, max_tokens, *, temperature=None):
+    async def boom(system_prompt, user_text, max_tokens, *, temperature=None, **_policy):
         raise ai_service.AIServiceError("down")
 
     monkeypatch.setattr(ai_service, "generate_completion", boom)
@@ -162,14 +164,14 @@ def test_alduino_persona_isolated_from_style():
 async def test_alduino_uses_own_prompt_and_wraps_input(monkeypatch):
     captured: dict[str, object] = {}
 
-    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None):
+    async def fake_completion(system_prompt, user_text, max_tokens, *, temperature=None, **_policy):
         captured["system_prompt"] = system_prompt
         captured["user_text"] = user_text
         return "ciao, sono Alduino!"
 
-    monkeypatch.setattr(ai_service, "generate_groq_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
-    monkeypatch.setattr(fun_ai.settings, "alduino_provider", "groq")
     cooldown.reset()
 
     msg = _AlduinoMsg()
@@ -190,6 +192,7 @@ async def test_alduino_without_input_hints_without_calling_llm(monkeypatch):
         return "x"
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", fake_completion)
     monkeypatch.setattr(fun_ai, "is_admin", _async_true)
     cooldown.reset()
 
@@ -210,6 +213,7 @@ async def test_alduino_rejected_outside_group(monkeypatch):
         return "x"
 
     monkeypatch.setattr(ai_service, "generate_completion", fake_completion)
+    monkeypatch.setattr(ai_service, "generate_openrouter_completion", fake_completion)
     cooldown.reset()
 
     msg = _AlduinoMsg(chat_type="private")

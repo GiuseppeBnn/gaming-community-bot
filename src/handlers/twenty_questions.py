@@ -35,7 +35,7 @@ from services.ai_game_types import (
     TurnRejectReason,
 )
 from services.ai_game_service import GameSnapshot
-from services.structured_ai import GeminiStructuredProvider, StructuredAIError
+from services.structured_ai import OpenRouterStructuredProvider, StructuredAIError
 from services.twenty_questions_rules import v2_policy
 from utils.text import esc
 from utils.twenty_questions_view import (
@@ -450,6 +450,8 @@ def render_card(
     lines = [
         f"🐲 <b>{esc(snapshot.session.title)}</b>",
         "<i>Alduino ha scelto un videogioco.</i>",
+        "Domande: rispondo solo <b>SÌ</b> o <b>NO</b>. "
+        "Se non so, <b>NON LO SO</b>: domanda non consumata.",
         "",
         f"❓ Domande rimaste: <b>{snapshot.questions_left}/{snapshot.game.question_limit}</b>",
         f"🎯 Tentativi rimasti: <b>{snapshot.guesses_left}/{snapshot.game.guess_limit}</b>",
@@ -918,7 +920,7 @@ async def _play_turn_v1(
         await db_session.rollback()
         await message.reply("🐲 Sto già rispondendo a un'altra domanda. Un respiro e riprova.")
         return
-    # This short commit is deliberate: never hold a DB transaction while Gemini thinks.
+    # This short commit is deliberate: never hold a DB transaction during AI I/O.
     await db_session.commit()
 
     if guess is not None:
@@ -936,7 +938,7 @@ async def _play_turn_v1(
     else:
         try:
             verdict = await ai_game_service.classify_question(
-                snapshot, text, GeminiStructuredProvider(),
+                snapshot, text, OpenRouterStructuredProvider(),
             )
         except StructuredAIError:
             await ai_game_service.release_turn(db_session, snapshot.session.id, token)

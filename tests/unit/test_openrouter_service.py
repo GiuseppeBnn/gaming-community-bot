@@ -200,7 +200,6 @@ async def test_entertainment_dispatch_uses_configured_order(monkeypatch):
         captured.update(kwargs)
         return "ok"
 
-    monkeypatch.setattr(ai_service.settings, "ai_entertainment_provider", "openrouter")
     monkeypatch.setattr(ai_service.settings, "openrouter_fun_models", " qwen/a, qwen/a, deep/b ")
     monkeypatch.setattr(ai_service, "generate_openrouter_completion", route)
     assert await ai_service.generate_completion("s", "u", 12, temperature=0.4) == "ok"

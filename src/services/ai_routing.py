@@ -1,4 +1,4 @@
-"""Small reusable free-to-paid failover boundary for text workloads."""
+"""Bounded text request guard; runtime uses one OpenRouter attempt per workload."""
 
 from __future__ import annotations
 
