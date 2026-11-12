@@ -27,6 +27,7 @@ from config_data.config import settings
 from database.connection import async_session_maker
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers import event_types
+from handlers._privacy import redirect_to_private
 from handlers.callbacks import EventCb, SchedCb
 from handlers.event_types.base import PostCommitHook
 from keyboards.common_kb import confirm_cancel_kb
@@ -312,18 +313,32 @@ async def _programmati_view(db_session) -> tuple[str, InlineKeyboardMarkup]:
 
 @router.message(Command("programmati"), IsAdminFilter())
 async def cmd_programmati(message: Message, db_session) -> None:
+    if await redirect_to_private(
+        message, "programmati", "🗓️ Apri programmati",
+        notice="🔒 La gestione degli eventi programmati è riservata agli admin in privato.",
+    ):
+        return
     text, kb = await _programmati_view(db_session)
     await message.reply(text, reply_markup=kb)
 
 
-@router.callback_query(SchedCb.filter(F.action == "list"))
+@router.callback_query(
+    SchedCb.filter(F.action.in_({"list", "view", "del"})),
+    F.message.chat.type != ChatType.PRIVATE,
+)
+async def cb_programmati_group(callback: CallbackQuery) -> None:
+    """Old group keyboards must neither disclose tasks nor mutate them."""
+    await callback.answer("Apri /programmati in privato col bot.", show_alert=True)
+
+
+@router.callback_query(SchedCb.filter(F.action == "list"), F.message.chat.type == ChatType.PRIVATE)
 async def cb_sched_list(callback: CallbackQuery, db_session) -> None:
     text, kb = await _programmati_view(db_session)
     await callback.message.edit_text(text, reply_markup=kb)
     await callback.answer()
 
 
-@router.callback_query(SchedCb.filter(F.action == "view"))
+@router.callback_query(SchedCb.filter(F.action == "view"), F.message.chat.type == ChatType.PRIVATE)
 async def cb_sched_view(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
     """Per-task screen: view its read-only info (where the type offers one) or
     cancel it. Cancelling used to sit directly in the list; it moved here."""
@@ -360,7 +375,7 @@ async def cb_sched_view(callback: CallbackQuery, callback_data: SchedCb, db_sess
     await callback.answer()
 
 
-@router.callback_query(SchedCb.filter(F.action == "del"))
+@router.callback_query(SchedCb.filter(F.action == "del"), F.message.chat.type == ChatType.PRIVATE)
 async def cb_sched_del(callback: CallbackQuery, callback_data: SchedCb, db_session) -> None:
     task_id = callback_data.item_id
     if task_id is None:

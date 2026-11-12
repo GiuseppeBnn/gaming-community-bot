@@ -54,6 +54,7 @@ class _PrivateMessage:
 
     def __init__(self, user_id: int):
         self.from_user = SimpleNamespace(id=user_id)
+        self.chat = SimpleNamespace(type="private", id=user_id)
         self.bot = object()
         self.replies: list[tuple[str, object]] = []
 

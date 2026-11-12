@@ -146,6 +146,7 @@ ADMIN_PAYLOADS = [
     ("create_quiz", "handlers.quiz.start_quiz_creation"),
     ("create_poll", "handlers.events.start_poll_creation"),
     ("programma", "handlers.schedule.start_schedule_flow"),
+    ("programmati", "handlers.schedule.cmd_programmati"),
     ("manage_bets", "handlers.admin_betting._show_event_list"),
     ("backup", "handlers.backup.run_backup_now"),
     ("esporta", "handlers.backup.run_export_now"),

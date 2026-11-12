@@ -296,7 +296,7 @@ a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
 Modelli, costi verificati, limiti dello scan e migrazione:
 [OpenRouter-only](docs/openrouter-only-2026-11-11.md).
 Il giudice strict resta `openai/gpt-oss-120b`, selezionabile con
-`OPENROUTER_JUDGE_MODEL`. Thinking `low`, schema booleano invariato, 32 token
+`OPENROUTER_JUDGE_MODEL`. Thinking `low`, schema enum strict senza testo libero, 32 token
 risposta più allowance di reasoning (default 1024), prenotati prima della rete.
 Giudizi non verificabili non consumano tentativi veri; non si ritenta sul provider gratuito.
 
@@ -345,9 +345,19 @@ soluzione si discute in chat e giocare in privato non vuol più dire niente. Si 
 parità conta il tempo.
 
 Le risposte sono **libere** e le giudica l'AI, quindi «GTA SA» vale «Grand Theft Auto: San
-Andreas» — ma la **serie da sola non basta**: «GTA» per «GTA San Andreas» è sbagliato. In
+Andreas» — ma la **serie da sola non basta**: «GTA» o «GTA Vice City» per «GTA San Andreas»
+ricevono «Saga corretta!», senza vittoria né rivelare il capitolo. Il tentativo conta
+normalmente; nessuna chiamata AI aggiuntiva. In
 creazione puoi aggiungere grafie sempre accettate: sono la rete di sicurezza se l'AI non
 risponde, perché quelle vengono riconosciute **senza** interpellarla.
+
+Puoi seguire il link di un'altra attività senza prima uscire dal vecchio gioco:
+la modalità di risposta si libera, ma tempo e tentativi restano persistiti.
+Una partita personale scaduta non si riapre. Il limite per giocatore è distinto
+dalla chiusura dell'evento, configurata dall'admin nella scheda.
+
+`/programmati` è riservato agli admin e mostra la gestione solo in privato;
+nel gruppo offre un link che ricontrolla i permessi all'apertura.
 
 Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
 tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e

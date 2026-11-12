@@ -631,7 +631,7 @@ class GuessAttempt(Base):
     attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-based, per user
     raw_answer: Mapped[str] = mapped_column(String(200), nullable=False)
     normalized: Mapped[str] = mapped_column(String(200), nullable=False)
-    verdict: Mapped[str] = mapped_column(String(16), nullable=False)  # correct|wrong|unverified
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)  # correct|series|wrong|unverified
     # exact|alias|shape|ai|cache|unavailable — how the verdict was reached.
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     elapsed_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

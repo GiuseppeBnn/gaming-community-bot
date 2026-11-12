@@ -330,7 +330,7 @@ _COMMANDS: list[CommandDoc] = [
                        "viene pubblicato all'istante."),
     CommandDoc("programma", "Programma un evento (quiz/sondaggio/scommessa)", "🎬 Eventi",
                usage="/programma", admin_only=True),
-    CommandDoc("programmati", "Elenca/annulla gli eventi programmati", "🎬 Eventi",
+    CommandDoc("programmati", "Elenca/annulla gli eventi programmati (solo in privato)", "🎬 Eventi",
                usage="/programmati", admin_only=True),
 ]
 

@@ -416,7 +416,7 @@ async def generate_completion(
 # failure is a flat joke, this one decides whether somebody gets paid.
 # ---------------------------------------------------------------------------
 
-#: Constrained-decoding schema. One boolean, no free-text field — there is
+#: Constrained-decoding schema. One enum, no free-text field — there is
 #: deliberately nothing in the reply that could carry a correct answer back to a
 #: player who tried to talk the model into leaking it.
 JUDGE_SCHEMA: dict = {
@@ -424,15 +424,15 @@ JUDGE_SCHEMA: dict = {
     "strict": True,
     "schema": {
         "type": "object",
-        "properties": {"corretta": {"type": "boolean"}},
-        "required": ["corretta"],
+        "properties": {"verdetto": {"type": "string", "enum": ["correct", "series", "wrong"]}},
+        "required": ["verdetto"],
         "additionalProperties": False,
     },
 }
 
 
-async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
-    """Preserve the strict boolean judge, now on the metered OpenRouter lane.
+async def judge_equivalence(system_prompt: str, user_text: str) -> str:
+    """Classify exact game, same series or wrong on the metered OpenRouter lane.
 
     No application retry after an ambiguous timeout: the reservation remains
     charged and the game treats the answer as unverified, never as incorrect.
@@ -454,8 +454,8 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
         user_prompt=user_text,
         schema_name=JUDGE_SCHEMA["name"],
         schema=JUDGE_SCHEMA["schema"],
-        prompt_version="guess-equivalence-v1",
-        schema_version="boolean-v1",
+        prompt_version="guess-equivalence-v2",
+        schema_version="game-match-v2",
         max_output_tokens=32,
         temperature=0,
     )
@@ -463,4 +463,4 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> bool:
         result = await provider.generate_json(request)
     except StructuredAIError as exc:
         raise AIServiceError("OpenRouter judge unavailable", status=exc.status) from exc
-    return result.value["corretta"]
+    return result.value["verdetto"]

@@ -447,6 +447,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
+| `programmati` | `common.cmd_start` → `schedule.cmd_programmati` | Elenco/gestione task (**admin**, re-check, solo privato) |
 | `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo Locanda (cosmetici + menù) |
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
 | `bet_custom_<e>_<o>` | `common.cmd_start` → `betting.start_custom_amount` | FSM importo custom |
@@ -1486,22 +1487,29 @@ righe `unverified` **non** si mettono in cache: non sono un verdetto, sono l'ass
 riusarle renderebbe permanente un singolo outage.
 
 **Regola di sicurezza non negoziabile: l'output testuale del modello non raggiunge mai un
-giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`, constrained
+giocatore.** Si estrae esclusivamente l'enum `correct|series|wrong`. Lo schema JSON (`strict`, constrained
 decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
 che possa riportare indietro la soluzione a chi provi a farsela dire.
 
 `OPENROUTER_JUDGE_MODEL=openai/gpt-oss-120b` resta separato dal modello creativo.
-Il modello e i prompt del giudice non cambiano: si migra solo il trasporto.
+Il modello resta invariato; prompt `guess-equivalence-v2`, schema `game-match-v2`.
 `judge_equivalence` riutilizza `OpenRouterStructuredProvider` con temperatura 0,
-schema booleano strict, ZDR, tetti di prezzo e lane `openrouter_other`.
+schema enum strict, ZDR, tetti di prezzo e lane `openrouter_other`.
 Non crea una seconda implementazione della contabilizzazione.
+
+`series` conferma soltanto l'appartenenza alla stessa saga (serie generica o capitolo
+diverso), mai una vittoria: `Verdict.correct` resta false, il tentativo conta e il
+giocatore riceve un testo locale senza il titolo segreto. Una sola chiamata classifica
+tutti e tre gli esiti. Il verdetto `series` viene persistito e condiviso dalla cache
+del round; i vecchi `wrong` restano invariati. Gli alias admin mantengono la precedenza
+autorevole, anche su un precedente `series`. Nessuna migrazione: la colonna è già String(16).
 
 ### Il budget di token del giudice — la regressione da non rifare
 
 GPT-OSS ha reasoning obbligatorio: il limite include sia reasoning sia JSON.
 32 token per la risposta più `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (default 1024),
 effort `low`, ragionamento escluso dalla risposta. Tutto il tetto è prenotato
-prima della rete. Schema/parsing rifiutano numeri, stringhe, prose o campi extra.
+prima della rete. Schema/parsing rifiutano numeri, booleani, enum sconosciuti, prose o campi extra.
 
 ### Quando il giudice non risponde
 
@@ -1534,10 +1542,13 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
   deve costare token OpenRouter. Otto test contano le chiamate al modello per tenerlo fermo — la
   mutazione che sposta il controllo tentativi dopo il giudice era passata verde prima che ci
   fossero.
-- **Un comando (testo che inizia con `/`) non è mai un tentativo**: `fsm_answer` lo **ignora**
-  in cima, prima di cooldown/giudice/registrazione. Serve al caso reale in cui un giocatore non
-  si accorge che il round è partito e ri-tocca «avvia», che rimanda `/start <deeplink>` in chat:
-  senza la guardia veniva giudicato e bruciava un tentativo.
+- **Un comando (testo che inizia con `/`) non è mai un tentativo**: il filtro di
+  `fsm_answer` lo esclude, lasciandolo ai veri handler (il return interno da solo
+  consumava l'update e bloccava `/start`). Un nuovo `/start` privato libera solo
+  `GuessPlayStates.answering` e la sua tastiera prima del dispatch del deep-link,
+  senza toccare sessione, tentativi o timer nel DB e senza scartare altre FSM admin.
+  Rientrare controlla subito la scadenza, con confine `now >= deadline`.
+  Un vecchio «Esci» risponde anche fuori stato ma non cancella una nuova FSM.
 - **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
   Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
   azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
@@ -1859,12 +1870,14 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   corso: chiuso a mano o mai avviato è comunque lo stato voluto, non un errore). `/programmati` etichetta
   ogni task «▶️ Avvio» o «🏁 Chiusura» — su un item con entrambi pendenti è la differenza fra annullare
   quello giusto e quello sbagliato.
-- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla),
+- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla, **solo privato**),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
   riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
   `schedule.router` monta `IsAdminFilter`/`IsAdminCallbackFilter` alla radice, così ogni handler
   (anche quelli guidati solo dallo stato FSM) richiede l'admin.
+  `/programmati` nel gruppo mostra solo il deep-link, con nuovo check admin all'apertura;
+  i vecchi callback di lista/dettaglio/annullamento nel gruppo rispondono senza leggere o mutare task.
 - I `ScheduledTask` sono **persistiti** → sopravvivono al restart.
 
 ---
@@ -1970,7 +1983,7 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
     > Verificato sul campo: Guess The Game e Sound Quest sono entrati **senza toccare né `events.py` né `schedule.py`** — una spec parametrizzata (`GuessType(kind=…)`) e due righe in `register_builtin`. Quando due tipi differiscono solo per etichette e per un media, si **parametrizza la spec** invece di scriverne due: sono percorsi che pagano monete, e due copie sono due posti dove correggere lo stesso bug.
 26. **Trofei & Locanda** (§11/§12): nuove **condizioni trofeo** si aggiungono al **dispatch** di `check_and_award_milestones` + a `TROPHY_CONDITIONS` + a `describe_condition` (mai catene `if/elif` fuori dagli helper). Le condizioni scoped usano **`Badge.condition_param`** (key item/categoria/gioco o slug `;`-separati per `collection`); colonna nuova ⇒ voce in `_MIGRATIONS`. Le **`collection`** si risolvono a **punto fisso** (sblocco a catena nello stesso commit). **Chiavi disgiunte**: consumabili `cons_*`, cosmetici `tag_*` (namespace `shop_purchases.item_key` condiviso). Acquisto consumabile: **flush prima** del milestone check (autoflush off). Cataloghi (consumabili/categorie/trofei) **solo via CSV + default Python**, mai hardcode negli handler. Nuovi giochi col podio chiamano `progress_service.record_podium(game_key, rank)` — i loro trofei `podium_count`/`first_place_count` si attivano da soli.
-27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **rifiuta tutto ciò che non è esattamente un booleano**. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
+27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **ammette solo l'enum `correct|series|wrong`**. Solo `correct` può vincere; `series` è un indizio. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
 
 ---
 

@@ -482,6 +482,24 @@ class TestWhatToSchedule:
 # ---------------------------------------------------------------------------
 
 class TestPendingList:
+    async def test_group_only_gets_private_link_without_querying_tasks(self):
+        from unittest.mock import AsyncMock
+
+        session = AsyncMock()
+        message = _FakeMessage(chat_type="supergroup")
+        await schedule.cmd_programmati(message, session)
+        assert "riservata agli admin" in message.said
+        assert "Eventi programmati" not in message.said
+        assert message.markups[0].inline_keyboard[0][0].url.endswith("?start=programmati")
+        session.execute.assert_not_called()
+
+    async def test_old_group_callback_never_queries_or_mutates_tasks(self):
+        message = _FakeMessage(chat_type="supergroup")
+        callback = _FakeCallback("sched:del::7", message=message)
+        await schedule.cb_programmati_group(callback)
+        assert callback.alerts == ["Apri /programmati in privato col bot."]
+        assert not message.texts
+
     async def _task(self, session, *, task_type="fake", hours=1) -> ScheduledTask:
         task = await schedule_service.schedule_task(
             session, task_type, schedule_service.utcnow() + timedelta(hours=hours),

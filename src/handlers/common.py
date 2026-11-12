@@ -126,6 +126,13 @@ async def cmd_start(
 
     payload = command.args or ""
 
+    # A private game is not a modal dialog: following a new /start link releases
+    # the old answer mode, without resetting the DB-backed clock or attempts.
+    # Other FSMs (e.g. admin drafts) retain their existing interruption policy.
+    if message.chat.type == ChatType.PRIVATE:
+        from handlers.guess.play import leave_answering
+        await leave_answering(message, state)
+
     if payload.startswith("telefono_") and payload[9:].isdigit():
         from handlers.telephone import join
         await join(message, state, db_session, int(payload[9:]))
@@ -199,6 +206,15 @@ async def cmd_start(
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.events import start_poll_creation
             await start_poll_creation(message, state)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
+    # Deep-link: programmati (admin-only list, never publish task details in group)
+    if payload == "programmati":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.schedule import cmd_programmati
+            await cmd_programmati(message, db_session)
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return

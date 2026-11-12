@@ -6,6 +6,11 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Navigazione tra giochi privati** — Guess/Sound non intercettano più i comandi;
+  un nuovo link libera la sola modalità di risposta senza azzerare tempo o tentativi.
+  Ripresa scaduta rifiutata subito e vecchi bottoni «Esci» innocui per le nuove FSM.
+- **`/programmati` solo admin e privato** — nel gruppo soltanto il link, permessi
+  ricontrollati all'apertura; vecchi bottoni di gestione nel gruppo non operativi.
 - **Guard membership sugli update reali** — legge anche il payload del contenitore
   `Update` ricevuto da `dp.update`, preservando l'oggetto inoltrato al dispatcher.
   I voti dei quiz privati passano dallo stesso controllo dei messaggi privati.
@@ -16,6 +21,9 @@ Modifiche rilevanti al bot. Formato ispirato a
   Nessun retry automatico pagato né aumento del budget.
 
 ### Aggiunto
+- **Saga corretta in Guess/Sound** — feedback distinto per serie o capitolo diverso,
+  senza vittoria né soluzione rivelata. Un solo giudizio AI con enum strict,
+  cache condivisa e normale consumo del tentativo; alias admin ancora autorevoli.
 - **`/immagine <descrizione>` (solo admin)** — comando case-insensitive per
   provare il generatore della staffetta senza eventi. Stesso modello/stile,
   budget condiviso, audit senza prompt e nessun retry automatico.

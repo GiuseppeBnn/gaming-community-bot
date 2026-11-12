@@ -179,6 +179,123 @@ async def _playing(session, round_, state):
     await pl.start_guess_session(_Msg(), session, state, round_.id)
 
 
+@pytest.mark.parametrize("kind,attempts", [("guess", 3), ("sound", 3), ("guess", 1)])
+async def test_same_saga_feedback_counts_attempt_but_never_solves(
+    session, round_, state, monkeypatch, kind, attempts,
+):
+    round_.kind = kind
+    round_.max_attempts = attempts
+    await session.flush()
+    await _playing(session, round_, state)
+
+    async def series(*args):
+        return Verdict(correct=False, source="ai", same_series=True)
+
+    monkeypatch.setattr(guess_judge, "judge", series)
+    message = _Msg("Doom II")
+    await pl.fsm_answer(message, session, state)
+    assert "Saga corretta" in message.said
+    assert "Indovinato!" not in message.said
+    assert "Doom" not in message.said  # No solution or model text leaked.
+    assert ("esauriti" in message.said) == (attempts == 1)
+    assert await gs.attempts_left(session, round_, 7) == attempts - 1
+    rows = (await session.execute(select(GuessAttempt))).scalars().all()
+    assert len(rows) == 1 and rows[0].verdict == "series"
+    sess = (await session.execute(select(GuessSession))).scalar_one()
+    assert sess.solved_at is None
+    rejected = await gs.recent_rejected(session, round_.id)
+    assert rejected  # Admins can still inspect a misclassified series response.
+
+
+@pytest.mark.parametrize("kind", ["guess", "sound"])
+async def test_resuming_expired_session_does_not_reenter_answer_mode(
+    session, round_, state, monkeypatch, kind,
+):
+    round_.kind = kind
+    round_.time_limit_seconds = 60
+    await session.flush()
+    await _playing(session, round_, state)
+    sess = await gs.get_session(session, round_.id, 7)
+    started_at = sess.started_at
+    monkeypatch.setattr(gs, "now", lambda: started_at + timedelta(seconds=60))
+    message = _Msg()
+    await pl.start_guess_session(message, session, state, round_.id)
+    assert "Tempo scaduto" in message.said
+    assert await state.get_state() is None
+    assert not message.bot.media
+    assert sess.started_at == started_at
+
+
+async def test_navigation_clears_answer_mode_even_if_old_keyboard_cannot_be_edited(
+    session, round_, state, monkeypatch,
+):
+    await _playing(session, round_, state)
+    message = _Msg()
+
+    async def unavailable(**kwargs):
+        raise RuntimeError("old message deleted")
+
+    monkeypatch.setattr(message.bot, "edit_message_reply_markup", unavailable)
+    await pl.leave_answering(message, state)
+    assert await state.get_state() is None
+
+
+@pytest.mark.parametrize("destination", ["quiz_42", "telefono_42", "sound_42"])
+async def test_real_dispatcher_allows_new_game_link_during_old_answer_mode(
+    session, round_, state, user_factory, monkeypatch, destination,
+):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock
+    from aiogram import Dispatcher, Router
+    from aiogram.types import Chat, Message, Update, User
+    from handlers import common, quiz, telephone
+
+    await user_factory(7, onboarding_completed=True)
+    await _playing(session, round_, state)
+    await pl.fsm_answer(_Msg("Quake"), session, state)
+    used = await gs.attempts_left(session, round_, 7)
+    started = (await gs.get_session(session, round_.id, 7)).started_at
+    monkeypatch.setattr(common, "_ensure_welcome_trophy", AsyncMock())
+    reached = []
+
+    async def enter(*args):
+        assert await state.get_state() is None
+        reached.append(args[-1])
+
+    if destination.startswith("quiz_"):
+        monkeypatch.setattr(quiz, "start_quiz_session", enter)
+    elif destination.startswith("telefono_"):
+        monkeypatch.setattr(telephone, "join", enter)
+    else:
+        import handlers.guess
+        monkeypatch.setattr(handlers.guess, "start_guess_session", enter)
+
+    dispatcher = Dispatcher(storage=state.storage)
+    first, last = Router(), Router()
+    # Copy real registrations/filters: changing only fsm_answer's body cannot fix
+    # aiogram's first-handler-wins behaviour, and this regression must catch it.
+    for source, target, callback in [
+        (pl.router.message, first.message, pl.fsm_answer),
+        (common.router.message, last.message, common.cmd_start),
+    ]:
+        registered = next(h for h in source.handlers if h.callback is callback)
+        target.register(callback, *(f.callback for f in registered.filters))
+    dispatcher.include_routers(first, last)
+    bot = _Bot()
+    try:
+        await dispatcher.feed_update(bot, Update(update_id=1, message=Message(
+            message_id=90, date=datetime.now(timezone.utc),
+            chat=Chat(id=7, type="private"),
+            from_user=User(id=7, is_bot=False, first_name="Player"),
+            text=f"/start {destination}",
+        )), db_session=session, state=state, raw_state=pl.GuessPlayStates.answering.state)
+    finally:
+        await dispatcher.storage.close()
+    assert reached == [42]
+    assert await gs.attempts_left(session, round_, 7) == used
+    assert (await gs.get_session(session, round_.id, 7)).started_at == started
+
+
 async def _solved_at(session, uid: int = 7):
     return (
         await session.execute(select(GuessSession.solved_at).where(GuessSession.user_tg_id == uid))
@@ -794,6 +911,13 @@ class TestTheStatusLine:
 
 
 class TestQuit:
+    async def test_an_old_quit_button_never_clears_a_new_creation_flow(self, state):
+        await state.set_state("NewActivity:draft")
+        await state.set_data({"title": "Draft to keep", "round_id": 999})
+        await pl.cb_quit(_ResumeCb(""), state)
+        assert await state.get_state() == "NewActivity:draft"
+        assert (await state.get_data())["title"] == "Draft to keep"
+
     async def test_quitting_offers_a_way_back_in(self, session, round_, state):
         """Otherwise the only way to resume is to scroll the group back to the
         announcement and find the deep link again."""

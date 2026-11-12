@@ -39,7 +39,7 @@ def ai(monkeypatch):
     """A scriptable stand-in for the model. `calls` gets asserted as often as the
     verdict does."""
     calls: list[str] = []
-    state = {"verdict": True, "error": None}
+    state = {"verdict": "correct", "error": None}
 
     async def _judge(system_prompt, user_text):
         calls.append(user_text)
@@ -124,8 +124,17 @@ class TestShapeRejection:
 
 
 class TestTheModel:
+    @pytest.mark.parametrize("answer", ["GTA", "GTA Vice City"])
+    async def test_series_is_feedback_not_a_win(self, session, round_, ai, answer):
+        ai.state["verdict"] = "series"
+        verdict = await gj.judge(session, round_, answer)
+        assert verdict.verified and verdict.same_series
+        assert not verdict.correct
+        assert verdict.stored_verdict == gj.SERIES
+        assert len(ai.calls) == 1
+
     async def test_the_ambiguous_middle_is_asked(self, session, round_, ai):
-        ai.state["verdict"] = True
+        ai.state["verdict"] = "correct"
 
         v = await gj.judge(session, round_, "gta san andreas ps2")
 
@@ -143,7 +152,7 @@ class TestTheModel:
         assert "gta san andreas del 2004" in content
 
     async def test_a_no_from_the_model_is_a_no(self, session, round_, ai):
-        ai.state["verdict"] = False
+        ai.state["verdict"] = "wrong"
 
         v = await gj.judge(session, round_, "gta vice city")
 
@@ -151,6 +160,27 @@ class TestTheModel:
 
 
 class TestVerdictCache:
+    async def test_series_is_cached_without_a_second_call(self, session, round_, ai):
+        session.add(GuessAttempt(
+            round_id=round_.id, user_tg_id=1, attempt_no=1,
+            raw_answer="GTA", normalized="gta", verdict=gj.SERIES, source="ai",
+        ))
+        await session.flush()
+        verdict = await gj.judge(session, round_, "GTA!")
+        assert verdict.same_series and not verdict.correct
+        assert verdict.source == "cache"
+        assert ai.calls == []
+
+    async def test_explicit_admin_alias_still_wins_over_cached_series(self, session, round_, ai):
+        session.add(GuessAttempt(
+            round_id=round_.id, user_tg_id=1, attempt_no=1,
+            raw_answer="GTA SA", normalized="gta sa", verdict=gj.SERIES, source="ai",
+        ))
+        await session.flush()
+        verdict = await gj.judge(session, round_, "GTA SA")
+        assert verdict.correct and not verdict.same_series
+        assert verdict.source == "alias" and not ai.calls
+
     async def test_the_same_normalised_answer_is_judged_once(self, session, round_, ai):
         """Fairness first, cost second: two players who type the same thing must
         get the same verdict."""
@@ -210,7 +240,7 @@ class TestVerdictCache:
             raw_answer="tetris", normalized="tetris", verdict=gj.CORRECT, source="ai",
         ))
         await session.flush()
-        ai.state["verdict"] = False
+        ai.state["verdict"] = "wrong"
 
         v = await gj.judge(session, round_, "tetris")
 
