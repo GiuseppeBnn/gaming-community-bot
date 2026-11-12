@@ -98,6 +98,7 @@ src/                                  # src-layout: i package restano top-level 
 | `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2; 20 Domande è legacy v1 |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
+| `tavern.py` | Offerte private, ricevute persistenti e consumazione di scorte |
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
 | `leaderboard.py` | `/classifiche` con switcher inline (monete · XP · trofei) |
 | `fun_ai.py` | Comandi comici one-shot + `/alduino` |
@@ -124,6 +125,7 @@ src/                                  # src-layout: i package restano top-level 
 | `poll_service.py` | Template di sondaggio pre-creati |
 | `shop_service.py` | Cosmetici: acquisto, tag attivi multipli, `apply_cosmetic` |
 | `consumable_service.py` | Consumabili ripetibili (menu Locanda) + conteggi per i trofei |
+| `tavern_service.py` | Conferme regalo atomiche, limiti persistenti e lease annuncio |
 | `catalog_loader.py` | CSV → trofei/ranghi/cosmetici/consumabili/categorie. Letti **solo all'avvio**, fallback ai default |
 | `admin_service.py` | `set_balance` `mass_credit` `get_dossier` `search_users` warn/ban `log_action` `recent_actions` |
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |
@@ -184,6 +186,7 @@ src/                                  # src-layout: i package restano top-level 
 | `poll_templates` | Sondaggi pre-creati |
 | `game_podiums` / `user_progress_events` | Metriche generiche per i trofei (podi, «fatto X volte») |
 | `shop_purchases` | Acquisti cosmetici (`tag_*`) e consumabili (`cons_*`) |
+| `tavern_items` / `tavern_offers` | Scorte consumabili reali, proprietari e ricevute regalo |
 | `warnings` / `admin_actions` | Moderazione e audit trail |
 | `scheduled_tasks` | Azioni future eseguite dallo scheduler in-process |
 | `bot_state` | Key-value di runtime (es. id gruppo effettivo) |

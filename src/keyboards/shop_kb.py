@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -19,6 +21,8 @@ def get_locanda_home_kb(has_cosmetics: bool, has_menu: bool) -> InlineKeyboardMa
         builder.button(text="🍖 Menù della Locanda", callback_data=ShopCb(action="menu").pack())
     builder.button(text="🎨 I miei tag", callback_data=ShopCb(action="tags").pack())
     builder.button(text="🎒 Dispensa", callback_data=ShopCb(action="pantry").pack())
+    from handlers.callbacks import TavernCb
+    builder.button(text="🎁 Le mie offerte", callback_data=TavernCb(action="offers").pack())
     builder.button(text=_CLOSE_TEXT, callback_data=_CLOSE_CB)
     builder.adjust(1)
     return builder.as_markup()

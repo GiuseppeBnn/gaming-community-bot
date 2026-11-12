@@ -9,7 +9,7 @@ id in ``item_id``.
 
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from handlers.callbacks import AdminCb, EventCb
@@ -144,7 +144,7 @@ def mass_remove_kb(users) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def lead_kb(active: str) -> InlineKeyboardMarkup:
+def lead_kb(active: str, page: int = 0, pages: int = 1) -> InlineKeyboardMarkup:
     """Leaderboard switcher inside the dashboard (coins · xp · trofei)."""
     b = InlineKeyboardBuilder()
     for label, key in (("💰 Ricchezza", "coins"), ("⚡ XP", "xp"), ("🏆 Trofei", "trofei")):
@@ -152,8 +152,21 @@ def lead_kb(active: str) -> InlineKeyboardMarkup:
             text=f"• {label} •" if key == active else label,
             callback_data=AdminCb(action="lead_board", key=key).pack(),
         )
-    b.button(text="⬅️ Home", callback_data=AdminCb(action="home").pack())
-    b.adjust(3, 1)
+    b.adjust(3)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            text="⬅️ Precedenti",
+            callback_data=AdminCb(action="lead_board", key=active, item_id=page - 1).pack(),
+        ))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(
+            text="Successivi ➡️",
+            callback_data=AdminCb(action="lead_board", key=active, item_id=page + 1).pack(),
+        ))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="⬅️ Home", callback_data=AdminCb(action="home").pack()))
     return b.as_markup()
 
 

@@ -133,6 +133,11 @@ async def cmd_start(
         from handlers.guess.play import leave_answering
         await leave_answering(message, state)
 
+    if payload.startswith("offri_"):
+        from handlers.tavern import start_offer_private
+        await start_offer_private(message, db_session, payload[6:])
+        return
+
     if payload.startswith("telefono_") and payload[9:].isdigit():
         from handlers.telephone import join
         await join(message, state, db_session, int(payload[9:]))

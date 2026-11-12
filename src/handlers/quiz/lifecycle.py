@@ -18,13 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from filters.admin_filter import IsAdminFilter, is_admin
-from handlers._mentions import mention
+from handlers._mentions import mention_many
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from services import badge_service, group_registry, progress_service, quiz_service
 from utils import cooldown
 from utils.static_reply import reply_static
-from utils.text import esc, format_seconds_short
+from utils.text import chunk_html_lines, esc, format_seconds_short
 
 from handlers.quiz._shared import (
     _QUIZ_PRIVATE_NOTICE,
@@ -209,7 +209,8 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     text = await _podium_text(db_session, quiz.title, ranked, awards)
     if group_registry.get_group_id() != 0:
         try:
-            await group_registry.send_group_message(bot, db_session, text)
+            for page in chunk_html_lines(text):
+                await group_registry.send_group_message(bot, db_session, page)
         except Exception:  # noqa: BLE001
             log.warning("Impossibile annunciare il podio nel gruppo.")
         return True, "🏁 Quiz chiuso. Podio pubblicato nel gruppo."
@@ -225,7 +226,8 @@ async def cmd_chiudi_quiz(message: Message, command: CommandObject, db_session: 
         await message.reply("ℹ️ Uso: <code>/chiudi_quiz &lt;id&gt;</code>")
         return
     ok, msg = await close_quiz(message.bot, db_session, int(raw))
-    await message.reply(msg if ok else f"⚠️ {msg}")
+    for page in chunk_html_lines(msg if ok else f"⚠️ {msg}"):
+        await message.reply(page)
 
 
 async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> str:
@@ -234,9 +236,10 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
     lines = [f"🏁 <b>{esc(title)} — PODIO</b>\n"]
-    for i, row in enumerate(ranked[:10]):
+    names = await mention_many(db_session, [row.user_tg_id for row in ranked])
+    for i, row in enumerate(ranked):
         rank = medals[i] if i < 3 else f"{i + 1}."
-        name = await _display_name(db_session, row.user_tg_id)
+        name = names[row.user_tg_id]
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:
@@ -252,8 +255,4 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
             f" + {settings.quiz_xp_per_correct}/risposta giusta + bonus podio.</i>"
         )
     return "\n".join(lines)
-
-
-async def _display_name(db_session: AsyncSession, tg_id: int) -> str:
-    return await mention(db_session, tg_id)
 

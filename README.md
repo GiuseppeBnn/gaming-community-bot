@@ -185,8 +185,9 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
-| `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
+| `/classifiche` | Classifiche complete: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline, pagine se necessarie) |
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
+| `/offri` (in reply nel gruppo) | 🎁 Compra o regala una scorta a un amico, con scelta e conferma private |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
@@ -312,7 +313,9 @@ conflitti e gli altri errori mantengono gli alert immediati.
 Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
 **personalizzabili** per 1°/2°/3°, un **premio di consolazione a scendere** con **minimo
 garantito** per *tutti* i finisher, e una schermata di riepilogo prima di pubblicare. Si
-gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
+gioca in chat privata; alla chiusura viene pubblicata la **classifica completa**
+dei finisher con i premi, non solo i primi dieci. Anche Guess/Sound mostrano tutti
+i classificati; testi lunghi vengono suddivisi senza escludere partecipanti.
 
 Le domande usano i **quiz nativi Telegram**, anche nella prova admin: risposte
 leggibili fino a **100 caratteri**, spiegazione e timer nativo opzionale. Una sola
@@ -432,7 +435,14 @@ Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica d
   level-up e rank-up vengono annunciati. Gli admin vedono il sistema completo con `/lista_ranghi`.
 - **La Locanda** (`/locanda`): 🏷️ **tag cosmetici** (flair, acquisto una tantum) e 🍖 **menù
   di consumabili** (cibi/bevande riacquistabili che riempiono la 🎒 **dispensa** mostrata sul
-  profilo). Tutto **solo estetico/collezionabile** — nessun permesso reale, nessuna escalation.
+  profilo). Dalla dispensa consumi **una singola unità**, senza perdere acquisti storici o
+  trofei. Con **`/offri`**, in risposta a un membro nel gruppo, scegli e confermi in privato:
+  puoi comprare dal menù oppure regalare una tua scorta senza nuove spese. Il destinatario
+  può consumare il regalo dal messaggio nel gruppo o conservarlo. Inviti personali di
+  10 minuti, massimo 5 aperti e un'offerta confermata al minuto. «Le mie offerte» recupera
+  le ultime 10 ricevute, anche dopo restart; se l'annuncio fallisce, il regalo resta nella
+  dispensa e si può ritentare la sola pubblicazione senza comprare di nuovo.
+  **Nessun vantaggio nei giochi**, bonus economico, permesso Telegram o chiamata AI.
 
 ### Personalizzare con i CSV
 

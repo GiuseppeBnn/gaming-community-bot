@@ -99,6 +99,30 @@ async def _status(session, round_id: int) -> str:
     ).scalar_one()
 
 
+@pytest.mark.parametrize("kind", ["guess", "sound"])
+async def test_close_sends_every_ranking_page_after_payout(
+    session, round_, user_factory, monkeypatch, kind,
+):
+    from unittest.mock import AsyncMock
+    from utils.text import chunk_html_lines
+
+    round_.kind = kind
+    round_.status = "running"
+    await session.flush()
+    await _solve(session, round_, 7, user_factory)
+    text = "🏁 <b>CLASSIFICA</b>\n" + "\n".join(
+        f"{i}. <b>Giocatore {i}</b> " + "🎮" * 40 for i in range(1, 100)
+    )
+    monkeypatch.setattr(lc, "_podium_text", AsyncMock(return_value=text))
+    bot = _Bot()
+
+    ok, _ = await lc.close_round(bot, session, round_.id)
+
+    assert ok and await _coins(session, 7) == 100
+    assert [message[1] for message in bot.messages] == chunk_html_lines(text)
+    assert len(bot.messages) > 1 and "99." in bot.messages[-1][1]
+
+
 class TestOpen:
     async def test_it_announces_and_then_runs(self, session, round_):
         ok, _ = await lc.open_round(_Bot(), session, round_.id)

@@ -152,7 +152,18 @@ _COMMANDS: list[CommandDoc] = [
         details="<i>La Locanda del Drago.</i> Spendi CoInn in due sezioni: 🏷️ "
                 "<b>Personalizzazioni</b> (tag cosmetici da mostrare sul profilo, attivabili "
                 "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
-                "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei).",
+                "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei). "
+                "Dalla dispensa puoi consumare una singola unità; con /offri puoi regalarla. "
+                "Nessun vantaggio nei giochi: consumare non cancella acquisti o trofei.",
+    ),
+    CommandDoc(
+        "offri", "Offri un consumabile a un amico", "🍺 Locanda",
+        usage="/offri (nel gruppo, in risposta a un messaggio)",
+        details="Rispondi a un membro del gruppo con /offri. Scegli e conferma in privato: "
+                "compra dal menù oppure regala una tua scorta, senza nuove spese. "
+                "Il destinatario può consumare il regalo o conservarlo. Invito personale "
+                "valido 10 minuti, massimo un'offerta confermata al minuto. "
+                "Le ultime offerte sono recuperabili da /locanda → Le mie offerte.",
     ),
     # --- 🎲 Giochi rapidi ---
     CommandDoc(

@@ -262,6 +262,44 @@ class ShopPurchase(Base):
     error_reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
 
+class TavernItem(Base):
+    """Mutable ownership of one purchased unit; absent rows mean legacy stock.
+
+    Purchase history remains immutable and continues to drive purchase trophies.
+    The purchase row is the serialization root for materialization and mutations.
+    """
+
+    __tablename__ = "tavern_items"
+
+    purchase_id: Mapped[int] = mapped_column(ForeignKey("shop_purchases.id"), primary_key=True)
+    owner_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class TavernOffer(Base):
+    """Persistent, personal confirmation and delivery receipt for a gift."""
+
+    __tablename__ = "tavern_offers"
+    __table_args__ = (UniqueConstraint("group_id", "request_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    sender_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    recipient_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    request_message_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
+    item_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_purchase_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_purchases.id"), nullable=True)
+    cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    purchase_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_purchases.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    publish_lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
 class GamePodium(Base):
     """A podium finish (rank 1–3) by a user in a community game.
 

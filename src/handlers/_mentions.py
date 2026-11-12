@@ -21,6 +21,21 @@ async def mention(db_session: AsyncSession, tg_id: int) -> str:
         await db_session.execute(select(User).where(User.tg_id == tg_id))
     ).scalar_one_or_none()
     if user is None:
+        return _render(None, tg_id)
+    return _render(user, tg_id)
+
+
+async def mention_many(db_session: AsyncSession, tg_ids: list[int]) -> dict[int, str]:
+    """Resolve a complete ranking in one query instead of one per player."""
+    if not tg_ids:
+        return {}
+    users = (await db_session.execute(select(User).where(User.tg_id.in_(tg_ids)))).scalars().all()
+    by_id = {user.tg_id: user for user in users}
+    return {tg_id: _render(by_id.get(tg_id), tg_id) for tg_id in tg_ids}
+
+
+def _render(user: User | None, tg_id: int) -> str:
+    if user is None:
         return f'<a href="tg://user?id={tg_id}">giocatore</a>'
     if user.username:
         return f"@{esc(user.username)}"

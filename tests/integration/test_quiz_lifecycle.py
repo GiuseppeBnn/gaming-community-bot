@@ -133,6 +133,24 @@ async def _status(session, quiz_id: int) -> str:
     ).scalar_one()
 
 
+async def test_close_sends_every_ranking_page_after_payout(session, user_factory, monkeypatch):
+    from unittest.mock import AsyncMock
+    from utils.text import chunk_html_lines
+
+    group = _Group(monkeypatch)
+    quiz = await _quiz_with_players(session, user_factory)
+    text = "🏁 <b>CLASSIFICA</b>\n" + "\n".join(
+        f"{i}. <b>Giocatore {i}</b> " + "🎮" * 40 for i in range(1, 100)
+    )
+    monkeypatch.setattr(quiz_handlers, "_podium_text", AsyncMock(return_value=text))
+
+    ok, _ = await quiz_handlers.close_quiz(_FakeBot(), session, quiz.id)
+
+    assert ok and await _coins(session, 10) == 1000
+    assert group.messages == chunk_html_lines(text)
+    assert len(group.messages) > 1 and "99." in group.messages[-1]
+
+
 class TestOpen:
     async def test_launching_announces_and_sets_it_running(
         self, session, user_factory, monkeypatch

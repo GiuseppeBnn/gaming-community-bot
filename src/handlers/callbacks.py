@@ -76,6 +76,14 @@ class ShopCb(CallbackData, prefix="shop"):
     key: str | None = None
 
 
+class TavernCb(CallbackData, prefix="tav"):
+    """Integer references only: catalog keys never consume the 64-byte budget."""
+
+    action: str
+    ref: int = 0
+    offer_id: int = 0
+
+
 class RulesCb(CallbackData, prefix="rules"):
     """Initial onboarding acceptance — `handlers/onboarding.py`."""
 
@@ -89,6 +97,13 @@ class LeaderboardCb(CallbackData, prefix="lead"):
     #: "show" | "close"
     action: str
     board: str | None = None
+
+
+class LeaderboardPageCb(CallbackData, prefix="lead_page"):
+    """Separate pagination payload: deployed lead:* tabs remain compatible."""
+
+    board: str
+    page: int
 
 
 class AdminBetCb(CallbackData, prefix="admin_bet"):

@@ -38,7 +38,7 @@ from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
 from handlers.admin import apply_warning, render_audit, render_panel_help, render_stats
 from handlers.admin_betting import _show_event_list
 from handlers.callbacks import AdminCb
-from handlers.leaderboard import render_board
+from handlers.leaderboard import render_board_page
 from middlewares import ban_guard
 from keyboards.admin_dashboard_kb import (
     PAGE_SIZE,
@@ -145,8 +145,9 @@ async def cb_stats(callback: CallbackQuery, db_session: AsyncSession) -> None:
 
 @router.callback_query(AdminCb.filter(F.action == "lead"), IsAdminCallbackFilter())
 async def cb_lead(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    text, page, pages = await render_board_page(db_session, "coins")
     await callback.message.edit_text(
-        await render_board(db_session, "coins"), reply_markup=lead_kb("coins")
+        text, reply_markup=lead_kb("coins", page, pages)
     )
     await callback.answer()
 
@@ -159,9 +160,10 @@ async def cb_lead_board(
     if board not in ("coins", "xp", "trofei"):
         await callback.answer()
         return
+    text, page, pages = await render_board_page(db_session, board, callback_data.item_id or 0)
     try:
         await callback.message.edit_text(
-            await render_board(db_session, board), reply_markup=lead_kb(board)
+            text, reply_markup=lead_kb(board, page, pages)
         )
     except Exception:  # noqa: BLE001 — "message not modified"
         pass

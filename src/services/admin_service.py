@@ -209,11 +209,11 @@ async def count_users(session: AsyncSession) -> int:
     return (await session.execute(select(func.count()).select_from(User))).scalar_one()
 
 
-async def leaderboard(session: AsyncSession, limit: int = 10) -> list[tuple[User, int]]:
+async def leaderboard(session: AsyncSession, limit: int | None = None) -> list[tuple[User, int]]:
     result = await session.execute(
         select(User, Wallet.coins)
         .join(Wallet, Wallet.tg_id == User.tg_id)
-        .order_by(Wallet.coins.desc())
+        .order_by(Wallet.coins.desc(), User.tg_id.asc())
         .limit(limit)
     )
     return [(row[0], row[1]) for row in result.all()]

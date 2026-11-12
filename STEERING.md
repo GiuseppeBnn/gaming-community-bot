@@ -350,6 +350,12 @@ per coprire tutti i ~190 handler.
 
 Cosa fa: logga con `exc_info` più `user_id`/`username`/`chat_id`/`callback_data`/testo — l'obiettivo
 è che la riga di log basti da sola ad agire — poi risponde all'utente (alert sulle callback).
+Il contesto si ricava dal vero `Update` tramite il resolver di aiogram
+(`UserContextMiddleware.resolve_event_context`), non da `update.event_from_user`:
+quest'ultimo è una chiave DI, non un attributo. Il log include anche `update_id`;
+voti/inline senza messaggio vengono registrati senza inventare chat o inviare DM.
+I test usano modelli aiogram reali e attraversano anche `Dispatcher.feed_update`,
+verificando che l'eccezione originale resti nel log e il polling possa proseguire.
 Senza di esso un'eccezione non gestita lasciava il bot **muto** e, sulle callback, il bottone con lo
 spinner appeso fino al timeout di Telegram.
 
@@ -570,15 +576,62 @@ saldo dell'apertore). Niente item di moderazione (rimossi: erano grief).
 
 Acquisto **ripetibile** (non idempotente, a differenza dei cosmetici): spende CoInn, logga una
 riga `ShopPurchase` (`group_id=0`, `success=True`) e accumula la **dispensa** dell'utente
-(mostrata sul profilo). **Nessun permesso Telegram, nessun effetto di gioco** → puro sink +
-fuel trofei. L'inventario è **derivato** da `shop_purchases` (COUNT per `item_key`): nessuna
-colonna su `User`. Flusso: `ShopCb(action="menu").pack()` (`shop:menu:`) →
+(mostrata sul profilo). **Nessun permesso Telegram, nessun vantaggio nei giochi**.
+`purchase_counts` resta il COUNT storico per i trofei, immutabile dopo regali/consumi.
+Le scorte correnti usano `TavernItem`: una unità per `ShopPurchase.id`, proprietario e
+`consumed_at`. Una riga assente significa vecchia scorta, ancora disponibile al compratore.
+Non servono backfill massivi: primo uso/trasferimento prende un lock sulla **colonna** della
+riga acquisto, materializza l'unità se assente, poi UPDATE SQL condizionale su proprietario e
+`consumed_at IS NULL`. Tutti gli writer rispettano `purchase → item`; mai cancellare acquisti
+o assegnare trofei d'acquisto al destinatario. `stock_summary` aggrega quantità e prima unità
+in una query; UNION ALL di due insiemi disgiunti (legacy/owner corrente) usa gli indici utente,
+non un filtro COALESCE su tutti gli acquisti. Nessuna colonna su `User`.
+Flusso: `ShopCb(action="menu").pack()` (`shop:menu:`) →
 `ShopCb(action="cat", key=<key>).pack()` (`shop:cat:<key>`) → `ShopCb(action="cbuy",
 key=<key>).pack()` (`shop:cbuy:<key>`) → `ShopCb(action="cexec", key=<key>).pack()`
 (`shop:cexec:<key>`) (debit con lock wallet → `record_consumption` → **flush** → milestone check →
 commit). Il **flush prima del milestone check** è obbligatorio (autoflush off: la query dei
 conteggi non vedrebbe l'INSERT pendente). Catalogo CSV `consumables.csv` +
 `consumable_categories.csv` (§12.2).
+
+### 11.c Offerte e consumazione reale
+
+`handlers/tavern.py` e `services/tavern_service.py` aggiungono `/offri` in risposta a un
+membro del gruppo effettivo: no self, bot o identità anonime; entrambi registrati.
+`TavernOffer` conserva mittente/destinatario, token personale, scadenza, selezione congelata,
+costo, unità e ricevuta. UNIQUE `(group_id, request_message_id)` deduplica l'update.
+Deep-link `offri_<token>` riconvalida identità/gruppo; callback `TavernCb` solo riferimenti
+numerici, sotto 64 byte anche con chiavi catalogo lunghe. Scelta/conferma/cancellazione e
+dispensa sono private; il gruppo non vede mai il saldo.
+
+`draft → prepared → delivered` oppure cancellazione; selezione immutabile dopo `prepared`.
+Scadenza 10 minuti verificata all'uso (anche **dopo** l'attesa sui lock), massimo 5 pendenti,
+un'offerta consegnata al minuto per mittente, persistente e non aggirabile con altri draft.
+Conferma: membership Telegram fresca fail-closed, poi `offer → User/Wallet ordinati →
+purchase → item`. Lock root con letture di colonne, mai fidarsi della identity map.
+Regalo da scorta = trasferimento senza spesa; nuovo acquisto = debit + acquisto + trasferimento
++ trofei del compratore + stato ricevuta nella **stessa transazione**, commit dell'handler.
+Prezzo cambiato dal catalogo? Rifiuta e richiede una nuova conferma. Errori => rollback;
+nessun commit nei service. Il campo `LedgerEntry.reference_id` è FK a `betting_events`,
+quindi un ID offerta **non** va mai scritto lì: la ricevuta conserva il riferimento proprio.
+Anche i normali acquisti cosmetici/consumabili prendono `User → Wallet` prima del debit:
+update del tag e FK dei trofei non devono invertire l'ordine rispetto ai regali.
+ACK del pulsante di conferma prima delle chiamate membership; eventuali errori successivi
+arrivano in DM, senza provare a rispondere a una callback Telegram ormai scaduta.
+
+Annuncio Telegram solo post-commit; se fallisce il destinatario possiede comunque l'oggetto.
+«Le mie offerte» riprende le ultime 10 ricevute e permette di ritentare **solo l'annuncio**.
+Claim SQL con lease 60s + fence sul timestamp e `message_id`: niente publisher simultanei
+e nessun nuovo addebito. Rete con timeout 10s; crash tra send e salvataggio può lasciare una
+card duplicata dopo retry, **mai un secondo regalo** (limite Telegram già accettato altrove).
+Solo destinatario + gruppo + ID messaggio/unità corrispondenti possono usare i bottoni pubblici.
+Conservare non consuma; bere/consumare fa CAS sull'unità precisa, quindi il replay non prende
+la successiva. Scorte paginabili, nessun reset FSM e nessuna dipendenza da Redis o LLM.
+Nuove tabelle via `create_all`, incluse nell'export metadata. Nessuna modifica a premi/XP,
+salvo i normali trofei dell'acquisto effettivo. Le vecchie scorte rimangono disponibili.
+
+Questa è la prima tranche della Locanda sociale. Scene di coppia, ricette segrete e ricordi
+sono pianificati separatamente; **non** ancora attivi. Nessun evento natalizio incluso.
 
 > **Anti-collisione chiavi**: consumabili `cons_*`, cosmetici `tag_*` — condividono
 > `shop_purchases.item_key` ma i registry sono disgiunti, quindi `has_cosmetic` e
@@ -717,7 +770,7 @@ xp_to_reach_level(level) -> int        # XP cumulativi per il livello (inverso, 
 progress_bar(prog, width=6) -> str     # ▰▰▱▱ puro (no HTML), per il profilo
 rank_for_level(level) -> Rank | None   # tier = max(min_level ≤ level), registry §12.2
 rank_for_xp(xp) -> Rank | None         # tier via level_for_xp(xp).level
-leaderboard_xp(session, limit=10)
+leaderboard_xp(session, limit=None)   # tutti; limite solo se richiesto esplicitamente
 ```
 
 **Livelli (GTA-style):** la progressione mostrata all'utente è un **livello numerico**, non l'XP
@@ -764,6 +817,21 @@ sempre `.pack()` / `LeaderboardCb.filter(F.action == ...)`. `render_board` è ri
 dashboard con `AdminCb(action="lead_board", key=<board>).pack()`
 (`adm:lead_board:<board>:`). Board: 💰 `admin_service.leaderboard`, ⚡ `xp_service.leaderboard`, 🏆
 `badge_service.leaderboard_trophies`.
+
+Tutte le query di classifica hanno `limit=None` di default (un limite esplicito resta
+supportato). Nessun top 10 implicito; parità stabilizzate con `User.tg_id` come ultimo
+criterio. I trofei continuano a includere solo chi ne possiede almeno uno.
+`render_board` produce il testo completo; `render_board_page` lo suddivide solo se
+necessario per Telegram. I tab pubblici `lead:*` restano compatibili; la navigazione
+usa `LeaderboardPageCb(board, page)` (`lead_page:*`). La dashboard riusa le stesse
+pagine con `AdminCb(action="lead_board", key=board, item_id=page)`. Indici scaduti
+vengono limitati all'intervallo esistente, board sconosciute non interrogano il DB.
+Il comando admin `/classifica` e i risultati finali Trivia/Guess/Sound inviano tutte
+le parti in sequenza. `utils.text.chunk_html_lines` mantiene righe/tag HTML integri
+anche con nomi multilinea e conta unità UTF-16; il margine di 3900 lascia spazio alla
+numerazione delle pagine. Nomi delle classifiche evento risolti in batch con
+`handlers._mentions.mention_many`, non con una query per giocatore. Premi, soli
+finisher Trivia e inclusione dei non-risolutori Guess/Sound restano invariati.
 
 ---
 
@@ -1314,6 +1382,10 @@ A fine: quiz `ready`.
 - **Navigazione**: ogni step ha «⬅️ Indietro» (`QuizNewCb(action="back").pack()`,
   `quiz_new:back::`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
+  Il riepilogo accetta solo gli stati `waiting_question_text`/`reviewing`; un vecchio
+  pulsante fuori flusso viene risposto senza query o modifiche alla FSM corrente.
+  L'esistenza di `quiz_id` intero e della bozza `draft` viene verificata prima di
+  impostare `reviewing`, anche se Redis ha perso i dati o la bozza è stata eliminata.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
   (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di

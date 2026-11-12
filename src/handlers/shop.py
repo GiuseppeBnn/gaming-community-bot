@@ -101,8 +101,9 @@ def _home_text(balance: int) -> str:
         "🍺 <b>La Locanda del Drago</b>\n\n"
         f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>\n\n"
         "🏷️ <b>Personalizzazioni</b> — tag da sfoggiare sul profilo.\n"
-        "🍖 <b>Menù della Locanda</b> — cibi e bevande da collezionare.\n"
-        "🎒 <b>Dispensa</b> — cosa hai accumulato."
+        "🍖 <b>Menù della Locanda</b> — cibi e bevande da consumare o offrire.\n"
+        "🎒 <b>Dispensa</b> — le tue scorte disponibili.\n"
+        "🎁 Per offrire, rispondi a un amico nel gruppo con /offri."
     )
 
 
@@ -228,8 +229,9 @@ async def cb_shop_execute(
         return
 
     try:
-        # Debit FIRST: this takes the wallet row lock, serializing concurrent
-        # purchases of the same user.
+        # Match gift/account flows: User -> Wallet, before cosmetic User writes.
+        await economy_service.lock_users_then_wallets(db_session, (tg_id,))
+        # Debit takes the wallet row lock, serializing concurrent purchases.
         await economy_service.debit(
             db_session,
             tg_id,
@@ -305,7 +307,7 @@ async def cb_shop_category(
         return
     tg_id = callback.from_user.id
     balance = await _balance(db_session, tg_id)
-    counts = await consumable_service.purchase_counts(db_session, tg_id)
+    counts = await consumable_service.stock_counts(db_session, tg_id)
     await callback.message.edit_text(
         f"{cat.emoji} <b>{esc(cat.name)}</b>\n\n"
         f"🪙 Il tuo saldo: <b>{balance:,} CoInn</b>\n\n"
@@ -363,6 +365,8 @@ async def cb_consumable_execute(
 
     tg_id = callback.from_user.id
     try:
+        # Trophy FK inserts can lock User too: keep the same account order as gifts.
+        await economy_service.lock_users_then_wallets(db_session, (tg_id,))
         # Debit takes the wallet row lock (serializes concurrent buys); consumables
         # are repeatable so there's no idempotency re-check.
         await economy_service.debit(
@@ -389,7 +393,7 @@ async def cb_consumable_execute(
     await announce_trophies(callback.bot, db_session, tg_id, newly)
 
     text = (
-        f"✅ <b>Gustato!</b> {item.emoji}\n\n"
+        f"✅ <b>Acquistato!</b> {item.emoji}\n\n"
         f"Hai acquistato <b>{esc(item.name)}</b> — finisce nella tua 🎒 Dispensa.\n"
         f"💸 Hai speso <b>{item.price:,} 🪙</b>."
     )
@@ -399,17 +403,8 @@ async def cb_consumable_execute(
 
 @router.callback_query(ShopCb.filter(F.action == "pantry"))
 async def cb_shop_pantry(callback: CallbackQuery, db_session: AsyncSession) -> None:
-    items = await consumable_service.inventory(db_session, callback.from_user.id)
-    if not items:
-        text = (
-            "🎒 <b>La tua Dispensa</b>\n\n"
-            "<i>È vuota! Passa dal 🍖 Menù della Locanda per riempirla.</i>"
-        )
-    else:
-        lines = ["🎒 <b>La tua Dispensa</b>\n"]
-        lines += [f"{it.emoji} <b>{esc(it.name)}</b> ×{qty}" for it, qty in items]
-        text = "\n".join(lines)
-    await callback.message.edit_text(text, reply_markup=get_pantry_kb())
+    from handlers.tavern import show_pantry
+    await show_pantry(callback.message, db_session, callback.from_user.id)
     await callback.answer()
 
 

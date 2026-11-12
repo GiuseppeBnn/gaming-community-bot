@@ -50,6 +50,7 @@ from handlers import (
     quiz,
     schedule,
     shop,
+    tavern,
     telephone,
     twenty_questions,
 )
@@ -64,6 +65,7 @@ ROUTERS: tuple[Router, ...] = (
     badges.router,
     leaderboard.router,
     shop.router,
+    tavern.router,
     dice.router,
     images.router,          # explicit admin command before quiz/guess free-text FSMs
     admin.router,

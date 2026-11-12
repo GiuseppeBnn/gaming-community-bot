@@ -713,3 +713,76 @@ class TestRandomizeSummary:
         """It is what the review screen shows before publishing; naming the wrong
         combination would have the admin publish a shuffle they did not choose."""
         assert qz._randomize_summary(questions, answers) == expected
+
+
+@pytest.mark.parametrize("current_state,data", [
+    (None, {}),
+    ("GuessCreationStates.waiting_title", {"title": "Another activity"}),
+    (qz.QuizCreationStates.waiting_title, {"title": "A new quiz"}),
+    (qz.QuizCreationStates.waiting_question_options, {"quiz_id": 123, "q_text": "In progress"}),
+])
+async def test_stale_review_does_not_hijack_another_flow(current_state, data):
+    """A callback from old history must not set reviewing before validating FSM."""
+    from unittest.mock import AsyncMock
+
+    state = _state()
+    await state.set_state(current_state)
+    await state.set_data(data)
+    before = await state.get_state()
+    callback = _FakeCallback(QuizNewCb(action="review").pack())
+    db_session = AsyncMock()
+
+    await qz.cb_review(callback, state, db_session)
+
+    assert await state.get_state() == before
+    assert await state.get_data() == data
+    assert callback.alerts and "non è più attivo" in callback.alerts[0]
+    assert callback.message.texts == []
+    db_session.execute.assert_not_awaited()
+
+
+@pytest.mark.parametrize("quiz_id", [None, "invalid", 999999])
+async def test_review_without_an_existing_draft_is_safe(session, quiz_id):
+    state = _state()
+    await state.set_state(qz.QuizCreationStates.waiting_question_text)
+    data = {"quiz_id": quiz_id, "saved_count": 1}
+    await state.set_data(data)
+    callback = _FakeCallback(QuizNewCb(action="review").pack())
+
+    await qz.cb_review(callback, state, session)
+
+    assert "non è più attivo" in callback.message.said
+    assert await state.get_state() == qz.QuizCreationStates.waiting_question_text.state
+    assert await state.get_data() == data
+    assert callback.answers == [(None, False)]
+
+
+@pytest.mark.parametrize("status", ["ready", "running", "finished"])
+async def test_review_does_not_reopen_a_published_quiz(session, status):
+    state = _state()
+    await _walk_to_questions(session, state)
+    data = await state.get_data()
+    quiz = await _quiz_row(session, data["quiz_id"])
+    quiz.status = status
+    await session.commit()
+    callback = _FakeCallback(QuizNewCb(action="review").pack())
+
+    await qz.cb_review(callback, state, session)
+
+    assert "non è più attivo" in callback.message.said
+    assert await state.get_state() == qz.QuizCreationStates.waiting_question_text.state
+    assert await state.get_data() == data
+    assert (await _quiz_row(session, quiz.id)).status == status
+
+
+async def test_review_returns_from_the_next_question_to_existing_draft(session):
+    state = _state()
+    await _walk_to_questions(session, state)
+    await _add_question(session, state)
+    await qz.cb_add_question(_FakeCallback(QuizNewCb(action="add").pack()), state)
+    callback = _FakeCallback(QuizNewCb(action="review").pack())
+
+    await qz.cb_review(callback, state, session)
+
+    assert "Riepilogo quiz" in callback.message.said
+    assert await state.get_state() == qz.QuizCreationStates.reviewing.state

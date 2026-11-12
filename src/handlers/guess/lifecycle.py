@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config_data.config import settings
 from database.models import ScheduledTask
 from filters.admin_filter import is_admin
-from handlers._mentions import mention
+from handlers._mentions import mention_many
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from services import (
@@ -42,7 +42,7 @@ from services import (
 )
 from utils import cooldown
 from utils.static_reply import reply_static
-from utils.text import esc, format_seconds_short
+from utils.text import chunk_html_lines, esc, format_seconds_short
 
 from handlers.guess._shared import _GUESS_PRIVATE_NOTICE, kind_of, log, router, send_media
 
@@ -235,7 +235,8 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
         except Exception as exc:  # noqa: BLE001 — a dead file_id is not a bug here
             log.warning("Reveal del media del round %s fallito: %s", round_id, exc)
         try:
-            await group_registry.send_group_message(bot, db_session, text)
+            for page in chunk_html_lines(text):
+                await group_registry.send_group_message(bot, db_session, page)
         except Exception:  # noqa: BLE001
             log.warning("Impossibile annunciare il podio del round %s.", round_id)
         return True, "🏁 Round chiuso. Podio pubblicato nel gruppo."
@@ -328,10 +329,11 @@ async def _podium_text(db_session: AsyncSession, round_, ranked, awards) -> str:
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
     lines = [f"{spec.emoji} {header}", f"<b>CLASSIFICA {esc(spec.label.upper())}</b>\n"]
-    for i, row in enumerate(ranked[:10]):
+    names = await mention_many(db_session, [row.user_tg_id for row in ranked])
+    for i, row in enumerate(ranked):
         # Medals only for solvers on the actual podium; everyone else is numbered.
         rank = medals[i] if (row.solved and i < 3) else f"{i + 1}."
-        who = await mention(db_session, row.user_tg_id)
+        who = names[row.user_tg_id]
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 from collections.abc import Iterable
+from html.parser import HTMLParser
 
 # Count UTF-16 units conservatively, including HTML markup. This also bounds
 # emoji-heavy messages, where a Python character may take two Telegram units.
@@ -53,6 +54,38 @@ def chunk_blocks(
     if current:
         chunks.append(sep.join(current))
     return chunks
+
+
+class _HTMLDepth(HTMLParser):
+    """Track balanced markup so newlines inside names/links remain atomic."""
+
+    depth = 0
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        self.depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        self.depth = max(0, self.depth - 1)
+
+
+def chunk_html_lines(text: str, limit: int = _CHUNK_LIMIT) -> list[str]:
+    """Pack an already escaped HTML ranking without splitting rows or tags.
+
+    Entries (including embedded newlines) must individually fit the limit,
+    just as with ``chunk_blocks``. No text is removed or parsed back to HTML.
+    """
+    parser = _HTMLDepth(convert_charrefs=False)
+    blocks: list[str] = []
+    pending: list[str] = []
+    for line in text.split("\n"):
+        pending.append(line)
+        parser.feed(line + "\n")
+        if parser.depth == 0:
+            blocks.append("\n".join(pending))
+            pending = []
+    if pending:
+        blocks.append("\n".join(pending))
+    return chunk_blocks(blocks, limit=limit)
 
 
 def format_duration(seconds: int) -> str:

@@ -456,10 +456,22 @@ def _randomize_summary(randomize_questions: bool, randomize_answers: bool) -> st
     return "nessuna"
 
 
+_STALE_REVIEW_NOTICE = (
+    "Questo riepilogo non è più attivo. Usa /quiz per gestire i quiz "
+    "o /crea_quiz per crearne uno nuovo."
+)
+
+
 async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
-    await state.set_state(QuizCreationStates.reviewing)
     data = await state.get_data()
-    quiz = await quiz_service.get_quiz(db_session, data["quiz_id"])
+    quiz_id = data.get("quiz_id")
+    quiz = await quiz_service.get_quiz(db_session, quiz_id) if type(quiz_id) is int else None
+    if quiz is None or quiz.status != "draft":
+        # Old keyboards survive cleared/expired FSM data and deleted/published
+        # drafts. Do not turn missing context into a new, unusable review state.
+        await message.answer(_STALE_REVIEW_NOTICE)
+        return
+    await state.set_state(QuizCreationStates.reviewing)
     lines = ["🧠 <b>Riepilogo quiz</b>\n", f"📌 <b>{esc(quiz.title)}</b>"]
     if quiz.description:
         lines.append(f"<i>{esc(quiz.description)}</i>")
@@ -491,6 +503,14 @@ async def cb_back(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(QuizNewCb.filter(F.action == "review"), IsAdminCallbackFilter())
 async def cb_review(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    if await state.get_state() not in {
+        QuizCreationStates.waiting_question_text.state,
+        QuizCreationStates.reviewing.state,
+    }:
+        # This button is intentionally stateless at router level: acknowledge
+        # stale callbacks too, without hijacking another admin/player flow.
+        await callback.answer(_STALE_REVIEW_NOTICE, show_alert=True)
+        return
     await _prompt_review(callback.message, state, db_session)
     await callback.answer()
 

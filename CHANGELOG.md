@@ -6,6 +6,11 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Vecchio riepilogo del creatore quiz** — un bottone senza più la sua FSM o
+  bozza valida viene rifiutato senza errori e senza sovrascrivere altri flussi.
+- **Fallback errori aiogram** — contesto estratto dal vero `Update`, non da un
+  attributo inesistente. Messaggi, callback e voti preservano l'errore originale
+  nei log, con ID update; regressione verificata anche nel dispatcher reale.
 - **Navigazione tra giochi privati** — Guess/Sound non intercettano più i comandi;
   un nuovo link libera la sola modalità di risposta senza azzerare tempo o tentativi.
   Ripresa scaduta rifiutata subito e vecchi bottoni «Esci» innocui per le nuove FSM.
@@ -21,6 +26,11 @@ Modifiche rilevanti al bot. Formato ispirato a
   Nessun retry automatico pagato né aumento del budget.
 
 ### Aggiunto
+- **Locanda sociale, prima tranche** — scorte reali consumabili e `/offri` in reply:
+  scelta/conferma private, acquisto regalo o trasferimento dalla dispensa, ricevute
+  persistenti e consumazione riservata al destinatario. Storico e trofei preservati,
+  vecchie scorte compatibili senza backfill, limiti anti-spam persistenti, annuncio
+  ritentabile senza nuovi addebiti. Nessun bonus ai giochi, LLM o evento natalizio.
 - **Saga corretta in Guess/Sound** — feedback distinto per serie o capitolo diverso,
   senza vittoria né soluzione rivelata. Un solo giudizio AI con enum strict,
   cache condivisa e normale consumo del tentativo; alias admin ancora autorevoli.
@@ -43,6 +53,10 @@ Modifiche rilevanti al bot. Formato ispirato a
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **Classifiche complete** — nessun taglio implicito ai primi dieci in ricchezza,
+  livelli, trofei e risultati Trivia/Guess/Sound. Pagine navigabili nelle viste
+  interattive, messaggi consecutivi negli annunci; HTML/emoji preservati e nomi
+  recuperati in batch. Premi e criteri di partecipazione invariati.
 - **Trivia Nerd con quiz nativi Telegram** — al posto dei bottoni a riga singola,
   opzioni fino a 100 caratteri, spiegazioni e timer nativo. Presentazione condivisa
   con la prova admin, senza scritture in classifica durante le prove. Mapping

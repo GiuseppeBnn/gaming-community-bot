@@ -354,15 +354,15 @@ async def get_all_badges(session: AsyncSession) -> list[Badge]:
 
 
 async def leaderboard_trophies(
-    session: AsyncSession, limit: int = 10
+    session: AsyncSession, limit: int | None = None
 ) -> list[tuple[User, int]]:
-    """Top users by number of trophies earned (tie-break: XP). Excludes 0-trophy users."""
+    """All trophy holders by count, then XP/id. An explicit limit is optional."""
     count = func.count(UserBadge.id)
     result = await session.execute(
         select(User, count)
         .join(UserBadge, UserBadge.user_tg_id == User.tg_id)
         .group_by(User.tg_id)
-        .order_by(count.desc(), User.xp.desc())
+        .order_by(count.desc(), User.xp.desc(), User.tg_id.asc())
         .limit(limit)
     )
     return [(row[0], row[1]) for row in result.all()]
