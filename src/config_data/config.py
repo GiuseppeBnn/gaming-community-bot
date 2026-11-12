@@ -79,6 +79,19 @@ class Settings(BaseSettings):
     ai_monthly_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     twentyq_openrouter_budget_usd: Decimal = Field(default=Decimal("4.00"), ge=0)
     openrouter_other_budget_usd: Decimal = Field(default=Decimal("1.00"), ge=0)
+    # Test rollout only. Images share the existing other/global caps, never a
+    # second purse. Only fixed per-image pricing is admitted by the adapter.
+    telephone_enabled: bool = False
+    telephone_image_model: str = Field(
+        default="black-forest-labs/flux-3-image-klein", min_length=3, max_length=128,
+    )
+    telephone_image_provider: str = Field(
+        default="black-forest-labs", min_length=1, max_length=128,
+    )
+    telephone_image_max_usd: Decimal = Field(
+        default=Decimal("0.012"), ge=Decimal("0.000001"), le=Decimal("0.05"),
+    )
+    telephone_image_timeout_seconds: int = Field(default=90, ge=10, le=120)
     ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
     # Preserve the strict judge model; only its transport changes to OpenRouter.
     openrouter_judge_model: str = "openai/gpt-oss-120b"

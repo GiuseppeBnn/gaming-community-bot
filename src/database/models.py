@@ -816,6 +816,37 @@ class TwentyQuestionsGame(Base):
     winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
 
 
+class TelephoneGame(Base):
+    """Policy snapshot for a four-image, open-participation relay."""
+
+    __tablename__ = "telephone_games"
+
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    image_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_cap_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
+    reveal_announced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+
+class TelephoneVisit(Base):
+    """An exposed stage cannot be visited again, even after abandoning it."""
+
+    __tablename__ = "telephone_visits"
+    __table_args__ = (UniqueConstraint("token"),)
+
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stage: Mapped[int] = mapped_column(Integer, nullable=False)
+    token: Mapped[str] = mapped_column(String(36), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
+
+
 class AIGameRewardSettlement(Base):
     """Immutable reward-policy snapshot and settlement result for one v2 game."""
 

@@ -42,6 +42,10 @@ class StartResult:
     message: str
     alert: bool = False
     post_commit: PostCommitHook | None = None
+    # Optional audit request. The generic caller knows the acting Telegram user
+    # (unlike the spec), and records it in the same mutation transaction.
+    audit_action: str | None = None
+    audit_detail: str | None = None
 
 
 @runtime_checkable

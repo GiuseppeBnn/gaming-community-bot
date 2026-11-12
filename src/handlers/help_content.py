@@ -276,7 +276,7 @@ _COMMANDS: list[CommandDoc] = [
                usage="/lista_ranghi", admin_only=True,
                details="Mostra la curva dei livelli (XP per salire, crescita %) e come i "
                        "nomi-rango (Novizio→Leggenda) si mappano sulle fasce di livello."),
-    CommandDoc("eventi", "Hub eventi: quiz, Guess The Game, Sound Quest, sondaggi, scommesse",
+    CommandDoc("eventi", "Hub eventi: quiz, giochi, staffette, sondaggi e scommesse",
                "🎬 Eventi",
                usage="/eventi", admin_only=True,
                details="Crea quiz, <b>Guess The Game</b> (indovina il gioco da una foto), "
@@ -289,7 +289,11 @@ _COMMANDS: list[CommandDoc] = [
                        "parità conta il tempo. Le risposte libere le giudica l'AI, quindi "
                        "«GTA SA» vale «Grand Theft Auto: San Andreas» — ma la <b>serie da "
                        "sola non basta</b>. In creazione puoi aggiungere grafie alternative "
-                       "sempre accettate: sono la rete di sicurezza se l'AI non risponde."),
+                       "sempre accettate: sono la rete di sicurezza se l'AI non risponde.\n\n"
+                       "<b>Telefono senza fili</b> (se abilitato): quattro passaggi "
+                       "privati testo/immagine, una persona per passaggio. Due minuti "
+                       "per descrivere l'ultima immagine, massimo 150 caratteri; "
+                       "il gruppo scopre la catena alla fine. Nessun premio CoInn/XP."),
     CommandDoc(
         "gioco_alduino",
         "Regole e stato del gioco segreto di Alduino",

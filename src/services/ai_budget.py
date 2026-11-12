@@ -159,18 +159,36 @@ async def reserve(
     max_output_tokens: int,
 ) -> Reservation:
     """Atomically reserve the worst-case cost before a paid network call."""
-    global_cap = usd_to_microusd(settings.ai_monthly_budget_usd)
-    lane_cap = _configured_lane_cap(budget_lane)
-    if global_cap == 0 or lane_cap == 0:
-        raise AIBudgetExceeded("OpenRouter budget exhausted")
-
-    period = current_period()
     estimate = estimate_cost_microusd(
         estimate_input_tokens(system_prompt, user_text),
         max_output_tokens,
         max_prompt_price=settings.openrouter_max_prompt_price,
         max_completion_price=settings.openrouter_max_completion_price,
     )
+    return await reserve_cost(
+        feature=feature, budget_lane=budget_lane, provider=provider,
+        requested_model=requested_model, estimated_microusd=estimate,
+    )
+
+
+async def reserve_cost(
+    *, feature: str, provider: str, requested_model: str,
+    estimated_microusd: int, budget_lane: BudgetLane = "openrouter_other",
+) -> Reservation:
+    """Reserve an explicit upper bound for non-token billing (e.g. one image).
+
+    The caller must validate the provider's units and price before calling this.
+    Settlement and atomic monthly/lane guards are identical to text requests.
+    """
+    if isinstance(estimated_microusd, bool) or not isinstance(estimated_microusd, int) or estimated_microusd <= 0:
+        raise ValueError("a positive integer cost bound is required")
+    global_cap = usd_to_microusd(settings.ai_monthly_budget_usd)
+    lane_cap = _configured_lane_cap(budget_lane)
+    if global_cap == 0 or lane_cap == 0:
+        raise AIBudgetExceeded("OpenRouter budget exhausted")
+
+    period = current_period()
+    estimate = estimated_microusd
     request_id = str(uuid4())
     now = datetime.now(UTC).replace(tzinfo=None)
 

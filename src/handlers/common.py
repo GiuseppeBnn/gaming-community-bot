@@ -126,6 +126,11 @@ async def cmd_start(
 
     payload = command.args or ""
 
+    if payload.startswith("telefono_") and payload[9:].isdigit():
+        from handlers.telephone import join
+        await join(message, state, db_session, int(payload[9:]))
+        return
+
     # Deep-link: admin (admin tools dashboard)
     if payload == "admin":
         if await is_bot_admin(message.bot, message.from_user.id):

@@ -2285,6 +2285,55 @@ trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).
 
 ## 27. Inline eventi & giochi AI persistenti
 
+### Telefono senza fili (rollout test, opt-in)
+
+`telephone` è un tipo-evento registrato, senza ramificazioni in hub/scheduler.
+Condivide `AIGameSession` e il ledger `AIGameTurn`; le nuove tabelle
+`TelephoneGame` (snapshot modello/provider/prezzo massimo) e `TelephoneVisit`
+(esposizione, token, prompt DM e descrizione) nascono da `metadata.create_all`.
+Nessuna modifica alle colonne preesistenti, nessun premio CoInn/XP.
+
+Una sola staffetta running per gruppo (advisory lock PostgreSQL all'avvio), quattro
+partecipanti distinti, massimo quattro immagini e 30 minuti complessivi. Deep-link
+`telefono_<id>` → verifica membership fail-closed → claim SQL condizionale → commit
+→ consegna privata protetta → armo i 120 secondi per scrivere. Il lease di consegna
+è separato (30 secondi). Chi ha prenotato/può aver visto non rientra nella catena,
+anche dopo un abbandono. Nessun roster obbligatorio: la staffetta torna libera.
+
+Le descrizioni (1–150 caratteri) arrivano solo come reply al prompt DM persistito,
+con identità e token validi e nessun altro FSM attivo; comandi e altri reply non
+vengono intercettati. `begin_generation` fa CAS prima della rete: un duplicato
+non genera. Il provider riceve **solo l'ultima descrizione + stile fisso**, senza
+chat, cronologia, prompt iniziale o immagini precedenti. `image_service` usa Image
+API OpenRouter async, provider pinned, `n=1`, PNG 1K e controllo listino fresco
+che rifiuta unità sconosciute. Lo schema `ImageGenerationProviderPreferences`
+non espone `max_price`: non inviare il campo del router testuale fingendo che sia
+un vincolo immagini. Il tetto è un gate di preflight con margine; un cambio prezzo
+tra GET e POST resta un limite dichiarato. Per un hard cap esterno usare il limite
+mensile sulla key OpenRouter, non alzarlo automaticamente per le immagini.
+`ai_budget.reserve_cost` prenota il tetto immagine nella lane `openrouter_other`
+e nel cap globale già esistenti, senza aumenti. Costo assente/timeout = addebito
+conservativo del tetto; nessun retry automatico del POST pagato. Ledger senza prompt.
+
+I task `expire` interni rilasciano i writer scaduti e chiudono generazioni rimaste
+orfane dopo 180 secondi. Una generazione ammessa prima della deadline può terminare;
+poi si chiude la catena. Errori/restart non riavviano lavori pagati ambigui.
+Una card gruppo viene editata per progresso e reveal sfogliabile (nessun invio
+ripetuto di album), con una notifica finale best-effort prenotata una volta nel DB;
+gli admin possono riprovare la presentazione dagli Eventi
+senza rigenerare immagini. La primissima `send_message` conserva il consueto limite
+Telegram send→salvataggio: un crash in quella finestra può lasciare una card orfana,
+non una seconda generazione pagata. Il contenuto privato non è inviolabile agli
+screenshot: `protect_content` riduce inoltri accidentali, non garantisce segretezza.
+
+`TELEPHONE_ENABLED=false` per default: il rilascio del codice non abilita prod.
+`StartResult.audit_action/audit_detail` permette alla spec di richiedere audit:
+il caller generico registra l'admin effettivo nella stessa transazione prima
+del commit, senza indovinarlo dal creatore della partita.
+Dettagli operativi e limiti: `docs/telephone-2026-11-12.md`.
+
+### Altri giochi persistenti e inline
+
 L'inline mode è esclusivamente una proiezione **read-only** di eventi aperti e
 avvii futuri. `services.event_discovery` interroga soltanto le capability
 opzionali `discover_open` / `describe_scheduled` dei tipi registrati: vietati

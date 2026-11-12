@@ -24,6 +24,7 @@ dato corrente, non questo indice come metrica verificabile.
 | [INDEX.md](INDEX.md) | Questo file: mappa dei file | Non sai **dove** sta una cosa |
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
 | [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
+| [docs/telephone-2026-11-12.md](docs/telephone-2026-11-12.md) | Telefono senza fili: flusso, concorrenza, budget immagini e rollout test | Gestisci o modifichi la staffetta |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
 | [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |

@@ -6,6 +6,11 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Aggiunto
+- **Telefono senza fili (opt-in test)** — quattro passaggi testo/immagine in
+  privato, staffetta aperta senza roster, prenotazioni SQL atomiche e scadenze
+  persistenti. Finale sfogliabile nella card del gruppo con una sola notifica.
+  Immagini OpenRouter con listino verificato, tetto per immagine e budget mensile
+  condiviso; niente retry pagati automatici, premi CoInn/XP o attivazione in prod.
 - **Gioco di Alduino senza scroll** — `/gioco` (alias di `/gioco_alduino`) mostra
   stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
   verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla

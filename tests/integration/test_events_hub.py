@@ -252,6 +252,7 @@ class TestHub:
             EventCb(action="list", task_type="poll").pack(),
             EventCb(action="list", task_type="bet").pack(),
             EventCb(action="list", task_type="twentyq").pack(),
+            EventCb(action="list", task_type="telephone").pack(),
             AdminCb(action="home").pack(),
         }
         assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)

@@ -24,6 +24,12 @@ from aiogram.filters.callback_data import CallbackData
 from pydantic import ValidationInfo, field_validator
 
 
+class TelephoneCb(CallbackData, prefix="tel"):
+    action: str
+    game_id: int
+    stage: int = 0
+
+
 def _legacy_int_text(value: object) -> object:
     """Apply the replaced ``int()`` parser's lexical contract and normalization.
 

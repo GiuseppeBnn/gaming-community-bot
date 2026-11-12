@@ -98,6 +98,15 @@ def _state():
                       key=StorageKey(bot_id=1, chat_id=USER_ID, user_id=USER_ID))
 
 
+async def test_telephone_deep_link_dispatches_to_membership_guarded_join(session, user_factory, monkeypatch):
+    from handlers import telephone
+    await user_factory(USER_ID, onboarding_completed=True)
+    spy = _Spy()
+    monkeypatch.setattr(telephone, "join", spy)
+    await common.cmd_start(_FakeMessage(), _command("telefono_42"), _state(), session)
+    assert spy.called and spy.calls[0][0][-1] == 42
+
+
 @pytest.fixture(autouse=True)
 def _no_admins(monkeypatch):
     """Nobody is an admin unless a test says so, and no cooldown leaks in."""
