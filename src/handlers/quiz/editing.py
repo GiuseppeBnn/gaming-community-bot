@@ -27,6 +27,8 @@ from utils.text import esc
 
 from handlers.quiz._shared import (
     _MAX_EXPLANATION,
+    _explanation_error,
+    _correct_prompt,
     _MAX_OPTION,
     _MAX_OPTIONS,
     _MAX_QUESTION,
@@ -316,7 +318,7 @@ async def fsm_edit_explanation(
     message: Message, state: FSMContext, db_session: AsyncSession
 ) -> None:
     raw = (message.text or "").strip()
-    if err := _too_long(raw, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
+    if err := _explanation_error(raw):
         await message.answer(err, reply_markup=_edit_cancel_kb())
         return
     explanation = None if raw == "-" else raw
@@ -372,7 +374,7 @@ async def fsm_edit_options(message: Message, state: FSMContext) -> None:
     await state.update_data(edit_options=options)
     await state.set_state(QuizEditStates.editing_correct)
     await message.answer(
-        "Quale opzione è quella <b>corretta</b>?", reply_markup=_edit_correct_kb(options)
+        _correct_prompt(options), reply_markup=_edit_correct_kb(options)
     )
 
 

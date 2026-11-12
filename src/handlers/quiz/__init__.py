@@ -5,8 +5,8 @@ prizes → per-question time limit → shuffling → a loop of questions).
 
 Play: when launched, the bot posts an announcement in the group with a "Gioca"
 button (deep-link). Each participant plays in their OWN private chat — questions
-are sent one at a time as inline option buttons, advancing on answer and showing
-the explanation, with an optional per-question countdown.
+are sent one at a time as native quiz polls, advancing on answer and showing
+the explanation, with an optional native per-question countdown.
 
 Podium: finishers (answered every question) are ranked by correct answers DESC,
 then by how long the player took ASC, with arrival order as the final tie-break.

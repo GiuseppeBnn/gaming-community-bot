@@ -19,7 +19,7 @@ from services import quiz_service, schedule_service
 from services.public_event import PublicEvent
 from utils.text import esc
 
-from .base import StartResult, edit_or_send
+from .base import PostCommitHook, StartResult, edit_or_send
 
 # Status → (dot, human label) for the list and detail header.
 _STATUS = {
@@ -204,9 +204,23 @@ class QuizType:
 
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
-    ) -> None:
+    ) -> PostCommitHook | None:
         from handlers.quiz import close_quiz, open_quiz
         from services.schedule_service import TaskSkip
+
+        payload = schedule_service.task_payload(task)
+        if payload.get("action") == "expire" and payload.get("internal") is True:
+            from handlers.quiz.play import finish_expiry, prepare_expiry
+
+            token = payload.get("poll_token")
+            if not isinstance(token, str) or not token:
+                raise ValueError("Missing native quiz poll token")
+            delivery = await prepare_expiry(session, token)
+            if delivery is not None:
+                async def after_commit() -> None:
+                    await finish_expiry(bot, session, delivery)
+                return after_commit
+            return None
 
         # A scheduled close reuses this same task_type with an action payload — the
         # pattern the guess auto-close and the betting auto-lock already use. No new

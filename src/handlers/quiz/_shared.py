@@ -15,7 +15,8 @@ import logging
 
 from aiogram import Router
 
-from utils.text import too_long as _too_long  # noqa: F401 — shared flow helper
+from services.poll_service import question_length
+from utils.text import esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -30,12 +31,8 @@ _MIN_OPTIONS, _MAX_OPTIONS = 2, 10
 _MAX_TITLE = 256
 _MAX_DESC = 1024
 _MAX_QUESTION = 300
-# The options are inline buttons in private play, and a full-width button shows
-# only a short single line before Telegram truncates it. 30 is what fits without
-# the answer being visually cut — and `_question_kb` slices to exactly this, so
-# the validated cap and the displayed cap can no longer diverge (they did: the
-# button hard-cut at 40 while this allowed 100, so answers 31–100 were cut).
-_MAX_OPTION = 30
+# Native poll options wrap in Telegram's dedicated UI (not single-line buttons).
+_MAX_OPTION = 100
 _MAX_EXPLANATION = 200
 
 # Quiz management (list/start/close) is admin-only AND private-only: in a group it
@@ -43,14 +40,38 @@ _MAX_EXPLANATION = 200
 _QUIZ_PRIVATE_NOTICE = "🧠 Gestisci i quiz in chat privata col bot."
 
 
+def _too_long(text: str, cap: int, subject: str) -> str | None:
+    """Native polls count UTF-16 units, including emoji, not Python code points."""
+    length = question_length(text)
+    if length <= cap:
+        return None
+    return (
+        f"⚠️ {subject}: <b>{length}/{cap}</b> caratteri.\n"
+        f"Accorcia di {length - cap} e reinvia."
+    )
+
+
+def _explanation_error(text: str) -> str | None:
+    return _too_long(text, _MAX_EXPLANATION, "La spiegazione è troppo lunga") or (
+        "⚠️ La spiegazione può contenere al massimo due a capo." if text.count("\n") > 2 else None
+    )
+
+
+def _correct_prompt(options: list[str]) -> str:
+    """Admin selectors remain buttons: show full options above their short labels."""
+    return "Quale opzione è quella <b>corretta</b>?\n\n" + "\n".join(
+        f"<b>{index}.</b> {esc(text)}" for index, text in enumerate(options, start=1)
+    )
+
+
 def _options_error(options: list[str]) -> str | None:
     """Validate a parsed option list (count + per-option length). Shared by the
     creation and the edit flow so both enforce exactly the same rules."""
     if not (_MIN_OPTIONS <= len(options) <= _MAX_OPTIONS):
         return f"⚠️ Servono da {_MIN_OPTIONS} a {_MAX_OPTIONS} opzioni (una per riga)."
-    long_ones = [(i, o) for i, o in enumerate(options, start=1) if len(o) > _MAX_OPTION]
+    long_ones = [(i, o) for i, o in enumerate(options, start=1) if question_length(o) > _MAX_OPTION]
     if long_ones:
-        detail = "\n".join(f"• opzione {i}: {len(o)}/{_MAX_OPTION}" for i, o in long_ones)
+        detail = "\n".join(f"• opzione {i}: {question_length(o)}/{_MAX_OPTION}" for i, o in long_ones)
         return (
             f"⚠️ Ogni opzione può essere al massimo <b>{_MAX_OPTION}</b> caratteri.\n{detail}\n"
             "Accorcia e reinvia tutte le opzioni."

@@ -117,6 +117,7 @@ src/                                  # src-layout: i package restano top-level 
 | `badge_service.py` | `sync_trophies` `award_badge` `check_and_award_milestones` `describe_condition` `leaderboard_trophies` |
 | `progress_service.py` | `record_podium` / `record_event` + i relativi conteggi (alimentano i trofei) |
 | `quiz_service.py` | Quiz: creazione, domande, risposte, `podium`, `award_prizes`, `claim_close` |
+| `quiz_poll_service.py` | Quiz nativi privati: lease di invio, mapping opzioni, consumo atomico e scadenze persistenti |
 | `guess_service.py` | Round, sessioni per giocatore, tentativi, `standings`, `award_prizes` |
 | `guess_judge.py` | `normalize` `aliases_of` `judge` — verdetto in 4 stadi, dal più economico al più costoso |
 | `prizes.py` | `participation_floor` `consolation_amounts` — schedule premi condiviso da ogni gioco col podio |
@@ -178,7 +179,7 @@ src/                                  # src-layout: i package restano top-level 
 | `ledger` | Ogni movimento di denaro (tipo, importo, riferimento) |
 | `badges` / `user_badges` | Catalogo trofei (rarità, condizione, `condition_param`, hidden) e assegnazioni |
 | `betting_events` / `betting_options` / `user_bets` | Scommesse: evento, esiti, puntate |
-| `quizzes` / `quiz_questions` / `quiz_answers` | Quiz e partite |
+| `quizzes` / `quiz_questions` / `quiz_answers` / `quiz_polls` | Quiz, partite e sondaggi privati per domanda/giocatore |
 | `guess_rounds` / `guess_sessions` / `guess_attempts` | Giochi «indovina»: round, run per giocatore, tentativi (+cache verdetti) |
 | `poll_templates` | Sondaggi pre-creati |
 | `game_podiums` / `user_progress_events` | Metriche generiche per i trofei (podi, «fatto X volte») |

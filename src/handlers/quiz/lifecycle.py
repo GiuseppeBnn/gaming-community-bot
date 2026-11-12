@@ -64,7 +64,7 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
             f"🧠 <b>QUIZ: {esc(quiz.title)}</b>\n"
             f"❓ {len(quiz.questions)} domande · {tl_text} · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ne azzecca di più — "
-            "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁"
+            "a parità conta il tempo impiegato. Premio garantito a tutti i finisher! 🏁"
             f"{desc_txt}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(

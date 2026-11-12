@@ -377,6 +377,7 @@ class QuizQuestion(Base):
     correct_option_id: Mapped[int] = mapped_column(Integer, nullable=False)
     explanation: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     open_period: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    # Legacy shared-poll handles. Current per-player handles live in QuizPoll.
     tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -397,6 +398,35 @@ class QuizAnswer(Base):
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class QuizPoll(Base):
+    """One private native poll per question/player; never shared between players.
+
+    The delivery token fences delayed sends and callbacks, including across a
+    quiz reset. A short sending lease prevents double /start from sending twice.
+    """
+
+    __tablename__ = "quiz_polls"
+    __table_args__ = (UniqueConstraint("question_id", "user_tg_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    quiz_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("quiz_questions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    token: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    option_order_json: Mapped[str] = mapped_column(String(256), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
+    shown_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    lease_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class PollTemplate(Base):

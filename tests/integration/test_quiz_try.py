@@ -1,450 +1,204 @@
-"""Tests for the admin test-run of a quiz (§19.b).
-
-Two properties are under test.
-
-1. The defining one is negative: a test run must leave NO trace in the DB, so it
-   can never reach the podium, the prizes, the XP or the leaderboard. Asserted
-   directly (zero `quiz_answers` rows) rather than by trusting a filter.
-
-2. The run must be keyed on the ADMIN who tapped, not on the author of the
-   message carrying the button. Every test therefore drives the real callback
-   entry points (`cb_try_start` / `cb_try_answer` / `cb_try_stop`) with a message
-   authored by the BOT — which is what production always hands them, since the
-   button lives on a message the bot itself sent. An earlier version of these
-   tests called `start_quiz_try` directly with an admin-authored fake message: a
-   shape that never occurs in production, which is exactly how the identity bug
-   slipped through green tests.
-"""
+"""Admin native poll dry-run stays structurally outside scores and prizes."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import func, select
 
-from database.models import QuizAnswer
+from database.models import QuizAnswer, QuizPoll, ScheduledTask
 from handlers.callbacks import QuizTryCb
-from handlers.quiz import trying as quiz_handlers
+from handlers.poll_vote import on_poll_answer
+from handlers.quiz import trying as trial
 from services import quiz_service
-
-ADMIN_ID = 42
-BOT_ID = 777  # the bot authors every message that carries a quiz_try button
-
-
-class _FakeBot:
-    async def send_message(self, *a, **kw):  # pragma: no cover - not exercised
-        raise AssertionError("the test run must not send group messages")
-
-
-class _FakeMessage:
-    """A message as the bot sent it: `from_user` is the BOT, like in production."""
-
-    def __init__(self, user_id=BOT_ID):
-        self.bot = _FakeBot()
-        self.from_user = SimpleNamespace(id=user_id)
-        self.chat = SimpleNamespace(id=ADMIN_ID, type="private")
-        self.replies = []
-
-    async def answer(self, text, reply_markup=None):
-        self.replies.append((text, reply_markup))
-        return SimpleNamespace(message_id=len(self.replies))
-
-    async def edit_text(self, text, **kw):
-        self.replies.append((text, None))
-
-
-class _FakeCallback:
-    def __init__(self, data, message, user_id=ADMIN_ID):
-        self.data = data
-        self.message = message
-        self.from_user = SimpleNamespace(id=user_id)
-        self.answers = []
-
-    async def answer(self, text=None, show_alert=False):
-        self.answers.append(text)
-
-
-def _cbs(markup):
-    if markup is None:
-        return []
-    return [b.callback_data for row in markup.inline_keyboard for b in row if b.callback_data]
-
-
-def _answer_callback(markup, choice=0):
-    answers = [
-        callback_data
-        for data in _cbs(markup)
-        if (callback_data := QuizTryCb.unpack(data)).action == "answer"
-    ]
-    assert answers, "the test run should be offering answer buttons"
-    return answers[choice]
-
-
-async def _make_quiz(session, *, status="ready"):
-    quiz = await quiz_service.create_quiz(session, 9, "Prova", "d")
-    await quiz_service.add_question(
-        session, quiz.id, "Capitale d'Italia?", ["Roma", "Milano"], 0, "È Roma."
-    )
-    await quiz_service.add_question(session, quiz.id, "2+2?", ["3", "4"], 1, None)
-    await quiz_service.set_status(session, quiz.id, status)
-    await session.commit()
-    return quiz
-
-
-async def _answer_count(session, quiz_id):
-    return (
-        await session.execute(
-            select(func.count()).select_from(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id)
-        )
-    ).scalar_one()
-
-
-async def _start(message, session, quiz_id):
-    """Enter the test run the way production does: a tap on the bot's own message."""
-    callback_data = QuizTryCb(action="start", quiz_id=quiz_id)
-    await quiz_handlers.cb_try_start(
-        _FakeCallback(callback_data.pack(), message), callback_data, session
-    )
-
-
-async def _answer_current(message, session, *, choice=0):
-    """Tap one of the answer buttons the flow last offered. Returns the callback."""
-    callback_data = _answer_callback(message.replies[-1][1], choice)
-    cb = _FakeCallback(callback_data.pack(), message)
-    await quiz_handlers.cb_try_answer(cb, callback_data, session)
-    return cb
-
-
-def _try_state(quiz_id: int):
-    return quiz_handlers._TRY.get((quiz_id, ADMIN_ID))
-
-
-class TestRunIsKeyedOnTheAdmin:
-    """Regression: the run used to be stored under `message.from_user.id`, which for
-    a bot-sent message is the BOT — so the lookup on answer (keyed on the tapping
-    admin) always missed and every answer was refused with "Prova scaduta"."""
-
-    def teardown_method(self):
-        quiz_handlers._TRY.clear()
-
-    async def test_answering_right_after_start_is_accepted(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        cb = await _answer_current(message, session)
-
-        assert not any("scaduta" in (a or "") for a in cb.answers)
-        # The flow moved on to question 2 instead of stalling.
-        assert "Domanda 2/2" in message.replies[-1][0]
-
-    async def test_run_is_stored_under_the_admin_not_the_message_author(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-
-        assert (quiz.id, ADMIN_ID) in quiz_handlers._TRY
-        assert (quiz.id, BOT_ID) not in quiz_handlers._TRY
-
-    async def test_stop_then_restart_then_answer(self, session):
-        """The exact flow reported: exit the run, reopen it from the quiz, answer."""
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
-        await _start(message, session, quiz.id)
-        cb = await _answer_current(message, session)
-
-        assert not any("scaduta" in (a or "") for a in cb.answers)
-        assert await _answer_count(session, quiz.id) == 0
-
-    async def test_stop_leaves_no_orphan_entry_at_all(self, session):
-        """Not just "no entry for the admin": the whole map must be clean, or the
-        run stored under the wrong key would leak until the process restarts."""
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
-
-        assert quiz_handlers._TRY == {}
-
-    async def test_a_second_admin_gets_an_independent_run(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        other_admin = 99
-
-        await _start(message, session, quiz.id)
-        callback_data = QuizTryCb(action="start", quiz_id=quiz.id)
-        await quiz_handlers.cb_try_start(
-            _FakeCallback(callback_data.pack(), message, user_id=other_admin),
-            callback_data,
-            session,
-        )
-        # Only the second admin answers; the first one's progress must not move.
-        callback_data = _answer_callback(message.replies[-1][1])
-        await quiz_handlers.cb_try_answer(
-            _FakeCallback(callback_data.pack(), message, user_id=other_admin),
-            callback_data,
-            session,
-        )
-
-        assert quiz_handlers._TRY[(quiz.id, ADMIN_ID)].index == 0
-        assert quiz_handlers._TRY[(quiz.id, other_admin)].index == 1
-
-
-class TestRunLeavesNoTrace:
-    def teardown_method(self):
-        quiz_handlers._TRY.clear()
-
-    async def test_full_run_records_nothing_in_db(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        for _ in range(2):
-            await _answer_current(message, session)
-
-        assert await _answer_count(session, quiz.id) == 0
-        # ...and the quiz is still ready to be started for real.
-        refreshed = await quiz_service.get_quiz(session, quiz.id)
-        assert refreshed.status == "ready"
-
-    async def test_run_does_not_reach_the_podium(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        for _ in range(2):
-            await _answer_current(message, session)
-
-        assert await quiz_service.podium(session, quiz.id) == []
-        assert await quiz_service.answered_count(session, quiz.id, ADMIN_ID) == 0
-
-    async def test_final_screen_reports_the_score(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        for _ in range(2):
-            await _answer_current(message, session)
-
-        final = message.replies[-1][0]
-        assert "Prova completata" in final
-        assert "Nessun dato è stato salvato" in final
-
-    async def test_every_message_is_marked_as_a_test(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-
-        assert "MODALITÀ PROVA" in message.replies[0][0]
-        assert "🧪" in message.replies[1][0]
-
-
-class TestRunGuards:
-    def teardown_method(self):
-        quiz_handlers._TRY.clear()
-
-    async def test_refused_for_a_running_quiz(self, session):
-        quiz = await _make_quiz(session, status="running")
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-
-        assert "solo per un quiz" in message.replies[-1][0]
-        assert _try_state(quiz.id) is None
-
-    async def test_stop_clears_the_run(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-        assert _try_state(quiz.id) is not None
-
-        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
-
-        assert _try_state(quiz.id) is None
-        assert await _answer_count(session, quiz.id) == 0
-
-    async def test_answering_without_an_active_run_is_rejected(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        loaded = await quiz_service.get_quiz(session, quiz.id)
-
-        callback_data = QuizTryCb(
-            action="answer", quiz_id=quiz.id, question_id=loaded.questions[0].id, option_id=0
-        )
-        cb = _FakeCallback(callback_data.pack(), message)
-        await quiz_handlers.cb_try_answer(cb, callback_data, session)
-
-        assert any("scaduta" in (a or "") for a in cb.answers)
-        assert await _answer_count(session, quiz.id) == 0
-
-
-class _UneditableMessage(_FakeMessage):
-    """Telegram refuses to edit messages older than 48h. The test run must degrade
-    to a fresh message rather than swallow the feedback."""
-
-    async def edit_text(self, text, **kw):
-        raise RuntimeError("message can't be edited")
-
-
-class TestRunRefusals:
-    """Everything the test run says no to. All of it is reachable from a real tap:
-    the buttons stay on screen after the run ends, the quiz can be started or
-    edited from another device while the run is open, and callback data is just
-    text an old keyboard carries."""
-
-    def teardown_method(self):
-        quiz_handlers._TRY.clear()
-
-    async def test_a_quiz_that_no_longer_exists(self, session):
-        message = _FakeMessage()
-
-        await _start(message, session, 999_999)
-
-        assert "non trovato" in message.replies[-1][0]
-
-    async def test_a_quiz_with_no_questions_cannot_be_tried(self, session):
-        """There is nothing to show, and an empty run would report «0/0 corrette»
-        as if the quiz were fine."""
-        quiz = await quiz_service.create_quiz(session, 9, "Vuoto", "d")
-        await quiz_service.set_status(session, quiz.id, "ready")
-        await session.commit()
-        message = _FakeMessage()
-
-        await _start(message, session, quiz.id)
-
-        assert "non trovato" in message.replies[-1][0]
-        assert _try_state(quiz.id) is None
-
-    async def test_answer_without_question_or_option_is_refused_before_side_effects(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        ctx = _try_state(quiz.id)
-        callback_data = QuizTryCb(action="answer", quiz_id=quiz.id)
-        cb = _FakeCallback(callback_data.pack(), message)
-
-        await quiz_handlers.cb_try_answer(cb, callback_data, session)
-
-        assert any("non validi" in (a or "") for a in cb.answers)
-        assert _try_state(quiz.id) is ctx
-        assert ctx.index == 0
-        assert await _answer_count(session, quiz.id) == 0
-
-    async def test_answering_a_question_already_passed_is_refused(self, session):
-        """The previous question's message keeps its buttons; tapping one must not
-        rewind the run or count a second time."""
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        stale = _answer_callback(message.replies[-1][1])
-        await _answer_current(message, session)
-
-        cb = _FakeCallback(stale.pack(), message)
-        await quiz_handlers.cb_try_answer(cb, stale, session)
-
-        assert any("già risposto" in (a or "") for a in cb.answers)
-        assert _try_state(quiz.id).index == 1
-
-    async def test_a_quiz_started_mid_run_ends_the_run(self, session):
-        """The admin launched it for real from another screen: continuing the test
-        run would show a «nothing was saved» banner over a live quiz."""
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        callback_data = _answer_callback(message.replies[-1][1])
+from tests.quiz_support import Bot, Callback, Message, answer, make_quiz
+
+
+@pytest.fixture(autouse=True)
+def isolate(monkeypatch):
+    from config_data.config import settings
+
+    monkeypatch.setattr(settings, "admin_ids", [42])
+    trial._TRY.clear()
+    yield
+    trial._TRY.clear()
+
+
+async def start(session, **kw):
+    quiz = await make_quiz(session, status="ready", **kw)
+    bot = Bot()
+    # This is a BOT-authored message, as in production callback entry points.
+    msg = Message(bot, user_id=42)
+    msg.from_user = SimpleNamespace(id=777, is_bot=True)
+    cb = Callback(msg, user_id=42)
+    await trial.cb_try_start(cb, QuizTryCb(action="start", quiz_id=quiz.id), session)
+    return quiz, bot, msg
+
+
+async def test_native_dry_run_never_writes_scores_deliveries_or_tasks(session):
+    quiz, bot, msg = await start(session, shuffle=True, limit=30)
+    assert (quiz.id, 42) in trial._TRY and (quiz.id, 777) not in trial._TRY
+    assert "MODALITÀ PROVA" in bot.said
+    for _ in range(2):
+        ctx = trial._TRY[(quiz.id, 42)]
+        assert bot.polls[-1]["description"].startswith("🧪 PROVA")
+        assert bot.polls[-1]["open_period"] is None
+        correct = bot.polls[-1]["correct_option_ids"][0]
+        await on_poll_answer(answer(ctx.poll_id, [correct]), session, bot)
+    assert "Prova completata" in bot.said and "2/2" in bot.said
+    assert not trial._TRY
+    for model in (QuizAnswer, QuizPoll, ScheduledTask):
+        assert (await session.execute(select(func.count()).select_from(model))).scalar_one() == 0
+    assert await quiz_service.podium(session, quiz.id) == []
+    assert await quiz_service.award_prizes(session, quiz.id) == []
+
+
+async def test_wrong_answer_and_duplicate_are_not_recounted(session):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+    vote = answer(ctx.poll_id, [1])
+    await on_poll_answer(vote, session, bot)
+    await on_poll_answer(vote, session, bot)
+    assert ctx.index == 1 and ctx.correct == 0 and len(bot.polls) == 2
+    await on_poll_answer(answer(ctx.poll_id, [1]), session, bot)
+    assert "1/2" in bot.said
+
+
+@pytest.mark.parametrize("options,user", [([], 42), ([0, 1], 42), ([9], 42), ([0], 99)])
+async def test_invalid_and_foreign_answers_cannot_advance(session, options, user):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+    await on_poll_answer(answer(ctx.poll_id, options, user), session, bot)
+    assert ctx.index == 0 and len(bot.polls) == 1
+
+
+async def test_admin_revocation_stops_trial(session, monkeypatch):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+
+    async def denied(*args):
+        return False
+
+    monkeypatch.setattr(trial, "is_admin", denied)
+    await on_poll_answer(answer(ctx.poll_id), session, bot)
+    assert not trial._TRY and len(bot.polls) == 1
+
+
+async def test_stop_and_restart_retire_old_poll(session):
+    quiz, bot, msg = await start(session)
+    old = trial._TRY[(quiz.id, 42)].poll_id
+    await trial.cb_try_start(Callback(msg), QuizTryCb(action="start", quiz_id=quiz.id), session)
+    assert bot.stopped == [(42, 1)]
+    assert trial._TRY[(quiz.id, 42)].poll_id != old
+    await on_poll_answer(answer(old), session, bot)
+    assert trial._TRY[(quiz.id, 42)].index == 0
+    await trial.cb_try_stop(Callback(msg), QuizTryCb(action="stop", quiz_id=quiz.id))
+    assert not trial._TRY and "interrotta" in bot.said
+    await trial.cb_try_stop(Callback(msg), QuizTryCb(action="stop", quiz_id=quiz.id))
+
+
+@pytest.mark.parametrize("status", ["running", "finished"])
+async def test_non_ready_quiz_is_refused(session, status):
+    quiz = await make_quiz(session, status=status)
+    msg = Message()
+    await trial.start_quiz_try(msg, session, quiz.id, 42)
+    assert "solo per un quiz" in msg.bot.said and not trial._TRY
+
+
+async def test_missing_empty_and_group_quizzes_do_not_start(session):
+    msg = Message()
+    await trial.start_quiz_try(msg, session, 999, 42)
+    assert "non trovato" in msg.bot.said
+    quiz = await make_quiz(session, status="ready", count=0)
+    await trial.start_quiz_try(msg, session, quiz.id, 42)
+    await trial.start_quiz_try(Message(chat_type="group"), session, quiz.id, 42)
+    assert not trial._TRY and not msg.bot.polls
+
+
+@pytest.mark.parametrize("delete_quiz", [False, True])
+async def test_quiz_started_or_deleted_during_trial_stops_safely(session, delete_quiz):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+    if delete_quiz:
+        await quiz_service.delete_quiz(session, quiz.id)
+    else:
         await quiz_service.set_status(session, quiz.id, "running")
-        await session.commit()
-
-        cb = _FakeCallback(callback_data.pack(), message)
-        await quiz_handlers.cb_try_answer(cb, callback_data, session)
-
-        assert any("non è più in prova" in (a or "") for a in cb.answers)
-        assert _try_state(quiz.id) is None
-
-    async def test_an_option_index_out_of_range_is_refused(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        question_id = _try_state(quiz.id).order[0]
-
-        callback_data = QuizTryCb(
-            action="answer", quiz_id=quiz.id, question_id=question_id, option_id=99
-        )
-        cb = _FakeCallback(callback_data.pack(), message)
-        await quiz_handlers.cb_try_answer(cb, callback_data, session)
-
-        assert any("Opzione non valida" in (a or "") for a in cb.answers)
-
-    async def test_a_question_deleted_mid_run_is_refused(self, session):
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        ctx = _try_state(quiz.id)
-        ctx.order[ctx.index] = 999_999
-
-        callback_data = QuizTryCb(
-            action="answer", quiz_id=quiz.id, question_id=999_999, option_id=0
-        )
-        cb = _FakeCallback(callback_data.pack(), message)
-        await quiz_handlers.cb_try_answer(cb, callback_data, session)
-
-        assert any("Domanda non valida" in (a or "") for a in cb.answers)
-
-    async def test_a_question_deleted_between_two_answers_ends_the_run(self, session):
-        """`_present_try_question` can find the next id gone (the editor deleted it
-        while the run was open); finishing beats showing a blank screen."""
-        quiz = await _make_quiz(session)
-        message = _FakeMessage()
-        await _start(message, session, quiz.id)
-        _try_state(quiz.id).order[1] = 999_999
-
-        await _answer_current(message, session)
-
-        assert "Prova completata" in message.replies[-1][0]
-        assert _try_state(quiz.id) is None
-
-    async def test_presenting_without_a_run_does_nothing(self, session):
-        """Defensive: `_present_try_question` is also reached after a stop."""
-        quiz = await _make_quiz(session)
-        loaded = await quiz_service.get_quiz(session, quiz.id)
-        message = _FakeMessage()
-
-        await quiz_handlers._present_try_question(message, session, loaded, ADMIN_ID)
-
-        assert message.replies == []
+    await session.commit()
+    await on_poll_answer(answer(ctx.poll_id), session, bot)
+    assert not trial._TRY and "non è più disponibile" in bot.said
 
 
-class TestOldMessages:
-    def teardown_method(self):
-        quiz_handlers._TRY.clear()
+async def test_deleted_current_question_ends_trial_without_score(session):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+    ctx.order[0] = 999
+    await on_poll_answer(answer(ctx.poll_id), session, bot)
+    assert not trial._TRY and "Prova completata" in bot.said
 
-    async def test_stopping_on_an_uneditable_message_still_confirms(self, session):
-        quiz = await _make_quiz(session)
-        message = _UneditableMessage()
-        await _start(message, session, quiz.id)
 
-        callback_data = QuizTryCb(action="stop", quiz_id=quiz.id)
-        await quiz_handlers.cb_try_stop(_FakeCallback(callback_data.pack(), message), callback_data)
+async def test_missing_next_question_finishes_and_legacy_callbacks_are_retired(session):
+    quiz, bot, msg = await start(session)
+    ctx = trial._TRY[(quiz.id, 42)]
+    ctx.order[1] = 999
+    await on_poll_answer(answer(ctx.poll_id), session, bot)
+    assert not trial._TRY
+    cb = Callback(msg)
+    await trial.cb_try_answer(cb, QuizTryCb(action="answer", quiz_id=quiz.id))
+    assert "quiz nativi" in cb.answers[-1]
 
-        assert "interrotta" in message.replies[-1][0]
-        assert _try_state(quiz.id) is None
 
-    async def test_answering_on_an_uneditable_message_still_shows_the_feedback(self, session):
-        """Without the fallback the admin taps, sees nothing change, and taps again."""
-        quiz = await _make_quiz(session)
-        message = _UneditableMessage()
-        await _start(message, session, quiz.id)
+async def test_native_trial_reuses_presenter_without_holding_transaction(session):
+    quiz = await make_quiz(session, status="ready", count=1)
+    bot = Bot(session)
+    msg = Message(bot)
+    await trial.start_quiz_try(msg, session, quiz.id, 42)
+    ctx = trial._TRY[(quiz.id, 42)]
+    await on_poll_answer(answer(ctx.poll_id), session, bot)
+    assert "Prova completata" in bot.said
 
-        await _answer_current(message, session)
 
-        assert any("Esatto" in t or "Sbagliato" in t for t, _ in message.replies)
+async def test_trial_stopped_while_poll_is_sending_closes_orphan(session):
+    quiz = await make_quiz(session, status="ready")
+    bot = Bot()
+    original = bot.send_poll
+
+    async def interrupted(**kwargs):
+        sent = await original(**kwargs)
+        trial._TRY.clear()
+        return sent
+
+    bot.send_poll = interrupted
+    await trial.start_quiz_try(Message(bot), session, quiz.id, 42)
+    assert not trial._TRY and bot.stopped == [(42, 1)]
+
+
+async def test_stale_trial_cannot_pop_replacement_or_process_old_vote(session, monkeypatch):
+    quiz, bot, msg = await start(session)
+    old = trial._TRY[(quiz.id, 42)]
+    replacement = trial._TryCtx(quiz.id, [999])
+
+    async def restarted(*args):
+        trial._TRY[(quiz.id, 42)] = replacement
+        return True
+
+    monkeypatch.setattr(trial, "is_admin", restarted)
+    await on_poll_answer(answer(old.poll_id), session, bot)
+    await trial._finish(bot, 42, old)
+    assert trial._TRY[(quiz.id, 42)] is replacement
+    assert old.index == 0 and len(bot.polls) == 1
+
+
+async def test_trial_stopped_during_commit_does_not_send_next_poll(session, monkeypatch):
+    quiz, bot, msg = await start(session)
+    old = trial._TRY[(quiz.id, 42)]
+    vote = answer(old.poll_id)
+    original = session.commit
+
+    async def stopped():
+        await original()
+        trial._TRY.clear()
+
+    monkeypatch.setattr(session, "commit", stopped)
+    assert await trial.on_answer(vote, bot, session)
+    assert not trial._TRY and len(bot.polls) == 1

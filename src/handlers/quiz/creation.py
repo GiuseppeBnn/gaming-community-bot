@@ -33,6 +33,8 @@ from utils.text import esc
 from handlers.quiz._shared import (
     _MAX_DESC,
     _MAX_EXPLANATION,
+    _explanation_error,
+    _correct_prompt,
     _MAX_OPTION,
     _MAX_OPTIONS,
     _MAX_QUESTION,
@@ -431,7 +433,7 @@ async def _prompt_correct(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_correct)
     options = (await state.get_data()).get("q_options", [])
     await message.answer(
-        "Quale opzione è quella <b>corretta</b>?", reply_markup=_correct_kb(options)
+        _correct_prompt(options), reply_markup=_correct_kb(options)
     )
 
 
@@ -781,7 +783,7 @@ async def cb_correct(callback: CallbackQuery, state: FSMContext, callback_data: 
 @router.message(QuizCreationStates.waiting_explanation, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_explanation(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     explanation = (message.text or "").strip()
-    if err := _too_long(explanation, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
+    if err := _explanation_error(explanation):
         await message.answer(err, reply_markup=_explanation_kb())
         return
     await _save_question(message, state, db_session, explanation)

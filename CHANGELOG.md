@@ -6,6 +6,9 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Guard membership sugli update reali** — legge anche il payload del contenitore
+  `Update` ricevuto da `dp.update`, preservando l'oggetto inoltrato al dispatcher.
+  I voti dei quiz privati passano dallo stesso controllo dei messaggi privati.
 - **Staffetta e timeout immagini** — gli errori transitori non eliminano subito
   la partita: pausa di due minuti e una sola ripresa manuale, con fence SQL nuovo
   e massimo due job per tappa anche cambiando utente. Timeout immagini fino a
@@ -32,6 +35,11 @@ Modifiche rilevanti al bot. Formato ispirato a
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **Trivia Nerd con quiz nativi Telegram** — al posto dei bottoni a riga singola,
+  opzioni fino a 100 caratteri, spiegazioni e timer nativo. Presentazione condivisa
+  con la prova admin, senza scritture in classifica durante le prove. Mapping
+  sondaggio/giocatore persistente, deduplica SQL, ripresa senza reset del timer e
+  recupero delle scadenze con lo scheduler esistente. Premi e randomizzazione invariati.
 - **Attività nel contesto di Alduino** — scadenze dai task di chiusura/lock/expiry
   associate all'evento corretto e rese in ora locale; data corrente esplicita nel
   dossier live. I sondaggi in corso entrano nella discovery pubblica, senza link

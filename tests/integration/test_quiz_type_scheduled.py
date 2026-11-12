@@ -21,6 +21,45 @@ from services import group_registry
 from services.schedule_service import TaskSkip
 
 
+async def test_native_poll_expiry_is_durable_and_advances_only_after_commit(session):
+    from datetime import timedelta
+
+    from sqlalchemy import update
+
+    from database.models import QuizPoll, ScheduledTask
+    from handlers.quiz import play
+    from services import quiz_service, schedule_service
+    from tests.quiz_support import Bot, Message, make_quiz
+
+    quiz = await make_quiz(session, count=1, limit=5)
+    bot = Bot(session)
+    await play.start_quiz_session(Message(bot), session, quiz.id)
+    task = (await session.execute(select(ScheduledTask))).scalar_one()
+    await session.execute(update(QuizPoll).values(
+        expires_at=schedule_service.utcnow() - timedelta(seconds=1),
+    ).execution_options(synchronize_session=False))
+    await session.commit()
+
+    hook = await QuizType().execute_scheduled(bot, session, task, 123)
+    assert hook is not None
+    # DB-only transition, no Telegram call while the parent lock is held.
+    assert not bot.stopped and "Quiz completato" not in bot.said
+    assert await quiz_service.answered_count(session, quiz.id, 42) == 1
+    await session.commit()
+    await hook()
+    assert "Quiz completato" in bot.said and "0/1" in bot.said
+    assert await QuizType().execute_scheduled(bot, session, task, 123) is None
+
+
+@pytest.mark.parametrize("token", [None, "", 123])
+async def test_native_expiry_rejects_missing_or_malformed_tokens(session, token):
+    task = SimpleNamespace(payload_json=json.dumps({
+        "action": "expire", "internal": True, "poll_token": token,
+    }))
+    with pytest.raises(ValueError, match="token"):
+        await QuizType().execute_scheduled(None, session, task, 123)
+
+
 def _task(ref_id: int, *, action: str | None = None):
     """A stand-in for the ScheduledTask row. ``payload_json`` is spelled out even
     when empty: it is what tells an open apart from a scheduled close."""

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.types import PollAnswer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,11 +26,23 @@ router = Router()
 
 
 @router.poll_answer()
-async def on_poll_answer(poll_answer: PollAnswer, db_session: AsyncSession) -> None:
+async def on_poll_answer(
+    poll_answer: PollAnswer, db_session: AsyncSession, bot: Bot | None = None,
+) -> None:
     # `user` is None for anonymous channel votes (voter_chat); nothing to pay there.
     user = poll_answer.user
     if user is None or user.is_bot:
         return
+    # One dispatcher owns poll_answer. Separate routers with catch-all observers
+    # would swallow each other's updates regardless of registration order.
+    if bot is not None:
+        from handlers.quiz import play, trying
+
+        if await play.on_answer(poll_answer, bot, db_session):
+            return
+        await db_session.commit()  # release the lookup before Telegram admin checks
+        if await trying.on_answer(poll_answer, bot, db_session):
+            return
     poll = await poll_service.get_by_tg_poll_id(db_session, poll_answer.poll_id)
     # Only track polls we still own and that are live: a stale poll_id (finished /
     # deleted / a poll we never created) is simply ignored.

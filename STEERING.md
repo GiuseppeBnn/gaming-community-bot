@@ -129,6 +129,10 @@ quiz_questions  (id PK, quiz_id FK, position, text, options_json, correct_option
                  explanation, open_period, tg_poll_id index, sent_at)
 quiz_answers    (id PK, quiz_id index, question_id FK, user_tg_id, selected_option_id,
                  is_correct, response_ms, answered_at)  UniqueConstraint(question_id, user_tg_id)
+quiz_polls      (id PK, quiz_id FK index, question_id FK, user_tg_id, token unique,
+                 state, option_order_json, chat_id, message_id, tg_poll_id unique,
+                 shown_at, expires_at, lease_until) UniqueConstraint(question_id, user_tg_id)
+                 ← un poll nativo privato per domanda/giocatore, nuova tabella create_all
 scheduled_tasks (id PK, task_type [quiz|poll|bet], ref_id, payload_json, run_at index,
                  status, created_by_tg_id, group_id, created_at, executed_at, error)
 game_podiums    (id PK, user_tg_id BigInt index, game_key index, rank, ref_id, created_at)
@@ -233,6 +237,10 @@ dp.update.middleware(GroupContextMiddleware()) # 5. transcript locale best-effor
 - `GroupMemberMiddleware` fa una API call che richiede il bot (dal framework), non la sessione DB.
 - `GroupContextMiddleware` non deve precedere ban/group guard: apre una propria transazione breve e
   registra solo testo umano autorizzato del gruppo effettivo; comandi, bot e altre chat sono ignorati.
+
+`GroupMemberMiddleware` ispeziona sia gli eventi diretti sia il payload del contenitore
+`Update` passato da `dp.update.middleware`; inoltra sempre l'oggetto originale al dispatcher.
+I `PollAnswer` non hanno chat, quindi sono trattati come privati per il controllo membership.
 
 ---
 
@@ -1283,7 +1291,8 @@ conta il tempo minore** (poi l'ordine di arrivo).
 **File:** `services/quiz_service.py` (DB) e il pacchetto **`handlers/quiz/`**, diviso per fase
 attorno a un unico `router` condiviso in `_shared.py`: `creation.py` (FSM di creazione),
 `editing.py` (modifica domande), `lifecycle.py` (avvio/lista/chiusura/podio), `play.py`
-(sessione privata, timer, risposte), `trying.py` (prova admin). `__init__.py` è la superficie
+(sessione privata, scadenze, risposte), `trying.py` (prova admin), `_native.py` (presentazione
+Telegram condivisa), `services/quiz_poll_service.py` (delivery/risposte persistenti). `__init__.py` è la superficie
 pubblica — `open_quiz`, `close_quiz`, `start_quiz_creation`, `start_quiz_session`,
 `start_quiz_try`, `router` — quindi chi importa continua a scrivere `from handlers.quiz import …`.
 **L'ordine degli import in `__init__.py` è l'ordine di registrazione degli handler** su quel
@@ -1294,9 +1303,9 @@ router, identico a quello che le sezioni avevano nel file unico (47 handler, ver
 FSM admin in privato (redirect dal gruppo con deep-link `create_quiz`, oppure dall'hub Eventi
 `EventCb(action="new", task_type="quiz")` (packed `ev:new:quiz:`) che passa `creator_id`
 esplicito perché lì `message.from_user` è il bot): titolo →
-descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
+descrizione → **premi** → **timer opzionale** → **mescolamento** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
 (inline) → spiegazione opzionale} → **riepilogo** {➕ Aggiungi · 🗑 Rimuovi ultima · ✅ Pubblica}.
-**Nessun timer.** A fine: quiz `ready`.
+A fine: quiz `ready`.
 
 - **Premi**: schermata `prize_mode` con ⚡ Consigliati (default da settings) · ✏️ Personalizza · 🚫 Nessuno.
   In personalizzato si impostano 1°/2°/3° e la **consolazione (4°)**; il `prize_min` è **derivato**
@@ -1306,12 +1315,12 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
-  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (30), `_MAX_EXPLANATION` (200). **Unica fonte di
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
-  divergere da quello imposto. `_MAX_OPTION` è basso di proposito: le opzioni sono **bottoni inline**
-  in gioco e `play._question_kb` taglia il testo del bottone **allo stesso `_MAX_OPTION`** — un cap di
-  display separato (prima `[:40]`, con validazione a 100) tagliava risposte che la creazione aveva
-  accettato. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  divergere da quello imposto. Le opzioni sono poll nativi: nessun taglio di display.
+  Lunghezze in unità UTF-16 come Telegram, incluse emoji; spiegazioni con al massimo due a capo.
+  Le spiegazioni legacy con più a capo sono mostrate su una riga, senza tagli o riscritture DB.
+  L'input oltre il limite viene **rifiutato** (`_too_long` →
   `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
@@ -1336,16 +1345,12 @@ pronto!» e «🧪 Prova» nel dettaglio dell'hub Eventi.
 
 **Invariante:** la prova è **interamente in memoria** (`_TRY: dict[(quiz_id, admin_id), _TryCtx]`) e
 **non scrive nessuna riga `quiz_answers`**. Quindi non può raggiungere podio, premi, XP o
-`game_podiums`: l'isolamento è **strutturale**, non un filtro da ricordarsi in ogni query (era
-l'alternativa scartata: colonna `is_test` + filtro in ~6 punti). Le callback usano
-`QuizTryCb(action, quiz_id, question_id=None, option_id=None)`: `start` e `stop` richiedono il
-solo `quiz_id`, mentre `answer` richiede anche `question_id` e `option_id`; i loro wire payload
-sono rispettivamente `quiz_try:start:<quiz>::`, `quiz_try:stop:<quiz>::` e
-`quiz_try:answer:<quiz>:<question>:<option>`. Il namespace resta disgiunto da `quiz_ans:*`, così
-una risposta di prova non può finire nel recorder vero. Handler gated **singolarmente**
-(`quiz.router` è misto, §8). Nessun timer in prova (il vero limite è
-comunicato a schermo). Ogni messaggio porta il marker 🧪 e il riepilogo finale dichiara
-esplicitamente che nulla è stato salvato.
+`game_podiums`: l'isolamento è **strutturale**, non un filtro nelle query. Non scrive nemmeno
+`quiz_polls` o timer persistenti: il `poll_id` della prova vive nel contesto `_TryCtx`.
+Il presenter `_native.send_question` è identico al gioco reale, senza timer; marker 🧪 nella
+descrizione. `QuizTryCb(start|stop)` resta per avvio/uscita; le risposte passano dal dispatcher
+`poll_answer` e verificano nuovamente i diritti admin. La vecchia azione `answer` è solo un
+avviso di tastiera superata, mai un ingresso al recorder. Il riepilogo conferma zero premi/XP.
 
 > **Identità dell'attore — `admin_id` esplicito.** `start_quiz_try` riceve `admin_id` come
 > parametro **obbligatorio, senza default**, e **non** lo deriva mai da `message.from_user`: il
@@ -1366,13 +1371,28 @@ esplicitamente che nulla è stato salvato.
   (`EventCb(action="start", task_type="quiz", item_id=<id>)`, con conferma `action="askstart"`)
   e dallo scheduler. Caller committa. **`/quiz` (admin)**
   non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
-- Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: gioca in privato, una domanda alla
-  volta con **bottoni inline** `QuizAnswerCb(action="answer", quiz_id=<quiz>,
-  question_id=<question>, option_id=<opt>)` (`quiz_ans:answer:<quiz>:<question>:<opt>`). Il filtro
-  tipizzato accetta solo l'azione `answer` e inietta i tre identificatori interi, quindi payload
-  malformati o bottoni di un deploy precedente non raggiungono l'handler. Alla risposta: feedback
-  immediato (✅/❌ + spiegazione), poi domanda successiva. È **resumable** (riprende dalla domanda
-  non ancora risposta). `record_answer` è idempotente per (domanda, utente) — dedup + `IntegrityError` guard.
+- Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: poll **quiz nativo non anonimo**
+  individuale in privato, `allows_revoting=False`, `protect_content=True`. Domanda invariata
+  (300 caratteri); progresso nella descrizione, opzioni complete (100). Risposta corretta
+  rimappata nell'ordine casuale del giocatore; Telegram mostra feedback/spiegazione.
+- `quiz_polls` conserva token, giocatore, domanda, mapping degli indici, poll/message id,
+  istante iniziale e deadline. Claim con lease 60s, commit **prima** dell'invio, attach fenced
+  e altro commit. Un doppio start riprende il poll aperto, mai un timer nuovo. Un invio incerto
+  conserva il lease; dopo 60s una ripresa può ritentarlo. Nel raro crash fra invio e attach può
+  rimanere un poll orfano: i suoi voti sono ignorati, mai attribuiti ad altra domanda/partita.
+- Lock padre `Quiz` prima della delivery: risposta e chiusura si serializzano. Consumo condizionale
+  `open→answered` + `record_answer` nella stessa transazione. Owner, ordine, opzione singola,
+  stato running e token verificati; né duplicati né tastiere pre-deploy possono cambiare il podio.
+- Unico dispatcher `handlers/poll_vote.on_poll_answer`: quiz reale → prova admin → sondaggi
+  ricompensati, senza catch-all concorrenti che inghiottano gli update. `poll` chiuso senza voti
+  fa avanzare subito; con voti attende il `PollAnswer` autenticato. `ScheduledTask(quiz, action=expire,
+  internal=True, poll_token)` recupera la scadenza dopo 3s di grace + intervallo scheduler in caso
+  di update perso/restart. Nessuna task asyncio per domanda; timer visibile gestito da Telegram.
+  I voti non hanno timestamp del tap: il tempo è misurato alla ricezione, bounded al limite;
+  un update oltre la grace può perdere la gara col timeout. Mai dedurre correttezza dai soli conteggi.
+- Reset/delete cancellano esplicitamente le delivery (anche SQLite). Token diversi impediscono
+  ai poll della partita precedente di rispondere nella nuova. Invio/avanzamento post-commit
+  best-effort: dopo un'interruzione si riprende dal deep-link senza cancellare risposte valide.
 
 ### Podio & premi
 
@@ -1407,7 +1427,7 @@ esplicitamente che nulla è stato salvato.
 ### Regole
 
 - Stati quiz: `draft → ready → running → finished`.
-- Play in **privato** (i poll di gruppo non sono usati per i quiz; `send_poll` serve solo per avviare/programmare un sondaggio, mai per i quiz).
+- Play in **privato**, con un poll diverso per ciascun giocatore; mai un quiz condiviso nel gruppo.
 - Service no-commit (§5): commit negli handler. `open_quiz` annuncia prima di flippare lo stato.
 
 ---

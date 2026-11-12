@@ -314,6 +314,13 @@ Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indie
 garantito** per *tutti* i finisher, e una schermata di riepilogo prima di pubblicare. Si
 gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
 
+Le domande usano i **quiz nativi Telegram**, anche nella prova admin: risposte
+leggibili fino a **100 caratteri**, spiegazione e timer nativo opzionale. Una sola
+risposta, non modificabile; classifica e premi rimangono quelli del bot. Riaprire
+il link riprende il sondaggio corrente senza azzerare il tempo. Le associazioni
+sondaggio/giocatore e le scadenze sono persistenti; lo scheduler recupera i timeout
+anche dopo un riavvio. Nessuna chiamata AI o costo aggiuntivo.
+
 I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la **scheda info**
 (non si avviano con un tap) e da lì si sceglie **Avvia · Programma · Chiudi · Riproponi · Elimina**,
 sempre **con conferma**. Un quiz concluso resta come archivio finché non lo elimini, e «Riproponi»

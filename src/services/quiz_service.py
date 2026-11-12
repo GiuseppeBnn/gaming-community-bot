@@ -1,8 +1,8 @@
 """
 Quiz service — DB-side operations for private, answer-driven quizzes.
 
-Each participant plays the quiz in their PRIVATE chat with the bot (inline option
-buttons), with no per-question time limit. Answers are recorded per user; when a
+Each participant plays the quiz in their PRIVATE chat with the bot (native quiz
+polls), with an optional per-question time limit. Answers are recorded per user; when a
 user has answered every question they are a "finisher". The podium ranks finishers
 by correct answers (desc) then by finish time (asc, arrival order) and pays prizes.
 
@@ -26,6 +26,7 @@ from database.models import (
     Quiz,
     QuizAnswer,
     QuizQuestion,
+    QuizPoll,
     ScheduledTask,
     TransactionType,
 )
@@ -329,10 +330,17 @@ async def delete_quiz(session: AsyncSession, quiz_id: int) -> bool:
     Historical progress rows (``game_podiums`` / ``user_metrics``, keyed by ``ref_id``)
     are intentionally left intact.
     """
-    quiz = await get_quiz(session, quiz_id)
-    if quiz is None:
+    # Same parent-first lock as native answer/publish/reset. Deleting children
+    # first could deadlock a vote that owns Quiz and is about to consume its poll.
+    locked_id = (await session.execute(
+        select(Quiz.id).where(Quiz.id == quiz_id).with_for_update()
+    )).scalar_one_or_none()
+    if locked_id is None:
         return False
+    quiz = await get_quiz(session, quiz_id)
+    assert quiz is not None  # the locked parent cannot disappear
     await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
+    await session.execute(delete(QuizPoll).where(QuizPoll.quiz_id == quiz_id))
     await session.execute(
         update(ScheduledTask)
         .where(
@@ -380,6 +388,7 @@ async def reset_quiz(session: AsyncSession, quiz_id: int) -> bool:
     if quiz is None:  # pragma: no cover - the locked row cannot vanish under us
         return False
     await session.execute(delete(QuizAnswer).where(QuizAnswer.quiz_id == quiz_id))
+    await session.execute(delete(QuizPoll).where(QuizPoll.quiz_id == quiz_id))
     for question in quiz.questions:
         question.tg_poll_id = None
         question.sent_at = None
