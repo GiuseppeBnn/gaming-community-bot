@@ -304,3 +304,80 @@ async def test_idempotent_edit_still_emits_one_pending_final_notification(sessio
     await ui.publish_card(bot, session, game_id)
     assert sum(chat == GROUP for chat, _, _ in bot.sent) == 2
     assert (await game.get_view(session, game_id)).announced
+
+
+def retry_callback(bot, game_id, *, user=10, action="retry"):
+    return SimpleNamespace(
+        bot=bot, message=Message(bot, user), from_user=SimpleNamespace(id=user), answer=AsyncMock()
+    ), TelephoneCb(action=action, game_id=game_id)
+
+
+async def test_transient_timeout_is_paused_and_one_manual_retry_can_succeed(session, setup):
+    bot, state, generator = setup
+    game_id = await running(session)
+    await ui.join(Message(bot), state, session, game_id)
+    prompt = await prompt_id(session, game_id, 10)
+    generator.side_effect = ui.image_service.ImageError(
+        "safe", kind="timeout", stage="generation", retryable=True
+    )
+    await ui.reply(Message(bot, text="scene", reply_id=prompt), session)
+    view = await game.get_view(session, game_id)
+    assert view.status == "running" and view.kind == "retry" and view.attempts == 1
+    assert generator.await_count == 1
+    assert any("staffetta è salva" in t for _, t, _ in bot.sent)
+    await ui.join(Message(bot), state, session, game_id)
+    assert bot.sent[-1][2]["reply_markup"] is not None
+    wrong, data = retry_callback(bot, game_id, user=999)
+    await ui.retry_control(wrong, data, state, session)
+    assert generator.await_count == 1
+    generator.side_effect = None
+    cb, data = retry_callback(bot, game_id)
+    await ui.retry_control(cb, data, state, session)
+    assert generator.await_count == 2
+    assert (await game.get_view(session, game_id)).stage == 2
+    await ui.retry_control(cb, data, state, session)
+    assert generator.await_count == 2
+
+
+@pytest.mark.parametrize("action", ["retry", "leave"])
+async def test_second_transient_failure_or_abandon_is_bounded(session, setup, action):
+    bot, state, generator = setup
+    game_id = await running(session)
+    await ui.join(Message(bot), state, session, game_id)
+    generator.side_effect = ui.image_service.ImageError(
+        "safe", kind="http", http_status=503, retryable=True
+    )
+    await ui.reply(
+        Message(bot, text="scene", reply_id=await prompt_id(session, game_id, 10)), session
+    )
+    cb, data = retry_callback(bot, game_id, action=action)
+    await ui.retry_control(cb, data, state, session)
+    view = await game.get_view(session, game_id)
+    assert view.status == ("finished" if action == "retry" else "running")
+    assert view.token is None
+    assert generator.await_count == (2 if action == "retry" else 1)
+
+
+async def test_retry_does_not_bypass_membership_or_other_fsm(session, setup):
+    bot, state, generator = setup
+    cb, data = retry_callback(bot, 999)
+    state.get_state.return_value = "other"
+    await ui.retry_control(cb, data, state, session)
+    assert cb.answer.call_args.kwargs["show_alert"]
+    state.get_state.return_value = None
+    bot.member = "left"
+    await ui.retry_control(cb, data, state, session)
+    assert "Accesso" in cb.answer.call_args.args[0]
+    generator.assert_not_awaited()
+
+
+async def test_budget_failure_has_clear_message_and_no_retry_button(session, setup):
+    bot, state, generator = setup
+    game_id = await running(session)
+    await ui.join(Message(bot), state, session, game_id)
+    generator.side_effect = ui.ai_budget.AIBudgetExceeded("test")
+    await ui.reply(
+        Message(bot, text="scene", reply_id=await prompt_id(session, game_id, 10)), session
+    )
+    assert any("budget immagini" in t for _, t, _ in bot.sent)
+    assert (await game.get_view(session, game_id)).status == "finished"

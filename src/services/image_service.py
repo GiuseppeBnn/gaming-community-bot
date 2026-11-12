@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import json
 import logging
 import re
+import time
 
 import aiohttp
 
@@ -32,6 +33,21 @@ _STYLE = (
 
 class ImageError(RuntimeError):
     """Safe, content-free generation failure. Never retry a paid POST blindly."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "validation",
+        kind: str = "invalid_response",
+        http_status: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.kind = kind
+        self.http_status = http_status
+        self.retryable = retryable
 
 
 def _money(value: object) -> int:
@@ -111,6 +127,7 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
         "X-Title": settings.openrouter_app_name,
     }
     async with aiohttp.ClientSession(timeout=timeout) as client:
+        started = time.monotonic()
         try:
             async with client.get(
                 f"{_API}/images/models/{model}/endpoints",
@@ -118,10 +135,23 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as response:
                 if response.status != 200:
-                    raise ImageError("Image discovery unavailable")
+                    raise ImageError(
+                        "Image discovery unavailable",
+                        stage="discovery",
+                        kind="http",
+                        http_status=response.status,
+                        retryable=response.status == 429 or response.status >= 500,
+                    )
                 validate_endpoint(await _read_json(response), provider, cap_microusd)
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError) as exc:
-            raise ImageError("Image discovery unavailable") from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise ImageError(
+                "Image discovery unavailable",
+                stage="discovery",
+                kind="timeout" if isinstance(exc, TimeoutError) else "network",
+                retryable=True,
+            ) from exc
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ImageError("Invalid image discovery", stage="discovery") from exc
         reservation = await ai_budget.reserve_cost(
             feature="telephone_image",
             provider="openrouter",
@@ -154,7 +184,13 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
                     if response.status in (400, 401, 402, 403, 404, 422, 429):
                         charge = 0
                         status = "rejected"
-                    raise ImageError("Image provider unavailable")
+                    raise ImageError(
+                        "Image provider unavailable",
+                        stage="generation",
+                        kind="http",
+                        http_status=response.status,
+                        retryable=response.status == 429 or response.status >= 500,
+                    )
                 data = await _read_json(response)
                 cost = data.get("usage", {}).get("cost")
                 charge = _money(cost) if cost is not None else None
@@ -168,8 +204,15 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
                         cap_microusd,
                     )
                 return image
-        except (aiohttp.ClientError, TimeoutError, ValueError, TypeError, AttributeError) as exc:
-            raise ImageError("Image generation failed") from exc
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            raise ImageError(
+                "Image generation failed",
+                stage="generation",
+                kind="timeout" if isinstance(exc, TimeoutError) else "network",
+                retryable=True,
+            ) from exc
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ImageError("Invalid image response", stage="generation") from exc
         finally:
             # Also runs on cancellation. A storage error preserves the reserved
             # amount (fail closed); a process crash never frees it automatically.
@@ -180,4 +223,12 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
                     actual_microusd=charge,
                     metrics=ai_budget.UsageMetrics(actual_model=model),
                 )
+            )
+            log.info(
+                "Image request finished model=%s provider=%s status=%s elapsed_ms=%s request_id=%s",
+                model,
+                provider,
+                status,
+                round((time.monotonic() - started) * 1000),
+                reservation.request_id,
             )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from weakref import WeakValueDictionary
 
 from aiogram import F, Router
@@ -24,7 +25,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from handlers.callbacks import EventCb, TelephoneCb
 from filters.admin_filter import IsAdminCallbackFilter
-from services import admin_service, group_registry, image_service, telephone_service as game
+from services import (
+    admin_service,
+    ai_budget,
+    group_registry,
+    image_service,
+    telephone_service as game,
+)
 from utils.text import esc
 
 router = Router()
@@ -38,7 +45,22 @@ _REASONS = {
     "busy": "Qualcuno ha appena preso la staffetta. Riprova più tardi!",
     "seen": "Hai già visto un passaggio: in questa catena si partecipa una sola volta.",
     "resume": "La staffetta è già tua: rispondi al messaggio privato con l'immagine o la richiesta iniziale. Il tempo non riparte.",
+    "retry": "Il tuo passaggio è in pausa. Puoi riprovare una sola volta o lasciare la staffetta; non ci sono tentativi automatici.",
 }
+
+
+def _retry_keyboard(game_id: int):
+    b = InlineKeyboardBuilder()
+    b.button(
+        text="🎨 Riprova una volta",
+        callback_data=TelephoneCb(action="retry", game_id=game_id).pack(),
+    )
+    b.button(
+        text="Lascia la staffetta",
+        callback_data=TelephoneCb(action="leave", game_id=game_id).pack(),
+    )
+    b.adjust(1)
+    return b.as_markup()
 
 
 async def _member(bot, user_id: int) -> bool:
@@ -99,7 +121,9 @@ async def publish_card(bot, session: AsyncSession, game_id: int, number: int = 1
                 url=f"https://t.me/{me.username}?start=telefono_{game_id}",
             )
             activity = (
-                "🎨 Sto creando l'immagine."
+                "⏸️ Immagine non riuscita: passaggio recuperabile."
+                if view.kind == "retry"
+                else "🎨 Sto creando l'immagine."
                 if view.kind == "generating"
                 else (
                     "✍️ Un partecipante ha la staffetta." if view.token else "🟢 Passaggio libero!"
@@ -232,7 +256,9 @@ async def join(message: Message, state: FSMContext, session: AsyncSession, game_
     )
     await session.commit()
     if c is None:
-        await message.answer(_REASONS[reason])
+        await message.answer(
+            _REASONS[reason], reply_markup=_retry_keyboard(game_id) if reason == "retry" else None
+        )
         return
     prompt = (
         "📞 Inventa una scena buffa in massimo 150 caratteri."
@@ -297,8 +323,20 @@ async def reply(message: Message, db_session: AsyncSession) -> None:
             "Passaggio già inviato, scaduto o chiuso: nessuna nuova immagine generata."
         )
         return
+    await _run_generation(message, db_session, c, view, description)
+
+
+async def _run_generation(
+    message: Message,
+    db_session: AsyncSession,
+    c: game.Claim,
+    view: game.View,
+    description: str,
+) -> None:
     try:
-        await message.answer("🎨 Ricevuto! Creo l'immagine, poi libero la staffetta.")
+        await message.answer(
+            "🎨 Ricevuto! Creo l'immagine, poi libero la staffetta.", request_timeout=15
+        )
         image = await image_service.generate(
             description, model=view.model, provider=view.provider, cap_microusd=view.cap
         )
@@ -313,13 +351,77 @@ async def reply(message: Message, db_session: AsyncSession) -> None:
         await db_session.commit()
     except Exception as exc:  # noqa: BLE001 — no blind paid retry; reveal any completed prefix
         await db_session.rollback()
-        await game.finish(db_session, c.game_id, "image_error")
+        recoverable = isinstance(exc, image_service.ImageError) and exc.retryable
+        paused = recoverable and await game.pause_generation(db_session, c)
+        if not paused:
+            await game.finish(db_session, c.game_id, "image_error")
         await db_session.commit()
-        log.warning("Telephone generation stopped game=%s error=%s", c.game_id, type(exc).__name__)
-        await message.answer(
-            "Non sono riuscito a completare l'immagine. Chiudo la staffetta mostrando gli eventuali passaggi già raccolti, senza ritentare a pagamento."
+        frames = traceback.extract_tb(exc.__traceback__)
+        location = f"{frames[-1].name}:{frames[-1].lineno}" if frames else "unknown"
+        log.warning(
+            "Telephone generation stopped game=%s error=%s stage=%s kind=%s http_status=%s paused=%s location=%s",
+            c.game_id,
+            type(exc).__name__,
+            getattr(exc, "stage", None),
+            getattr(exc, "kind", None),
+            getattr(exc, "http_status", None),
+            paused,
+            location,
         )
+        if paused:
+            reason = (
+                "Il provider immagini non ha risposto in tempo."
+                if exc.kind == "timeout"
+                else "Il servizio immagini ha avuto un problema temporaneo."
+            )
+            await message.answer(
+                f"⏸️ {reason} La staffetta è salva.\n"
+                f"Puoi confermare un solo altro tentativo (prenotazione massima ${view.cap / 1_000_000:.3f}), "
+                "oppure lasciare il passaggio a un'altra persona. Tra 2 minuti torna libero. "
+                "Non ho ritentato automaticamente.",
+                reply_markup=_retry_keyboard(c.game_id),
+            )
+        elif isinstance(exc, ai_budget.AIBudgetError):
+            await message.answer(
+                "Il budget immagini è esaurito o non verificabile. Chiudo la staffetta conservando i passaggi già raccolti, senza altre chiamate a pagamento."
+            )
+        else:
+            await message.answer(
+                "Non sono riuscito a completare l'immagine. Chiudo la staffetta mostrando gli eventuali passaggi già raccolti, senza ritentare a pagamento."
+            )
     await _refresh(message.bot, db_session, c.game_id)
+
+
+@router.callback_query(
+    TelephoneCb.filter(F.action.in_({"retry", "leave"})), F.message.chat.type == "private"
+)
+async def retry_control(
+    callback: CallbackQuery,
+    callback_data: TelephoneCb,
+    state: FSMContext,
+    db_session: AsyncSession,
+) -> None:
+    await db_session.rollback()
+    if await state.get_state():
+        await callback.answer("Concludi prima l'altra operazione in corso.", show_alert=True)
+        return
+    if callback_data.action == "leave":
+        ok = await game.abandon_retry(db_session, callback_data.game_id, callback.from_user.id)
+        await db_session.commit()
+        await callback.answer("Staffetta liberata." if ok else "Passaggio già ripreso o scaduto.")
+        await _refresh(callback.bot, db_session, callback_data.game_id)
+        return
+    if not await _member(callback.bot, callback.from_user.id):
+        await callback.answer("Accesso al gruppo non verificato.", show_alert=True)
+        return
+    result = await game.retry_generation(db_session, callback_data.game_id, callback.from_user.id)
+    await db_session.commit()
+    if result is None:
+        await callback.answer("Tentativo già avviato, esaurito o scaduto.")
+        return
+    await callback.answer()
+    c, view, description = result
+    await _run_generation(callback.message, db_session, c, view, description)
 
 
 @router.callback_query(TelephoneCb.filter(F.action == "view"))

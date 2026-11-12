@@ -119,8 +119,10 @@ async def test_expiry_and_crashed_generation_never_reopen_a_paid_job(session):
     game_id = await running(session)
     c = await writing(session, game_id)
     await game.begin_generation(session, c, "scene", now=NOW)
-    assert not await game.tick(session, game_id, now=NOW + timedelta(seconds=179))
-    assert await game.tick(session, game_id, now=NOW + timedelta(seconds=180))
+    assert not await game.tick(
+        session, game_id, now=NOW + timedelta(seconds=game.GENERATION_SECONDS - 1)
+    )
+    assert await game.tick(session, game_id, now=NOW + timedelta(seconds=game.GENERATION_SECONDS))
     assert (await game.get_view(session, game_id)).status == "finished"
     assert not await game.complete(session, c, "orphan", now=NOW)
     assert (await game.claim(session, game_id, 11, "other", GROUP, now=NOW))[1] == "closed"
@@ -216,3 +218,83 @@ async def test_concurrent_starts_and_duplicate_paid_submissions_on_postgres(pg_s
             return result
 
     assert sum(v is not None for v in await asyncio.gather(submit(), submit())) == 1
+
+
+async def test_one_explicit_retry_rotates_token_and_preserves_stage(session):
+    game_id = await running(session)
+    c = await writing(session, game_id)
+    await game.begin_generation(session, c, "a scene", now=NOW)
+    assert (await game.get_view(session, game_id)).attempts == 1
+    assert await game.pause_generation(session, c, now=NOW)
+    assert (await game.claim(session, game_id, 10, "same", GROUP, now=NOW))[1] == "retry"
+    assert await game.retry_generation(session, game_id, 999, now=NOW) is None
+    retry = await game.retry_generation(session, game_id, 10, now=NOW)
+    new, view, description = retry
+    assert new.token != c.token and description == "a scene" and view.attempts == 2
+    assert await game.retry_generation(session, game_id, 10, now=NOW) is None
+    assert not await game.complete(session, c, "stale-image", now=NOW)
+    assert not await game.pause_generation(session, c, now=NOW)
+    assert not await game.pause_generation(session, new, now=NOW)
+    assert await game.complete(session, new, "valid-image", now=NOW)
+    view = await game.get_view(session, game_id)
+    assert view.stage == 2 and len(view.stages) == 1 and view.attempts == 0
+
+
+@pytest.mark.parametrize("abandon", [True, False])
+async def test_paused_user_can_leave_or_expire_without_resetting_spend_guard(session, abandon):
+    game_id = await running(session)
+    c = await writing(session, game_id)
+    await game.begin_generation(session, c, "scene", now=NOW)
+    assert await game.pause_generation(session, c, now=NOW)
+    assert not await game.abandon_retry(session, game_id, 999)
+    later = NOW
+    if abandon:
+        assert await game.abandon_retry(session, game_id, 10)
+    else:
+        later = NOW + timedelta(seconds=121)
+        assert await game.retry_generation(session, game_id, 10, now=later) is None
+        assert await game.tick(session, game_id, now=later)
+    assert await game.retry_generation(session, game_id, 10, now=later) is None
+    d = await writing(session, game_id, user=11, now=later)
+    await game.begin_generation(session, d, "other scene", now=later)
+    assert (await game.get_view(session, game_id)).attempts == 2
+    assert not await game.pause_generation(session, d, now=later)
+
+
+async def test_retry_rejects_missing_description_disabled_feature_and_closed_game(
+    session, monkeypatch
+):
+    game_id = await running(session)
+    c = await writing(session, game_id)
+    assert await game.retry_generation(session, game_id, 10, now=NOW) is None
+    await game.begin_generation(session, c, "scene", now=NOW)
+    assert not await game.pause_generation(session, c, now=NOW + timedelta(hours=1))
+    assert await game.pause_generation(session, c, now=NOW)
+    monkeypatch.setattr(game.settings, "telephone_enabled", False)
+    assert await game.retry_generation(session, game_id, 10, now=NOW) is None
+    monkeypatch.setattr(game.settings, "telephone_enabled", True)
+    await game.finish(session, game_id, "admin_closed", now=NOW)
+    assert await game.retry_generation(session, game_id, 10, now=NOW) is None
+
+
+@pytest.mark.pg
+async def test_concurrent_manual_retry_has_one_admitted_job(pg_sessions):
+    import asyncio
+
+    async with pg_sessions() as s:
+        game_id = await running(s)
+        c = await writing(s, game_id)
+        await game.begin_generation(s, c, "scene", now=NOW)
+        assert await game.pause_generation(s, c, now=NOW)
+        await s.commit()
+
+    async def retry():
+        async with pg_sessions() as s:
+            result = await game.retry_generation(s, game_id, 10, now=NOW)
+            await s.commit()
+            return result
+
+    results = await asyncio.gather(retry(), retry())
+    assert sum(r is not None for r in results) == 1
+    async with pg_sessions() as s:
+        assert (await game.get_view(s, game_id)).attempts == 2

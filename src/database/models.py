@@ -828,6 +828,7 @@ class TelephoneGame(Base):
     image_provider: Mapped[str] = mapped_column(String(128), nullable=False)
     image_cap_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
     reveal_announced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    stage_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class TelephoneVisit(Base):

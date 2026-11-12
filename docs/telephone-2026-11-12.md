@@ -33,7 +33,7 @@ TELEPHONE_ENABLED=true
 TELEPHONE_IMAGE_MODEL=black-forest-labs/flux-3-image-klein
 TELEPHONE_IMAGE_PROVIDER=black-forest-labs
 TELEPHONE_IMAGE_MAX_USD=0.012
-TELEPHONE_IMAGE_TIMEOUT_SECONDS=90
+TELEPHONE_IMAGE_TIMEOUT_SECONDS=120
 ```
 
 L'API key è quella OpenRouter esistente: non servono nuove credenziali. Default
@@ -43,8 +43,16 @@ partita già creata, crearne un'altra (nessun cambio silenzioso durante la caten
 
 Listino verificato il 12 novembre 2026: FLUX 3 Image Klein, provider Black Forest
 Labs, 1K, **$0,009/immagine**, quindi circa **$0,036 per quattro immagini**. La
-prenotazione prudenziale è $0,012 per passaggio, massimo $0,048 per catena. Non
+prenotazione prudenziale è $0,012 per chiamata, $0,048 per una catena senza errori. Non
 abbassare il ceiling sotto il prezzo effettivo e non contare sulle promozioni.
+
+In caso di timeout/rete/429/5xx, la staffetta va **in pausa**, non viene distrutta:
+chi aveva il passaggio può confermare una sola ripresa (con avviso del costo massimo)
+o lasciarlo a un'altra persona. Dopo due minuti la prenotazione si libera. Massimo
+**due chiamate ammesse per passaggio**, anche se cambia partecipante: fino a otto
+chiamate/$0,096 prenotati se vengono confermati tutti i retry. Nessun tentativo
+automatico e nessun aumento del budget mensile. Le vecchie staffette già concluse
+restano concluse: dopo l'aggiornamento crearne una nuova.
 
 Prima di ciascun POST viene letto il listino pubblico dell'endpoint: ammessa
 solo tariffa fissa per singola immagine 1K. Endpoint vincolato e fallback spenti.
@@ -82,9 +90,11 @@ Fonti ufficiali:
   precedenti, nessuna chat di gruppo, nessun riassunto che corregga i fraintendimenti.
 - Membership verificata fail-closed prima di consegnare e prima di generare;
   `protect_content` sui DM. Non impedisce screenshot o accordi tra partecipanti.
-- Massimo un POST per descrizione ammessa. Timeout, crash, upload Telegram fallito
-  o errore provider chiudono/rendono scadibile la catena, non fanno retry pagati.
-  Una prenotazione orfana resta conservativamente impegnata nel budget.
+- Massimo un POST per job ammesso. Un transitorio gestito consente una sola
+  conferma manuale, con nuovo token e contatore SQL per tappa. Il secondo errore,
+  un errore permanente o un upload Telegram fallito chiudono la catena, senza
+  rigenerazioni automatiche. Un job orfano scade dopo 240s e una prenotazione
+  finanziaria orfana resta conservativamente impegnata nel budget.
 - Sono conservati soltanto `file_id` Telegram e descrizioni nella partita, non
   base64 nel DB. La risposta HTTP è limitata a 12 MiB e validata come PNG/JPEG.
 - L'edit della card/reveal è ritentabile dal dettaglio admin senza spendere.
@@ -94,3 +104,12 @@ Fonti ufficiali:
   ripubblicare: non si inviano automaticamente sostituzioni a ogni errore Telegram.
 - Il listino non certifica qualità/resa in italiano né disponibilità per ogni key:
   prima della promozione a prod serve una partita manuale completa su test.
+
+## Debug del 12 novembre
+
+Ledger e log hanno isolato un timeout durante la generazione a 90s, non un errore
+nel claim. Una successiva prova reale con scena sintetica sullo stesso server,
+modello, provider e budget ha prodotto un PNG valido da 1.520.575 byte in 8,15s.
+Questo conferma il funzionamento della route, non garantisce l'assenza di futuri
+stalli del provider. La correzione introduce ripresa manuale limitata, timeout
+massimo 120s e diagnostica senza contenuti; non cambia modello senza evidenze.

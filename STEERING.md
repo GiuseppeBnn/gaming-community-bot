@@ -2291,7 +2291,8 @@ trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).
 Condivide `AIGameSession` e il ledger `AIGameTurn`; le nuove tabelle
 `TelephoneGame` (snapshot modello/provider/prezzo massimo) e `TelephoneVisit`
 (esposizione, token, prompt DM e descrizione) nascono da `metadata.create_all`.
-Nessuna modifica alle colonne preesistenti, nessun premio CoInn/XP.
+`telephone_games.stage_attempts` viene aggiunto con DDL idempotente in
+`_MIGRATIONS` anche sulle istanze già rilasciate. Nessun premio CoInn/XP.
 
 Una sola staffetta running per gruppo (advisory lock PostgreSQL all'avvio), quattro
 partecipanti distinti, massimo quattro immagini e 30 minuti complessivi. Deep-link
@@ -2315,9 +2316,18 @@ mensile sulla key OpenRouter, non alzarlo automaticamente per le immagini.
 e nel cap globale già esistenti, senza aumenti. Costo assente/timeout = addebito
 conservativo del tetto; nessun retry automatico del POST pagato. Ledger senza prompt.
 
-I task `expire` interni rilasciano i writer scaduti e chiudono generazioni rimaste
-orfane dopo 180 secondi. Una generazione ammessa prima della deadline può terminare;
-poi si chiude la catena. Errori/restart non riavviano lavori pagati ambigui.
+I task `expire` interni rilasciano writer e pause scadute e chiudono generazioni
+orfane dopo 240 secondi (timeout provider fino a 120s, più margine rete/Telegram).
+Un errore transitorio gestito (timeout/rete/429/5xx) preserva la catena in pausa
+per 120s: il titolare può confermare **un solo** nuovo tentativo o lasciare il
+passaggio. `stage_attempts` ammette massimo due job per tappa, condivisi fra tutti
+i partecipanti; si azzera soltanto dopo il completamento. Retry manuale = nuovo
+token CAS, quindi doppio click e completamenti tardivi non generano/scrivono due
+volte. Nessun retry pagato automatico, neppure dopo restart. Al secondo errore o
+su errore permanente si rivela il prefisso raccolto. Il cap mensile non aumenta.
+Una generazione ammessa prima della deadline può terminare; poi si chiude.
+I log riportano stage/kind/status HTTP, durata e request-id tecnico, mai prompt,
+corpi di errore, credenziali o descrizioni.
 Una card gruppo viene editata per progresso e reveal sfogliabile (nessun invio
 ripetuto di album), con una notifica finale best-effort prenotata una volta nel DB;
 gli admin possono riprovare la presentazione dagli Eventi

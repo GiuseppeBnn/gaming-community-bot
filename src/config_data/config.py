@@ -91,7 +91,7 @@ class Settings(BaseSettings):
     telephone_image_max_usd: Decimal = Field(
         default=Decimal("0.012"), ge=Decimal("0.000001"), le=Decimal("0.05"),
     )
-    telephone_image_timeout_seconds: int = Field(default=90, ge=10, le=120)
+    telephone_image_timeout_seconds: int = Field(default=120, ge=10, le=120)
     ai_entertainment_deadline_seconds: int = Field(default=30, ge=1)
     # Preserve the strict judge model; only its transport changes to OpenRouter.
     openrouter_judge_model: str = "openai/gpt-oss-120b"

@@ -22,7 +22,8 @@ GAME_TYPE = "telephone"
 STAGES = 4
 CLAIM_SECONDS = 120
 DELIVERY_SECONDS = 30
-GENERATION_SECONDS = 180  # longer than the bounded provider + Telegram timeouts
+GENERATION_SECONDS = 240  # provider 120s + discovery/upload/ack/accounting grace
+MAX_STAGE_ATTEMPTS = 2
 DURATION_SECONDS = 1800
 
 
@@ -51,6 +52,7 @@ class View:
     model: str
     provider: str
     cap: int
+    attempts: int
     announced: bool
     stages: tuple[Stage, ...]
 
@@ -84,6 +86,7 @@ async def get_view(session: AsyncSession, game_id: int) -> View | None:
                 TelephoneGame.image_model,
                 TelephoneGame.image_provider,
                 TelephoneGame.image_cap_microusd,
+                TelephoneGame.stage_attempts,
                 TelephoneGame.reveal_announced,
             )
             .join(TelephoneGame, TelephoneGame.session_id == AIGameSession.id)
@@ -123,6 +126,7 @@ async def get_view(session: AsyncSession, game_id: int) -> View | None:
         model=r.image_model,
         provider=r.image_provider,
         cap=r.image_cap_microusd,
+        attempts=r.stage_attempts,
         announced=r.reveal_announced,
         stages=stages,
     )
@@ -225,7 +229,7 @@ def _lease_expired(now: datetime):
             AIGameSession.pending_since <= now - timedelta(seconds=DELIVERY_SECONDS),
         ),
         and_(
-            AIGameSession.pending_kind == "writing",
+            AIGameSession.pending_kind.in_(("writing", "retry")),
             AIGameSession.pending_since <= now - timedelta(seconds=CLAIM_SECONDS),
         ),
     )
@@ -282,6 +286,13 @@ async def claim(
             or view.expires_at <= now
         ):
             return None, "closed"
+        if (
+            view.user_id == user_id
+            and view.kind == "retry"
+            and view.since is not None
+            and view.since > now - timedelta(seconds=CLAIM_SECONDS)
+        ):
+            return None, "retry"
         if (
             view.user_id == user_id
             and view.token
@@ -357,6 +368,18 @@ async def reply_claim(session: AsyncSession, user_id: int, prompt_id: int) -> Cl
 async def begin_generation(
     session: AsyncSession, c: Claim, description: str, *, now: datetime | None = None
 ) -> View | None:
+    return await _admit_generation(session, c, description, "writing", now=now)
+
+
+async def _admit_generation(
+    session: AsyncSession,
+    c: Claim,
+    description: str,
+    expected_kind: str,
+    *,
+    now: datetime | None = None,
+    new_token: str | None = None,
+) -> View | None:
     now = now or schedule_service.utcnow()
     description = description.strip()
     if not settings.telephone_enabled or not 1 <= len(description) <= 150:
@@ -369,24 +392,108 @@ async def begin_generation(
             AIGameSession.pending_token == c.token,
             AIGameSession.pending_user_tg_id == c.user_id,
             AIGameSession.next_turn_no == c.stage,
-            AIGameSession.pending_kind == "writing",
+            AIGameSession.pending_kind == expected_kind,
             AIGameSession.pending_since > now - timedelta(seconds=CLAIM_SECONDS),
             AIGameSession.expires_at > now,
+            exists(
+                select(TelephoneGame.session_id).where(
+                    TelephoneGame.session_id == c.game_id,
+                    TelephoneGame.stage_attempts < MAX_STAGE_ATTEMPTS,
+                )
+            ),
         )
-        .values(pending_kind="generating", pending_since=now)
+        .values(pending_kind="generating", pending_since=now, pending_token=new_token or c.token)
         .execution_options(synchronize_session=False)
     )
     if result.rowcount != 1:
         return None
     await session.execute(
+        update(TelephoneGame)
+        .where(TelephoneGame.session_id == c.game_id)
+        .values(stage_attempts=TelephoneGame.stage_attempts + 1)
+        .execution_options(synchronize_session=False)
+    )
+    await session.execute(
         update(TelephoneVisit)
         .where(TelephoneVisit.token == c.token)
-        .values(description=description)
+        .values(description=description, token=new_token or c.token)
     )
     view = await get_view(session, c.game_id)
     assert view is not None
     await _wake(session, view, now + timedelta(seconds=GENERATION_SECONDS))
     return view
+
+
+async def pause_generation(session: AsyncSession, c: Claim, *, now: datetime | None = None) -> bool:
+    """Only a transient, handled failure can offer one explicit paid retry."""
+    now = now or schedule_service.utcnow()
+    result = await session.execute(
+        update(AIGameSession)
+        .where(
+            AIGameSession.id == c.game_id,
+            AIGameSession.status == "running",
+            AIGameSession.pending_token == c.token,
+            AIGameSession.pending_kind == "generating",
+            AIGameSession.expires_at > now,
+            exists(
+                select(TelephoneGame.session_id).where(
+                    TelephoneGame.session_id == c.game_id,
+                    TelephoneGame.stage_attempts < MAX_STAGE_ATTEMPTS,
+                )
+            ),
+        )
+        .values(pending_kind="retry", pending_since=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        return False
+    view = await get_view(session, c.game_id)
+    assert view is not None
+    await _wake(session, view, now + timedelta(seconds=CLAIM_SECONDS))
+    return True
+
+
+async def retry_generation(
+    session: AsyncSession,
+    game_id: int,
+    user_id: int,
+    *,
+    now: datetime | None = None,
+) -> tuple[Claim, View, str] | None:
+    """Rotate the fence: stale completions/buttons cannot generate or overwrite twice."""
+    row = (
+        await session.execute(
+            select(
+                TelephoneVisit.token,
+                TelephoneVisit.stage,
+                TelephoneVisit.description,
+            ).where(TelephoneVisit.session_id == game_id, TelephoneVisit.user_tg_id == user_id)
+        )
+    ).one_or_none()
+    if row is None or not row.description:
+        return None
+    old = Claim(game_id, row.token, user_id, row.stage, None)
+    token = str(uuid4())
+    view = await _admit_generation(session, old, row.description, "retry", now=now, new_token=token)
+    if view is None:
+        return None
+    return Claim(game_id, token, user_id, row.stage, None), view, row.description
+
+
+async def abandon_retry(session: AsyncSession, game_id: int, user_id: int) -> bool:
+    result = await session.execute(
+        update(AIGameSession)
+        .where(
+            AIGameSession.id == game_id,
+            AIGameSession.status == "running",
+            AIGameSession.game_type == GAME_TYPE,
+            AIGameSession.pending_user_tg_id == user_id,
+            AIGameSession.pending_kind == "retry",
+        )
+        .values(pending_token=None, pending_user_tg_id=None, pending_kind=None, pending_since=None)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount == 1
 
 
 async def complete(
@@ -413,6 +520,12 @@ async def complete(
     )
     if result.rowcount != 1:
         return False
+    await session.execute(
+        update(TelephoneGame)
+        .where(TelephoneGame.session_id == c.game_id)
+        .values(stage_attempts=0)
+        .execution_options(synchronize_session=False)
+    )
     visit = (
         await session.execute(
             select(TelephoneVisit.description, TelephoneVisit.display_name).where(

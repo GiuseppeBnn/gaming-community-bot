@@ -5,6 +5,13 @@ Modifiche rilevanti al bot. Formato ispirato a
 
 ## [Unreleased]
 
+### Corretto
+- **Staffetta e timeout immagini** — gli errori transitori non eliminano subito
+  la partita: pausa di due minuti e una sola ripresa manuale, con fence SQL nuovo
+  e massimo due job per tappa anche cambiando utente. Timeout immagini fino a
+  120s, diagnostica HTTP/tempi senza contenuti e migrazione idempotente del contatore.
+  Nessun retry automatico pagato né aumento del budget.
+
 ### Aggiunto
 - **Telefono senza fili (opt-in test)** — quattro passaggi testo/immagine in
   privato, staffetta aperta senza roster, prenotazioni SQL atomiche e scadenze

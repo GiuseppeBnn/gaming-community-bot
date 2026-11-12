@@ -20,6 +20,36 @@ import database.connection as conn_mod
 pytestmark = [pytest.mark.pg]
 
 
+async def test_telephone_attempt_counter_migrates_existing_rows_idempotently(
+    pg_engine, monkeypatch
+):
+    async with pg_engine.begin() as c:
+        await c.execute(text("ALTER TABLE telephone_games DROP COLUMN stage_attempts"))
+        game_id = await c.scalar(
+            text(
+                "INSERT INTO ai_game_sessions (game_type,title,creator_tg_id,status,next_turn_no) VALUES ('telephone','Old relay',1,'finished',1) RETURNING id"
+            )
+        )
+        await c.execute(
+            text(
+                "INSERT INTO telephone_games (session_id,image_model,image_provider,image_cap_microusd,reveal_announced) VALUES (:id,'test/image','test',12000,false)"
+            ),
+            {"id": game_id},
+        )
+    await _run_migrations(pg_engine, monkeypatch)
+    await _run_migrations(pg_engine, monkeypatch)
+    columns = await _columns(pg_engine, "telephone_games")
+    assert columns["stage_attempts"]["nullable"] is False
+    async with pg_engine.connect() as c:
+        assert (
+            await c.scalar(
+                text("SELECT stage_attempts FROM telephone_games WHERE session_id=:id"),
+                {"id": game_id},
+            )
+            == 0
+        )
+
+
 async def _columns(engine, table: str) -> dict[str, dict]:
     """{column_name: {'default': ..., 'nullable': ...}} from information_schema."""
     async with engine.connect() as conn:
@@ -32,9 +62,7 @@ async def _columns(engine, table: str) -> dict[str, dict]:
                 {"t": table},
             )
         ).all()
-    return {
-        r[0]: {"default": r[1], "nullable": r[2] == "YES", "type": r[3]} for r in rows
-    }
+    return {r[0]: {"default": r[1], "nullable": r[2] == "YES", "type": r[3]} for r in rows}
 
 
 async def _run_migrations(engine, monkeypatch) -> None:
@@ -172,9 +200,7 @@ class TestMigrationsRepairAnOldDeploy:
     that predates the columns, which is the situation `_MIGRATIONS` exists for.
     """
 
-    async def test_readds_the_round_duration_to_an_older_guess_table(
-        self, pg_engine, monkeypatch
-    ):
+    async def test_readds_the_round_duration_to_an_older_guess_table(self, pg_engine, monkeypatch):
         """`guess_rounds.round_duration_seconds` drives the auto-close task.
 
         `create_all` skips tables that already exist, so a deploy that already has
@@ -183,9 +209,7 @@ class TestMigrationsRepairAnOldDeploy:
         exactly as they did.
         """
         async with pg_engine.begin() as conn:
-            await conn.execute(
-                text("ALTER TABLE guess_rounds DROP COLUMN round_duration_seconds")
-            )
+            await conn.execute(text("ALTER TABLE guess_rounds DROP COLUMN round_duration_seconds"))
 
         await _run_migrations(pg_engine, monkeypatch)
 
@@ -193,18 +217,14 @@ class TestMigrationsRepairAnOldDeploy:
         assert col["nullable"] is False
         assert "0" in col["default"]
 
-    async def test_readds_the_absolute_close_to_an_older_guess_table(
-        self, pg_engine, monkeypatch
-    ):
+    async def test_readds_the_absolute_close_to_an_older_guess_table(self, pg_engine, monkeypatch):
         """`guess_rounds.closes_at` is the admin-picked-date alternative to the
         relative auto-close. Added after the initial deploy, so a table that
         predates it must get it from `_MIGRATIONS` — nullable, since NULL means
         "fall back to the duration" and existing rounds keep behaving as before.
         """
         async with pg_engine.begin() as conn:
-            await conn.execute(
-                text("ALTER TABLE guess_rounds DROP COLUMN IF EXISTS closes_at")
-            )
+            await conn.execute(text("ALTER TABLE guess_rounds DROP COLUMN IF EXISTS closes_at"))
 
         await _run_migrations(pg_engine, monkeypatch)
 
@@ -212,36 +232,45 @@ class TestMigrationsRepairAnOldDeploy:
         assert col["nullable"] is True
 
     async def test_retires_live_raid_work_without_deleting_history(
-        self, pg_engine, monkeypatch,
+        self,
+        pg_engine,
+        monkeypatch,
     ):
         async with pg_engine.begin() as conn:
             game_id = (
-                await conn.execute(text(
-                    "INSERT INTO ai_game_sessions "
-                    "(game_type, title, creator_tg_id, status, next_turn_no) "
-                    "VALUES ('raid', 'Storico', 9, 'running', 1) RETURNING id"
-                ))
+                await conn.execute(
+                    text(
+                        "INSERT INTO ai_game_sessions "
+                        "(game_type, title, creator_tg_id, status, next_turn_no) "
+                        "VALUES ('raid', 'Storico', 9, 'running', 1) RETURNING id"
+                    )
+                )
             ).scalar_one()
             task_id = (
-                await conn.execute(text(
-                    "INSERT INTO scheduled_tasks "
-                    "(task_type, ref_id, run_at, status, created_by_tg_id, retry_count) "
-                    "VALUES ('raid', :game_id, CURRENT_TIMESTAMP, 'pending', 9, 0) RETURNING id"
-                ), {"game_id": game_id})
+                await conn.execute(
+                    text(
+                        "INSERT INTO scheduled_tasks "
+                        "(task_type, ref_id, run_at, status, created_by_tg_id, retry_count) "
+                        "VALUES ('raid', :game_id, CURRENT_TIMESTAMP, 'pending', 9, 0) RETURNING id"
+                    ),
+                    {"game_id": game_id},
+                )
             ).scalar_one()
 
         await _run_migrations(pg_engine, monkeypatch)
 
         async with pg_engine.connect() as conn:
             game = (
-                await conn.execute(text(
-                    "SELECT status, finished_at FROM ai_game_sessions WHERE id = :id"
-                ), {"id": game_id})
+                await conn.execute(
+                    text("SELECT status, finished_at FROM ai_game_sessions WHERE id = :id"),
+                    {"id": game_id},
+                )
             ).one()
             task = (
-                await conn.execute(text(
-                    "SELECT status, executed_at FROM scheduled_tasks WHERE id = :id"
-                ), {"id": task_id})
+                await conn.execute(
+                    text("SELECT status, executed_at FROM scheduled_tasks WHERE id = :id"),
+                    {"id": task_id},
+                )
             ).one()
         assert game[0] == "finished" and game[1] is not None
         assert task[0] == "cancelled" and task[1] is not None
@@ -306,7 +335,6 @@ class TestMigrationsRepairAnOldDeploy:
             ).scalar_one()
         assert stored == big
 
-
     async def test_widens_the_other_int32_counters(self, pg_engine, monkeypatch):
         """`users.xp` and `betting_options.total_wagered` accumulate without any
         upper bound of their own — XP from airdrops, wagers from a pot paid in
@@ -322,17 +350,13 @@ class TestMigrationsRepairAnOldDeploy:
         await _run_migrations(pg_engine, monkeypatch)
 
         assert (await _columns(pg_engine, "users"))["xp"]["type"] == "bigint"
-        assert (
-            await _columns(pg_engine, "betting_options")
-        )["total_wagered"]["type"] == "bigint"
+        assert (await _columns(pg_engine, "betting_options"))["total_wagered"]["type"] == "bigint"
 
         big = 12_345_678_900  # > 2^31
         async with pg_engine.begin() as conn:
             await conn.execute(text(INSERT_USER), {"id": 8})
             await conn.execute(text("UPDATE users SET xp = :x WHERE tg_id = 8"), {"x": big})
-            stored = (
-                await conn.execute(text("SELECT xp FROM users WHERE tg_id = 8"))
-            ).scalar_one()
+            stored = (await conn.execute(text("SELECT xp FROM users WHERE tg_id = 8"))).scalar_one()
         assert stored == big
 
 
@@ -367,8 +391,7 @@ class TestAlduinoV2Migration:
         }
         assert all(row.expires_at is None for row in rows)
         assert all(
-            (row.rules_version, row.question_limit, row.guess_limit) == (1, 20, 3)
-            for row in rows
+            (row.rules_version, row.question_limit, row.guess_limit) == (1, 20, 3) for row in rows
         )
         assert (
             await pg_session.execute(text("SELECT count(*) FROM ai_game_reward_settlements"))
