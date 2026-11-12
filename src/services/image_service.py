@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from typing import Literal
 
 import aiohttp
 
@@ -113,7 +114,14 @@ def _decode(data: dict) -> bytes:
     return image
 
 
-async def generate(description: str, *, model: str, provider: str, cap_microusd: int) -> bytes:
+async def generate(
+    description: str,
+    *,
+    model: str,
+    provider: str,
+    cap_microusd: int,
+    feature: Literal["telephone_image", "admin_image"] = "telephone_image",
+) -> bytes:
     """One preflight + at most one paid POST. Missing cost is charged at the cap."""
     if not settings.telephone_enabled or not settings.openrouter_api_key:
         raise ImageError("Image generation disabled")
@@ -153,7 +161,7 @@ async def generate(description: str, *, model: str, provider: str, cap_microusd:
         except (ValueError, TypeError, AttributeError) as exc:
             raise ImageError("Invalid image discovery", stage="discovery") from exc
         reservation = await ai_budget.reserve_cost(
-            feature="telephone_image",
+            feature=feature,
             provider="openrouter",
             requested_model=model,
             estimated_microusd=cap_microusd,

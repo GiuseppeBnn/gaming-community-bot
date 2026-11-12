@@ -8,6 +8,11 @@ from main import _ADMIN_EXTRA_COMMANDS, _GROUP_COMMANDS, _PRIVATE_COMMANDS
 _DESCRIPTION = "🐲 Regole e stato del gioco segreto"
 
 
+def test_image_command_is_only_in_admin_menu():
+    assert not any(c.command=="immagine" for c in _PRIVATE_COMMANDS+_GROUP_COMMANDS)
+    assert sum(c.command=="immagine" for c in _ADMIN_EXTRA_COMMANDS)==1
+
+
 def _count(commands):
     return sum(command.command == "gioco_alduino" for command in commands)
 

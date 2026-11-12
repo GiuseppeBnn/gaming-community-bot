@@ -44,6 +44,12 @@ def _modules_defining_a_router() -> dict[str, Router]:
 
 
 class TestRouterRegistry:
+    def test_image_command_precedes_free_text_game_fsms(self):
+        from handlers import images, guess, quiz
+        order=list(handlers.ROUTERS)
+        assert order.index(images.router)<order.index(guess.router)
+        assert order.index(images.router)<order.index(quiz.router)
+
     def test_every_module_with_a_router_is_registered(self):
         registered = set(handlers.ROUTERS)
         missing = {

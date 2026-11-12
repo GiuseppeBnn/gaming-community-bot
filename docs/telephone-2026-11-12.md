@@ -5,6 +5,14 @@ e senza premi monetari/XP. Non abilitarla in produzione durante questo rollout.
 
 ## Utilizzo
 
+Per provare **soltanto la generazione**, un admin può usare
+`/Immagine un pinguino che vende gelati sulla luna` (anche `/immagine`). Accetta
+1–150 caratteri e usa la stessa route, stile fumetto, timeout e budget, senza
+creare eventi/turni/premi. Una sola richiesta simultanea per admin, nessun retry
+automatico. L'immagine viene inviata nella chat in cui si esegue il comando;
+per un test privato, inviarlo in DM al bot. Il ledger distingue `admin_image`
+da `telephone_image`, ma la lane mensile resta la stessa.
+
 1. Admin, in privato: `/eventi` → **Telefono senza fili** → crea → prepara.
 2. Apri la staffetta pronta e conferma **Avvia ora**, oppure programmala.
 3. Nel gruppo compare una sola card, con **Prendo la staffetta** verso il privato.

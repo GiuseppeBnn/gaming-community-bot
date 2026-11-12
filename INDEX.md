@@ -101,6 +101,7 @@ src/                                  # src-layout: i package restano top-level 
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
 | `leaderboard.py` | `/classifiche` con switcher inline (monete · XP · trofei) |
 | `fun_ai.py` | Comandi comici one-shot + `/alduino` |
+| `images.py` | `/immagine` admin-only: prova del generatore condiviso, senza eventi né retry automatici |
 | `group_events.py` | Migrazioni chat, `chat_member`/`my_chat_member`, invalidazione cache admin |
 | `backup.py` | `/backup`, `/esporta` (admin) |
 | `help_content.py` | Registro comandi: sorgente unica di `/comandi` e `/spiega_comando` |

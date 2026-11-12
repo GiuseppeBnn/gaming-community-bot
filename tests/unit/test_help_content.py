@@ -50,6 +50,12 @@ class TestRenderCommandIsHtmlSafe:
         assert render_command("credita", is_admin=True) is not None
 
 
+def test_image_manual_is_admin_only():
+    assert render_command("immagine", is_admin=False) is None
+    page=render_command("immagine", is_admin=True)
+    assert "150" in page and "&lt;descrizione&gt;" in page
+
+
 class TestRenderCommandOrHint:
     """Shared by /spiega_comando (private) and the spiega_<cmd> deep-link landing."""
 

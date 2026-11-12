@@ -13,6 +13,9 @@ Modifiche rilevanti al bot. Formato ispirato a
   Nessun retry automatico pagato né aumento del budget.
 
 ### Aggiunto
+- **`/immagine <descrizione>` (solo admin)** — comando case-insensitive per
+  provare il generatore della staffetta senza eventi. Stesso modello/stile,
+  budget condiviso, audit senza prompt e nessun retry automatico.
 - **Telefono senza fili (opt-in test)** — quattro passaggi testo/immagine in
   privato, staffetta aperta senza roster, prenotazioni SQL atomiche e scadenze
   persistenti. Finale sfogliabile nella card del gruppo con una sola notifica.

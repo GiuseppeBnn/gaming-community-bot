@@ -207,6 +207,11 @@ async def test_budget_failure_never_posts(api):
     api.settle.assert_not_awaited()
 
 
+async def test_admin_command_has_distinct_audit_feature_but_same_budget(api):
+    assert await image.generate("a penguin",model=MODEL,provider=PROVIDER,cap_microusd=12000,feature="admin_image") == PNG
+    assert api.reserve.call_args.kwargs["feature"] == "admin_image"
+
+
 @pytest.mark.parametrize(
     "response,charge,status",
     [

@@ -88,6 +88,7 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="admin", description="🔧 Pannello admin"),
     BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
     BotCommand(command="eventi", description="🎬 Hub eventi"),
+    BotCommand(command="immagine", description="🖼️ Prova il generatore immagini"),
     # In sviluppo: comando temporaneamente riservato agli admin (vedi
     # help_content.CommandDoc("gioco_alduino", admin_only=True)).
     BotCommand(command="gioco", description="🐲 Gioca qui: stato, domande e tentativi"),

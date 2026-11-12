@@ -42,6 +42,7 @@ from handlers import (
     fun_ai,
     group_events,
     guess,
+    images,
     inline_mode,
     leaderboard,
     onboarding,
@@ -64,6 +65,7 @@ ROUTERS: tuple[Router, ...] = (
     leaderboard.router,
     shop.router,
     dice.router,
+    images.router,          # explicit admin command before quiz/guess free-text FSMs
     admin.router,
     admin_dashboard.router,
     events.router,

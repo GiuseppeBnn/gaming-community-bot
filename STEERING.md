@@ -918,6 +918,12 @@ i commit dell'handler.
 - **Warn**: `/warn [motivo]`, `/warns`, `/unwarn`
 - **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/lista_ranghi` (curva livelli + fasce tier, §12.1), `/admin` (UI a bottoni — §18.1)
 - **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
+- **Test immagini**: `/immagine <descrizione>` (case-insensitive), router admin-gated
+  alla radice. 1–150 caratteri, stessa route/stile/configurazione della staffetta e
+  flag `TELEPHONE_ENABLED`, ma nessuna partita creata. Audit solo modello/lunghezza,
+  commit prima della rete, ledger feature `admin_image` nella stessa lane
+  `openrouter_other`. Una sola richiesta in corso per admin; nessun retry automatico.
+  Il risultato arriva nella chat del comando, mai un invio di prova spontaneo.
 - **Visibilità menù "/":** gli admin vedono i comandi admin nel menù grazie a uno scope dedicato
   (`BotCommandScopeChat` per ogni `settings.admin_ids` in privato + `BotCommandScopeChatAdministrators`
   sul gruppo) — i comandi restano fuori dalle liste pubbliche (§18 regola 11).

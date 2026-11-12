@@ -276,6 +276,16 @@ _COMMANDS: list[CommandDoc] = [
                usage="/lista_ranghi", admin_only=True,
                details="Mostra la curva dei livelli (XP per salire, crescita %) e come i "
                        "nomi-rango (Novizio→Leggenda) si mappano sulle fasce di livello."),
+    CommandDoc(
+        "immagine", "Genera un'immagine di prova senza creare eventi", "🎬 Eventi",
+        usage="/immagine <descrizione>", admin_only=True,
+        details="Accetta anche <code>/Immagine</code>. Descrizione da 1 a 150 caratteri. "
+                "Usa esattamente modello, stile e limiti di Telefono senza fili: "
+                "deve essere abilitato <code>TELEPHONE_ENABLED</code>. "
+                "L'immagine arriva nella chat del comando, senza creare partite o premi. "
+                "Una sola richiesta in corso per admin, budget AI condiviso e nessun "
+                "retry automatico. La generazione può richiedere fino a 120 secondi.",
+    ),
     CommandDoc("eventi", "Hub eventi: quiz, giochi, staffette, sondaggi e scommesse",
                "🎬 Eventi",
                usage="/eventi", admin_only=True,

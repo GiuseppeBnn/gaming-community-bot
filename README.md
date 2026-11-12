@@ -205,6 +205,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 | `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
+| `/immagine <descrizione>` | Test admin del generatore: 1–150 caratteri, stessi stile/modello/budget della staffetta, senza creare eventi; accetta anche `/Immagine` |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
 
