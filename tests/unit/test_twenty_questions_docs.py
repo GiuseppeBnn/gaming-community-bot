@@ -28,7 +28,7 @@ def test_public_docs_and_env_describe_the_v2_contract():
         "5 domande valide e 2 tentativi validi",
         "10 XP",
         "RISPOSTA: nome del gioco",
-        "/gioco_alduino",
+        "/aldusgame",
         "pool = max(30 × partecipanti, 100 × partecipanti - 6 × domande - 20 × errori)",
         "CoInn vengono accreditati solo in caso di vittoria.",
         "CoInn: 0 su scadenza o chiusura admin.",
@@ -51,6 +51,15 @@ def test_public_docs_and_env_describe_the_v2_contract():
         "TWENTYQ_MAX_COINS_PER_PARTICIPANT=1000",
     ):
         assert line in env_example
+
+
+def test_operational_docs_use_the_canonical_aldusgame_commands():
+    for name in ("README.md", "STEERING.md", "INDEX.md"):
+        text = _read(name)
+        assert "/aldusgame" in text
+        assert "/gestisci_aldusgame" in text
+        assert "/gioco_alduino" not in text
+        assert "/gestisci_gioco_alduino" not in text
 
 
 def test_historical_twenty_questions_references_are_explicitly_legacy():

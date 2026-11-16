@@ -18,6 +18,7 @@ from config_data.config import settings
 from database.connection import async_session_maker, create_tables, engine, run_migrations
 import handlers
 from handlers import errors, event_types
+from handlers.help_content import command_enabled
 from handlers.schedule import scheduler_loop
 from middlewares.ban_guard import BannedUserMiddleware
 from middlewares.db_middleware import DbSessionMiddleware
@@ -44,10 +45,10 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="trasferisci", description="Trasferisci CoInn"),
     BotCommand(command="scommesse", description="Scommesse aperte"),
     BotCommand(command="crea_scommessa", description="Crea una scommessa"),
-    BotCommand(command="quiz", description="🧠 Quiz: gioca o gestisci"),
+    BotCommand(command="trivianerd", description="🧠 Trivia Nerd: gioca o gestisci"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
-    BotCommand(command="gioco_alduino", description="🐲 Gioca con Alduino e consulta lo stato"),
+    BotCommand(command="aldusgame", description="🐲 Gioca con Alduino e consulta lo stato"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
@@ -65,10 +66,10 @@ _GROUP_COMMANDS = [
     BotCommand(command="saldo", description="Il tuo saldo"),
     BotCommand(command="trasferisci", description="Trasferisci CoInn"),
     BotCommand(command="profilo", description="Il tuo profilo"),
-    BotCommand(command="quiz", description="🧠 Quiz attivo da giocare"),
+    BotCommand(command="trivianerd", description="🧠 Trivia Nerd attivo da giocare"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
-    BotCommand(command="gioco_alduino", description="🐲 Gioca con Alduino e consulta lo stato"),
+    BotCommand(command="aldusgame", description="🐲 Gioca con Alduino e consulta lo stato"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche della community"),
@@ -93,8 +94,10 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
     BotCommand(command="eventi", description="🎬 Hub eventi"),
     BotCommand(command="immagine", description="🖼️ Prova il generatore immagini"),
-    BotCommand(command="gestisci_gioco_alduino", description="🔧 Gestisci il gioco di Alduino"),
-    BotCommand(command="crea_quiz", description="🎬 Crea un quiz"),
+    BotCommand(command="gestisci_aldusgame", description="🔧 Gestisci il gioco di Alduino"),
+    BotCommand(command="crea_trivianerd", description="🎬 Crea Trivia Nerd"),
+    BotCommand(command="avvia_trivianerd", description="🎬 Avvia Trivia Nerd tramite ID"),
+    BotCommand(command="chiudi_trivianerd", description="🏁 Chiudi Trivia Nerd tramite ID"),
     BotCommand(command="sondaggio", description="🎬 Crea un sondaggio"),
     BotCommand(command="programma", description="🎬 Programma un evento"),
     BotCommand(command="programmati", description="🎬 Eventi programmati"),
@@ -111,6 +114,11 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="mute", description="🛡️ Silenzia un utente"),
 ]
 _ADMIN_COMMANDS = _PRIVATE_COMMANDS + _ADMIN_EXTRA_COMMANDS
+
+
+def _enabled_commands(commands: list[BotCommand]) -> list[BotCommand]:
+    """Replace Telegram scopes with enabled commands, removing stale entries."""
+    return [command for command in commands if command_enabled(command.command)]
 
 
 async def _build_storage() -> BaseStorage:
@@ -219,8 +227,8 @@ async def main() -> None:
     # (not a router) so it covers every handler registered above.
     dp.errors.register(errors.on_error)
 
-    await bot.set_my_commands(_PRIVATE_COMMANDS, scope=BotCommandScopeAllPrivateChats())
-    await bot.set_my_commands(_GROUP_COMMANDS, scope=BotCommandScopeAllGroupChats())
+    await bot.set_my_commands(_enabled_commands(_PRIVATE_COMMANDS), scope=BotCommandScopeAllPrivateChats())
+    await bot.set_my_commands(_enabled_commands(_GROUP_COMMANDS), scope=BotCommandScopeAllGroupChats())
 
     # Admin tools in the "/" menu, scoped so only admins see them:
     #  • each configured super-admin's private chat (best-effort: needs them to
@@ -229,7 +237,7 @@ async def main() -> None:
     for admin_id in settings.admin_ids:
         try:
             await bot.set_my_commands(
-                _ADMIN_COMMANDS, scope=BotCommandScopeChat(chat_id=admin_id)
+                _enabled_commands(_ADMIN_COMMANDS), scope=BotCommandScopeChat(chat_id=admin_id)
             )
         except Exception:  # noqa: BLE001 — chat may not exist yet; non-fatal
             logger.warning("Comandi admin non registrati per %s (chat non avviata?)", admin_id)
@@ -237,7 +245,7 @@ async def main() -> None:
     if group_id:
         try:
             await bot.set_my_commands(
-                _ADMIN_COMMANDS, scope=BotCommandScopeChatAdministrators(chat_id=group_id)
+                _enabled_commands(_ADMIN_COMMANDS), scope=BotCommandScopeChatAdministrators(chat_id=group_id)
             )
         except Exception:  # noqa: BLE001
             logger.warning("Comandi admin di gruppo non registrati (group_id=%s)", group_id)

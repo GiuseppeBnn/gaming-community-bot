@@ -251,7 +251,7 @@ def _review_kb(question_count: int) -> InlineKeyboardMarkup:
 async def start_quiz_creation(
     message: Message, state: FSMContext, creator_id: int | None = None
 ) -> None:
-    """Deep-link create_quiz, /crea_quiz, and dashboard «Crea quiz» entry.
+    """Creation command/deep-links (including legacy links) and dashboard entry.
 
     `creator_id` lets callers that start the flow from a callback (where
     message.from_user is the bot) pass the real admin id.
@@ -263,18 +263,18 @@ async def start_quiz_creation(
     await _prompt_title(message, state)
 
 
-@router.message(Command("crea_quiz"), IsAdminFilter())
+@router.message(Command("crea_trivianerd"), IsAdminFilter())
 async def cmd_crea_quiz(message: Message, state: FSMContext) -> None:
     if message.chat.type != ChatType.PRIVATE:
         bot_info = await message.bot.get_me()
         await message.reply(
-            "🧠 Crea il quiz in chat privata:",
+            "🧠 Crea Trivia Nerd in chat privata:",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="➡️ Crea quiz",
-                            url=f"https://t.me/{bot_info.username}?start=create_quiz",
+                            text="➡️ Crea Trivia Nerd",
+                            url=f"https://t.me/{bot_info.username}?start=create_trivianerd",
                         )
                     ]
                 ]
@@ -327,7 +327,7 @@ async def _prompt_title(message: Message, state: FSMContext) -> None:
     current = (await state.get_data()).get("title")
     hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
-        "🧠 <b>Crea un nuovo quiz</b>\n\n"
+        "🧠 <b>Crea un nuovo Trivia Nerd</b>\n\n"
         f"<b>Step 1/3</b> — Invia il <b>titolo</b> del quiz (max {_MAX_TITLE} caratteri):" + hint,
         reply_markup=_cancel_kb(),
     )
@@ -408,7 +408,7 @@ async def _prompt_question_text(message: Message, state: FSMContext, first: bool
     await state.set_state(QuizCreationStates.waiting_question_text)
     data = await state.get_data()
     n = data.get("saved_count", 0) + 1
-    intro = "🧠 <b>Quiz creato!</b>\n\n" if first else ""
+    intro = "🧠 <b>Trivia Nerd creato!</b>\n\n" if first else ""
     kb = _back_to_review_kb() if data.get("saved_count", 0) > 0 else _cancel_kb()
     await message.answer(
         f"{intro}<b>Domanda {n}</b> — Invia il <b>testo della domanda</b> "
@@ -457,8 +457,8 @@ def _randomize_summary(randomize_questions: bool, randomize_answers: bool) -> st
 
 
 _STALE_REVIEW_NOTICE = (
-    "Questo riepilogo non è più attivo. Usa /quiz per gestire i quiz "
-    "o /crea_quiz per crearne uno nuovo."
+    "Questo riepilogo non è più attivo. Usa /trivianerd per gestire Trivia Nerd "
+    "o /crea_trivianerd per crearne uno nuovo."
 )
 
 
@@ -889,21 +889,21 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: Asy
     await state.clear()
     b = InlineKeyboardBuilder()
     b.button(
-        text="🧪 Prova il quiz", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack()
+        text="🧪 Prova Trivia Nerd", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack()
     )
     b.adjust(1)
     await callback.message.answer(
-        f"🎉 <b>Quiz pronto!</b>\n\n"
+        f"🎉 <b>Trivia Nerd pronto!</b>\n\n"
         f"🧠 <b>#{quiz.id} {esc(quiz.title)}</b>\n"
         f"❓ Domande: <b>{len(quiz.questions)}</b>\n"
         f"💰 Premi: {quiz_service.format_prize_summary(quiz)}\n\n"
-        f"Avvialo nel gruppo con <code>/avvia_quiz {quiz.id}</code> o <code>/quiz</code>, "
+        f"Avvialo nel gruppo con <code>/avvia_trivianerd {quiz.id}</code> o <code>/trivianerd</code>, "
         f"oppure dalla dashboard <code>/admin</code>.\n\n"
         f"<i>Prima di avviarlo puoi provarlo tu: la prova non viene salvata "
         f"e non conta in classifica.</i>",
         reply_markup=b.as_markup(),
     )
-    await callback.answer("✅ Quiz pronto!")
+    await callback.answer("✅ Trivia Nerd pronto!")
 
 
 # Maps each step's state → the prompt to re-show when the user taps «⬅️ Indietro».

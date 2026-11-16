@@ -141,16 +141,18 @@ async def test_complete_private_relay_and_public_gallery(session, setup):
     assert "non disponibile" in callback.answer.call_args.args[0]
 
 
-async def test_creation_is_admin_entry_and_disabled_error_is_clear(session, setup, monkeypatch):
+async def test_creation_is_admin_entry_and_disabled_mode_is_silent(session, setup, monkeypatch):
     bot, state, _ = setup
     cb = SimpleNamespace(
         message=Message(bot, 1), from_user=SimpleNamespace(id=1), answer=AsyncMock()
     )
     await ui.create(cb, state, session)
     assert len(await game.list_games(session)) == 1
+    sent_count = len(bot.sent)
     monkeypatch.setattr(game.settings, "telephone_enabled", False)
     await ui.start_creation(Message(bot, 1), state, 1, session)
-    assert "non abilitato" in bot.sent[-1][1]
+    assert len(bot.sent) == sent_count
+    assert len(await game.list_games(session)) == 1
 
 
 @pytest.mark.parametrize(

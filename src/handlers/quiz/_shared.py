@@ -36,8 +36,8 @@ _MAX_OPTION = 100
 _MAX_EXPLANATION = 200
 
 # Quiz management (list/start/close) is admin-only AND private-only: in a group it
-# redirects to the private dashboard. Creation already redirects via /crea_quiz.
-_QUIZ_PRIVATE_NOTICE = "🧠 Gestisci i quiz in chat privata col bot."
+# redirects to the private dashboard. Creation already redirects to its own DM flow.
+_QUIZ_PRIVATE_NOTICE = "🧠 Gestisci Trivia Nerd in chat privata col bot."
 
 
 def _too_long(text: str, cap: int, subject: str) -> str | None:

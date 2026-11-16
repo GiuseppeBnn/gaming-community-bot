@@ -36,7 +36,7 @@ def test_live_card_escapes_content_and_never_reveals_secret():
     assert "È &lt;b&gt;3D?" in card
     assert "Portal 2" not in card
     assert "Risposta: titolo del gioco" in card
-    assert card.endswith("Digita /gioco_alduino per avere le informazioni aggiornate")
+    assert card.endswith("Digita /aldusgame per avere le informazioni aggiornate")
 
 
 def test_finished_card_reveals_answer():

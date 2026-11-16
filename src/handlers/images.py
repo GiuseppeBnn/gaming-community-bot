@@ -15,7 +15,7 @@ from filters.admin_filter import IsAdminFilter
 from services import admin_service, ai_budget, image_service
 
 router = Router(name="images")
-router.message.filter(IsAdminFilter())
+router.message.filter(lambda _: settings.telephone_enabled, IsAdminFilter())
 log = logging.getLogger(__name__)
 # A UX guard only; the SQL ledger remains the authority on spending. No await
 # separates check/add, and finally frees the slot even on cancellation.
@@ -33,12 +33,14 @@ async def cmd_immagine(
     command: CommandObject,
     db_session: AsyncSession,
 ) -> None:
+    if not settings.telephone_enabled:
+        return
     prompt = (command.args or "").strip()
     if not 1 <= len(prompt) <= 150:
         await db_session.rollback()
         await message.answer(_USAGE)
         return
-    if not settings.telephone_enabled or not settings.openrouter_api_key:
+    if not settings.openrouter_api_key:
         await db_session.rollback()
         await message.answer("Generazione immagini non abilitata o OpenRouter non configurato.")
         return

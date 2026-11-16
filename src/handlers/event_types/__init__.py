@@ -15,6 +15,7 @@ from .base import (
     clear,
     edit_or_send,
     get,
+    is_disabled,
     register,
 )
 
@@ -51,6 +52,7 @@ __all__ = [
     "clear",
     "edit_or_send",
     "get",
+    "is_disabled",
     "register",
     "register_builtin",
 ]

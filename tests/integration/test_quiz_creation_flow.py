@@ -581,7 +581,7 @@ class TestEntryCommand:
 
         await qz.cmd_crea_quiz(message, state)
 
-        assert message.markups[0].inline_keyboard[0][0].url.endswith("?start=create_quiz")
+        assert message.markups[0].inline_keyboard[0][0].url.endswith("?start=create_trivianerd")
         assert await state.get_state() is None
 
     async def test_in_private_it_starts_the_flow(self, session):

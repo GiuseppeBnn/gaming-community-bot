@@ -14,10 +14,12 @@ escaped by the caller.
 from __future__ import annotations
 
 import difflib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import html
 import re
 
+from config_data.config import settings
 from services.ai_game_types import DEFAULT_MAX_COINS_PER_PARTICIPANT
 from services.twenty_questions_rules import v2_policy
 from utils.text import esc
@@ -33,6 +35,7 @@ class CommandDoc:
     details: str = ""               # novice-friendly manual body (HTML)
     admin_only: bool = False
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    enabled: Callable[[], bool] | None = None
 
 
 # Category order for the legend (user buckets first, then admin buckets).
@@ -108,8 +111,8 @@ _COMMANDS: list[CommandDoc] = [
     ),
     # --- 🏆 Progressione ---
     CommandDoc(
-        "quiz", "Gioca al quiz in corso (o vedi se ce n'è uno)", "🏆 Progressione",
-        usage="/quiz",
+        "trivianerd", "Trivia Nerd: gioca o consulta la gestione", "🏆 Progressione",
+        usage="/trivianerd",
         details="Se è in corso un quiz, ti dà il pulsante per <b>giocarlo</b> in chat privata; "
                 "altrimenti ti dice chiaramente che non ce ne sono di attivi. Gli admin lo usano "
                 "invece per gestire e avviare i quiz.",
@@ -290,6 +293,7 @@ _COMMANDS: list[CommandDoc] = [
     CommandDoc(
         "immagine", "Genera un'immagine di prova senza creare eventi", "🎬 Eventi",
         usage="/immagine <descrizione>", admin_only=True,
+        enabled=lambda: settings.telephone_enabled,
         details="Accetta anche <code>/Immagine</code>. Descrizione da 1 a 150 caratteri. "
                 "Usa esattamente modello, stile e limiti di Telefono senza fili: "
                 "deve essere abilitato <code>TELEPHONE_ENABLED</code>. "
@@ -297,7 +301,7 @@ _COMMANDS: list[CommandDoc] = [
                 "Una sola richiesta in corso per admin, budget AI condiviso e nessun "
                 "retry automatico. La generazione può richiedere fino a 120 secondi.",
     ),
-    CommandDoc("eventi", "Hub eventi: quiz, giochi, staffette, sondaggi e scommesse",
+    CommandDoc("eventi", "Hub eventi: quiz, giochi, sondaggi e scommesse",
                "🎬 Eventi",
                usage="/eventi", admin_only=True,
                details="Crea quiz, <b>Guess The Game</b> (indovina il gioco da una foto), "
@@ -310,36 +314,30 @@ _COMMANDS: list[CommandDoc] = [
                        "parità conta il tempo. Le risposte libere le giudica l'AI, quindi "
                        "«GTA SA» vale «Grand Theft Auto: San Andreas» — ma la <b>serie da "
                        "sola non basta</b>. In creazione puoi aggiungere grafie alternative "
-                       "sempre accettate: sono la rete di sicurezza se l'AI non risponde.\n\n"
-                       "<b>Telefono senza fili</b> (se abilitato): quattro passaggi "
-                       "privati testo/immagine, una persona per passaggio. Due minuti "
-                       "per descrivere l'ultima immagine, massimo 150 caratteri; "
-                       "il gruppo scopre la catena alla fine. Nessun premio CoInn/XP."),
+                       "sempre accettate: sono la rete di sicurezza se l'AI non risponde."),
     CommandDoc(
-        "gioco_alduino",
+        "aldusgame",
         "Regole e stato del gioco segreto di Alduino",
         "🏆 Progressione",
-        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
+        usage="/aldusgame [domanda | RISPOSTA: titolo]",
         details="Mostra la partita attiva e la tua quota personale. Il comportamento è "
                 "uguale per tutti, admin inclusi: non apre mai la gestione. "
                 "Si gioca nel gruppo, tramite reply o aggiungendo domanda/titolo al comando.\n\n"
                 + render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
     ),
     CommandDoc(
-        "gestisci_gioco_alduino", "Gestisci le partite del gioco di Alduino", "🎬 Eventi",
-        usage="/gestisci_gioco_alduino", admin_only=True,
+        "gestisci_aldusgame", "Gestisci le partite del gioco di Alduino", "🎬 Eventi",
+        usage="/gestisci_aldusgame", admin_only=True,
         details="Apre in privato la gestione già disponibile in /eventi: crea, avvia, "
                 "programma o chiudi una partita. «Vedi partita» mostra lo stato pubblico. "
-                "Per giocare come gli altri usa /gioco_alduino oppure rispondi nel gruppo.",
+                "Per giocare come gli altri usa /aldusgame oppure rispondi nel gruppo.",
     ),
-    CommandDoc("crea_quiz", "Crea un quiz (in privato)", "🎬 Eventi",
-               usage="/crea_quiz", admin_only=True),
-    CommandDoc("quiz", "Elenca i quiz pronti e avviali", "🎬 Eventi",
-               usage="/quiz", admin_only=True),
-    CommandDoc("avvia_quiz", "Avvia subito un quiz", "🎬 Eventi",
-               usage="/avvia_quiz <id>", admin_only=True),
-    CommandDoc("chiudi_quiz", "Chiudi un quiz e pubblica il podio", "🎬 Eventi",
-               usage="/chiudi_quiz <id>", admin_only=True),
+    CommandDoc("crea_trivianerd", "Crea Trivia Nerd (in privato)", "🎬 Eventi",
+               usage="/crea_trivianerd", admin_only=True),
+    CommandDoc("avvia_trivianerd", "Avvia subito Trivia Nerd", "🎬 Eventi",
+               usage="/avvia_trivianerd <id>", admin_only=True),
+    CommandDoc("chiudi_trivianerd", "Chiudi Trivia Nerd e pubblica il podio", "🎬 Eventi",
+               usage="/chiudi_trivianerd <id>", admin_only=True),
     CommandDoc("sondaggio", "Crea un sondaggio", "🎬 Eventi",
                usage="/sondaggio", admin_only=True,
                details="Crea un sondaggio (domanda + opzioni) <b>in chat privata</b>. "
@@ -366,18 +364,26 @@ def normalize(raw: str) -> str:
 
 
 def lookup(raw: str) -> CommandDoc | None:
-    return _BY_NAME.get(normalize(raw))
+    doc = _BY_NAME.get(normalize(raw))
+    return doc if doc is None or doc.enabled is None or doc.enabled() else None
+
+
+def command_enabled(raw: str) -> bool:
+    """Menu projection uses the same availability as help, not a second flag map."""
+    doc = _BY_NAME.get(normalize(raw))
+    return doc is None or doc.enabled is None or doc.enabled()
 
 
 def suggestions(raw: str, limit: int = 3) -> list[str]:
     """Closest known command names to a mistyped one (for 'comando non trovato')."""
-    return difflib.get_close_matches(normalize(raw), sorted(_BY_NAME), n=limit, cutoff=0.5)
+    names = sorted(name for name in _BY_NAME if command_enabled(name))
+    return difflib.get_close_matches(normalize(raw), names, n=limit, cutoff=0.5)
 
 
 def _by_category(categories: tuple[str, ...]) -> list[tuple[str, list[CommandDoc]]]:
     out: list[tuple[str, list[CommandDoc]]] = []
     for cat in categories:
-        cmds = [c for c in _COMMANDS if c.category == cat]
+        cmds = [c for c in _COMMANDS if c.category == cat and command_enabled(c.name)]
         if cmds:
             out.append((cat, cmds))
     return out
@@ -414,7 +420,7 @@ def render_alduino_reference() -> str:
         "Puoi spiegare queste funzioni, ma non fingere di aver eseguito comandi o azioni.",
     ]
     for command in _COMMANDS:
-        if command.admin_only:
+        if command.admin_only or not command_enabled(command.name):
             continue
         usage = command.usage or f"/{command.name}"
         details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
@@ -449,6 +455,14 @@ def render_command(raw: str, is_admin: bool = False) -> str | None:
         parts += ["", f"📋 <b>Uso:</b> <code>{esc(doc.usage)}</code>"]
     if doc.details:
         parts += ["", doc.details]
+    if doc.name == "eventi" and settings.telephone_enabled:
+        parts += [
+            "",
+            "<b>Telefono senza fili</b>: quattro passaggi privati testo/immagine, "
+            "una persona per passaggio. Due minuti per descrivere l'ultima immagine, "
+            "massimo 150 caratteri; il gruppo scopre la catena alla fine. "
+            "Nessun premio CoInn/XP.",
+        ]
     if doc.admin_only:
         parts += ["", "<i>🔐 Comando riservato agli admin.</i>"]
     return "\n".join(parts)

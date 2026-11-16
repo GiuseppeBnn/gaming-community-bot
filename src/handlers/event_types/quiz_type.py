@@ -35,8 +35,8 @@ def _fmt_dt(dt) -> str:
 
 class QuizType:
     key = "quiz"
-    hub_label = "🧠 Quiz"
-    create_label = "➕ Crea quiz"
+    hub_label = "🧠 Trivia Nerd"
+    create_label = "➕ Crea Trivia Nerd"
     #: Its close publishes the podium, so it is worth scheduling on its own clock —
     #: `handlers.schedule` offers «avvio o chiusura?» only for types that say this.
     closable = True
@@ -46,7 +46,7 @@ class QuizType:
             PublicEvent(
                 key=self.key, item_id=q.id, title=q.title,
                 summary=f"{len(q.questions)} domande · gioca in privato",
-                emoji="🧠", deep_link_payload=f"quiz_{q.id}",
+                emoji="🧠", deep_link_payload=f"trivianerd_{q.id}",
             )
             for q in await quiz_service.list_ready(db_session)
             if q.status == "running"
@@ -61,7 +61,7 @@ class QuizType:
         return PublicEvent(
             key=self.key, item_id=quiz.id, title=quiz.title,
             summary=f"{len(quiz.questions)} domande", emoji="🧠",
-            deep_link_payload=f"quiz_{quiz.id}",
+            deep_link_payload=f"trivianerd_{quiz.id}",
         )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
@@ -70,7 +70,7 @@ class QuizType:
         # never starts it (STEERING §18.2, no accidental launch).
         quizzes = await quiz_service.list_manageable(db_session)
         b = InlineKeyboardBuilder()
-        lines = ["🧠 <b>Quiz</b>\n"]
+        lines = ["🧠 <b>Trivia Nerd</b>\n"]
         for q in quizzes:
             dot, label = _STATUS.get(q.status, ("•", q.status))
             # Title only — no `#id` in the listing (the id still travels in the
@@ -81,8 +81,8 @@ class QuizType:
                 callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack(),
             )
         if not quizzes:
-            lines.append("<i>Nessun quiz. Creane uno.</i>")
-        b.button(text="➕ Crea quiz", callback_data=EventCb(action="new", task_type="quiz").pack())
+            lines.append("<i>Nessun Trivia Nerd. Creane uno.</i>")
+        b.button(text=self.create_label, callback_data=EventCb(action="new", task_type="quiz").pack())
         b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())

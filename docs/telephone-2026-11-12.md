@@ -46,6 +46,20 @@ TELEPHONE_IMAGE_TIMEOUT_SECONDS=120
 
 L'API key è quella OpenRouter esistente: non servono nuove credenziali. Default
 del flag **false**, incluso prod. Le altre variabili hanno già i default sopra.
+Con `false` la funzione è invisibile anche agli admin: niente hub, menu, aiuto,
+suggerimenti, eventi inline o contesto live AI. `/immagine`, vecchi link, callback
+e reply non consentono accesso o generazione; non vengono pubblicate card.
+I task già programmati sono nascosti e consumati senza esecuzione né notifiche
+quando scadono, non rimandati alla futura abilitazione. Dati e immagini già
+archiviati restano intatti; i messaggi Telegram già inviati non vengono cancellati.
+Cambiare il flag nell'env dell'istanza e avviare un nuovo processo: non è un toggle
+hot-reload. Con Docker usare `docker compose up -d --force-recreate bot`: un semplice
+restart e Watchtower conservano l'env del container precedente.
+
+Il flag separa il rollout, non i sorgenti: si può promuovere lo stesso codice in
+prod lasciandolo spento e continuare a sviluppare su test senza cherry-pick o
+esclusioni manuali di file. Non promuovere l'env di test in produzione.
+
 Modello/provider/prezzo sono copiati nella partita pronta: per cambiarli su una
 partita già creata, crearne un'altra (nessun cambio silenzioso durante la catena).
 

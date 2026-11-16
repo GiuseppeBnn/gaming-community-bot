@@ -43,11 +43,11 @@ async def test_native_poll_expiry_is_durable_and_advances_only_after_commit(sess
     hook = await QuizType().execute_scheduled(bot, session, task, 123)
     assert hook is not None
     # DB-only transition, no Telegram call while the parent lock is held.
-    assert not bot.stopped and "Quiz completato" not in bot.said
+    assert not bot.stopped and "Trivia Nerd completato" not in bot.said
     assert await quiz_service.answered_count(session, quiz.id, 42) == 1
     await session.commit()
     await hook()
-    assert "Quiz completato" in bot.said and "0/1" in bot.said
+    assert "Trivia Nerd completato" in bot.said and "0/1" in bot.said
     assert await QuizType().execute_scheduled(bot, session, task, 123) is None
 
 

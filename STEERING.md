@@ -446,11 +446,11 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `spiega_<cmd>` | `common.cmd_start` → `help_content.render_command_or_hint` | Man page del comando `<cmd>` (dal bottone di `/spiega_comando` nel gruppo) |
 | `manage_bets` | `common.cmd_start` | Apre pannello admin scommesse (`admin_betting._show_event_list`) |
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
-| `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
+| `create_trivianerd` (anche legacy `create_quiz`) | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione Trivia Nerd (admin, re-check) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
-| `manage_quiz` / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/quiz`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
+| `manage_trivianerd` (anche legacy `manage_quiz`) / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/trivianerd`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
 | `manage_twentyq` | `common.cmd_start` → `twenty_questions.cmd_gestisci_gioco_alduino` → `TwentyQuestionsType.render_list` | Gestione privata del gioco di Alduino, con verifica admin anche all'atterraggio |
-| `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
+| `trivianerd_<id>` (anche legacy `quiz_<id>`) | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi Trivia Nerd in privato, senza riavviare timer o progressi |
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
@@ -482,10 +482,10 @@ gruppo con un **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best
 > e il deep-link `scommesse`.
 
 I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
-comandi (`/crea_quiz`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
+comandi (`/crea_trivianerd`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
 avviano la FSM lì (mai prompt/input nel gruppo dove chiunque può leggere o interferire). Poiché
 `common.router` è **pubblico**, **ogni** landing deep-link admin in `cmd_start` (`admin`, `eventi`,
-`create_quiz`, `create_poll`, `programma`, `manage_bets`, `backup`/`esporta`) **ri-verifica
+`create_trivianerd`/`create_quiz`, `create_poll`, `programma`, `manage_bets`, `backup`/`esporta`) **ri-verifica
 `is_admin`**: il filtro del comando d'origine non si propaga al deep-link, che un non-admin potrebbe
 costruire a mano. (`create_bet` resta pubblico per design, §16.)
 
@@ -900,7 +900,7 @@ illimitata con tanti utenti).
 ### Anti-flood comandi statici di gruppo (`utils/static_reply`)
 
 Oltre al rate-limit globale, i **comandi statici** che ora rispondono **in chiaro nel gruppo**
-(`/profilo`, `/saldo`, la vista non-admin di `/quiz`, il bottone-guida di `/comandi`) usano
+(`/profilo`, `/saldo`, la vista non-admin di `/trivianerd`, il bottone-guida di `/comandi`) usano
 `utils.static_reply.reply_static(message, text, bucket, **kwargs)`: strategia **"sostituisci il
 precedente"** — tiene una mappa `(chat_id, user_id, bucket) → message_id` e, prima di inviare la
 risposta nuova, **cancella** quella precedente del bot per quella chiave (best-effort) ⇒ **una sola
@@ -953,12 +953,12 @@ i commit dell'handler.
 > admin, quindi copre di fatto ogni admin attivo.
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/trivianerd`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/trivianerd`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
 
-> **`/guessTheGame` e `/soundQuest` hanno due facce come `/quiz`** (un solo handler per kind, ramifica su
+> **`/guessTheGame` e `/soundQuest` hanno due facce come `/trivianerd`** (un solo handler per kind, ramifica su
 > `is_admin`): per i **non-admin** elencano i round `running` di quel gioco con bottoni deep-link ▶️ Gioca
 > (o «nessun evento attivo»); per gli **admin** aprono la lista di gestione `GuessType(kind).render_list`.
 > Telegram forza i nomi comando **minuscoli** nel menù «/» → registrati come `guessthegame`/`soundquest`
@@ -971,10 +971,19 @@ i commit dell'handler.
 > deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
 > condividono il registro unico in `handlers/help_content.py` (zero drift legenda↔dettaglio).
 
-> **`/quiz` ha due facce** (un solo handler, ramifica su `is_admin` — niente filtro sul decoratore):
+> **`/trivianerd` ha due facce** (un solo handler, ramifica su `is_admin` — niente filtro sul decoratore):
 > per i **non-admin** è user-facing (bottone «▶️ Gioca» sul quiz in corso, o un messaggio chiaro
-> «Nessun quiz attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
+> «Nessun Trivia Nerd attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
 > redirect al pannello). Gli handler di gestione restano gated.
+
+> **Rinomina Trivia Nerd:** `/trivianerd`, `/crea_trivianerd`, `/avvia_trivianerd` e
+> `/chiudi_trivianerd` sono i nomi canonici di router, menu e manuale. Una sola voce
+> pubblica nel registry help (mai una seconda omonima admin che la sovrascrive).
+> Nuovi inviti `trivianerd_<id>`, creazione `create_trivianerd` e gestione
+> `manage_trivianerd`; le rispettive varianti storiche restano accettate e i due
+> ingressi admin riconfermano sempre i permessi. **Non rinominare** task type `quiz`,
+> tabelle/campi, callback, sorgenti XP, chiavi cooldown o stati FSM persistiti: il cambio
+> è di presentazione/API Telegram, non una migrazione dei dati o della logica di gioco.
 
 > **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/locanda` · `/classifiche` · `/scommesse`
 > **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
@@ -995,7 +1004,7 @@ i commit dell'handler.
 - **Moderazione**: `/ban`, `/sban`, `/kick`, `/mute [durata]`, `/unmute`
 - **Warn**: `/warn [motivo]`, `/warns`, `/unwarn`
 - **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/lista_ranghi` (curva livelli + fasce tier, §12.1), `/admin` (UI a bottoni — §18.1)
-- **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
+- **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_trivianerd`, `/trivianerd`, `/avvia_trivianerd <id>`, `/chiudi_trivianerd <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
 - **Test immagini**: `/immagine <descrizione>` (case-insensitive), router admin-gated
   alla radice. 1–150 caratteri, stessa route/stile/configurazione della staffetta e
   flag `TELEPHONE_ENABLED`, ma nessuna partita creata. Audit solo modello/lunghezza,
@@ -1440,12 +1449,12 @@ avviso di tastiera superata, mai un ingresso al recorder. Il riepilogo conferma 
 
 ### Avvio & gioco
 
-- `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `quiz_<id>`) **poi**
-  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_quiz`, dall'hub Eventi
+- `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `trivianerd_<id>`) **poi**
+  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_trivianerd`, dall'hub Eventi
   (`EventCb(action="start", task_type="quiz", item_id=<id>)`, con conferma `action="askstart"`)
-  e dallo scheduler. Caller committa. **`/quiz` (admin)**
+  e dallo scheduler. Caller committa. **`/trivianerd` (admin)**
   non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
-- Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: poll **quiz nativo non anonimo**
+- Ogni utente apre `?start=trivianerd_<id>` (anche il vecchio `quiz_<id>`) → `start_quiz_session`: poll **quiz nativo non anonimo**
   individuale in privato, `allows_revoting=False`, `protect_content=True`. Domanda invariata
   (300 caratteri); progresso nella descrizione, opzioni complete (100). Risposta corretta
   rimappata nell'ordine casuale del giocatore; Telegram mostra feedback/spiegazione.
@@ -1491,7 +1500,7 @@ avviso di tastiera superata, mai un ingresso al recorder. Il riepilogo conferma 
   corrente, oppure `QUIZ_MISSING`). Al massimo un chiamante può ricevere `None`: è quello che rende
   sicuro pagare i premi subito dopo. **La transizione è la guardia** — controllare lo stato e
   ribaltarlo dopo sarebbe un read-then-write, e il quiz è spesso già in cache (§22).
-- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
+- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_trivianerd` **e** dall'hub Eventi
   (`EventCb(action="close", task_type="quiz", item_id=<id>)`, con conferma `action="askclose"`)
   → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le consolazioni). Un quiz `finished`
   resta gestibile nell'hub: `action="reset"` («Riproponi») lo riporta a `ready`, `action="del"`
@@ -2453,6 +2462,19 @@ non una seconda generazione pagata. Il contenuto privato non è inviolabile agli
 screenshot: `protect_content` riduce inoltri accidentali, non garantisce segretezza.
 
 `TELEPHONE_ENABLED=false` per default: il rilascio del codice non abilita prod.
+È un kill switch di visibilità e accesso, non solo di creazione: la capability
+opzionale `enabled` della spec nasconde il tipo in `get`/`all_types` del registro,
+quindi hub, programmazione, inline e contesto live AI non lo espongono.
+`/immagine` sparisce dai menu Telegram e dal manuale/suggerimenti; `/eventi` non
+menziona staffette. Reply, link, callback e pubblicazione delle card sono bloccati
+anche per gli admin. Gli ingressi obsoleti mostrano al massimo un errore generico,
+mai il nome della funzione. Le programmazioni disabilitate sono nascoste e, alla
+scadenza, marcate done senza esecuzione, retry o notifica: non si accodano per una
+futura riattivazione. Il dato storico rimane e nessun messaggio già inviato viene
+cancellato. Il flag si configura nell'env dell'istanza e richiede un nuovo processo;
+in Docker serve ricreare il container (`docker compose up -d --force-recreate bot`):
+un semplice restart e Watchtower conservano l'env del container precedente.
+Test `true`, produzione `false` o assente. Il codice resta identico nei branch.
 `StartResult.audit_action/audit_detail` permette alla spec di richiedere audit:
 il caller generico registra l'admin effettivo nella stessa transazione prima
 del commit, senza indovinarlo dal creatore della partita.
@@ -2487,10 +2509,10 @@ ricontrollata dopo il lock, quindi un turno tardivo non entra nel ledger né pag
 Una sola sessione `twentyq` può essere avviata per gruppo: il service serializza
 avvii manuali e programmati con advisory lock transazionale PostgreSQL sul gruppo,
 poi controlla le sessioni running (v1 e v2). Non chiude né modifica eventuali
-partite parallele preesistenti; `/gioco_alduino` ne segnala l'ambiguità senza sceglierne una.
-`/gioco_alduino` mostra stato/quota e consente di giocare allo stesso modo a utenti
+partite parallele preesistenti; `/aldusgame` ne segnala l'ambiguità senza sceglierne una.
+`/aldusgame` mostra stato/quota e consente di giocare allo stesso modo a utenti
 e admin, senza controllare il ruolo né aprire pannelli di gestione. Il comando distinto
-`/gestisci_gioco_alduino` è admin-only e apre in privato la lista del tipo
+`/gestisci_aldusgame` è admin-only e apre in privato la lista del tipo
 `TwentyQuestionsType`, già usata da `/eventi`. Filtro admin sul comando e controllo
 esplicito nel corpo per gli ingressi programmatici. Deep-link `manage_twentyq` con verifica
 admin all'atterraggio; nessun dettaglio/segredo admin nel gruppo. La callback pubblica
@@ -2503,10 +2525,13 @@ dei reply. La consultazione senza argomenti non chiama l'AI né consuma quote; l
 messaggio di riepilogo nel gruppo conserva soltanto la consueta mappatura reply.
 Menu e manuale del gioco pubblici, gestione solo in menu/manuale admin; mutazioni di gestione sempre
 dietro i filtri admin già presenti nell'hub.
+I nomi canonici sono `/aldusgame` e `/gestisci_aldusgame`: i precedenti comandi
+non sono alias. Restano invariati il deep-link `manage_twentyq`, le callback,
+le chiavi persistite `twentyq` e le funzioni interne; nessuna migrazione dei dati.
 Alias breve rimosso da router, menu e manuale. Le istruzioni comuni di card e help
 invitano a rispondere al messaggio con una domanda o `Risposta: titolo del gioco`;
 i reply a verdetti registrati rimangono comunque compatibili. Card, help senza partita
-attiva e riepilogo personale terminano con `Digita /gioco_alduino per avere le informazioni aggiornate`.
+attiva e riepilogo personale terminano con `Digita /aldusgame per avere le informazioni aggiornate`.
 Le scadenze visibili (anche nella conferma di creazione) usano `utils.daytime.to_local`,
 con timezone community e DST, ma persistenza e confronti restano UTC naive.
 Solo la presentazione dei premi è semplificata: avviso senza percentuali, minimi o
@@ -2516,7 +2541,7 @@ vittoria e l'importo definitivo viene calcolato a fine partita; niente «saldo m
 `AIGameMessage` associa esclusivamente `(group_id, message_id)` alla sessione:
 verdetti e riepiloghi v2 vengono registrati dopo l'invio Telegram, in una nuova
 transazione, e restano reply target dopo restart. Un errore nella registrazione
-non annulla il turno né duplica l'invio; `/gioco_alduino` permette di riprendere. Un reply
+non annulla il turno né duplica l'invio; `/aldusgame` permette di riprendere. Un reply
 a una partita conclusa non passa alla nuova e non attiva la chat normale.
 La tabella `ai_game_messages` viene creata da `Base.metadata.create_all()` allo
 startup ed è inclusa nell'export basato sui metadata; nessun backfill dei vecchi

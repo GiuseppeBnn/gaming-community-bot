@@ -379,7 +379,7 @@ async def _finish_creation(
     )
 
 
-@router.message(Command("gioco_alduino"))
+@router.message(Command("aldusgame"))
 async def cmd_gioco_alduino(
     message: Message, db_session: AsyncSession, command: CommandObject | None = None,
 ) -> None:
@@ -390,7 +390,7 @@ async def cmd_gioco_alduino(
     await show_game_status(message, db_session, raw_text=command.args if command else None)
 
 
-@router.message(Command("gestisci_gioco_alduino"), IsAdminFilter())
+@router.message(Command("gestisci_aldusgame"), IsAdminFilter())
 async def cmd_gestisci_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
     """Explicit management entry; recheck auth for programmatic deep-link calls."""
     if message.from_user is None or not await is_admin(message.bot, message.from_user.id):
@@ -819,7 +819,7 @@ async def _send_game_reply(
     """Deliver the result, then persist a reply target independently of the turn.
 
     Telegram delivery and a DB commit cannot be atomic. A mapping failure must
-    never roll back a completed turn or send the result twice; /gioco_alduino remains
+    never roll back a completed turn or send the result twice; /aldusgame remains
     available for recovery. No text or user identity is stored in the mapping.
     """
     sent = await (message.answer(text) if answer else message.reply(text))

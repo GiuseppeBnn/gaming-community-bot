@@ -14,7 +14,7 @@ def test_image_command_is_only_in_admin_menu():
 
 
 def _count(commands):
-    return sum(command.command == "gioco_alduino" for command in commands)
+    return sum(command.command == "aldusgame" for command in commands)
 
 
 def test_secret_game_play_command_is_public_for_every_role():
@@ -22,14 +22,15 @@ def test_secret_game_play_command_is_public_for_every_role():
     assert _count(_GROUP_COMMANDS) == 1
     assert _count(_ADMIN_EXTRA_COMMANDS) == 0
     for commands in (_PRIVATE_COMMANDS, _GROUP_COMMANDS):
-        assert next(c for c in commands if c.command == "gioco_alduino").description == _DESCRIPTION
+        assert next(c for c in commands if c.command == "aldusgame").description == _DESCRIPTION
 
 
 def test_secret_game_commands_keep_the_removed_short_alias_disabled():
-    assert all(command.command != "gioco" for command in _PRIVATE_COMMANDS + _GROUP_COMMANDS + _ADMIN_EXTRA_COMMANDS)
+    removed = {"gioco", "gioco_alduino", "gestisci_gioco_alduino"}
+    assert not removed.intersection(c.command for c in _PRIVATE_COMMANDS + _GROUP_COMMANDS + _ADMIN_EXTRA_COMMANDS)
 
 
 def test_secret_game_management_has_its_own_admin_only_command():
-    name = "gestisci_gioco_alduino"
+    name = "gestisci_aldusgame"
     assert not any(c.command == name for c in _PRIVATE_COMMANDS + _GROUP_COMMANDS)
     assert sum(c.command == name for c in _ADMIN_EXTRA_COMMANDS) == 1

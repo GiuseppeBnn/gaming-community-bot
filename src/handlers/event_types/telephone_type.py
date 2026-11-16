@@ -22,6 +22,10 @@ class TelephoneType:
     create_label = "➕ Crea staffetta"
     closable = True
 
+    @property
+    def enabled(self) -> bool:
+        return settings.telephone_enabled
+
     def _hook(self, bot, session, game_id):
         async def publish():
             from handlers.telephone import publish_card

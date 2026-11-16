@@ -244,7 +244,7 @@ async def close_round(bot, db_session: AsyncSession, round_id: int) -> tuple[boo
 
 
 # ---------------------------------------------------------------------------
-# Public commands: /guessTheGame and /soundQuest — same two-faced shape as /quiz.
+# Public commands: /guessTheGame and /soundQuest — same two-faced shape as /trivianerd.
 # Non-admins get a "play" view (buttons to the running rounds, or a clear "none
 # active" message instead of silence); admins get the events-hub management list.
 # Telegram lowercases command names in the "/" menu, so they are registered as

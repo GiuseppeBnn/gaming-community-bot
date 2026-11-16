@@ -93,9 +93,9 @@ src/                                  # src-layout: i package restano top-level 
 | `admin_dashboard.py` | Dashboard a bottoni (`adm:*`) |
 | `events.py` | Hub eventi (`ev:*`): crea → avvia ora / programma. **Zero `if/elif` per tipo** |
 | `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type`, `twenty_questions_type` |
-| `quiz/` | Quiz: creazione FSM, editor, lifecycle, gioco in privato, dry-run admin |
+| `quiz/` | Trivia Nerd: `/trivianerd`, famiglia admin `*_trivianerd`, creazione FSM, editor, gioco privato, dry-run |
 | `guess/` | Guess The Game (immagine) e Sound Quest (audio): un motore, due giochi |
-| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2; 20 Domande è legacy v1 |
+| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2: `/aldusgame` e `/gestisci_aldusgame`; 20 Domande è legacy v1 |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
 | `tavern.py` | Offerte private, ricevute persistenti e consumazione di scorte |

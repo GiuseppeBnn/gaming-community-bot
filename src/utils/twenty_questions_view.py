@@ -26,7 +26,7 @@ GAME_INSTRUCTIONS = (
     "Se vuoi provare ad indovinare la risposta digita\n"
     "<code>Risposta: titolo del gioco</code>"
 )
-GAME_STATUS_HINT = "Digita /gioco_alduino per avere le informazioni aggiornate"
+GAME_STATUS_HINT = "Digita /aldusgame per avere le informazioni aggiornate"
 GAME_REWARD_HINT = (
     "Riceverete i CoInn solo se qualcuno indovina il gioco. "
     "Il premio mostrato è una stima: l'importo definitivo sarà calcolato a fine partita."

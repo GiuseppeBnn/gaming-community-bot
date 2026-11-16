@@ -163,6 +163,9 @@ async def start_schedule_for(
     possible answer is not a question.
     """
     await state.clear()
+    if event_types.is_disabled(task_type):
+        await message.answer("Attività non disponibile.")
+        return
     await state.update_data(sched_type=task_type, sched_ref=ref_id, sched_label=label)
     et = event_types.get(task_type)
     if action is None and getattr(et, "closable", False):
@@ -197,6 +200,10 @@ async def cb_action(
 ) -> None:
     action = callback_data.key
     data = await state.get_data()
+    if event_types.is_disabled(data.get("sched_type", "")):
+        await state.clear()
+        await callback.answer("Azione non disponibile.")
+        return
     if action is None or action not in _ACTIONS or "sched_ref" not in data:
         # Unknown action, or a stale button from a flow that has since been
         # cleared: there is nothing left to schedule, so say so instead of
@@ -256,10 +263,14 @@ async def cb_pick_event(
 
 @router.message(ScheduleStates.event_runat, ~F.text.startswith("/"))
 async def fsm_event_runat(message: Message, state: FSMContext, db_session) -> None:
+    data = await state.get_data()
+    if event_types.is_disabled(data.get("sched_type", "")):
+        await state.clear()
+        await message.answer("Attività non disponibile.")
+        return
     run_at = await _parse_or_reprompt(message)
     if run_at is None:
         return
-    data = await state.get_data()
     action = data.get("sched_action", _ACTION_START)
     task = await schedule_service.schedule_task(
         db_session, data["sched_type"], run_at, message.from_user.id,
@@ -294,7 +305,10 @@ def _task_label(t) -> str:
 async def _programmati_view(db_session) -> tuple[str, InlineKeyboardMarkup]:
     """Build the /programmati list: one tappable button per task (opens its
     per-task screen). Empty state has no keyboard."""
-    tasks = await schedule_service.list_pending(db_session)
+    tasks = [
+        task for task in await schedule_service.list_pending(db_session)
+        if not event_types.is_disabled(task.task_type)
+    ]
     if not tasks:
         return "🗓️ Nessun evento programmato.", InlineKeyboardMarkup(inline_keyboard=[])
     b = InlineKeyboardBuilder()
@@ -347,7 +361,7 @@ async def cb_sched_view(callback: CallbackQuery, callback_data: SchedCb, db_sess
         await callback.answer()
         return
     task = await schedule_service.get_task(db_session, task_id)
-    if task is None or task.status != "pending":
+    if task is None or task.status != "pending" or event_types.is_disabled(task.task_type):
         # Executed/cancelled in the meantime → back to a fresh list.
         text, kb = await _programmati_view(db_session)
         await callback.message.edit_text(text, reply_markup=kb)
@@ -396,7 +410,7 @@ async def cb_sched_del(callback: CallbackQuery, callback_data: SchedCb, db_sessi
 async def cmd_sondaggio(message: Message, state: FSMContext) -> None:
     # The whole creation flow must happen in private chat — never in the group,
     # where anyone could read the prompts or interfere with the FSM. Same pattern
-    # as /crea_quiz and /crea_scommessa: in a group, hand back a deep-link button
+    # as /crea_trivianerd and /crea_scommessa: in a group, hand back a deep-link button
     # that re-opens (and re-checks admin) in private (STEERING §16).
     if message.chat.type != ChatType.PRIVATE:
         bot_info = await message.bot.get_me()
@@ -457,6 +471,9 @@ async def execute_task(bot, session, task) -> PostCommitHook | None:
     Raises on failure (the caller marks the task failed). Dispatch goes through
     the event-type registry — no per-type branching here.
     """
+    if event_types.is_disabled(task.task_type):
+        raise schedule_service.TaskSkip
+
     # Prefer the live effective group id (the task's stored id may be stale after
     # a migration); fall back to the task's own group_id if none is configured.
     group_id = group_registry.get_group_id() or task.group_id
@@ -503,6 +520,8 @@ async def _run_due_task(bot, session, task) -> None:
     payload: dict = {}
 
     try:
+        if event_types.is_disabled(task_type):
+            raise schedule_service.TaskSkip
         # Persisted payload is untrusted state.  Decode it inside the same failure
         # boundary as dispatch so corrupt JSON is rolled back and terminally
         # recorded by scalar id instead of aborting the scheduler tick.
@@ -519,7 +538,8 @@ async def _run_due_task(bot, session, task) -> None:
             log.warning("Task #%s esito skip non persistito", task_id)
             await session.rollback()
             return
-        await _notify_creator(bot, creator_tg_id, task_id, f"ℹ️ Task #{task_id} saltato.")
+        if not event_types.is_disabled(task_type):
+            await _notify_creator(bot, creator_tg_id, task_id, f"ℹ️ Task #{task_id} saltato.")
         return
     except Exception as exc:  # noqa: BLE001 — task errors are isolated per due row
         await session.rollback()

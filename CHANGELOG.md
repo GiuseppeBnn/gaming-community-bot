@@ -6,6 +6,19 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Telefono senza fili: rollout completamente nascosto** — `TELEPHONE_ENABLED=false`
+  nasconde tipo-evento, programmazione, inline, riferimenti nei manuali e comando
+  immagini, anche per gli admin. Vecchi link/callback/reply e pubblicazione bloccati;
+  task disabilitati saltati senza notifiche o generazioni. Default spento, dati
+  conservati, sviluppo su test senza escludere file dai merge.
+- **Comandi Aldu's Game** — `/aldusgame` per giocare e consultare lo stato,
+  `/gestisci_aldusgame` per la gestione privata admin. Menu, aiuto, istruzioni e
+  documentazione allineati; link di gestione esistenti, dati e regole invariati.
+- **Trivia Nerd: comandi e presentazione coerenti** — comando pubblico `/trivianerd`
+  e famiglia admin `/crea_trivianerd`, `/avvia_trivianerd`, `/chiudi_trivianerd`.
+  Menu, manuale pubblico unico, hub, inviti e avvisi aggiornati. Nuovi deep-link
+  `*_trivianerd` e `trivianerd_<id>`; link storici ancora supportati. Identificatori
+  persistiti, callback, timer, classifica e premi invariati.
 - **Scheduler: rollback isolati per task** — discovery con soli ID e sessione nuova
   per ogni esecuzione, evitando `MissingGreenlet` sul task successivo dopo errore,
   skip o hook. Stato/scadenza ricontrollati prima di eseguire; cancellazioni e

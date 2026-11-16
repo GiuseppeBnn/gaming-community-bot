@@ -23,6 +23,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config_data.config import settings
 from handlers.callbacks import EventCb, TelephoneCb
 from filters.admin_filter import IsAdminCallbackFilter
 from services import (
@@ -106,6 +107,8 @@ def _gallery(view: game.View, number: int):
 
 
 async def publish_card(bot, session: AsyncSession, game_id: int, number: int = 1) -> None:
+    if not settings.telephone_enabled:
+        return
     lock = _card_locks.setdefault(game_id, asyncio.Lock())
     async with lock:
         view = await game.get_view(session, game_id)
@@ -201,6 +204,8 @@ async def _refresh(bot, session: AsyncSession, game_id: int) -> None:
 async def start_creation(
     message: Message, state: FSMContext, creator_id: int, session: AsyncSession
 ) -> None:
+    if not settings.telephone_enabled:
+        return
     await state.clear()
     try:
         game_id = await game.create(session, creator_id)
@@ -229,11 +234,17 @@ async def start_creation(
     F.message.chat.type == "private",
 )
 async def create(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    if not settings.telephone_enabled:
+        await callback.answer("Azione non disponibile.")
+        return
     await callback.answer()
     await start_creation(callback.message, state, callback.from_user.id, db_session)
 
 
 async def join(message: Message, state: FSMContext, session: AsyncSession, game_id: int) -> None:
+    if not settings.telephone_enabled:
+        await message.answer("Link non disponibile. Usa /comandi per le attività disponibili.")
+        return
     if message.chat.type != "private":
         await session.rollback()
         return
@@ -301,6 +312,8 @@ async def join(message: Message, state: FSMContext, session: AsyncSession, game_
     F.chat.type == "private", StateFilter(None), F.reply_to_message, F.text, ~F.text.startswith("/")
 )
 async def reply(message: Message, db_session: AsyncSession) -> None:
+    if not settings.telephone_enabled:
+        raise SkipHandler
     c = await game.reply_claim(
         db_session, message.from_user.id, message.reply_to_message.message_id
     )
@@ -401,6 +414,9 @@ async def retry_control(
     state: FSMContext,
     db_session: AsyncSession,
 ) -> None:
+    if not settings.telephone_enabled:
+        await callback.answer("Azione non disponibile.")
+        return
     await db_session.rollback()
     if await state.get_state():
         await callback.answer("Concludi prima l'altra operazione in corso.", show_alert=True)
@@ -428,6 +444,9 @@ async def retry_control(
 async def gallery(
     callback: CallbackQuery, callback_data: TelephoneCb, db_session: AsyncSession
 ) -> None:
+    if not settings.telephone_enabled:
+        await callback.answer("Azione non disponibile.")
+        return
     view = await game.get_view(db_session, callback_data.game_id)
     await db_session.rollback()
     if (

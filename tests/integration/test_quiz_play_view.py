@@ -1,6 +1,6 @@
-"""/quiz is user-facing for non-admins (Punto 6): a non-admin gets a 'play'
+"""/trivianerd is user-facing for non-admins: a non-admin gets a 'play'
 button for a running quiz, or a clear 'no quiz active' message — never silence
-(the old admin-only filter just dropped their /quiz). Admins still get the
+(the old admin-only filter just dropped their command). Admins still get the
 management branch.
 """
 
@@ -68,7 +68,7 @@ async def test_non_admin_no_active_quiz_gets_clear_message(session):
 
     assert len(msg.answers) == 1
     text, _ = msg.answers[0]
-    assert "Nessun quiz attivo" in text
+    assert "Nessun Trivia Nerd attivo" in text
     assert msg.replies == []  # not the admin management reply
 
 
@@ -83,9 +83,9 @@ async def test_non_admin_running_quiz_gets_play_button(session):
     await quiz.cmd_quiz_list(msg, session)
 
     text, kwargs = msg.answers[0]
-    assert "Quiz in corso" in text
+    assert "Trivia Nerd in corso" in text
     urls = _urls(kwargs["reply_markup"])
-    assert any("start=quiz_" in u for u in urls)
+    assert any("start=trivianerd_" in u for u in urls)
     # Only the running quiz is offered, not the ready one.
     assert len(urls) == 1
 
@@ -101,8 +101,8 @@ async def test_admin_gets_management_branch_not_play_view(session, monkeypatch):
     # `edit_or_send` falls back to `answer`.
     assert msg.answers, "admin should get the management list"
     text, kwargs = msg.answers[-1]
-    assert "Quiz" in text and "Creane uno" in text  # empty management list
+    assert "Trivia Nerd" in text and "Creane uno" in text  # empty management list
     cbs = [b.callback_data for row in kwargs["reply_markup"].inline_keyboard for b in row]
     # events-hub create button → management branch
     assert EventCb(action="new", task_type="quiz").pack() in cbs
-    assert all("Nessun quiz attivo" not in a[0] for a in msg.answers)
+    assert all("Nessun Trivia Nerd attivo" not in a[0] for a in msg.answers)

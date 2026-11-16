@@ -240,7 +240,7 @@ async def test_navigation_clears_answer_mode_even_if_old_keyboard_cannot_be_edit
     assert await state.get_state() is None
 
 
-@pytest.mark.parametrize("destination", ["quiz_42", "telefono_42", "sound_42"])
+@pytest.mark.parametrize("destination", ["trivianerd_42", "quiz_42", "telefono_42", "sound_42"])
 async def test_real_dispatcher_allows_new_game_link_during_old_answer_mode(
     session, round_, state, user_factory, monkeypatch, destination,
 ):
@@ -262,7 +262,7 @@ async def test_real_dispatcher_allows_new_game_link_during_old_answer_mode(
         assert await state.get_state() is None
         reached.append(args[-1])
 
-    if destination.startswith("quiz_"):
+    if destination.startswith(("trivianerd_", "quiz_")):
         monkeypatch.setattr(quiz, "start_quiz_session", enter)
     elif destination.startswith("telefono_"):
         monkeypatch.setattr(telephone, "join", enter)

@@ -188,8 +188,8 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/classifiche` | Classifiche complete: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline, pagine se necessarie) |
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/offri` (in reply nel gruppo) | 🎁 Compra o regala una scorta a un amico, con scelta e conferma private |
-| `/quiz` (gioco) | Partecipa ai quiz in chat privata |
-| `/gioco_alduino` | Stato e gioco per tutti, admin inclusi. Con argomenti, nel gruppo, domanda o tentativo |
+| `/trivianerd` (gioco) | Partecipa a Trivia Nerd in chat privata |
+| `/aldusgame` | Stato e gioco per tutti, admin inclusi. Con argomenti, nel gruppo, domanda o tentativo |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 | `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
@@ -204,11 +204,11 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/ban` · `/sban` · `/kick` · `/mute [10m]` · `/unmute` | Moderazione (reply o @user/ID) |
 | `/warn [motivo]` · `/warns` · `/unwarn` | Warn/strike (auto mute/ban a soglia) |
 | `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
-| `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
+| `/crea_trivianerd` · `/trivianerd` · `/avvia_trivianerd <id>` · `/chiudi_trivianerd <id>` | Trivia Nerd |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 | `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
-| `/gestisci_gioco_alduino` | Gestione privata delle partite di Alduino; `/gioco_alduino` rimane dedicato al gioco anche per gli admin |
-| `/immagine <descrizione>` | Test admin del generatore: 1–150 caratteri, stessi stile/modello/budget della staffetta, senza creare eventi; accetta anche `/Immagine` |
+| `/gestisci_aldusgame` | Gestione privata delle partite di Alduino; `/aldusgame` rimane dedicato al gioco anche per gli admin |
+| `/immagine <descrizione>` | Solo con `TELEPHONE_ENABLED=true`: test admin del generatore, 1–150 caratteri, senza creare eventi; accetta anche `/Immagine` |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
 
@@ -310,9 +310,9 @@ I reset brevi del polling Telegram restano nei log senza duplicare i DM; se una
 sequenza di errori di rete dura almeno 60 s arriva l'alert. Autenticazione,
 conflitti e gli altri errori mantengono gli alert immediati.
 
-### Quiz a premi
+### Trivia Nerd — quiz a premi
 
-Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
+Creazione guidata (`/crea_trivianerd` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
 **personalizzabili** per 1°/2°/3°, un **premio di consolazione a scendere** con **minimo
 garantito** per *tutti* i finisher, e una schermata di riepilogo prima di pubblicare. Si
 gioca in chat privata; alla chiusura viene pubblicata la **classifica completa**
@@ -325,6 +325,12 @@ risposta, non modificabile; classifica e premi rimangono quelli del bot. Riaprir
 il link riprende il sondaggio corrente senza azzerare il tempo. Le associazioni
 sondaggio/giocatore e le scadenze sono persistenti; lo scheduler recupera i timeout
 anche dopo un riavvio. Nessuna chiamata AI o costo aggiuntivo.
+
+Il comando pubblico è `/trivianerd`; gli admin usano anche `/crea_trivianerd`,
+`/avvia_trivianerd <id>` e `/chiudi_trivianerd <id>`. Menu e manuale usano gli stessi
+nomi. Gli inviti nuovi usano `trivianerd_<id>`, `create_trivianerd` e
+`manage_trivianerd`; i precedenti link `quiz_<id>`, `create_quiz` e `manage_quiz`
+restano validi. Tabelle, task `quiz`, callback, stati FSM, timer e premi non cambiano.
 
 I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la **scheda info**
 (non si avviano con un tap) e da lì si sceglie **Avvia · Programma · Chiudi · Riproponi · Elimina**,
@@ -371,14 +377,14 @@ ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto
 ### Il gioco segreto di Alduino
 
 Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
-o al riepilogo di `/gioco_alduino`, senza tornare al messaggio iniziale. Gioco e gestione
+o al riepilogo di `/aldusgame`, senza tornare al messaggio iniziale. Gioco e gestione
 hanno comandi distinti, così anche gli admin possono giocare senza aprire il pannello:
 
-- `/gioco_alduino` mostra stato e quota personale a tutti, admin inclusi;
-- `/gestisci_gioco_alduino` è solo admin e apre la gestione privata già presente in
+- `/aldusgame` mostra stato e quota personale a tutti, admin inclusi;
+- `/gestisci_aldusgame` è solo admin e apre la gestione privata già presente in
   `/eventi` (crea, avvia, programma, chiudi). «Vedi partita» apre la vista pubblica;
-- `/gioco_alduino È multiplayer?` fa una domanda;
-- `/gioco_alduino RISPOSTA: Portal 2` tenta il titolo.
+- `/aldusgame È multiplayer?` fa una domanda;
+- `/aldusgame RISPOSTA: Portal 2` tenta il titolo.
 
 Gli argomenti funzionano nel gruppo per entrambi i ruoli, con le stesse quote dei reply.
 In privato si può consultare lo stato, ma non giocare o pubblicare una card nel gruppo.
@@ -388,7 +394,7 @@ admin, e i bottoni di gestione restano riservati agli admin.
 
 Il comando per giocare è identico per tutti: l'alias breve è stato rimosso. Nei reply,
 per tentare il titolo usa `RISPOSTA: nome del gioco`. La card, le istruzioni senza
-partita attiva e il riepilogo terminano con «Digita /gioco_alduino per avere le
+partita attiva e il riepilogo terminano con «Digita /aldusgame per avere le
 informazioni aggiornate». Le scadenze mostrate sono nell'orario della community
 (`Europe/Rome`, con ora legale/solare), senza modificare i timestamp UTC nel DB.
 Ogni persona ha 5 domande valide e 2 tentativi validi:
@@ -407,7 +413,7 @@ Con il default di 100 CoInn massimi a persona:
 Il resto della divisione non viene assegnato a nessuno. Può essere attiva una sola
 partita per gruppo, anche con avvii programmati. Le risposte a messaggi di una partita
 conclusa non vengono inoltrate a quella nuova. Dopo l'aggiornamento, i vecchi verdetti
-non sono riconosciuti retroattivamente: usa `/gioco_alduino` per un
+non sono riconosciuti retroattivamente: usa `/aldusgame` per un
 riepilogo a cui rispondere. La card live e le istruzioni mostrano soltanto un avviso sulla possibile
 riduzione del premio, senza percentuali o dettagli tecnici del pool; il calcolo resta invariato.
 La chiusura amministrativa resta in `/eventi`; la durata raccomandata è 12 ore. Per il dettaglio di

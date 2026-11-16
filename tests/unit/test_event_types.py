@@ -61,14 +61,17 @@ def test_clear_empties_registry():
     assert event_types.all_types() == []
 
 
-def test_register_builtin_registers_every_type_in_hub_order():
+@pytest.mark.parametrize("enabled", [True, False])
+def test_register_builtin_registers_every_type_in_hub_order(monkeypatch, enabled):
     """The order is the hub's button order, so it is behaviour and not a list.
     `guess` and `sound` are the same spec registered twice — one engine, two
     games — which is why they sit next to each other."""
+    from config_data.config import settings
+    monkeypatch.setattr(settings, "telephone_enabled", enabled)
     event_types.register_builtin()
     assert [t.key for t in event_types.all_types()] == [
-        "quiz", "guess", "sound", "poll", "bet", "twentyq", "telephone",
-    ]
+        "quiz", "guess", "sound", "poll", "bet", "twentyq",
+    ] + (["telephone"] if enabled else [])
 
 
 _REQUIRED_METHODS = (

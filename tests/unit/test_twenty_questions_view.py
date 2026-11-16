@@ -442,6 +442,6 @@ def test_requested_instructions_are_shared_without_changing_reward_projection():
         assert "Riceverete i CoInn solo se qualcuno indovina il gioco" in text
         assert "a fine partita" in text
         assert "saldo maturato" not in text
-        assert text.endswith("Digita /gioco_alduino per avere le informazioni aggiornate")
+        assert text.endswith("Digita /aldusgame per avere le informazioni aggiornate")
         assert "o a un verdetto" not in text
     assert view.projection == before

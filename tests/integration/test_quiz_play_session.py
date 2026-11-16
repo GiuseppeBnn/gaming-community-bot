@@ -104,7 +104,7 @@ async def test_shuffled_options_and_questions_keep_real_answer_mapping(session):
         assert bot.polls[index]["correct_option_ids"] == [displayed]
         await on_poll_answer(answer(row.tg_poll_id, [displayed]), session, bot)
     assert await quiz_service.correct_count(session, quiz.id, 42) == 4
-    assert "Quiz completato" in bot.said and "4/4" in bot.said
+    assert "Trivia Nerd completato" in bot.said and "4/4" in bot.said
     assert len(bot.polls) == 4
     await play.start_quiz_session(Message(bot), session, quiz.id)
     assert len(bot.polls) == 4
@@ -218,7 +218,7 @@ async def test_resume_after_downtime_expires_original_question_not_a_new_timer(s
     )
     await session.commit()
     await play.start_quiz_session(Message(bot), session, quiz.id)
-    assert len(bot.polls) == 1 and "Quiz completato" in bot.said
+    assert len(bot.polls) == 1 and "Trivia Nerd completato" in bot.said
     assert await quiz_service.correct_count(session, quiz.id, 42) == 0
 
 
@@ -236,7 +236,7 @@ async def test_no_database_transaction_is_held_over_telegram(session):
     await play.start_quiz_session(Message(bot), session, quiz.id)
     row = await current(session, quiz.id)
     await on_poll_answer(answer(row.tg_poll_id), session, bot)
-    assert "Quiz completato" in bot.said
+    assert "Trivia Nerd completato" in bot.said
 
 
 async def test_rejected_send_releases_claim_but_uncertain_send_keeps_lease(session):
@@ -396,4 +396,4 @@ async def test_real_aiogram_dispatcher_routes_poll_answer_and_injects_bot(sessio
     finally:
         await dispatcher.storage.close()
     assert await quiz_service.correct_count(session, quiz.id, 42) == 1
-    assert "Quiz completato" in bot.said
+    assert "Trivia Nerd completato" in bot.said

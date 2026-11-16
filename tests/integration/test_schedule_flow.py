@@ -169,7 +169,10 @@ async def _tasks(session) -> list[ScheduledTask]:
 # ---------------------------------------------------------------------------
 
 class TestEntry:
-    async def test_the_menu_offers_every_registered_type(self, session):
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_the_menu_offers_every_registered_type(self, session, monkeypatch, enabled):
+        from config_data.config import settings
+        monkeypatch.setattr(settings, "telephone_enabled", enabled)
         message = _FakeMessage()
 
         await schedule.start_schedule_flow(message, _state())
@@ -181,9 +184,8 @@ class TestEntry:
             SchedCb(action="type", key="poll").pack(),
             SchedCb(action="type", key="bet").pack(),
             SchedCb(action="type", key="twentyq").pack(),
-            SchedCb(action="type", key="telephone").pack(),
             SchedCb(action="cancel").pack(),
-        }
+        } | ({SchedCb(action="type", key="telephone").pack()} if enabled else set())
         assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_new_type_is_schedulable_without_touching_this_file(self, session):

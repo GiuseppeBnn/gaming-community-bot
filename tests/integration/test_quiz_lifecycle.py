@@ -530,7 +530,7 @@ class _GroupMessage(_FakeMessage):
 
 @pytest.fixture(autouse=True)
 def _clean_cooldowns():
-    """`/quiz` is throttled per user and the store is module-level."""
+    """`/trivianerd` is throttled per user and the store is module-level."""
     cooldown.reset()
     static_reply.reset()
     yield
@@ -549,7 +549,7 @@ class TestQuizCommand:
     async def test_a_player_with_no_quiz_running_is_told_so(
         self, session, monkeypatch, user_factory
     ):
-        """Never silence: the old admin-only filter simply dropped a member's /quiz,
+        """Never silence: the old admin-only filter simply dropped a member's command,
         which reads as a broken bot."""
         _as_admin(monkeypatch, False)
         await user_factory(tg_id=ADMIN_ID, username="tizio")
@@ -557,7 +557,7 @@ class TestQuizCommand:
 
         await quiz_handlers.cmd_quiz_list(message, session)
 
-        assert "Nessun quiz attivo" in message.said
+        assert "Nessun Trivia Nerd attivo" in message.said
 
     async def test_a_player_gets_a_private_play_link_for_a_running_quiz(
         self, session, monkeypatch, user_factory
@@ -570,7 +570,7 @@ class TestQuizCommand:
         await quiz_handlers.cmd_quiz_list(message, session)
 
         urls = [b.url for row in message.markups[-1].inline_keyboard for b in row]
-        assert any(u.endswith(f"?start=quiz_{quiz.id}") for u in urls)
+        assert any(u.endswith(f"?start=trivianerd_{quiz.id}") for u in urls)
 
     async def test_the_second_call_within_the_window_says_nothing(
         self, session, monkeypatch, user_factory
@@ -590,7 +590,7 @@ class TestQuizCommand:
         self, session, monkeypatch, user_factory
     ):
         """The group redirect deep-links straight to the quiz management list
-        (?start=manage_quiz), not the whole /admin dashboard."""
+        (?start=manage_trivianerd), not the whole /admin dashboard."""
         _as_admin(monkeypatch, True)
         await user_factory(tg_id=ADMIN_ID, username="admin")
         message = _GroupMessage()
@@ -598,7 +598,7 @@ class TestQuizCommand:
         await quiz_handlers.cmd_quiz_list(message, session)
 
         urls = [b.url for row in message.markups[0].inline_keyboard for b in row]
-        assert any(u.endswith("?start=manage_quiz") for u in urls)
+        assert any(u.endswith("?start=manage_trivianerd") for u in urls)
 
     async def test_an_admin_in_private_gets_the_management_list(
         self, session, monkeypatch, user_factory
@@ -609,7 +609,7 @@ class TestQuizCommand:
 
         await quiz_handlers.cmd_quiz_list(message, session)
 
-        assert "Quiz" in message.said
+        assert "Trivia Nerd" in message.said
 
 
 class TestLegacyCommands:

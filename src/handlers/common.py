@@ -96,7 +96,7 @@ async def cmd_start(
     if user is None or not user.onboarding_completed:
         # Group admins/owner are recognized via Telegram, not via the private
         # onboarding flow. Don't trap them behind the rules gate when they
-        # switch to private for an admin entry point (e.g. ?start=create_quiz):
+        # switch to private for an admin entry point (e.g. ?start=create_trivianerd):
         # otherwise the admin recognition further down is never reached.
         if not await is_bot_admin(message.bot, message.from_user.id):
             # Rules acceptance is strictly personal and must happen in PRIVATE.
@@ -162,7 +162,7 @@ async def cmd_start(
         return
 
     # Deep-link: manage_<type> — the admin management
-    # list of that event type. This is where /quiz, /guessTheGame and /soundQuest
+    # list of that event type. This is where /trivianerd, /guessTheGame and /soundQuest
     # send an admin from the group: straight to the type's own list, not the whole
     # /admin dashboard.
     if payload == "manage_twentyq":
@@ -173,9 +173,10 @@ async def cmd_start(
             await message.answer("⛔ Accesso non autorizzato.")
         return
 
-    if payload in ("manage_quiz", "manage_guess", "manage_sound"):
+    # Keep historical links valid; new producers use the Trivia Nerd spelling.
+    if payload in ("manage_trivianerd", "manage_quiz", "manage_guess", "manage_sound"):
         if await is_bot_admin(message.bot, message.from_user.id):
-            if payload == "manage_quiz":
+            if payload in ("manage_trivianerd", "manage_quiz"):
                 from handlers.event_types.quiz_type import QuizType
                 await QuizType().render_list(message, db_session)
             else:
@@ -187,8 +188,8 @@ async def cmd_start(
             await message.answer("⛔ Accesso non autorizzato.")
         return
 
-    # Deep-link: create_quiz (admin quiz creation FSM)
-    if payload == "create_quiz":
+    # New creation links plus historical invitations; both recheck admin rights.
+    if payload in ("create_trivianerd", "create_quiz"):
         if await is_bot_admin(message.bot, message.from_user.id):
             from handlers.quiz import start_quiz_creation
             await start_quiz_creation(message, state)
@@ -196,11 +197,13 @@ async def cmd_start(
             await message.answer("⛔ Accesso non autorizzato.")
         return
 
-    # Deep-link: quiz_<id> (join a running quiz in private)
-    if payload.startswith("quiz_") and payload[5:].isdigit():
-        from handlers.quiz import start_quiz_session
-        await start_quiz_session(message, db_session, int(payload[5:]))
-        return
+    # New invitations use trivianerd_<id>; legacy quiz_<id> stays resumable.
+    for prefix in ("trivianerd_", "quiz_"):
+        value = payload[len(prefix):]
+        if payload.startswith(prefix) and value.isascii() and value.isdecimal():
+            from handlers.quiz import start_quiz_session
+            await start_quiz_session(message, db_session, int(value))
+            return
 
     # Deep-link: guess_<id> / sound_<id> (play a running round in private).
     # Public by design: any group member plays, so unlike the admin landings

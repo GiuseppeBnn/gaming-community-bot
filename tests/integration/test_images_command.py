@@ -85,9 +85,8 @@ async def test_invalid_input_does_not_spend(session, setup, prompt):
     assert "150" in msg.texts[-1] and not msg.photos
 
 
-@pytest.mark.parametrize("field,value", [("telephone_enabled", False), ("openrouter_api_key", "")])
-async def test_disabled_command_is_explicit(session, setup, monkeypatch, field, value):
-    monkeypatch.setattr(images.settings, field, value)
+async def test_missing_api_configuration_is_explicit(session, setup, monkeypatch):
+    monkeypatch.setattr(images.settings, "openrouter_api_key", "")
     msg = FakeMessage(session)
     await images.cmd_immagine(msg, command(), session)
     assert "non abilitata" in msg.texts[-1]

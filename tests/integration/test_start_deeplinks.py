@@ -144,6 +144,7 @@ ADMIN_PAYLOADS = [
     ("admin", "handlers.admin_dashboard.show_dashboard_home"),
     ("eventi", "handlers.events.show_hub"),
     ("create_quiz", "handlers.quiz.start_quiz_creation"),
+    ("create_trivianerd", "handlers.quiz.start_quiz_creation"),
     ("create_poll", "handlers.events.start_poll_creation"),
     ("programma", "handlers.schedule.start_schedule_flow"),
     ("programmati", "handlers.schedule.cmd_programmati"),
@@ -156,6 +157,7 @@ ADMIN_PAYLOADS = [
 # Payloads any member may use, and where they land.
 PUBLIC_PAYLOADS = [
     ("quiz_5", "handlers.quiz.start_quiz_session"),
+    ("trivianerd_5", "handlers.quiz.start_quiz_session"),
     # The guess games are public: any group member plays them, so — unlike the
     # admin landings — there is no is_admin re-check here to forget.
     ("guess_5", "handlers.guess.start_guess_session"),
@@ -299,7 +301,7 @@ class TestPublicDeepLinks:
     ):
         message = _FakeMessage()
 
-        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+        await common.cmd_start(message, _command("spiega_aldusgame"), _state(), session)
 
         assert "Il gioco segreto di Alduino" in message.said
 
@@ -308,7 +310,7 @@ class TestPublicDeepLinks:
     ):
         message = _FakeMessage()
 
-        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+        await common.cmd_start(message, _command("spiega_aldusgame"), _state(), session)
 
         assert "Il gioco segreto di Alduino" in message.said
 
@@ -378,6 +380,7 @@ class TestOnboardingGate:
 
 _MANAGE = [
     ("manage_quiz", "handlers.event_types.quiz_type", "QuizType"),
+    ("manage_trivianerd", "handlers.event_types.quiz_type", "QuizType"),
     ("manage_guess", "handlers.event_types.guess_type", "GuessType"),
     ("manage_sound", "handlers.event_types.guess_type", "GuessType"),
 ]
@@ -393,7 +396,7 @@ def _spy_render_list(monkeypatch, module_name: str, cls_name: str, calls: list) 
 
 
 class TestManageDeepLinks:
-    """/quiz, /guessTheGame and /soundQuest send an admin from the group straight to
+    """/trivianerd, /guessTheGame and /soundQuest send an admin from the group straight to
     that type's own list — not the /admin dashboard (the bug this fixes)."""
 
     @pytest.mark.parametrize("payload,module_name,cls_name", _MANAGE)
@@ -408,7 +411,7 @@ class TestManageDeepLinks:
 
         assert calls == [cls_name] and "non autorizzato" not in message.said
 
-    @pytest.mark.parametrize("payload", ["manage_quiz", "manage_guess", "manage_sound"])
+    @pytest.mark.parametrize("payload", ["manage_trivianerd", "manage_quiz", "manage_guess", "manage_sound"])
     async def test_a_non_admin_is_refused(self, session, onboarded, monkeypatch, payload):
         calls: list[str] = []
         _spy_render_list(monkeypatch, "handlers.event_types.quiz_type", "QuizType", calls)

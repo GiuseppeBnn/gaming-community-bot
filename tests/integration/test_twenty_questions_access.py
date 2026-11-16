@@ -39,8 +39,8 @@ async def test_status_then_reply_to_verdict_then_guess_share_the_game(session, m
     session_id = await running(session, monkeypatch)
     ai = AsyncMock(return_value=SimpleNamespace(value=QuestionVerdict.si))
     monkeypatch.setattr(ai_game_service, "classify_question", ai)
-    status = _Message("/gioco_alduino", anchor=None)
-    await handler.cmd_gioco_alduino(status, session, CommandObject(command="gioco_alduino"))
+    status = _Message("/aldusgame", anchor=None)
+    await handler.cmd_gioco_alduino(status, session, CommandObject(command="aldusgame"))
     assert (await session.get(AIGameMessage, (-1001, 999))).session_id == session_id
     await session.rollback()
 
@@ -66,8 +66,8 @@ async def test_command_plays_without_reply_or_command_text_in_ai(session, monkey
     await running(session, monkeypatch)
     ai = AsyncMock(return_value=SimpleNamespace(value=QuestionVerdict.no))
     monkeypatch.setattr(ai_game_service, "classify_question", ai)
-    message = ReplyMessage("/gioco_alduino " + args, anchor=None)
-    await handler.cmd_gioco_alduino(message, session, CommandObject(command="gioco_alduino", args=args))
+    message = ReplyMessage("/aldusgame " + args, anchor=None)
+    await handler.cmd_gioco_alduino(message, session, CommandObject(command="aldusgame", args=args))
     if is_guess:
         ai.assert_not_awaited()
         assert "Non è lui" in message.said[-1]
@@ -179,14 +179,17 @@ async def test_unknown_is_free_and_can_be_followed_by_a_question(session, monkey
 
 
 @pytest.mark.parametrize("command,allowed", [
-    ("/gioco_alduino", True),
+    ("/aldusgame", True),
+    ("/aldusgame@testbot", True),
+    ("/gioco_alduino", False),
     ("/gioco", False),
 ])
-async def test_registered_command_accepts_only_the_single_public_command(command, allowed):
+async def test_registered_command_accepts_only_the_single_public_command(monkeypatch, command, allowed):
     from datetime import datetime
     from aiogram import Bot
     from aiogram.types import Chat, Message, User
     bot = Bot(token="1234567890:AAFtesttoken_ci")
+    monkeypatch.setattr(bot, "get_me", AsyncMock(return_value=SimpleNamespace(username="testbot")))
     message = Message(
         message_id=1, date=datetime(2026, 11, 16), text=command,
         chat=Chat(id=-1001, type="supergroup"),

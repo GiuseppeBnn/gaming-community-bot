@@ -21,7 +21,7 @@ from utils.text import esc, format_seconds_short
 
 
 async def start_quiz_session(message: Message, db_session: AsyncSession, quiz_id: int) -> None:
-    """Deep-link quiz_<id>: start or resume without re-sending an open question."""
+    """New/legacy deep-link landing: resume without re-sending an open question."""
     if message.chat.type != "private":
         return
     quiz = await quiz_service.get_quiz(db_session, quiz_id)
@@ -68,7 +68,7 @@ async def advance(bot: Bot, db_session: AsyncSession, quiz_id: int, user_id: int
         await db_session.commit()
         await bot.send_message(
             user_id,
-            f"🏁 <b>Quiz completato!</b>\n\n<b>{correct}/{len(quiz.questions)}</b> corrette."
+            f"🏁 <b>Trivia Nerd completato!</b>\n\n<b>{correct}/{len(quiz.questions)}</b> corrette."
             f"{timing}\nAspetta la chiusura per scoprire il podio! 🏆",
         )
         return
@@ -182,5 +182,5 @@ async def cb_quiz_answer(callback: CallbackQuery, callback_data: QuizAnswerCb) -
     # Retire old keyboards safely: a pre-deploy button must not bypass the new
     # poll owner/deadline checks, even for a quiz that is still running.
     await callback.answer(
-        "Questi pulsanti sono superati. Riapri il quiz da /quiz.", show_alert=True
+        "Questi pulsanti sono superati. Riapri Trivia Nerd da /trivianerd.", show_alert=True
     )
