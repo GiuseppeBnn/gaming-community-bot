@@ -585,9 +585,20 @@ async def scheduler_loop(bot) -> None:
     while True:
         try:
             async with async_session_maker() as session:
-                tasks = await schedule_service.due_tasks(session, schedule_service.utcnow())
-                for task in tasks:
-                    await _run_due_task(bot, session, task)
+                task_ids = await schedule_service.due_task_ids(session, schedule_service.utcnow())
+            # Rollback expires EVERY ORM instance in a session, even with
+            # expire_on_commit=False. Isolate both task execution and publisher
+            # hooks from other due rows, retaining only primitives across tasks.
+            for task_id in task_ids:
+                try:
+                    async with async_session_maker() as session:
+                        task = await schedule_service.get_due_task(
+                            session, task_id, schedule_service.utcnow(),
+                        )
+                        if task is not None:
+                            await _run_due_task(bot, session, task)
+                except Exception:  # noqa: BLE001 — preserve this row for a later tick
+                    log.exception("Scheduler task execution error task_id=%s", task_id)
         except Exception:  # noqa: BLE001 — loop must never die
             log.exception("Scheduler loop error")
         await asyncio.sleep(settings.scheduler_poll_interval)

@@ -1883,7 +1883,10 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
 (comandi + FSM + `scheduler_loop`/`execute_task`).
 
 - `scheduler_loop(bot)` avviato in `main()` con `asyncio.create_task` prima di `start_polling`; ogni
-  `scheduler_poll_interval`s esegue i `due_tasks` (try/except per task → `mark_done`/`mark_failed`).
+  `scheduler_poll_interval`s scopre gli ID scalari con `due_task_ids`, chiude la sessione di
+  discovery e apre una **sessione indipendente per ogni task**. `get_due_task` ricontrolla
+  esistenza, stato pending e scadenza prima dell'esecuzione: task cancellati, spostati o
+  eliminati dopo la discovery vengono saltati. Ordinamento stabile per data e ID.
   > **Sta in `handlers/` di proposito, non per sbaglio.** Sembra un daemon collocato male, ma
   > `execute_task` dispatcha sul registro `handlers/event_types`, e quegli spec **importano
   > funzioni degli handler** (`handlers.quiz.open_quiz`, `handlers.betting.start_bet_creation`, …)
@@ -1891,19 +1894,19 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   > importare `handlers` da `services`, cioè un'inversione di layering vera in cambio di uno
   > smell estetico. Non farlo senza prima spostare `event_types`.
   >
-  > **L'isolamento per-task sta tutto in `_run_due_task` che non solleva mai**, non nel loop: il
-  > `for` è dentro il `try` del tick, quindi un raise lì dentro abbandona i task ancora dovuti
-  > fino al giro successivo. Coperto da `tests/unit/test_scheduler_loop.py` +
-  > `tests/integration/test_scheduler_failure_path.py` (14 test, garanzie verificate per
-  > mutazione).
-  >
-  > ⚠️ **Rischio latente, misurato.** Dopo un `rollback` che ha lavoro da annullare, leggere
-  > *qualsiasi* attributo dell'istanza ORM dà `MissingGreenlet` — e `_run_due_task` passa quella
-  > stessa istanza a `_notify_creator`, che ne legge due. Oggi funziona **solo** perché fra il
-  > rollback e la notifica ci sono `mark_failed` (che assegna soltanto: un'assegnazione non
-  > carica) e `await session.commit()`, il cui flush ricarica la riga in contesto greenlet.
-  > Quindi: **non spostare la notifica prima del commit** e non togliere quel commit dal path di
-  > errore. Provato per mutazione — il test integration lo prende.
+  > Un rollback invalida **tutti** gli oggetti ORM della sessione, anche con
+  > `expire_on_commit=False`: precaricare la lista di task e poi passarli allo stesso
+  > executor può causare `MissingGreenlet` già leggendo `task.id` del task successivo.
+  > Non basta catturare i metadati del solo task corrente. Fra task si conservano solo
+  > ID primitivi; anche gli hook post-commit restano nella sessione del rispettivo task.
+  > `_run_due_task` cattura ID/creator/retry prima del rischio, fa rollback prima degli
+  > UPDATE scalari di esito e notifica con primitivi **dopo il commit**, senza rileggere
+  > oggetti invalidati. Il loop isola anche errori inattesi di caricamento/esecuzione:
+  > conserva il task ritentabile e prosegue con gli altri ID. Nessun nuovo claim distribuito
+  > o lock del task attraverso rete; idempotenza e lock degli aggregati restano invariati.
+  > Regressioni su sessioni SQLite e PostgreSQL reali:
+  > `test_scheduler_batch_isolation.py` (errore, skip, retry, rollback dell'hook), oltre a
+  > `test_scheduler_failure_path.py` e `test_scheduler_loop.py`.
 - `parse_run_at(text)`: assoluto `AAAA-MM-GG HH:MM` o relativo `30m`/`2h`/`1d` → **UTC naive**
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
@@ -2113,7 +2116,8 @@ tests/
     ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
     ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
     │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
-    ├── test_scheduler_failure_path.py # path di errore su sessione reale: istanza ORM leggibile dopo il rollback
+    ├── test_scheduler_failure_path.py # path di errore su sessione reale: esiti/notifiche con primitivi dopo il rollback
+    ├── test_scheduler_batch_isolation.py # batch su SQLite/PG: sessioni indipendenti, retry/skip/hook, task cancellati/spostati
     └── test_money_concurrency_pg.py # [pg] gare su denaro/XP/bet/quiz — 16 guardie di regressione
 ```
 

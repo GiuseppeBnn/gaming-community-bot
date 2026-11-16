@@ -6,6 +6,10 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Scheduler: rollback isolati per task** — discovery con soli ID e sessione nuova
+  per ogni esecuzione, evitando `MissingGreenlet` sul task successivo dopo errore,
+  skip o hook. Stato/scadenza ricontrollati prima di eseguire; cancellazioni e
+  riprogrammazioni rispettate. Retry, esiti e logica dei premi invariati.
 - **Messaggi del gioco segreto di Alduino** — scadenze nel fuso della community,
   istruzioni condivise e avviso premi senza dettagli tecnici del pool. Unico comando
   `/gioco_alduino`, richiamato in fondo a card e riepiloghi.

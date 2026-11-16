@@ -193,6 +193,32 @@ async def due_tasks(session: AsyncSession, now: datetime) -> list[ScheduledTask]
     return list(result.scalars().all())
 
 
+async def due_task_ids(session: AsyncSession, now: datetime) -> list[int]:
+    """Snapshot scalar IDs, never a batch of ORM objects sharing rollback state."""
+    result = await session.execute(
+        select(ScheduledTask.id)
+        .where(ScheduledTask.status == "pending", ScheduledTask.run_at <= now)
+        .order_by(ScheduledTask.run_at.asc(), ScheduledTask.id.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def get_due_task(session: AsyncSession, task_id: int, now: datetime) -> ScheduledTask | None:
+    """Recheck an ID in its fresh execution session: it may have been changed.
+
+    This is not a distributed claim. Existing event/aggregate locks and
+    idempotence remain authoritative; no task lock is held across network I/O.
+    """
+    result = await session.execute(
+        select(ScheduledTask).where(
+            ScheduledTask.id == task_id,
+            ScheduledTask.status == "pending",
+            ScheduledTask.run_at <= now,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def list_pending(session: AsyncSession) -> list[ScheduledTask]:
     result = await session.execute(
         select(ScheduledTask)

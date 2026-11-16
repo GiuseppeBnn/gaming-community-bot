@@ -49,6 +49,38 @@ async def test_mark_done_excludes_from_due(session):
     assert t.status == "done"
 
 
+async def test_due_ids_are_ordered_primitives_and_survive_rollback(session):
+    now = datetime(2026, 11, 16, 10, 0)
+    rows = [
+        await sch.schedule_task(session, "quiz", now, 9, -100, ref_id=1),
+        await sch.schedule_task(session, "quiz", now, 9, -100, ref_id=2),
+        await sch.schedule_task(session, "quiz", now - timedelta(minutes=1), 9, -100, ref_id=3),
+        await sch.schedule_task(session, "quiz", now + timedelta(minutes=1), 9, -100, ref_id=4),
+        await sch.schedule_task(session, "quiz", now, 9, -100, ref_id=5),
+    ]
+    rows[-1].status = "done"
+    await session.commit()
+    expected = [rows[2].id, rows[0].id, rows[1].id]
+    ids = await sch.due_task_ids(session, now)
+    await session.rollback()
+    assert ids == expected and all(type(task_id) is int for task_id in ids)
+
+
+async def test_get_due_task_rejects_future_cancelled_missing_and_done_rows(session):
+    now = datetime(2026, 11, 16, 10, 0)
+    task = await sch.schedule_task(session, "quiz", now, 9, -100, ref_id=1)
+    await session.commit()
+    assert (await sch.get_due_task(session, task.id, now)).id == task.id
+    assert await sch.get_due_task(session, task.id, now - timedelta(seconds=1)) is None
+    assert await sch.get_due_task(session, -1, now) is None
+    task.status = "cancelled"
+    await session.commit()
+    assert await sch.get_due_task(session, task.id, now) is None
+    task.status = "done"
+    await session.commit()
+    assert await sch.get_due_task(session, task.id, now) is None
+
+
 async def test_mark_failed_records_error(session):
     past = sch.utcnow() - timedelta(minutes=1)
     t = await sch.schedule_task(session, "poll", past, 9, -100, payload={})

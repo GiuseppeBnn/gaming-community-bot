@@ -492,32 +492,31 @@ class TestSchedulerLoop:
         assert ticks == 2, "the loop died on the failing tick instead of retrying"
 
     async def test_every_due_task_in_the_tick_is_processed(self, monkeypatch):
-        """All due tasks, in order, in one tick.
-
-        Note what is deliberately **not** asserted: that the loop keeps going if
-        `_run_due_task` *raises*. It would not — the `for` is inside the tick's `try`,
-        so a raise there aborts the rest of the tick. That guarantee lives entirely in
-        `_run_due_task` never raising, which `TestRunDueTask` above pins directly and
-        `tests/integration/test_scheduler_failure_path.py` pins against a real DB.
-        Asserting it here with a raising stub would only test the stub.
-        """
+        """Scalar discovery followed by a fresh session for each execution."""
         handled: list[int] = []
+        opened = []
 
-        async def due_tasks(session, now):
-            return [_task(1), _task(2), _task(3)]
+        async def due_task_ids(session, now):
+            return [1, 2, 3]
+
+        async def get_due_task(session, task_id, now):
+            return _task(task_id)
 
         async def run_one(bot, session, task):
             handled.append(task.id)
 
         class _Ctx:
             async def __aenter__(self):
-                return _FakeSession()
+                session = _FakeSession()
+                opened.append(session)
+                return session
 
             async def __aexit__(self, *exc):
                 return False
 
         monkeypatch.setattr(schedule, "async_session_maker", _Ctx)
-        monkeypatch.setattr(schedule.schedule_service, "due_tasks", due_tasks)
+        monkeypatch.setattr(schedule.schedule_service, "due_task_ids", due_task_ids)
+        monkeypatch.setattr(schedule.schedule_service, "get_due_task", get_due_task)
         monkeypatch.setattr(schedule, "_run_due_task", run_one)
 
         async def fake_sleep(_s):
@@ -529,11 +528,13 @@ class TestSchedulerLoop:
             await schedule.scheduler_loop(object())
 
         assert handled == [1, 2, 3], f"the tick stopped early: {handled}"
+        assert len(opened) == 4  # discovery + three execution sessions
+        assert len({id(s) for s in opened}) == 4
 
     async def test_the_loop_waits_the_configured_interval(self, monkeypatch):
         slept: list[float] = []
 
-        async def due_tasks(session, now):
+        async def due_task_ids(session, now):
             return []
 
         class _Ctx:
@@ -544,7 +545,7 @@ class TestSchedulerLoop:
                 return False
 
         monkeypatch.setattr(schedule, "async_session_maker", _Ctx)
-        monkeypatch.setattr(schedule.schedule_service, "due_tasks", due_tasks)
+        monkeypatch.setattr(schedule.schedule_service, "due_task_ids", due_task_ids)
 
         async def fake_sleep(seconds):
             slept.append(seconds)
