@@ -1,4 +1,4 @@
-"""One public command, private management, and a strictly public status projection."""
+"""Explicit play/management commands and a strictly public status projection."""
 
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ async def test_admin_group_command_only_redirects_to_personal_management(session
     monkeypatch.setattr(handler, "is_admin", AsyncMock(return_value=True))
     manage = AsyncMock()
     monkeypatch.setattr(TwentyQuestionsType, "render_list", manage)
-    message = _Message("/gioco_alduino")
+    message = _Message("/gestisci_gioco_alduino")
     message.reply = AsyncMock()
     message.bot.get_me = AsyncMock(return_value=SimpleNamespace(username="testbot"))
-    await handler.cmd_gioco_alduino(message, session)
+    await handler.cmd_gestisci_gioco_alduino(message, session)
     manage.assert_not_awaited()
     text = message.reply.call_args.args[0]
     assert "continua in privato" in text
@@ -47,8 +47,8 @@ async def test_admin_private_command_reuses_existing_management_with_status_butt
     monkeypatch.setattr(handler, "is_admin", AsyncMock(return_value=True))
     start = AsyncMock(side_effect=AssertionError("a command must not launch a game"))
     monkeypatch.setattr(ai_game_service, "start", start)
-    message = _Message("/gioco_alduino", chat_type="private", group=42, anchor=None)
-    await handler.cmd_gioco_alduino(message, session)
+    message = _Message("/gestisci_gioco_alduino", chat_type="private", group=42, anchor=None)
+    await handler.cmd_gestisci_gioco_alduino(message, session)
     assert "Partita pronta" in message.said[-1]
     assert "Crea il gioco segreto" in str(message.markups[-1])
     assert TwentyQuestionsStatusCb(action="show").pack() in str(message.markups[-1])
@@ -57,8 +57,11 @@ async def test_admin_private_command_reuses_existing_management_with_status_butt
     start.assert_not_awaited()
 
 
-async def test_public_group_command_only_reports_state_and_keeps_reply_mapping(session, monkeypatch):
+@pytest.mark.parametrize("admin", [True, False])
+async def test_public_group_command_only_reports_state_for_every_role(session, monkeypatch, admin):
     session_id = await running(session, monkeypatch)
+    role_check = AsyncMock(return_value=admin)
+    monkeypatch.setattr(handler, "is_admin", role_check)
     ai = AsyncMock(side_effect=AssertionError("status must not call AI"))
     manage = AsyncMock()
     monkeypatch.setattr(ai_game_service, "classify_question", ai)
@@ -73,10 +76,14 @@ async def test_public_group_command_only_reports_state_and_keeps_reply_mapping(s
     assert (await session.execute(select(func.count(AIGameTurn.id)))).scalar_one() == 0
     manage.assert_not_awaited()
     ai.assert_not_awaited()
+    role_check.assert_not_awaited()  # Role must never change the play command's purpose.
 
 
-async def test_private_public_status_uses_group_context_but_cannot_play_or_republish(session, monkeypatch):
+@pytest.mark.parametrize("admin", [True, False])
+async def test_private_play_command_never_opens_management(session, monkeypatch, admin):
     session_id = await running(session, monkeypatch)
+    role_check = AsyncMock(return_value=admin)
+    monkeypatch.setattr(handler, "is_admin", role_check)
     await session.execute(update(AIGameSession).where(AIGameSession.id == session_id).values(anchor_message_id=None))
     await session.commit()
     ai = AsyncMock(side_effect=AssertionError("private status must not call AI"))
@@ -89,6 +96,7 @@ async def test_private_public_status_uses_group_context_but_cannot_play_or_repub
     assert TARGET.title not in text
     assert text.endswith("Digita /gioco_alduino per avere le informazioni aggiornate")
     handler.refresh_group_card.assert_not_awaited()
+    role_check.assert_not_awaited()
     ai.assert_not_awaited()
     assert (await session.execute(select(func.count(AIGameTurn.id)))).scalar_one() == 0
     assert (await session.execute(select(func.count()).select_from(AIGameMessage))).scalar_one() == 0
@@ -145,6 +153,40 @@ async def test_public_command_rejects_non_personal_actors_without_ai_or_turns(se
     await handler.cmd_gioco_alduino(message, session, CommandObject(command="gioco_alduino", args="Ha enigmi?"))
     assert "profilo personale" in message.said[-1]
     assert not session.in_transaction()
+
+
+@pytest.mark.parametrize("anonymous", [True, False])
+async def test_management_programmatic_entry_rechecks_authority(session, monkeypatch, anonymous):
+    message = _Message("/gestisci_gioco_alduino", group=42, chat_type="private")
+    if anonymous:
+        message.from_user = None
+    monkeypatch.setattr(handler, "is_admin", AsyncMock(return_value=False))
+    manage = AsyncMock()
+    monkeypatch.setattr(TwentyQuestionsType, "render_list", manage)
+    await handler.cmd_gestisci_gioco_alduino(message, session)
+    assert "non autorizzato" in message.said[-1]
+    manage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("admin,allowed", [(True, True), (False, False)])
+async def test_management_command_is_admin_gated_at_router_boundary(monkeypatch, admin, allowed):
+    from datetime import datetime
+    from aiogram import Bot
+    from aiogram.types import Chat, Message, User
+    from filters import admin_filter
+
+    monkeypatch.setattr(admin_filter, "is_admin", AsyncMock(return_value=admin))
+    bot = Bot(token="1234567890:AAFtesttoken_ci")
+    message = Message(
+        message_id=1, date=datetime(2026, 11, 16), text="/gestisci_gioco_alduino",
+        chat=Chat(id=42, type="private"), from_user=User(id=42, first_name="Player", is_bot=False),
+    ).as_(bot)
+    registered = next(h for h in handler.router.message.handlers if h.callback is handler.cmd_gestisci_gioco_alduino)
+    try:
+        matched, _ = await registered.check(message, bot=bot)
+        assert matched is allowed
+    finally:
+        await bot.session.close()
 
 
 @pytest.mark.parametrize("chat_type,allowed", [("private", True), ("supergroup", False)])

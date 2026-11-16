@@ -105,7 +105,7 @@ def test_d20_is_a_public_bare_roll_command():
     assert "/d20" in page and "1" in page and "20" in page
 
 
-def test_secret_game_manual_explains_public_and_admin_views():
+def test_secret_game_play_manual_is_identical_for_players_and_admins():
     page = render_command("gioco_alduino", is_admin=True)
     assert page == render_command("gioco_alduino", is_admin=False)
     assert page is not None
@@ -113,8 +113,8 @@ def test_secret_game_manual_explains_public_and_admin_views():
     assert "Il gioco segreto di Alduino" in page
     assert "10 XP" in page
     assert "RISPOSTA:" in page
-    assert "gestione in privato" in page
-    assert "Vedi partita" in page
+    assert "uguale per tutti, admin inclusi" in page
+    assert "non apre mai la gestione" in page
 
 
 def test_secret_game_is_discoverable_by_everyone():
@@ -127,6 +127,16 @@ def test_secret_game_is_discoverable_by_everyone():
 
 def test_removed_secret_game_alias_has_no_manual_entry():
     assert render_command("gioco", is_admin=True) is None
+
+
+def test_secret_game_management_manual_is_hidden_from_players():
+    name = "gestisci_gioco_alduino"
+    assert render_command(name, is_admin=False) is None
+    assert "/" + name not in render_legend(is_admin=False)
+    assert "/" + name not in render_alduino_reference()
+    page = render_command(name, is_admin=True)
+    assert page is not None and "Vedi partita" in page
+    assert "/" + name in render_legend(is_admin=True)
 
 
 class TestAlduinoReference:

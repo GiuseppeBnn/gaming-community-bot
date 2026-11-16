@@ -320,11 +320,17 @@ _COMMANDS: list[CommandDoc] = [
         "Regole e stato del gioco segreto di Alduino",
         "🏆 Progressione",
         usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
-        details="Mostra la partita attiva e la tua quota personale. Per gli admin senza "
-                "argomenti apre invece la gestione in privato (crea, avvia, programma, chiudi); "
-                "«Vedi partita» mostra la stessa vista pubblica dei giocatori. "
+        details="Mostra la partita attiva e la tua quota personale. Il comportamento è "
+                "uguale per tutti, admin inclusi: non apre mai la gestione. "
                 "Si gioca nel gruppo, tramite reply o aggiungendo domanda/titolo al comando.\n\n"
                 + render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
+    ),
+    CommandDoc(
+        "gestisci_gioco_alduino", "Gestisci le partite del gioco di Alduino", "🎬 Eventi",
+        usage="/gestisci_gioco_alduino", admin_only=True,
+        details="Apre in privato la gestione già disponibile in /eventi: crea, avvia, "
+                "programma o chiudi una partita. «Vedi partita» mostra lo stato pubblico. "
+                "Per giocare come gli altri usa /gioco_alduino oppure rispondi nel gruppo.",
     ),
     CommandDoc("crea_quiz", "Crea un quiz (in privato)", "🎬 Eventi",
                usage="/crea_quiz", admin_only=True),

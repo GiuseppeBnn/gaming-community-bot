@@ -11,11 +11,12 @@ Modifiche rilevanti al bot. Formato ispirato a
   skip o hook. Stato/scadenza ricontrollati prima di eseguire; cancellazioni e
   riprogrammazioni rispettate. Retry, esiti e logica dei premi invariati.
 - **Messaggi del gioco segreto di Alduino** — scadenze nel fuso della community,
-  istruzioni condivise e avviso premi senza dettagli tecnici del pool. Unico comando
+  istruzioni condivise e avviso premi senza dettagli tecnici del pool. Comando di gioco
   `/gioco_alduino`, richiamato in fondo a card e riepiloghi.
   Nessuna modifica al calcolo dei premi o ai timestamp persistiti.
-- **Comando unico con ingresso per ruolo** — `/gioco_alduino` mostra lo stato agli
-  utenti e apre la gestione privata agli admin; «Vedi partita» riusa la vista pubblica.
+- **Gioco e gestione separati** — `/gioco_alduino` mostra stato e gioco a tutti,
+  admin inclusi; `/gestisci_gioco_alduino` apre la gestione privata solo agli admin.
+  «Vedi partita» riusa la vista pubblica. Testo dei premi riscritto in italiano semplice.
   Argomenti/reply di gioco e quote condivisi, consultazione privata senza turni o
   pubblicazioni nel gruppo; deep-link e mutazioni di gestione sempre protetti.
 - **Vecchio riepilogo del creatore quiz** — un bottone senza più la sua FSM o
@@ -58,8 +59,8 @@ Modifiche rilevanti al bot. Formato ispirato a
   utenti; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
   verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
   partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
-  Senza argomenti gli admin accedono alla gestione privata, con «Vedi partita»
-  per consultare lo stato pubblico; il gioco resta giocabile tramite reply.
+  La gestione privata ha il comando admin dedicato `/gestisci_gioco_alduino`,
+  con «Vedi partita» per consultare lo stato pubblico; il gioco resta giocabile tramite reply.
 - **Una partita per gruppo** — avvii manuali e programmati serializzati su
   PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.

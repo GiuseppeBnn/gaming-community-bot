@@ -27,6 +27,10 @@ GAME_INSTRUCTIONS = (
     "<code>Risposta: titolo del gioco</code>"
 )
 GAME_STATUS_HINT = "Digita /gioco_alduino per avere le informazioni aggiornate"
+GAME_REWARD_HINT = (
+    "Riceverete i CoInn solo se qualcuno indovina il gioco. "
+    "Il premio mostrato è una stima: l'importo definitivo sarà calcolato a fine partita."
+)
 
 
 def _reward_warning(policy: TwentyQuestionsPolicy) -> str:
@@ -113,8 +117,7 @@ def render_public_help(policy: TwentyQuestionsPolicy) -> str:
         "Se mancano elementi, <b>NON LO SO</b>: domanda e premio restano intatti.",
         GAME_INSTRUCTIONS,
         render_policy(policy),
-        "I CoInn si ricevono solo se il gioco viene indovinato. "
-        "La quota è una proiezione, non un saldo maturato. "
+        GAME_REWARD_HINT,
         "Duplicati, problemi tecnici e titoli senza <code>RISPOSTA:</code> non consumano nulla.",
         GAME_STATUS_HINT,
     ))
@@ -153,7 +156,7 @@ def render_live_card(
             f"Massimo <b>{policy.max_coins_per_participant}</b>."
         ),
         _reward_warning(policy),
-        "CoInn solo se indovinate. La quota è una proiezione, non è un saldo maturato.",
+        GAME_REWARD_HINT,
         f"✨ Partecipare vale <b>{policy.xp_per_participant} XP</b> alla chiusura.",
     ]
     recent = view.recent_turns[-6:]

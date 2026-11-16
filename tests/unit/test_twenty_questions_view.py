@@ -27,6 +27,7 @@ from services.ai_game_types import (
 )
 from utils.twenty_questions_view import (
     GAME_INSTRUCTIONS,
+    GAME_REWARD_HINT,
     GAME_STATUS_HINT,
     render_live_card,
     render_personal_status,
@@ -189,8 +190,9 @@ def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
     assert "pool" not in card.casefold()
     assert "%" not in card
     assert "Quota stimata: <b>108 CoInn</b>" in card
-    assert "proiezione" in card.casefold()
-    assert "non è un saldo maturato" in card
+    assert GAME_REWARD_HINT in card
+    assert "proiezione" not in card.casefold()
+    assert "saldo maturato" not in card
     assert "13 XP" in card
     assert "vecchia &lt;domanda&gt;" not in card
     assert "turno-2 &lt;x&gt;" in card
@@ -436,6 +438,10 @@ def test_requested_instructions_are_shared_without_changing_reward_projection():
     for text in (render_public_help(POLICY), render_live_card(view, now=NOW),
                  render_personal_status(view, _quota(), now=NOW)):
         assert expected in text
+        assert GAME_REWARD_HINT in text
+        assert "Riceverete i CoInn solo se qualcuno indovina il gioco" in text
+        assert "a fine partita" in text
+        assert "saldo maturato" not in text
         assert text.endswith("Digita /gioco_alduino per avere le informazioni aggiornate")
         assert "o a un verdetto" not in text
     assert view.projection == before

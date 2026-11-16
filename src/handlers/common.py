@@ -167,8 +167,8 @@ async def cmd_start(
     # /admin dashboard.
     if payload == "manage_twentyq":
         if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.twenty_questions import cmd_gioco_alduino
-            await cmd_gioco_alduino(message, db_session)
+            from handlers.twenty_questions import cmd_gestisci_gioco_alduino
+            await cmd_gestisci_gioco_alduino(message, db_session)
         else:
             await message.answer("⛔ Accesso non autorizzato.")
         return

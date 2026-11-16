@@ -189,7 +189,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/offri` (in reply nel gruppo) | 🎁 Compra o regala una scorta a un amico, con scelta e conferma private |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
-| `/gioco_alduino` | Stato del gioco per gli utenti; gestione privata per gli admin. Con argomenti, nel gruppo, domanda o tentativo per tutti |
+| `/gioco_alduino` | Stato e gioco per tutti, admin inclusi. Con argomenti, nel gruppo, domanda o tentativo |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 | `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
@@ -207,6 +207,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 | `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
+| `/gestisci_gioco_alduino` | Gestione privata delle partite di Alduino; `/gioco_alduino` rimane dedicato al gioco anche per gli admin |
 | `/immagine <descrizione>` | Test admin del generatore: 1–150 caratteri, stessi stile/modello/budget della staffetta, senza creare eventi; accetta anche `/Immagine` |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
@@ -370,12 +371,12 @@ ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto
 ### Il gioco segreto di Alduino
 
 Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
-o al riepilogo di `/gioco_alduino`, senza tornare al messaggio iniziale. Un solo comando
-per tutti, con ingresso distinto in base al ruolo:
+o al riepilogo di `/gioco_alduino`, senza tornare al messaggio iniziale. Gioco e gestione
+hanno comandi distinti, così anche gli admin possono giocare senza aprire il pannello:
 
-- `/gioco_alduino` mostra stato e quota personale agli utenti; agli admin senza
-  argomenti apre la gestione privata già presente in `/eventi` (crea, avvia,
-  programma, chiudi). «Vedi partita» apre la vista pubblica anche per loro;
+- `/gioco_alduino` mostra stato e quota personale a tutti, admin inclusi;
+- `/gestisci_gioco_alduino` è solo admin e apre la gestione privata già presente in
+  `/eventi` (crea, avvia, programma, chiudi). «Vedi partita» apre la vista pubblica;
 - `/gioco_alduino È multiplayer?` fa una domanda;
 - `/gioco_alduino RISPOSTA: Portal 2` tenta il titolo.
 
@@ -385,7 +386,7 @@ Consultare lo stato non chiama l'AI e non consuma domande o tentativi; nessuna p
 attiva viene segnalata esplicitamente. Il link `manage_twentyq` ricontrolla i permessi
 admin, e i bottoni di gestione restano riservati agli admin.
 
-È l'unico comando dell'attività: l'alias breve è stato rimosso. Nei reply,
+Il comando per giocare è identico per tutti: l'alias breve è stato rimosso. Nei reply,
 per tentare il titolo usa `RISPOSTA: nome del gioco`. La card, le istruzioni senza
 partita attiva e il riepilogo terminano con «Digita /gioco_alduino per avere le
 informazioni aggiornate». Le scadenze mostrate sono nell'orario della community

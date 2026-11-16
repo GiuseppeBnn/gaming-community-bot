@@ -383,22 +383,26 @@ async def _finish_creation(
 async def cmd_gioco_alduino(
     message: Message, db_session: AsyncSession, command: CommandObject | None = None,
 ) -> None:
-    """One entry point: admin management, or public state/play for members."""
+    """Public state/play with identical behavior for players and admins."""
     if message.from_user is None or message.from_user.is_bot or message.sender_chat:
         await message.answer("🐲 Usa il comando con il tuo profilo personale.")
         return
-    # Explicit group turn arguments retain the same quotas/ledger for all roles.
-    # Bare admin commands never mutate a game: reuse its private management list.
-    if not (command and command.args) and await is_admin(message.bot, message.from_user.id):
-        if await redirect_to_private(
-            message, "manage_twentyq", "🐲 Gestisci il gioco di Alduino",
-            notice="🔒 Gestione del gioco di Alduino: continua in privato.",
-        ):
-            return
-        from handlers.event_types.twenty_questions_type import TwentyQuestionsType
-        await TwentyQuestionsType().render_list(message, db_session)
-        return
     await show_game_status(message, db_session, raw_text=command.args if command else None)
+
+
+@router.message(Command("gestisci_gioco_alduino"), IsAdminFilter())
+async def cmd_gestisci_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
+    """Explicit management entry; recheck auth for programmatic deep-link calls."""
+    if message.from_user is None or not await is_admin(message.bot, message.from_user.id):
+        await message.answer("⛔ Accesso non autorizzato.")
+        return
+    if await redirect_to_private(
+        message, "manage_twentyq", "🐲 Gestisci il gioco di Alduino",
+        notice="🔒 Gestione del gioco di Alduino: continua in privato.",
+    ):
+        return
+    from handlers.event_types.twenty_questions_type import TwentyQuestionsType
+    await TwentyQuestionsType().render_list(message, db_session)
 
 
 async def show_game_status(
