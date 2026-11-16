@@ -187,6 +187,34 @@ def test_retry_after_parses_seconds_dates_and_rejects_invalid_values():
         ("x", {"type": [42]}, "invalid_schema"),
         ({}, {"type": "object", "properties": []}, "invalid_schema"),
         ({}, {"type": "object", "required": "key"}, "invalid_schema"),
+        (None, {"type": ["string", "null"]}, None),
+        (False, {"type": "number"}, "invalid_schema"),
+        (float("nan"), {"type": "number"}, "invalid_schema"),
+        ("x", {"type": []}, "invalid_schema"),
+        ("x", {"type": [42, "string"]}, None),
+        ("x", {"enum": "x"}, "invalid_enum"),
+        ("no", {"enum": ["yes"]}, "invalid_enum"),
+        ({}, {"required": [42]}, "invalid_schema"),
+        ({}, {"required": ["missing"]}, "invalid_schema"),
+        ({"optional": 1}, {"properties": {"absent": {"type": "string"}}}, None),
+        ({"extra": 1}, {"additionalProperties": False}, "invalid_schema"),
+        (["yes", "no"], {"items": {"enum": ["yes"]}}, "invalid_enum"),
+        ([], {"items": {"type": "unknown"}}, None),
+        (
+            {"answer": "wrong", "extra": 1},
+            {"properties": {"answer": {"enum": ["correct"]}}, "additionalProperties": False},
+            "invalid_schema",  # Reject unknown fields before inspecting children.
+        ),
+        (
+            {"answer": "wrong"},
+            {"properties": {"answer": {"enum": ["correct"]}}, "required": ["missing"]},
+            "invalid_schema",  # Required fields have precedence over child enums.
+        ),
+        (
+            {"first": "wrong", "second": "wrong"},
+            {"properties": {"first": {"enum": ["correct"]}, "second": {"type": "integer"}}},
+            "invalid_enum",  # Preserve deterministic property traversal order.
+        ),
         (
             {"items": [1, "bad"]},
             {

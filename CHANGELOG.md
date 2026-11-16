@@ -5,6 +5,13 @@ Modifiche rilevanti al bot. Formato ispirato a
 
 ## [Unreleased]
 
+### Manutenzione
+- **Riduzione della complessità senza cambi funzionali** — navigazione `/start`
+  suddivisa per responsabilità con whitelist e gate admin condiviso; validazione
+  JSON AI separata per tipo, struttura e ricorsione; requisiti dei trofei senza
+  parametri raccolti negli stessi template. Preservati link storici, permessi,
+  testi, precedenza degli errori, transazioni, configurazione e policy AI.
+
 ### Corretto
 - **Telefono senza fili: rollout completamente nascosto** — `TELEPHONE_ENABLED=false`
   nasconde tipo-evento, programmazione, inline, riferimenti nei manuali e comando

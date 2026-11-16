@@ -18,6 +18,9 @@ deep-link landing must not trust that the caller passed the originating command'
 admin filter (a non-admin could craft the ?start=… link directly).
 """
 
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
 import logging
 import re
 
@@ -81,6 +84,145 @@ async def _ensure_welcome_trophy(message: Message, db_session: AsyncSession) -> 
         await announce_trophies(message.bot, db_session, message.from_user.id, [badge])
 
 
+async def _dispatch_admin_link(
+    payload: str, message: Message, state: FSMContext, db_session: AsyncSession,
+) -> bool:
+    """Whitelist admin landings and recheck permissions before every dispatch.
+
+    Functions are resolved at call time, like the original lazy imports. Group
+    routes by their actual signature, without reflection or adapter wrappers.
+    """
+    from handlers import (
+        admin_betting,
+        admin_dashboard,
+        backup,
+        events,
+        quiz,
+        schedule,
+        twenty_questions,
+    )
+    from handlers.event_types.guess_type import GuessType
+    from handlers.event_types.quiz_type import QuizType
+
+    quiz_list = QuizType().render_list
+    db_routes: dict[str, Callable[[Message, AsyncSession], Awaitable[None]]] = {
+        "admin": admin_dashboard.show_dashboard_home,
+        "manage_twentyq": twenty_questions.cmd_gestisci_gioco_alduino,
+        "manage_trivianerd": quiz_list,
+        "manage_quiz": quiz_list,
+        "manage_guess": GuessType("guess").render_list,
+        "manage_sound": GuessType("sound").render_list,
+        "programmati": schedule.cmd_programmati,
+        "manage_bets": admin_betting._show_event_list,
+        "backup": backup.run_backup_now,
+        "esporta": backup.run_export_now,
+    }
+    state_routes: dict[str, Callable[[Message, FSMContext], Awaitable[None]]] = {
+        "create_trivianerd": quiz.start_quiz_creation,
+        "create_quiz": quiz.start_quiz_creation,
+        "create_poll": events.start_poll_creation,
+        "programma": schedule.start_schedule_flow,
+    }
+    db_action, state_action = db_routes.get(payload), state_routes.get(payload)
+    if db_action is None and state_action is None and payload != "eventi":
+        return False
+    if not await is_bot_admin(message.bot, message.from_user.id):
+        await message.answer("⛔ Accesso non autorizzato.")
+        return True
+    if db_action is not None:
+        await db_action(message, db_session)
+    elif state_action is not None:
+        await state_action(message, state)
+    else:
+        await events.show_hub(message)
+    return True
+
+
+async def _dispatch_game_link(
+    payload: str, message: Message, state: FSMContext, db_session: AsyncSession,
+) -> bool:
+    """Public game/gift landings retain membership and ownership guards."""
+    if payload.startswith("offri_"):
+        from handlers.tavern import start_offer_private
+        await start_offer_private(message, db_session, payload[6:])
+        return True
+    if payload.startswith("telefono_") and payload[9:].isdigit():
+        from handlers.telephone import join
+        await join(message, state, db_session, int(payload[9:]))
+        return True
+    # New invitations and already-published links use the same session engine.
+    for prefix in ("trivianerd_", "quiz_"):
+        value = payload[len(prefix):]
+        if payload.startswith(prefix) and value.isascii() and value.isdecimal():
+            from handlers.quiz import start_quiz_session
+            await start_quiz_session(message, db_session, int(value))
+            return True
+    for kind in ("guess", "sound"):
+        prefix = f"{kind}_"
+        if payload.startswith(prefix) and payload[len(prefix):].isdigit():
+            from handlers.guess import start_guess_session
+            await start_guess_session(message, db_session, state, int(payload[len(prefix):]))
+            return True
+    return False
+
+
+async def _dispatch_personal_link(
+    payload: str, message: Message, state: FSMContext, db_session: AsyncSession,
+) -> bool:
+    """Public navigation; each destination retains its existing privacy policy."""
+    from handlers import badges, betting, economy, leaderboard, shop
+
+    db_routes: dict[str, Callable[[Message, AsyncSession], Awaitable[None]]] = {
+        "saldo": economy.show_saldo,
+        "daily": economy.show_saldo,
+        "storico": economy.show_storico,
+        "profilo": show_profilo,
+        "trofei": badges.show_traguardi,
+        "traguardi": badges.show_traguardi,
+        "classifiche": leaderboard.show_board_private,
+    }
+    action = db_routes.get(payload)
+    if action is not None:
+        await action(message, db_session)
+    elif payload == "scommesse":
+        await betting.show_events_private(message, db_session, state)
+    elif payload == "create_bet":
+        await betting.start_bet_creation(message, state)
+    elif payload == "help":
+        await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
+    elif payload.startswith("spiega_"):
+        admin = await is_bot_admin(message.bot, message.from_user.id)
+        await message.answer(render_command_or_hint(payload[len("spiega_"):], admin))
+    elif payload.startswith("shop_") and payload[5:].lstrip("-").isdigit():
+        await shop.start_shop_private(message, state, int(payload[5:]), db_session)
+    else:
+        return False
+    return True
+
+
+async def _dispatch_bet_link(
+    payload: str, message: Message, state: FSMContext, db_session: AsyncSession,
+) -> bool:
+    """Keep custom amounts ahead of event links; preserve invalid-link feedback."""
+    if payload.startswith("bet_custom_"):
+        parts = payload.split("_")
+        if len(parts) == 4 and parts[2].isdigit() and parts[3].isdigit():
+            from handlers.betting import start_custom_amount
+            await start_custom_amount(message, state, int(parts[2]), int(parts[3]))
+        else:
+            await message.answer("⚠️ Link non valido.")
+        return True
+    if payload.startswith("bet_"):
+        tail = payload[4:]
+        if tail.isdigit():
+            from handlers.betting import start_bet_view
+            await start_bet_view(message, db_session, int(tail), state)
+        else:
+            await message.answer("⚠️ Link non valido.")
+        return True
+    return False
+
+
 @router.message(CommandStart())
 async def cmd_start(
     message: Message,
@@ -133,207 +275,14 @@ async def cmd_start(
         from handlers.guess.play import leave_answering
         await leave_answering(message, state)
 
-    if payload.startswith("offri_"):
-        from handlers.tavern import start_offer_private
-        await start_offer_private(message, db_session, payload[6:])
-        return
-
-    if payload.startswith("telefono_") and payload[9:].isdigit():
-        from handlers.telephone import join
-        await join(message, state, db_session, int(payload[9:]))
-        return
-
-    # Deep-link: admin (admin tools dashboard)
-    if payload == "admin":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.admin_dashboard import show_dashboard_home
-            await show_dashboard_home(message, db_session)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: eventi (admin events hub)
-    if payload == "eventi":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.events import show_hub
-            await show_hub(message)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: manage_<type> — the admin management
-    # list of that event type. This is where /trivianerd, /guessTheGame and /soundQuest
-    # send an admin from the group: straight to the type's own list, not the whole
-    # /admin dashboard.
-    if payload == "manage_twentyq":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.twenty_questions import cmd_gestisci_gioco_alduino
-            await cmd_gestisci_gioco_alduino(message, db_session)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Keep historical links valid; new producers use the Trivia Nerd spelling.
-    if payload in ("manage_trivianerd", "manage_quiz", "manage_guess", "manage_sound"):
-        if await is_bot_admin(message.bot, message.from_user.id):
-            if payload in ("manage_trivianerd", "manage_quiz"):
-                from handlers.event_types.quiz_type import QuizType
-                await QuizType().render_list(message, db_session)
-            else:
-                from handlers.event_types.guess_type import GuessType
-                await GuessType("guess" if payload == "manage_guess" else "sound").render_list(
-                    message, db_session
-                )
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # New creation links plus historical invitations; both recheck admin rights.
-    if payload in ("create_trivianerd", "create_quiz"):
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.quiz import start_quiz_creation
-            await start_quiz_creation(message, state)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # New invitations use trivianerd_<id>; legacy quiz_<id> stays resumable.
-    for prefix in ("trivianerd_", "quiz_"):
-        value = payload[len(prefix):]
-        if payload.startswith(prefix) and value.isascii() and value.isdecimal():
-            from handlers.quiz import start_quiz_session
-            await start_quiz_session(message, db_session, int(value))
+    for dispatch in (
+        _dispatch_game_link,
+        _dispatch_admin_link,
+        _dispatch_personal_link,
+        _dispatch_bet_link,
+    ):
+        if await dispatch(payload, message, state, db_session):
             return
-
-    # Deep-link: guess_<id> / sound_<id> (play a running round in private).
-    # Public by design: any group member plays, so unlike the admin landings
-    # there is no is_admin re-check here to forget.
-    for kind in ("guess", "sound"):
-        prefix = f"{kind}_"
-        if payload.startswith(prefix) and payload[len(prefix):].isdigit():
-            from handlers.guess import start_guess_session
-            await start_guess_session(
-                message, db_session, state, int(payload[len(prefix):])
-            )
-            return
-
-    # Deep-link: create_poll (admin poll creation FSM, redirected from the group)
-    if payload == "create_poll":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.events import start_poll_creation
-            await start_poll_creation(message, state)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: programmati (admin-only list, never publish task details in group)
-    if payload == "programmati":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.schedule import cmd_programmati
-            await cmd_programmati(message, db_session)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: programma (admin scheduling FSM)
-    if payload == "programma":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.schedule import start_schedule_flow
-            await start_schedule_flow(message, state)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: manage_bets (admin panel shortcut from group button)
-    if payload == "manage_bets":
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.admin_betting import _show_event_list
-            await _show_event_list(message, db_session)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: help
-    if payload == "help":
-        await _show_help(message, await is_bot_admin(message.bot, message.from_user.id))
-        return
-
-    # Deep-link: spiega_<cmd> (per-command manual, carried from the group button)
-    if payload.startswith("spiega_"):
-        cmd = payload[len("spiega_"):]
-        admin = await is_bot_admin(message.bot, message.from_user.id)
-        await message.answer(render_command_or_hint(cmd, admin))
-        return
-
-    # Deep-link: shop_<group_id>
-    if payload.startswith("shop_") and payload[5:].lstrip("-").isdigit():
-        group_id = int(payload[5:])
-        from handlers.shop import start_shop_private
-        await start_shop_private(message, state, group_id, db_session)
-        return
-
-    # Deep-links for personal data redirected from the group (privacy).
-    if payload in ("saldo", "daily"):
-        from handlers.economy import show_saldo
-        await show_saldo(message, db_session)
-        return
-    if payload == "storico":
-        from handlers.economy import show_storico
-        await show_storico(message, db_session)
-        return
-    if payload == "profilo":
-        await show_profilo(message, db_session)
-        return
-    if payload in ("trofei", "traguardi"):
-        from handlers.badges import show_traguardi
-        await show_traguardi(message, db_session)
-        return
-    if payload == "classifiche":
-        from handlers.leaderboard import show_board_private
-        await show_board_private(message, db_session)
-        return
-    if payload == "scommesse":
-        from handlers.betting import show_events_private
-        await show_events_private(message, db_session, state)
-        return
-
-    # Deep-links: admin backup / state export (redirected from the group)
-    if payload in ("backup", "esporta"):
-        if await is_bot_admin(message.bot, message.from_user.id):
-            from handlers.backup import run_backup_now, run_export_now
-            if payload == "backup":
-                await run_backup_now(message, db_session)
-            else:
-                await run_export_now(message, db_session)
-        else:
-            await message.answer("⛔ Accesso non autorizzato.")
-        return
-
-    # Deep-link: create_bet
-    if payload == "create_bet":
-        from handlers.betting import start_bet_creation
-        await start_bet_creation(message, state)
-        return
-
-    # Deep-link: bet_custom_<event_id>_<option_id>
-    if payload.startswith("bet_custom_"):
-        parts = payload.split("_")
-        if len(parts) == 4 and parts[2].isdigit() and parts[3].isdigit():
-            from handlers.betting import start_custom_amount
-            await start_custom_amount(message, state, int(parts[2]), int(parts[3]))
-        else:
-            await message.answer("⚠️ Link non valido.")
-        return
-
-    # Deep-link: bet_<event_id>
-    if payload.startswith("bet_"):
-        tail = payload[4:]
-        if tail.isdigit():
-            from handlers.betting import start_bet_view
-            await start_bet_view(message, db_session, int(tail), state)
-        else:
-            await message.answer("⚠️ Link non valido.")
-        return
 
     # Default: main menu
     name = esc(message.from_user.first_name)

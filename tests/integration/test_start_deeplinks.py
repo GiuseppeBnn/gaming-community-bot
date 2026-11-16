@@ -156,6 +156,7 @@ ADMIN_PAYLOADS = [
 
 # Payloads any member may use, and where they land.
 PUBLIC_PAYLOADS = [
+    ("offri_personal_token", "handlers.tavern.start_offer_private"),
     ("quiz_5", "handlers.quiz.start_quiz_session"),
     ("trivianerd_5", "handlers.quiz.start_quiz_session"),
     # The guess games are public: any group member plays them, so — unlike the
@@ -181,6 +182,23 @@ PUBLIC_PAYLOADS = [
 # ---------------------------------------------------------------------------
 
 class TestAdminDeepLinks:
+    @pytest.mark.parametrize("payload,target", ADMIN_PAYLOADS)
+    async def test_permissions_are_rechecked_on_each_landing(
+        self, session, onboarded, monkeypatch, payload, target
+    ):
+        from unittest.mock import AsyncMock
+
+        spy = _patch(monkeypatch, target)
+        permission = AsyncMock(side_effect=[True, False])
+        monkeypatch.setattr(common, "is_bot_admin", permission)
+        message = _FakeMessage()
+        await common.cmd_start(message, _command(payload), _state(), session)
+        assert len(spy.calls) == 1
+        await common.cmd_start(message, _command(payload), _state(), session)
+        assert len(spy.calls) == 1
+        assert "non autorizzato" in message.said
+        assert permission.await_count == 2
+
     @pytest.mark.parametrize("payload,target", ADMIN_PAYLOADS)
     async def test_a_non_admin_is_refused_and_the_screen_never_opens(
         self, session, onboarded, monkeypatch, payload, target
@@ -213,6 +231,21 @@ class TestAdminDeepLinks:
 # ---------------------------------------------------------------------------
 
 class TestPublicDeepLinks:
+    @pytest.mark.parametrize("payload", [
+        "guess_", "sound_nope", "trivianerd_abc", "quiz_-2", "telefono_nope", "unknown",
+    ])
+    async def test_unknown_or_invalid_game_links_keep_the_default_menu(
+        self, session, onboarded, monkeypatch, payload
+    ):
+        from unittest.mock import AsyncMock
+
+        permission = AsyncMock(side_effect=AssertionError("Unexpected admin check"))
+        monkeypatch.setattr(common, "is_bot_admin", permission)
+        message = _FakeMessage()
+        await common.cmd_start(message, _command(payload), _state(), session)
+        assert "Bentornato" in message.said
+        permission.assert_not_awaited()
+
     @pytest.mark.parametrize("payload,target", PUBLIC_PAYLOADS)
     async def test_each_payload_opens_its_own_screen(
         self, session, onboarded, monkeypatch, payload, target

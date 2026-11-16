@@ -43,7 +43,7 @@ _SYNC_FIELDS = (
     "xp_reward", "condition_type", "condition_value", "condition_param", "hidden",
 )
 
-# Plain-text "how to unlock" templates for the **un-parametrized counter**
+# Plain-text "how to unlock" templates for the **un-parametrized**
 # conditions. The trophy screens show each trophy's curated `description`; this is
 # the fallback the renderer uses only when a (CSV-authored) trophy left it blank,
 # so an entry never appears without its goal.
@@ -55,6 +55,9 @@ _CONDITION_TEMPLATES = {
     "transfers_made": "Invia {v} trasferimenti",
     "xp": "Accumula {v:,} XP",
     "level": "Raggiungi il livello {v}",
+    "shop_purchases": "Acquista {v} consumabili nella Locanda",
+    "catalog_complete": "Possiedi ogni oggetto del negozio: consumabili e cosmetici",
+    "all_trophies": "Sblocca tutti gli altri trofei",
 }
 
 
@@ -87,18 +90,12 @@ def describe_condition(
         cat = consumable_service.get_category(condition_param or "")
         name = cat.name if cat else "questa categoria"
         return f"Acquista {v} consumabili — {name}"
-    if condition_type == "shop_purchases":
-        return f"Acquista {v} consumabili nella Locanda"
     if condition_type == "event_count":
         when = "per la prima volta" if v <= 1 else f"{v} volte"
         template = progress_service.EVENT_LABELS.get(condition_param or "")
         if template is None:  # unknown/missing metric → generic fallback (never None)
             return f"Completa l'obiettivo {when}"
         return template.format(when=when)
-    if condition_type == "catalog_complete":
-        return "Possiedi ogni oggetto del negozio: consumabili e cosmetici"
-    if condition_type == "all_trophies":
-        return "Sblocca tutti gli altri trofei"
     if condition_type == "podium_count":
         game = progress_service.GAME_LABELS.get(condition_param or "", "un gioco")
         when = "per la prima volta" if v <= 1 else f"{v} volte"

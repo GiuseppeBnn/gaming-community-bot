@@ -84,7 +84,7 @@ src/                                  # src-layout: i package restano top-level 
 | --- | --- |
 | `__init__.py` | Tupla `ROUTERS` + `register(dp)`. Due invarianti: `admin_betting` **prima** di `betting`, `common` **ultimo** |
 | `errors.py` | `on_error` su `dp.errors`: logga con contesto, avvisa l'utente, silenzia i rifiuti benigni di Telegram |
-| `common.py` | `/start` (dispatch dei deep-link), `/profilo`, `/comandi`, fallback |
+| `common.py` | `/start`: onboarding e dispatch separato per giochi, ingressi admin, dati personali e scommesse; `/profilo`, `/comandi`, fallback |
 | `onboarding.py` | Primo contatto: accettazione regole prima di ogni altra cosa |
 | `economy.py` | `/saldo` `/storico` `/daily` `/trasferisci` |
 | `betting.py` | Lato giocatore: `/scommesse`, `/crea_scommessa`, piazzamento |

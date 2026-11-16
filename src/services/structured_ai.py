@@ -278,37 +278,47 @@ def _matches_type(value: Any, expected: str) -> bool:
     return False
 
 
-def _schema_failure(value: Any, schema: Any) -> StructuredAIErrorKind | None:
-    if not isinstance(schema, dict):
-        return StructuredAIErrorKind.invalid_schema
-    expected = schema.get("type")
-    if isinstance(expected, str) and not _matches_type(value, expected):
-        return StructuredAIErrorKind.invalid_schema
+def _matches_schema_type(value: Any, expected: Any) -> bool:
+    """Check the supported type constraint, including nullable/union schemas."""
+    if isinstance(expected, str):
+        return _matches_type(value, expected)
     if isinstance(expected, list):
         allowed = [item for item in expected if isinstance(item, str)]
-        if not allowed or not any(_matches_type(value, item) for item in allowed):
-            return StructuredAIErrorKind.invalid_schema
+        return bool(allowed) and any(_matches_type(value, item) for item in allowed)
+    return True
+
+
+def _object_schema_failure(
+    value: dict[str, Any], schema: dict[str, Any],
+) -> StructuredAIErrorKind | None:
+    """Validate object shape before children; first-failure order is intentional."""
+    properties = schema.get("properties", {})
+    required = schema.get("required", [])
+    if not isinstance(properties, dict) or not isinstance(required, list):
+        return StructuredAIErrorKind.invalid_schema
+    if any(not isinstance(key, str) or key not in value for key in required):
+        return StructuredAIErrorKind.invalid_schema
+    if schema.get("additionalProperties") is False and any(
+        key not in properties for key in value
+    ):
+        return StructuredAIErrorKind.invalid_schema
+    for key, child in properties.items():
+        if key in value:
+            failure = _schema_failure(value[key], child)
+            if failure is not None:
+                return failure
+    return None
+
+
+def _schema_failure(value: Any, schema: Any) -> StructuredAIErrorKind | None:
+    if not isinstance(schema, dict) or not _matches_schema_type(value, schema.get("type")):
+        return StructuredAIErrorKind.invalid_schema
     if "enum" in schema:
         enum = schema["enum"]
         if not isinstance(enum, list) or value not in enum:
             return StructuredAIErrorKind.invalid_enum
-
     if isinstance(value, dict):
-        properties = schema.get("properties", {})
-        required = schema.get("required", [])
-        if not isinstance(properties, dict) or not isinstance(required, list):
-            return StructuredAIErrorKind.invalid_schema
-        if any(not isinstance(key, str) or key not in value for key in required):
-            return StructuredAIErrorKind.invalid_schema
-        if schema.get("additionalProperties") is False and any(
-            key not in properties for key in value
-        ):
-            return StructuredAIErrorKind.invalid_schema
-        for key, child in properties.items():
-            if key in value:
-                failure = _schema_failure(value[key], child)
-                if failure is not None:
-                    return failure
+        return _object_schema_failure(value, schema)
     if isinstance(value, list) and "items" in schema:
         for item in value:
             failure = _schema_failure(item, schema["items"])

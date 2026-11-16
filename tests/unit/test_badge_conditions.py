@@ -35,6 +35,15 @@ class TestDescribeCondition:
         # A machine condition with no value still renders (treated as 0).
         assert describe_condition("xp", None) == "Accumula 0 XP"
 
+    @pytest.mark.parametrize("value", [None, 0, 1, 7])
+    @pytest.mark.parametrize("condition,expected", [
+        ("shop_purchases", "Acquista {v} consumabili nella Locanda"),
+        ("catalog_complete", "Possiedi ogni oggetto del negozio: consumabili e cosmetici"),
+        ("all_trophies", "Sblocca tutti gli altri trofei"),
+    ])
+    def test_unscoped_condition_wording_is_stable(self, condition, expected, value):
+        assert describe_condition(condition, value, "ignored") == expected.format(v=value or 0)
+
     def test_all_catalog_condition_types_are_covered(self):
         # Every condition type the milestone engine understands must have wording.
         from services.catalog_loader import TROPHY_CONDITIONS

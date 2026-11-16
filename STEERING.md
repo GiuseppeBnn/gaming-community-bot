@@ -489,6 +489,15 @@ avviano la FSM lì (mai prompt/input nel gruppo dove chiunque può leggere o int
 `is_admin`**: il filtro del comando d'origine non si propaga al deep-link, che un non-admin potrebbe
 costruire a mano. (`create_bet` resta pubblico per design, §16.)
 
+`cmd_start` mantiene onboarding, backfill del trofeo, uscita dalla modalità Guess
+e menu iniziale. Il dispatch è diviso in quattro helper nello stesso modulo:
+giochi/offerte, ingressi admin, navigazione personale e link scommesse. Le
+destinazioni admin sono whitelist esplicite di payload, raggruppate per firma
+(sessione DB oppure FSM); un solo gate verifica i permessi a ogni atterraggio,
+prima di chiamare qualsiasi destinazione. Le funzioni vengono risolte a runtime,
+non memorizzate tra le richieste. Alias storici, argomenti, controlli membership,
+privacy e transazioni restano di competenza delle destinazioni esistenti.
+
 ---
 
 ## 10. Betting — payout Twitch-style
@@ -2556,7 +2565,11 @@ non distribuito. Crediti CoInn, XP, ledger e allocazioni condividono una transaz
 errore di un partecipante fa fallire il settlement, che resta ritentabile.
 
 Le decisioni AI usano `StructuredAIProvider`, JSON Schema e validazione di
-dominio successiva. Il prompt riceve input utente delimitato/non attendibile;
+dominio successiva. Il validatore locale separa vincoli di tipo/union, struttura
+degli oggetti e visita ricorsiva di proprietà/array, senza cambiare il sottoinsieme
+di schema supportato. Precedenza degli errori invariata: tipo, enum, struttura
+dell'oggetto (required e campi extra), poi figli in ordine di dichiarazione.
+Il prompt riceve input utente delimitato/non attendibile;
 nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
 restano locali e deterministici. La sorgente primaria del gioco segreto v2 (20 Domande è
 legacy v1) è IGDB, ma
