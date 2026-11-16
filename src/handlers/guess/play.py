@@ -13,7 +13,7 @@ throttled, late or budget-exhausted message must never cost an attempt and must
 never reach the model.
 
 A wrong answer never echoes the correct one, and the model's own words never
-reach the player — only the boolean it produced.
+reach the player — only fixed local text for the closed verdict enum.
 """
 
 from __future__ import annotations
@@ -82,6 +82,26 @@ async def _reply(
     sent = await message.answer(text, reply_markup=kb)
     if kb is not None:
         await state.update_data(kb_message_id=sent.message_id)
+
+
+async def leave_answering(message: Message, state: FSMContext) -> None:
+    """Release only the personal answer mode, preserving the persistent session.
+
+    Used by /start navigation too: other FSMs (especially admin creation) must
+    never be silently discarded. Clearing this state cannot reset time/attempts.
+    """
+    if await state.get_state() != GuessPlayStates.answering.state:
+        return
+    data = await state.get_data()
+    previous = data.get("kb_message_id")
+    await state.clear()
+    if previous:
+        try:
+            await message.bot.edit_message_reply_markup(
+                chat_id=message.chat.id, message_id=previous, reply_markup=None
+            )
+        except Exception as exc:  # noqa: BLE001 — cosmetic, navigation must proceed
+            log.debug("Tastiera %s non rimovibile: %s", previous, type(exc).__name__)
 
 
 async def _end(message: Message, state: FSMContext, text: str) -> None:
@@ -170,6 +190,12 @@ async def start_guess_session(
         )
         return
 
+    expires = guess_service.deadline(round_, sess)
+    if expires is not None and guess_service.now() >= expires:
+        await leave_answering(message, state)
+        await message.answer("⏱️ <b>Tempo scaduto</b> per questo round. Puoi giocare alle altre attività.")
+        return
+
     left = await guess_service.attempts_left(db_session, round_, player_id)
     if left <= 0:
         await message.answer("❌ Hai esaurito i tentativi per questo round.")
@@ -193,22 +219,24 @@ async def start_guess_session(
         state,
         f"{spec.emoji} <b>{esc(round_.title)}</b>\n\n"
         f"{desc_txt}"
-        "Scrivimi il <b>titolo del gioco</b>.\n"
+        "Scrivimi il <b>titolo del gioco</b>. Se indovini solo la saga, te lo dico: "
+        "per vincere serve il capitolo esatto.\n"
         f"{_status_line(round_, sess, left)}\n"
         "<i>Meno tentativi usi, più in alto finisci nel podio!</i>",
         _playing_kb(),
     )
 
 
-@router.message(GuessPlayStates.answering, F.chat.type == ChatType.PRIVATE)
+@router.message(
+    GuessPlayStates.answering, F.chat.type == ChatType.PRIVATE, ~F.text.startswith("/"),
+)
 async def fsm_answer(message: Message, db_session: AsyncSession, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     if not raw:
         return  # a sticker or a photo is not an attempt
     if raw.startswith("/"):
-        # A command typed mid-round — typically /start, from re-tapping «avvia» on
-        # the deep-link when a player hasn't realised the round already began — must
-        # never cost an attempt. It is simply ignored while answering.
+        # Defensive for direct callers; routing excludes commands so /start and
+        # every other command can reach their real handlers instead of vanishing.
         return
 
     round_id = (await state.get_data()).get("round_id")
@@ -236,7 +264,7 @@ async def fsm_answer(message: Message, db_session: AsyncSession, state: FSMConte
         return
 
     deadline = guess_service.deadline(round_, sess)
-    if deadline is not None and guess_service.now() > deadline:
+    if deadline is not None and guess_service.now() >= deadline:
         await _end(message, state, "⏱️ <b>Tempo scaduto</b> per questo round.")
         return
 
@@ -299,22 +327,25 @@ async def fsm_answer(message: Message, db_session: AsyncSession, state: FSMConte
         )
         return
 
+    series_text = "🧩 <b>Saga corretta!</b> Ma il gioco non è quello."
     if outcome.attempts_left <= 0:
         await _end(
             message, state,
-            "❌ Tentativi <b>esauriti</b>. Ci vediamo al prossimo round!",
+            (series_text + "\n" if verdict.same_series else "")
+            + "❌ Tentativi <b>esauriti</b>. Ci vediamo al prossimo round!",
         )
         return
 
     # A wrong answer never echoes the correct one.
-    lines = ["❌ <b>Non ci siamo.</b>"]
+    lines = [series_text + " Prova il capitolo esatto." if verdict.same_series
+             else "❌ <b>Non ci siamo.</b>"]
     if outcome.hint:
         lines.append(f"💡 <i>{esc(outcome.hint)}</i>")
     lines.append(_status_line(round_, sess, outcome.attempts_left))
     await _reply(message, state, "\n".join(lines), _playing_kb())
 
 
-@router.callback_query(GuessPlayCb.filter(F.action == "quit"), GuessPlayStates.answering)
+@router.callback_query(GuessPlayCb.filter(F.action == "quit"))
 async def cb_quit(callback, state: FSMContext) -> None:
     """Leave the answering mode. The session (and its clock) stays: quitting is
     not a way to buy more time.
@@ -328,8 +359,10 @@ async def cb_quit(callback, state: FSMContext) -> None:
     link» meant scrolling the group back to an announcement that newer messages
     had already buried — a button costs one callback and no new command.
     """
-    round_id = (await state.get_data()).get("round_id")
-    await state.clear()
+    playing = await state.get_state() == GuessPlayStates.answering.state
+    round_id = (await state.get_data()).get("round_id") if playing else None
+    if playing:
+        await state.clear()
     # Strip the pressed button so it cannot be tapped a second time.
     try:
         await callback.message.edit_reply_markup(reply_markup=None)

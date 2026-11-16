@@ -122,7 +122,8 @@ Elenco completo: **STEERING §22 (regole 1–27)** e **§24 (checklist pre-PR)**
 14. **LLM**: l'intrattenimento passa da `ai_service.generate_completion`; Alduino usa la corsia
     provider-neutral dello stesso gateway. Il contesto gruppo va solo su una route ZDR. Un **giudizio** passa da
     `judge_equivalence` — temperature 0, schema `strict`, parse che rifiuta tutto ciò che non è un
-    booleano. Un raise significa *non dimostrato corretto*, mai *corretto* (§19.b).
+    esito enum `correct|series|wrong`, senza testo libero. Un raise significa
+    *non dimostrato corretto*, mai *corretto* (§19.b).
 
 ---
 

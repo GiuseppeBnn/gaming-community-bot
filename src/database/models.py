@@ -262,6 +262,44 @@ class ShopPurchase(Base):
     error_reason: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
 
+class TavernItem(Base):
+    """Mutable ownership of one purchased unit; absent rows mean legacy stock.
+
+    Purchase history remains immutable and continues to drive purchase trophies.
+    The purchase row is the serialization root for materialization and mutations.
+    """
+
+    __tablename__ = "tavern_items"
+
+    purchase_id: Mapped[int] = mapped_column(ForeignKey("shop_purchases.id"), primary_key=True)
+    owner_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class TavernOffer(Base):
+    """Persistent, personal confirmation and delivery receipt for a gift."""
+
+    __tablename__ = "tavern_offers"
+    __table_args__ = (UniqueConstraint("group_id", "request_message_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    sender_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    recipient_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    group_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    request_message_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="draft", nullable=False)
+    item_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    source_purchase_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_purchases.id"), nullable=True)
+    cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    purchase_id: Mapped[Optional[int]] = mapped_column(ForeignKey("shop_purchases.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    delivered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    publish_lease_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+
 class GamePodium(Base):
     """A podium finish (rank 1–3) by a user in a community game.
 
@@ -377,6 +415,7 @@ class QuizQuestion(Base):
     correct_option_id: Mapped[int] = mapped_column(Integer, nullable=False)
     explanation: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     open_period: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    # Legacy shared-poll handles. Current per-player handles live in QuizPoll.
     tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
     sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
@@ -397,6 +436,35 @@ class QuizAnswer(Base):
     is_correct: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     response_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     answered_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class QuizPoll(Base):
+    """One private native poll per question/player; never shared between players.
+
+    The delivery token fences delayed sends and callbacks, including across a
+    quiz reset. A short sending lease prevents double /start from sending twice.
+    """
+
+    __tablename__ = "quiz_polls"
+    __table_args__ = (UniqueConstraint("question_id", "user_tg_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    quiz_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("quizzes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("quiz_questions.id", ondelete="CASCADE"), nullable=False
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    token: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    option_order_json: Mapped[str] = mapped_column(String(256), nullable=False)
+    chat_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    tg_poll_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, unique=True)
+    shown_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    lease_until: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
 
 class PollTemplate(Base):
@@ -601,7 +669,7 @@ class GuessAttempt(Base):
     attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-based, per user
     raw_answer: Mapped[str] = mapped_column(String(200), nullable=False)
     normalized: Mapped[str] = mapped_column(String(200), nullable=False)
-    verdict: Mapped[str] = mapped_column(String(16), nullable=False)  # correct|wrong|unverified
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)  # correct|series|wrong|unverified
     # exact|alias|shape|ai|cache|unavailable — how the verdict was reached.
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     elapsed_ms: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -814,6 +882,38 @@ class TwentyQuestionsGame(Base):
     questions_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     guesses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     winner_tg_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+
+
+class TelephoneGame(Base):
+    """Policy snapshot for a four-image, open-participation relay."""
+
+    __tablename__ = "telephone_games"
+
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    image_model: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_provider: Mapped[str] = mapped_column(String(128), nullable=False)
+    image_cap_microusd: Mapped[int] = mapped_column(Integer, nullable=False)
+    reveal_announced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    stage_attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+class TelephoneVisit(Base):
+    """An exposed stage cannot be visited again, even after abandoning it."""
+
+    __tablename__ = "telephone_visits"
+    __table_args__ = (UniqueConstraint("token"),)
+
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("ai_game_sessions.id", ondelete="CASCADE"), primary_key=True,
+    )
+    user_tg_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    stage: Mapped[int] = mapped_column(Integer, nullable=False)
+    token: Mapped[str] = mapped_column(String(36), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    description: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
 
 
 class AIGameRewardSettlement(Base):

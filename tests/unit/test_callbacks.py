@@ -45,6 +45,7 @@ from handlers.callbacks import (
     SchedCb,
     ShopCb,
     TwentyQuestionsCreateCb,
+    TelephoneCb,
 )
 from handlers.events import _CONFIRM
 
@@ -87,6 +88,12 @@ def test_pack_shop_callbacks(cb, packed):
 def test_pack_rules_acceptance_callback():
     """The onboarding button keeps the deployed `rules:accept` payload."""
     assert RulesCb(action="accept").pack() == "rules:accept"
+
+
+def test_telephone_callback_round_trip_and_size():
+    payload = TelephoneCb(action="view", game_id=2**31 - 1, stage=4).pack()
+    assert len(payload.encode()) < 64
+    assert TelephoneCb.unpack(payload).stage == 4
 
 
 def test_pack_twenty_questions_creation_callbacks():

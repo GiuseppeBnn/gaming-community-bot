@@ -4,7 +4,7 @@ Questo documento conserva **soltanto le direzioni approvate dall'utente**. Le id
 in discussione non diventano requisiti e non vanno implementate finché non vengono aggiunte
 qui esplicitamente.
 
-**Ultimo aggiornamento:** 2026-08-13
+**Ultimo aggiornamento:** 2026-11-12
 
 ## Inline mode
 
@@ -21,21 +21,33 @@ tecnico, non come direzione di prodotto corrente.
 
 ## AI per gli utenti
 
-### In implementazione: Alduino ha scelto un gioco
+### Implementato: Il gioco segreto di Alduino
 
-Gioco collaborativo nel gruppo: Alduino estrae un videogioco da un catalogo
-verificato; la community dispone di 20 domande sì/no e 3 tentativi per
-indovinarlo. Gemini risponde con output strutturato e non decide localmente una
-vittoria. Le risposte pubbliche sono soltanto **SÌ**, **NO** o **FORSE**, senza
-spiegazioni. L'estrazione usa una rotazione persistente e bilanciata del catalogo,
-non una scelta casuale che favorisca o ripeta pochi titoli famosi.
-Il catalogo primario è una cache locale sincronizzata da IGDB: soltanto giochi
-principali, pubblicati, documentati e con segnali sufficienti di notorietà. I
-titoli manuali integrati restano il fallback e non una dipendenza editoriale.
+Gioco collaborativo con catalogo qualificato IGDB, rotazione persistente e
+quote personali. Le domande ricevono **SÌ** o **NO**; **NON LO SO** non consuma
+la domanda. Nessun nuovo FORSE. Il comportamento delle vecchie 20 Domande è
+legacy, non il contratto della versione corrente. Dettagli nella spec v2.
 
-La prossima direzione approvata, dopo aver consolidato questo motore, è
-**Misteri di Alduino**.
+Il runtime AI attuale è **solo OpenRouter**, con corsie distinte per chat,
+comandi leggeri, giudice e gioco; budget mensile persistente. Le vecchie
+indicazioni Gemini/free tier non sono più la direzione approvata.
 
-Provider scelto: **Gemini**, per structured output, free tier e finestra di
-contesto ampia. Il contesto lungo deve servire le meccaniche persistenti; non è
-una ragione per aggiungere un chatbot generico.
+### Approvato, rollout su test: Telefono senza fili
+
+Staffetta aperta, senza audio: scena → immagine → descrizione dell'ultima
+immagine → nuovo disegno. Quattro passaggi privati, quattro persone diverse,
+risultato pubblico sfogliabile. Nessuna lista di giocatori da aspettare.
+
+Prenotazione atomica per i click contemporanei, due minuti dalla consegna e
+rilascio del passaggio se qualcuno sparisce. Chi può aver visto una tappa non
+rientra dopo. L'AI riceve soltanto l'ultima descrizione: niente ricostruzione
+del prompt iniziale. Massimo 30 minuti, finale parziale se necessario.
+Nessun premio economico inventato e nessuna attivazione automatica in prod.
+
+Spec operativa: [Telefono senza fili](telephone-2026-11-12.md).
+
+### Direzione futura già approvata
+
+**Misteri di Alduino**, dopo il consolidamento dei motori esistenti. Il raid
+narrativo è stato rimosso dal ramo di rilascio perché ancora acerbo: non va
+reintrodotto come parte della staffetta.

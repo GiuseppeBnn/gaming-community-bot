@@ -98,6 +98,15 @@ def _state():
                       key=StorageKey(bot_id=1, chat_id=USER_ID, user_id=USER_ID))
 
 
+async def test_telephone_deep_link_dispatches_to_membership_guarded_join(session, user_factory, monkeypatch):
+    from handlers import telephone
+    await user_factory(USER_ID, onboarding_completed=True)
+    spy = _Spy()
+    monkeypatch.setattr(telephone, "join", spy)
+    await common.cmd_start(_FakeMessage(), _command("telefono_42"), _state(), session)
+    assert spy.called and spy.calls[0][0][-1] == 42
+
+
 @pytest.fixture(autouse=True)
 def _no_admins(monkeypatch):
     """Nobody is an admin unless a test says so, and no cooldown leaks in."""
@@ -135,9 +144,12 @@ ADMIN_PAYLOADS = [
     ("admin", "handlers.admin_dashboard.show_dashboard_home"),
     ("eventi", "handlers.events.show_hub"),
     ("create_quiz", "handlers.quiz.start_quiz_creation"),
+    ("create_trivianerd", "handlers.quiz.start_quiz_creation"),
     ("create_poll", "handlers.events.start_poll_creation"),
     ("programma", "handlers.schedule.start_schedule_flow"),
+    ("programmati", "handlers.schedule.cmd_programmati"),
     ("manage_bets", "handlers.admin_betting._show_event_list"),
+    ("manage_twentyq", "handlers.twenty_questions.cmd_gestisci_gioco_alduino"),
     ("backup", "handlers.backup.run_backup_now"),
     ("esporta", "handlers.backup.run_export_now"),
 ]
@@ -145,6 +157,7 @@ ADMIN_PAYLOADS = [
 # Payloads any member may use, and where they land.
 PUBLIC_PAYLOADS = [
     ("quiz_5", "handlers.quiz.start_quiz_session"),
+    ("trivianerd_5", "handlers.quiz.start_quiz_session"),
     # The guess games are public: any group member plays them, so — unlike the
     # admin landings — there is no is_admin re-check here to forget.
     ("guess_5", "handlers.guess.start_guess_session"),
@@ -283,23 +296,21 @@ class TestPublicDeepLinks:
 
         assert "daily" in message.said.lower()
 
-    async def test_the_secret_game_spiega_payload_is_hidden_from_non_admins(
+    async def test_the_secret_game_spiega_payload_is_public_for_members(
         self, session, onboarded
     ):
-        """Temporarily admin-only: a regular user gets the same "not found" hint
-        as for any unknown command, never the manual."""
         message = _FakeMessage()
 
-        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+        await common.cmd_start(message, _command("spiega_aldusgame"), _state(), session)
 
-        assert "Il gioco segreto di Alduino" not in message.said
+        assert "Il gioco segreto di Alduino" in message.said
 
     async def test_the_secret_game_spiega_payload_uses_the_public_manual_for_admins(
         self, session, onboarded, as_admin
     ):
         message = _FakeMessage()
 
-        await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
+        await common.cmd_start(message, _command("spiega_aldusgame"), _state(), session)
 
         assert "Il gioco segreto di Alduino" in message.said
 
@@ -369,6 +380,7 @@ class TestOnboardingGate:
 
 _MANAGE = [
     ("manage_quiz", "handlers.event_types.quiz_type", "QuizType"),
+    ("manage_trivianerd", "handlers.event_types.quiz_type", "QuizType"),
     ("manage_guess", "handlers.event_types.guess_type", "GuessType"),
     ("manage_sound", "handlers.event_types.guess_type", "GuessType"),
 ]
@@ -384,7 +396,7 @@ def _spy_render_list(monkeypatch, module_name: str, cls_name: str, calls: list) 
 
 
 class TestManageDeepLinks:
-    """/quiz, /guessTheGame and /soundQuest send an admin from the group straight to
+    """/trivianerd, /guessTheGame and /soundQuest send an admin from the group straight to
     that type's own list — not the /admin dashboard (the bug this fixes)."""
 
     @pytest.mark.parametrize("payload,module_name,cls_name", _MANAGE)
@@ -399,7 +411,7 @@ class TestManageDeepLinks:
 
         assert calls == [cls_name] and "non autorizzato" not in message.said
 
-    @pytest.mark.parametrize("payload", ["manage_quiz", "manage_guess", "manage_sound"])
+    @pytest.mark.parametrize("payload", ["manage_trivianerd", "manage_quiz", "manage_guess", "manage_sound"])
     async def test_a_non_admin_is_refused(self, session, onboarded, monkeypatch, payload):
         calls: list[str] = []
         _spy_render_list(monkeypatch, "handlers.event_types.quiz_type", "QuizType", calls)

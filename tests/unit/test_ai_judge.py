@@ -1,4 +1,4 @@
-"""Strict OpenRouter judge: same model and rules, metered and fail-closed."""
+"""Strict OpenRouter judge: one closed enum, metered and fail-closed."""
 from __future__ import annotations
 
 import asyncio
@@ -26,17 +26,17 @@ def judge(monkeypatch):
 def response(value):
     return {
         "model": "openai/gpt-oss-120b",
-        "choices": [{"message": {"content": json.dumps({"corretta": value})}, "finish_reason": "stop"}],
+        "choices": [{"message": {"content": json.dumps({"verdetto": value})}, "finish_reason": "stop"}],
         "usage": {"cost": .00001, "prompt_tokens": 100, "completion_tokens": 50},
     }
 
 
-@pytest.mark.parametrize("value", [True, False])
-async def test_boolean_verdict_and_metered_strict_contract(judge, value):
+@pytest.mark.parametrize("value", ["correct", "series", "wrong"])
+async def test_enum_verdict_and_metered_strict_contract(judge, value):
     reserve, settle = judge
     with aioresponses() as mocked:
         mocked.post(ai_service.settings.openrouter_url, payload=response(value))
-        assert await ai_service.judge_equivalence("regole", "titolo utente") is value
+        assert await ai_service.judge_equivalence("regole", "titolo utente") == value
     request = next(iter(mocked.requests.values()))[0]
     sent = request.kwargs["json"]
     assert sent["model"] == "openai/gpt-oss-120b"
@@ -59,8 +59,8 @@ async def test_boolean_verdict_and_metered_strict_contract(judge, value):
     assert settle.call_args.kwargs["actual_microusd"] == 10
 
 
-@pytest.mark.parametrize("value", [0, 1, "true", None, {}, []])
-async def test_non_boolean_is_never_a_verdict(judge, value):
+@pytest.mark.parametrize("value", [0, 1, True, False, "true", "CORRECT", "Portal 2", None, {}, []])
+async def test_unknown_or_non_string_is_never_a_verdict(judge, value):
     with aioresponses() as mocked:
         mocked.post(ai_service.settings.openrouter_url, payload=response(value))
         with pytest.raises(ai_service.AIServiceError):
@@ -109,7 +109,9 @@ async def test_missing_key_never_uses_legacy_credentials(judge, monkeypatch):
 
 
 async def test_judge_schema_has_no_answer_leak_field():
-    assert ai_service.JUDGE_SCHEMA["schema"]["properties"] == {"corretta": {"type": "boolean"}}
+    assert ai_service.JUDGE_SCHEMA["schema"]["properties"] == {
+        "verdetto": {"type": "string", "enum": ["correct", "series", "wrong"]}
+    }
     assert ai_service.JUDGE_SCHEMA["schema"]["additionalProperties"] is False
 
 

@@ -18,9 +18,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
-from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter
+from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter, is_admin
 from handlers import _mentions
-from handlers.callbacks import TwentyQuestionsCreateCb
+from handlers._privacy import redirect_to_private
+from handlers.callbacks import TwentyQuestionsCreateCb, TwentyQuestionsStatusCb
 from services import ai_game_service, group_registry, schedule_service
 from services.ai_game_types import (
     DEFAULT_DURATION_SECONDS,
@@ -39,6 +40,9 @@ from services.structured_ai import OpenRouterStructuredProvider, StructuredAIErr
 from services.twenty_questions_rules import v2_policy
 from utils.text import esc
 from utils.twenty_questions_view import (
+    GAME_INSTRUCTIONS,
+    GAME_STATUS_HINT,
+    render_expiry,
     render_live_card,
     render_personal_status,
     render_personal_turn,
@@ -367,7 +371,7 @@ async def _finish_creation(
         deadline = f"⏱️ Durata: <b>{duration // 3_600} ore</b>"
     else:
         assert expires_at is not None
-        deadline = f"🗓️ Scade: <b>{expires_at.strftime('%d/%m/%Y %H:%M UTC')}</b>"
+        deadline = render_expiry(expires_at)
     await message.answer(
         f"✅ Partita <b>#{game.session_id} · {esc(game.title)}</b> pronta.\n{deadline}\n\n"
         f"{render_policy(v2_policy(max_coins_per_participant))}\n\n"
@@ -375,35 +379,61 @@ async def _finish_creation(
     )
 
 
-@router.message(Command("gioco_alduino", "gioco"), IsAdminFilter())
+@router.message(Command("aldusgame"))
 async def cmd_gioco_alduino(
     message: Message, db_session: AsyncSession, command: CommandObject | None = None,
 ) -> None:
-    """Explain the public rules privately, or show safe live status in a group.
-
-    Admin-only while the command is in development (§ plan): a non-admin
-    simply gets no match here, same as an unknown command. The reply-to-card
-    gameplay in ``play_turn`` below is unaffected.
-    """
-    policy = v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)
-    if message.chat.type == ChatType.PRIVATE:
-        await message.answer(render_public_help(policy))
+    """Public state/play with identical behavior for players and admins."""
+    if message.from_user is None or message.from_user.is_bot or message.sender_chat:
+        await message.answer("🐲 Usa il comando con il tuo profilo personale.")
         return
+    await show_game_status(message, db_session, raw_text=command.args if command else None)
 
-    view, quota, alternatives = await _group_game_status(message, db_session)
+
+@router.message(Command("gestisci_aldusgame"), IsAdminFilter())
+async def cmd_gestisci_gioco_alduino(message: Message, db_session: AsyncSession) -> None:
+    """Explicit management entry; recheck auth for programmatic deep-link calls."""
+    if message.from_user is None or not await is_admin(message.bot, message.from_user.id):
+        await message.answer("⛔ Accesso non autorizzato.")
+        return
+    if await redirect_to_private(
+        message, "manage_twentyq", "🐲 Gestisci il gioco di Alduino",
+        notice="🔒 Gestione del gioco di Alduino: continua in privato.",
+    ):
+        return
+    from handlers.event_types.twenty_questions_type import TwentyQuestionsType
+    await TwentyQuestionsType().render_list(message, db_session)
+
+
+async def show_game_status(
+    message: Message, db_session: AsyncSession, *, user_id: int | None = None,
+    raw_text: str | None = None,
+) -> None:
+    """Public DTOs only: private views cannot publish group cards or play turns."""
+    policy = v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)
+    in_group = message.chat.type != ChatType.PRIVATE
+    view, quota, alternatives = await _group_game_status(
+        message, db_session,
+        group_id=message.chat.id if in_group else group_registry.get_group_id(),
+        user_id=user_id,
+    )
     if alternatives:
         await message.answer(
             "⚠️ Sono ancora aperte più partite precedenti. Un admin deve chiudere "
             "quelle in eccesso da /eventi; nel frattempo rispondi alla card desiderata."
+            f"\n\n{GAME_STATUS_HINT}"
         )
         return
     if view is None or quota is None:
-        await message.answer(render_public_help(policy))
+        await message.answer("🐲 Al momento non c'è una partita attiva.\n\n" + render_public_help(policy))
         return
-    if command is not None and command.args:
+    if in_group and raw_text:
         await _play_turn_v2(
-            message, db_session, session_id=view.session_id, raw_text=command.args,
+            message, db_session, session_id=view.session_id, raw_text=raw_text,
         )
+        return
+    if not in_group:
+        await message.answer(render_personal_status(view, quota, now=_presentation_now(), in_group=False))
         return
     if view.anchor_message_id is None:
         await refresh_group_card(message.bot, db_session, view)
@@ -414,13 +444,22 @@ async def cmd_gioco_alduino(
     )
 
 
+@router.callback_query(TwentyQuestionsStatusCb.filter(F.action == "show"), F.message.chat.type == ChatType.PRIVATE)
+async def cb_game_status(callback: CallbackQuery, db_session: AsyncSession) -> None:
+    """Public status needs no admin power; use the clicker, not the bot author."""
+    await callback.answer()
+    await show_game_status(callback.message, db_session, user_id=callback.from_user.id)
+
+
 async def _group_game_status(
     message: Message,
     db_session: AsyncSession,
+    *, group_id: int | None = None, user_id: int | None = None,
 ) -> tuple[GameView | None, PersonalQuota | None, int]:
     """Read only safe DTOs and close the transaction before command Telegram I/O."""
     try:
-        running = await ai_game_service.list_running_in_group(db_session, message.chat.id)
+        selected_group_id = message.chat.id if group_id is None else group_id
+        running = await ai_game_service.list_running_in_group(db_session, selected_group_id)
         if len(running) > 1:
             await db_session.rollback()
             return None, None, len(running) - 1
@@ -432,7 +471,7 @@ async def _group_game_status(
         quota = await ai_game_service.get_personal_quota(
             db_session,
             selected.id,
-            message.from_user.id,
+            message.from_user.id if user_id is None else user_id,
         )
         await db_session.rollback()
     except Exception:  # noqa: BLE001 — a public rules page is safer than a failed command
@@ -473,16 +512,14 @@ def render_card(
                     f"{'🏆' if output.get('correct') else '💥'} Tentativo: {esc(turn.input_text)}"
                 )
     if snapshot.session.status == "running" or open_preview:
-        lines.extend([
-            "", "Rispondi <b>a questo messaggio</b> con una domanda.",
-            "Per tentare: <code>RISPOSTA: titolo del gioco</code>",
-        ])
+        lines.extend(["", GAME_INSTRUCTIONS])
     if reveal or snapshot.session.status == "finished":
         winner = (
             f"\n🏆 Vincitore: <code>{snapshot.game.winner_tg_id}</code>"
             if snapshot.game.winner_tg_id else "\n⌛ Risorse esaurite."
         )
         lines.extend(["", f"🔓 Era <b>{esc(snapshot.game.answer)}</b>!{winner}"])
+    lines.extend(["", GAME_STATUS_HINT])
     return "\n".join(lines)
 
 
@@ -782,7 +819,7 @@ async def _send_game_reply(
     """Deliver the result, then persist a reply target independently of the turn.
 
     Telegram delivery and a DB commit cannot be atomic. A mapping failure must
-    never roll back a completed turn or send the result twice; /gioco remains
+    never roll back a completed turn or send the result twice; /aldusgame remains
     available for recovery. No text or user identity is stored in the mapping.
     """
     sent = await (message.answer(text) if answer else message.reply(text))

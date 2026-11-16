@@ -28,7 +28,7 @@ import datetime
 import time
 
 import pytest
-from aiogram.types import CallbackQuery, Chat, InlineQuery, Message, User
+from aiogram.types import CallbackQuery, Chat, InlineQuery, Message, PollAnswer, Update, User
 
 import middlewares.group_guard as gg
 from services import group_registry
@@ -332,6 +332,51 @@ class TestInlineGate:
 
 
 class TestChatType:
+    @pytest.mark.parametrize("kind", ["message", "callback_query", "inline_query", "poll_answer"])
+    async def test_real_update_envelope_does_not_bypass_membership(self, kind):
+        bot = _FakeBot("left")
+        handler = _Handler()
+        payloads = {
+            "message": _message(bot),
+            "callback_query": _callback(bot),
+            "inline_query": _inline(bot),
+            "poll_answer": PollAnswer(
+                poll_id="quiz", user=User(id=USER_ID, is_bot=False, first_name="Player"),
+                option_ids=[0], option_persistent_ids=["a"],
+            ),
+        }
+        update = Update(update_id=123, **{kind: payloads[kind]})
+        await gg.GroupMemberMiddleware()(handler, update, _data(bot))
+        assert handler.calls == 0 and bot.member_checks == [(GROUP_ID, USER_ID)]
+
+    async def test_authorized_update_envelope_is_forwarded_unchanged(self):
+        bot = _FakeBot("member")
+        update = Update(update_id=124, message=_message(bot))
+        seen = []
+
+        async def downstream(event, data):
+            seen.append(event)
+
+        await gg.GroupMemberMiddleware()(downstream, update, _data(bot))
+        assert seen == [update] and seen[0] is update
+
+    def test_poll_answers_are_private_even_without_a_chat(self):
+        vote = PollAnswer(
+            poll_id="quiz", user=User(id=USER_ID, is_bot=False, first_name="Player"),
+            option_ids=[0], option_persistent_ids=["a"],
+        )
+        assert gg._chat_type(vote) == "private"
+
+    async def test_non_member_cannot_answer_an_old_private_quiz(self):
+        bot = _FakeBot("left")
+        handler = _Handler()
+        vote = PollAnswer(
+            poll_id="quiz", user=User(id=USER_ID, is_bot=False, first_name="Player"),
+            option_ids=[0], option_persistent_ids=["a"],
+        )
+        await gg.GroupMemberMiddleware()(handler, vote, _data(bot))
+        assert handler.calls == 0 and bot.member_checks == [(GROUP_ID, USER_ID)]
+
     def test_an_inline_query_is_treated_as_private(self):
         """'private' → il gate membership scatta sempre, indipendentemente dal chat_type."""
         assert gg._chat_type(_inline(_FakeBot(), "supergroup")) == "private"

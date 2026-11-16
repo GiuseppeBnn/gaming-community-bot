@@ -24,6 +24,12 @@ from aiogram.filters.callback_data import CallbackData
 from pydantic import ValidationInfo, field_validator
 
 
+class TelephoneCb(CallbackData, prefix="tel"):
+    action: str
+    game_id: int
+    stage: int = 0
+
+
 def _legacy_int_text(value: object) -> object:
     """Apply the replaced ``int()`` parser's lexical contract and normalization.
 
@@ -70,6 +76,14 @@ class ShopCb(CallbackData, prefix="shop"):
     key: str | None = None
 
 
+class TavernCb(CallbackData, prefix="tav"):
+    """Integer references only: catalog keys never consume the 64-byte budget."""
+
+    action: str
+    ref: int = 0
+    offer_id: int = 0
+
+
 class RulesCb(CallbackData, prefix="rules"):
     """Initial onboarding acceptance — `handlers/onboarding.py`."""
 
@@ -83,6 +97,13 @@ class LeaderboardCb(CallbackData, prefix="lead"):
     #: "show" | "close"
     action: str
     board: str | None = None
+
+
+class LeaderboardPageCb(CallbackData, prefix="lead_page"):
+    """Separate pagination payload: deployed lead:* tabs remain compatible."""
+
+    board: str
+    page: int
 
 
 class AdminBetCb(CallbackData, prefix="admin_bet"):
@@ -222,6 +243,12 @@ class EventCb(CallbackData, prefix="ev"):
     action: str
     task_type: str | None = None
     item_id: int | None = None
+
+
+class TwentyQuestionsStatusCb(CallbackData, prefix="tqstatus"):
+    """Public status only, separate from admin event-management callbacks."""
+
+    action: str
 
 
 class TwentyQuestionsCreateCb(CallbackData, prefix="tqnew"):

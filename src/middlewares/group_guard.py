@@ -28,7 +28,9 @@ from aiogram.types import (
     InlineQueryResultArticle,
     InputTextMessageContent,
     Message,
+    PollAnswer,
     TelegramObject,
+    Update,
     User,
 )
 
@@ -57,7 +59,16 @@ class GroupMemberMiddleware(BaseMiddleware):
         if group_registry.get_group_id() == 0:
             return await handler(event, data)
 
-        chat_type = _chat_type(event)
+        # Registered on dp.update: production passes an Update envelope, while
+        # an observer-level registration may pass its contained event directly.
+        # Inspect the payload but always forward the ORIGINAL object downstream.
+        checked_event = event
+        if isinstance(event, Update):
+            checked_event = (
+                event.message or event.callback_query or event.inline_query
+                or event.poll_answer or event
+            )
+        chat_type = _chat_type(checked_event)
 
         # Only gate private chats; group/supergroup updates pass freely
         if chat_type != "private":
@@ -69,7 +80,7 @@ class GroupMemberMiddleware(BaseMiddleware):
 
         bot: Bot = data["bot"]
         if not await _is_group_member(bot, tg_user.id):
-            await _reject(event)
+            await _reject(checked_event)
             return
 
         return await handler(event, data)
@@ -84,6 +95,10 @@ def _chat_type(event: TelegramObject) -> str | None:
     # typed from any chat. Always reporting "private" forces the membership gate,
     # which is the source of truth (rule: group members may use the bot).
     if isinstance(event, InlineQuery):
+        return "private"
+    # Quiz votes carry no chat. They must not bypass private-chat membership
+    # checks after a player leaves the group with an old poll still open.
+    if isinstance(event, PollAnswer):
         return "private"
     return None
 

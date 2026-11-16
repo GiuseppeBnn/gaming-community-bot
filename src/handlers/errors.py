@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 
+from aiogram.dispatcher.middlewares.user_context import UserContextMiddleware
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import ErrorEvent
 
@@ -66,7 +67,11 @@ async def on_error(event: ErrorEvent) -> bool:
     message = update.message or (
         update.callback_query.message if update.callback_query else None
     )
-    user = update.event_from_user
+    # `event_from_user` is middleware data, NOT an Update attribute. Reuse
+    # aiogram's resolver so callbacks identify the clicker (not the bot), and
+    # poll answers / inline queries / senderless updates remain safe too.
+    context = UserContextMiddleware.resolve_event_context(update)
+    user = context.user
     callback_data = update.callback_query.data if update.callback_query else None
 
     if _is_benign(event.exception):
@@ -80,11 +85,12 @@ async def on_error(event: ErrorEvent) -> bool:
         return True
 
     log.exception(
-        "Unhandled exception in handler | user_id=%s username=%s chat_id=%s "
+        "Unhandled exception in handler | update_id=%s user_id=%s username=%s chat_id=%s "
         "callback_data=%s text=%r",
+        update.update_id,
         user.id if user else None,
         user.username if user else None,
-        message.chat.id if message else None,
+        context.chat_id,
         callback_data,
         (update.message.text[:120] if update.message and update.message.text else None),
         exc_info=event.exception,

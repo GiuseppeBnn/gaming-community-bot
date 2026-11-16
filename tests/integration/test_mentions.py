@@ -25,3 +25,16 @@ class TestMention:
 
     async def test_unknown_user_fallback(self, session):
         assert await m.mention(session, 999) == '<a href="tg://user?id=999">giocatore</a>'
+
+
+async def test_batch_mentions_match_single_mentions_and_escape_html(session, user_factory, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    await user_factory(tg_id=1, username="a<b")
+    await user_factory(tg_id=2, username=None, full_name="Mario & Rossi")
+    execute = AsyncMock(wraps=session.execute)
+    monkeypatch.setattr(session, "execute", execute)
+    batch = await m.mention_many(session, [1, 2, 999])
+    assert execute.await_count == 1
+    assert batch == {tg_id: await m.mention(session, tg_id) for tg_id in [1, 2, 999]}
+    assert await m.mention_many(session, []) == {}

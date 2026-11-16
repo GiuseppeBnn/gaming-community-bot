@@ -32,7 +32,7 @@ from database.models import (
     TransactionType,
 )
 from services import economy_service, xp_service
-from services.guess_judge import WRONG, Verdict, aliases_of, normalize
+from services.guess_judge import SERIES, WRONG, Verdict, aliases_of, normalize
 from services.prizes import consolation_amounts, participation_floor
 from services.xp_service import XpSource
 
@@ -352,7 +352,7 @@ async def recent_rejected(
     rows = (
         await session.execute(
             select(GuessAttempt.raw_answer)
-            .where(GuessAttempt.round_id == round_id, GuessAttempt.verdict == WRONG)
+            .where(GuessAttempt.round_id == round_id, GuessAttempt.verdict.in_((WRONG, SERIES)))
             .order_by(GuessAttempt.id.desc())
         )
     ).scalars().all()

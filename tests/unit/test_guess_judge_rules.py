@@ -147,6 +147,13 @@ class TestAliases:
 
 
 class TestVerdictDataclass:
+    def test_series_is_not_correct_and_does_not_override_unverified(self):
+        verdict = gj.Verdict(correct=False, source="ai", same_series=True)
+        assert verdict.stored_verdict == gj.SERIES
+        assert not verdict.correct
+        unavailable = gj.Verdict(correct=False, source="unavailable", verified=False, same_series=True)
+        assert unavailable.stored_verdict == gj.UNVERIFIED
+
     def test_a_correct_verdict_stores_correct(self):
         assert gj.Verdict(correct=True, source="exact").stored_verdict == gj.CORRECT
 

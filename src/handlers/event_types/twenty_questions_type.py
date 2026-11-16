@@ -8,7 +8,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database.models import ScheduledTask
-from handlers.callbacks import EventCb
+from handlers.callbacks import EventCb, TwentyQuestionsStatusCb
 from services import ai_game_service, group_registry, schedule_service
 from services.ai_game_types import FinishReason
 from services.public_event import PublicEvent
@@ -56,6 +56,7 @@ class TwentyQuestionsType:
         if not rows:
             lines.append("<i>Nessuna partita. Creane una.</i>")
         b.button(text=self.create_label, callback_data=EventCb(action="new", task_type=self.key).pack())
+        b.button(text="👀 Vedi partita", callback_data=TwentyQuestionsStatusCb(action="show").pack())
         b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         text = "\n".join(lines)

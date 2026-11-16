@@ -185,9 +185,11 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/trasferisci @user importo` | Trasferisci CoInn |
 | `/scommesse` · `/crea_scommessa` | Vedi/crea scommesse |
 | `/traguardi` · `/catalogo_badge` | I tuoi trofei (per rarità) + rango / catalogo |
-| `/classifiche` | Classifiche: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline) |
+| `/classifiche` | Classifiche complete: 💰 ricchezza · ⚡ XP · 🏆 trofei (switcher inline, pagine se necessarie) |
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
-| `/quiz` (gioco) | Partecipa ai quiz in chat privata |
+| `/offri` (in reply nel gruppo) | 🎁 Compra o regala una scorta a un amico, con scelta e conferma private |
+| `/trivianerd` (gioco) | Partecipa a Trivia Nerd in chat privata |
+| `/aldusgame` | Stato e gioco per tutti, admin inclusi. Con argomenti, nel gruppo, domanda o tentativo |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 | `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
@@ -202,9 +204,11 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/ban` · `/sban` · `/kick` · `/mute [10m]` · `/unmute` | Moderazione (reply o @user/ID) |
 | `/warn [motivo]` · `/warns` · `/unwarn` | Warn/strike (auto mute/ban a soglia) |
 | `/info` · `/cerca` · `/classifica` · `/stats` · `/audit` · `/lista_ranghi` | Info & dossier |
-| `/crea_quiz` · `/quiz` · `/avvia_quiz <id>` · `/chiudi_quiz <id>` | Quiz |
+| `/crea_trivianerd` · `/trivianerd` · `/avvia_trivianerd <id>` · `/chiudi_trivianerd <id>` | Trivia Nerd |
 | `/gestisci_scommesse` · `/sondaggio` · `/programma` · `/programmati` | Scommesse, sondaggi, scheduling |
 | `/eventi` | Hub privato: crea, gestisce, avvia subito o programma gli eventi disponibili |
+| `/gestisci_aldusgame` | Gestione privata delle partite di Alduino; `/aldusgame` rimane dedicato al gioco anche per gli admin |
+| `/immagine <descrizione>` | Solo con `TELEPHONE_ENABLED=true`: test admin del generatore, 1–150 caratteri, senza creare eventi; accetta anche `/Immagine` |
 
 > Gli admin possono fare **tutto da `/admin` con i soli bottoni**, senza digitare comandi.
 
@@ -295,7 +299,7 @@ a funzionare, ma vede solo comandi, mention e reply che Telegram gli consegna.
 Modelli, costi verificati, limiti dello scan e migrazione:
 [OpenRouter-only](docs/openrouter-only-2026-11-11.md).
 Il giudice strict resta `openai/gpt-oss-120b`, selezionabile con
-`OPENROUTER_JUDGE_MODEL`. Thinking `low`, schema booleano invariato, 32 token
+`OPENROUTER_JUDGE_MODEL`. Thinking `low`, schema enum strict senza testo libero, 32 token
 risposta più allowance di reasoning (default 1024), prenotati prima della rete.
 Giudizi non verificabili non consumano tentativi veri; non si ritenta sul provider gratuito.
 
@@ -306,12 +310,27 @@ I reset brevi del polling Telegram restano nei log senza duplicare i DM; se una
 sequenza di errori di rete dura almeno 60 s arriva l'alert. Autenticazione,
 conflitti e gli altri errori mantengono gli alert immediati.
 
-### Quiz a premi
+### Trivia Nerd — quiz a premi
 
-Creazione guidata (`/crea_quiz` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
+Creazione guidata (`/crea_trivianerd` o dall'hub **🎬 Eventi**) con tasti **« Indietro »**, premi
 **personalizzabili** per 1°/2°/3°, un **premio di consolazione a scendere** con **minimo
 garantito** per *tutti* i finisher, e una schermata di riepilogo prima di pubblicare. Si
-gioca in chat privata; alla chiusura viene pubblicato il **podio** con i premi.
+gioca in chat privata; alla chiusura viene pubblicata la **classifica completa**
+dei finisher con i premi, non solo i primi dieci. Anche Guess/Sound mostrano tutti
+i classificati; testi lunghi vengono suddivisi senza escludere partecipanti.
+
+Le domande usano i **quiz nativi Telegram**, anche nella prova admin: risposte
+leggibili fino a **100 caratteri**, spiegazione e timer nativo opzionale. Una sola
+risposta, non modificabile; classifica e premi rimangono quelli del bot. Riaprire
+il link riprende il sondaggio corrente senza azzerare il tempo. Le associazioni
+sondaggio/giocatore e le scadenze sono persistenti; lo scheduler recupera i timeout
+anche dopo un riavvio. Nessuna chiamata AI o costo aggiuntivo.
+
+Il comando pubblico è `/trivianerd`; gli admin usano anche `/crea_trivianerd`,
+`/avvia_trivianerd <id>` e `/chiudi_trivianerd <id>`. Menu e manuale usano gli stessi
+nomi. Gli inviti nuovi usano `trivianerd_<id>`, `create_trivianerd` e
+`manage_trivianerd`; i precedenti link `quiz_<id>`, `create_quiz` e `manage_quiz`
+restano validi. Tabelle, task `quiz`, callback, stati FSM, timer e premi non cambiano.
 
 I quiz sono **oggetti persistenti**: dall'hub Eventi si toccano per aprirne la **scheda info**
 (non si avviano con un tap) e da lì si sceglie **Avvia · Programma · Chiudi · Riproponi · Elimina**,
@@ -337,9 +356,19 @@ soluzione si discute in chat e giocare in privato non vuol più dire niente. Si 
 parità conta il tempo.
 
 Le risposte sono **libere** e le giudica l'AI, quindi «GTA SA» vale «Grand Theft Auto: San
-Andreas» — ma la **serie da sola non basta**: «GTA» per «GTA San Andreas» è sbagliato. In
+Andreas» — ma la **serie da sola non basta**: «GTA» o «GTA Vice City» per «GTA San Andreas»
+ricevono «Saga corretta!», senza vittoria né rivelare il capitolo. Il tentativo conta
+normalmente; nessuna chiamata AI aggiuntiva. In
 creazione puoi aggiungere grafie sempre accettate: sono la rete di sicurezza se l'AI non
 risponde, perché quelle vengono riconosciute **senza** interpellarla.
+
+Puoi seguire il link di un'altra attività senza prima uscire dal vecchio gioco:
+la modalità di risposta si libera, ma tempo e tentativi restano persistiti.
+Una partita personale scaduta non si riapre. Il limite per giocatore è distinto
+dalla chiusura dell'evento, configurata dall'admin nella scheda.
+
+`/programmati` è riservato agli admin e mostra la gestione solo in privato;
+nel gruppo offre un link che ricontrolla i permessi all'apertura.
 
 Se il giudice non risponde, il tentativo **non viene contato**: il messaggio te lo dice e il
 tuo budget resta intero. Dopo qualche risposta non giudicata di fila il bot si ferma da solo e
@@ -348,14 +377,26 @@ ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto
 ### Il gioco segreto di Alduino
 
 Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
-o al riepilogo di `/gioco`, senza tornare al messaggio iniziale. In alternativa:
+o al riepilogo di `/aldusgame`, senza tornare al messaggio iniziale. Gioco e gestione
+hanno comandi distinti, così anche gli admin possono giocare senza aprire il pannello:
 
-- `/gioco` mostra stato e quota personale;
-- `/gioco È multiplayer?` fa una domanda;
-- `/gioco RISPOSTA: Portal 2` tenta il titolo.
+- `/aldusgame` mostra stato e quota personale a tutti, admin inclusi;
+- `/gestisci_aldusgame` è solo admin e apre la gestione privata già presente in
+  `/eventi` (crea, avvia, programma, chiudi). «Vedi partita» apre la vista pubblica;
+- `/aldusgame È multiplayer?` fa una domanda;
+- `/aldusgame RISPOSTA: Portal 2` tenta il titolo.
 
-Resta disponibile anche `/gioco_alduino`, con gli stessi argomenti. Nei reply,
-per tentare il titolo usa `RISPOSTA: nome del gioco`.
+Gli argomenti funzionano nel gruppo per entrambi i ruoli, con le stesse quote dei reply.
+In privato si può consultare lo stato, ma non giocare o pubblicare una card nel gruppo.
+Consultare lo stato non chiama l'AI e non consuma domande o tentativi; nessuna partita
+attiva viene segnalata esplicitamente. Il link `manage_twentyq` ricontrolla i permessi
+admin, e i bottoni di gestione restano riservati agli admin.
+
+Il comando per giocare è identico per tutti: l'alias breve è stato rimosso. Nei reply,
+per tentare il titolo usa `RISPOSTA: nome del gioco`. La card, le istruzioni senza
+partita attiva e il riepilogo terminano con «Digita /aldusgame per avere le
+informazioni aggiornate». Le scadenze mostrate sono nell'orario della community
+(`Europe/Rome`, con ora legale/solare), senza modificare i timestamp UTC nel DB.
 Ogni persona ha 5 domande valide e 2 tentativi validi:
 duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano nulla.
 Se il dossier non basta, Alduino risponde **NON LO SO**, senza consumare la domanda,
@@ -372,7 +413,9 @@ Con il default di 100 CoInn massimi a persona:
 Il resto della divisione non viene assegnato a nessuno. Può essere attiva una sola
 partita per gruppo, anche con avvii programmati. Le risposte a messaggi di una partita
 conclusa non vengono inoltrate a quella nuova. Dopo l'aggiornamento, i vecchi verdetti
-non sono riconosciuti retroattivamente: usa `/gioco` per un riepilogo a cui rispondere.
+non sono riconosciuti retroattivamente: usa `/aldusgame` per un
+riepilogo a cui rispondere. La card live e le istruzioni mostrano soltanto un avviso sulla possibile
+riduzione del premio, senza percentuali o dettagli tecnici del pool; il calcolo resta invariato.
 La chiusura amministrativa resta in `/eventi`; la durata raccomandata è 12 ore. Per il dettaglio di
 prodotto e architettura, vedi la [specifica v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md).
 
@@ -414,7 +457,14 @@ Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica d
   level-up e rank-up vengono annunciati. Gli admin vedono il sistema completo con `/lista_ranghi`.
 - **La Locanda** (`/locanda`): 🏷️ **tag cosmetici** (flair, acquisto una tantum) e 🍖 **menù
   di consumabili** (cibi/bevande riacquistabili che riempiono la 🎒 **dispensa** mostrata sul
-  profilo). Tutto **solo estetico/collezionabile** — nessun permesso reale, nessuna escalation.
+  profilo). Dalla dispensa consumi **una singola unità**, senza perdere acquisti storici o
+  trofei. Con **`/offri`**, in risposta a un membro nel gruppo, scegli e confermi in privato:
+  puoi comprare dal menù oppure regalare una tua scorta senza nuove spese. Il destinatario
+  può consumare il regalo dal messaggio nel gruppo o conservarlo. Inviti personali di
+  10 minuti, massimo 5 aperti e un'offerta confermata al minuto. «Le mie offerte» recupera
+  le ultime 10 ricevute, anche dopo restart; se l'annuncio fallisce, il regalo resta nella
+  dispensa e si può ritentare la sola pubblicazione senza comprare di nuovo.
+  **Nessun vantaggio nei giochi**, bonus economico, permesso Telegram o chiamata AI.
 
 ### Personalizzare con i CSV
 

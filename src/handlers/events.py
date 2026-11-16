@@ -50,7 +50,7 @@ from handlers._privacy import redirect_to_private
 from handlers.callbacks import AdminCb, EventCb, PollCreateCb
 from handlers.event_types import StartResult, edit_or_send
 from keyboards.common_kb import confirm_cancel_kb
-from services import group_registry, poll_service, schedule_service
+from services import admin_service, group_registry, poll_service, schedule_service
 from utils.text import esc
 
 log = logging.getLogger(__name__)
@@ -254,6 +254,11 @@ async def _commit_then_present(
         await callback.answer(res.message, show_alert=res.alert)
         return True
     try:
+        if res.audit_action:
+            await admin_service.log_action(
+                db_session, callback.from_user.id, res.audit_action,
+                detail=res.audit_detail,
+            )
         await db_session.commit()
     except Exception as exc:  # noqa: BLE001 — caller owns this transaction boundary
         await db_session.rollback()

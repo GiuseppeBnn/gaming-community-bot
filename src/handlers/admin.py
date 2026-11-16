@@ -40,7 +40,7 @@ from services import (
     xp_service,
 )
 from services.xp_service import XpSource
-from utils.text import chunk_blocks, esc
+from utils.text import chunk_blocks, chunk_html_lines, esc
 
 log = logging.getLogger(__name__)
 router = Router()
@@ -628,7 +628,8 @@ async def cmd_cerca(message: Message, command: CommandObject, db_session: AsyncS
 
 @router.message(Command("classifica"), IsAdminFilter())
 async def cmd_classifica(message: Message, db_session: AsyncSession) -> None:
-    await message.reply(await render_leaderboard(db_session))
+    for page in chunk_html_lines(await render_leaderboard(db_session)):
+        await message.reply(page)
 
 
 @router.message(Command("stats"), IsAdminFilter())

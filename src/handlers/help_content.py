@@ -14,10 +14,12 @@ escaped by the caller.
 from __future__ import annotations
 
 import difflib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 import html
 import re
 
+from config_data.config import settings
 from services.ai_game_types import DEFAULT_MAX_COINS_PER_PARTICIPANT
 from services.twenty_questions_rules import v2_policy
 from utils.text import esc
@@ -33,6 +35,7 @@ class CommandDoc:
     details: str = ""               # novice-friendly manual body (HTML)
     admin_only: bool = False
     aliases: tuple[str, ...] = field(default_factory=tuple)
+    enabled: Callable[[], bool] | None = None
 
 
 # Category order for the legend (user buckets first, then admin buckets).
@@ -108,8 +111,8 @@ _COMMANDS: list[CommandDoc] = [
     ),
     # --- 🏆 Progressione ---
     CommandDoc(
-        "quiz", "Gioca al quiz in corso (o vedi se ce n'è uno)", "🏆 Progressione",
-        usage="/quiz",
+        "trivianerd", "Trivia Nerd: gioca o consulta la gestione", "🏆 Progressione",
+        usage="/trivianerd",
         details="Se è in corso un quiz, ti dà il pulsante per <b>giocarlo</b> in chat privata; "
                 "altrimenti ti dice chiaramente che non ce ne sono di attivi. Gli admin lo usano "
                 "invece per gestire e avviare i quiz.",
@@ -152,7 +155,18 @@ _COMMANDS: list[CommandDoc] = [
         details="<i>La Locanda del Drago.</i> Spendi CoInn in due sezioni: 🏷️ "
                 "<b>Personalizzazioni</b> (tag cosmetici da mostrare sul profilo, attivabili "
                 "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
-                "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei).",
+                "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei). "
+                "Dalla dispensa puoi consumare una singola unità; con /offri puoi regalarla. "
+                "Nessun vantaggio nei giochi: consumare non cancella acquisti o trofei.",
+    ),
+    CommandDoc(
+        "offri", "Offri un consumabile a un amico", "🍺 Locanda",
+        usage="/offri (nel gruppo, in risposta a un messaggio)",
+        details="Rispondi a un membro del gruppo con /offri. Scegli e conferma in privato: "
+                "compra dal menù oppure regala una tua scorta, senza nuove spese. "
+                "Il destinatario può consumare il regalo o conservarlo. Invito personale "
+                "valido 10 minuti, massimo un'offerta confermata al minuto. "
+                "Le ultime offerte sono recuperabili da /locanda → Le mie offerte.",
     ),
     # --- 🎲 Giochi rapidi ---
     CommandDoc(
@@ -276,7 +290,18 @@ _COMMANDS: list[CommandDoc] = [
                usage="/lista_ranghi", admin_only=True,
                details="Mostra la curva dei livelli (XP per salire, crescita %) e come i "
                        "nomi-rango (Novizio→Leggenda) si mappano sulle fasce di livello."),
-    CommandDoc("eventi", "Hub eventi: quiz, Guess The Game, Sound Quest, sondaggi, scommesse",
+    CommandDoc(
+        "immagine", "Genera un'immagine di prova senza creare eventi", "🎬 Eventi",
+        usage="/immagine <descrizione>", admin_only=True,
+        enabled=lambda: settings.telephone_enabled,
+        details="Accetta anche <code>/Immagine</code>. Descrizione da 1 a 150 caratteri. "
+                "Usa esattamente modello, stile e limiti di Telefono senza fili: "
+                "deve essere abilitato <code>TELEPHONE_ENABLED</code>. "
+                "L'immagine arriva nella chat del comando, senza creare partite o premi. "
+                "Una sola richiesta in corso per admin, budget AI condiviso e nessun "
+                "retry automatico. La generazione può richiedere fino a 120 secondi.",
+    ),
+    CommandDoc("eventi", "Hub eventi: quiz, giochi, sondaggi e scommesse",
                "🎬 Eventi",
                usage="/eventi", admin_only=True,
                details="Crea quiz, <b>Guess The Game</b> (indovina il gioco da una foto), "
@@ -291,23 +316,28 @@ _COMMANDS: list[CommandDoc] = [
                        "sola non basta</b>. In creazione puoi aggiungere grafie alternative "
                        "sempre accettate: sono la rete di sicurezza se l'AI non risponde."),
     CommandDoc(
-        "gioco_alduino",
+        "aldusgame",
         "Regole e stato del gioco segreto di Alduino",
-        "🎬 Eventi",
-        usage="/gioco_alduino [domanda | RISPOSTA: titolo]",
-        aliases=("gioco",),
-        admin_only=True,
-        details="<i>In sviluppo: comando temporaneamente riservato agli admin.</i>\n\n"
+        "🏆 Progressione",
+        usage="/aldusgame [domanda | RISPOSTA: titolo]",
+        details="Mostra la partita attiva e la tua quota personale. Il comportamento è "
+                "uguale per tutti, admin inclusi: non apre mai la gestione. "
+                "Si gioca nel gruppo, tramite reply o aggiungendo domanda/titolo al comando.\n\n"
                 + render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
     ),
-    CommandDoc("crea_quiz", "Crea un quiz (in privato)", "🎬 Eventi",
-               usage="/crea_quiz", admin_only=True),
-    CommandDoc("quiz", "Elenca i quiz pronti e avviali", "🎬 Eventi",
-               usage="/quiz", admin_only=True),
-    CommandDoc("avvia_quiz", "Avvia subito un quiz", "🎬 Eventi",
-               usage="/avvia_quiz <id>", admin_only=True),
-    CommandDoc("chiudi_quiz", "Chiudi un quiz e pubblica il podio", "🎬 Eventi",
-               usage="/chiudi_quiz <id>", admin_only=True),
+    CommandDoc(
+        "gestisci_aldusgame", "Gestisci le partite del gioco di Alduino", "🎬 Eventi",
+        usage="/gestisci_aldusgame", admin_only=True,
+        details="Apre in privato la gestione già disponibile in /eventi: crea, avvia, "
+                "programma o chiudi una partita. «Vedi partita» mostra lo stato pubblico. "
+                "Per giocare come gli altri usa /aldusgame oppure rispondi nel gruppo.",
+    ),
+    CommandDoc("crea_trivianerd", "Crea Trivia Nerd (in privato)", "🎬 Eventi",
+               usage="/crea_trivianerd", admin_only=True),
+    CommandDoc("avvia_trivianerd", "Avvia subito Trivia Nerd", "🎬 Eventi",
+               usage="/avvia_trivianerd <id>", admin_only=True),
+    CommandDoc("chiudi_trivianerd", "Chiudi Trivia Nerd e pubblica il podio", "🎬 Eventi",
+               usage="/chiudi_trivianerd <id>", admin_only=True),
     CommandDoc("sondaggio", "Crea un sondaggio", "🎬 Eventi",
                usage="/sondaggio", admin_only=True,
                details="Crea un sondaggio (domanda + opzioni) <b>in chat privata</b>. "
@@ -316,7 +346,7 @@ _COMMANDS: list[CommandDoc] = [
                        "viene pubblicato all'istante."),
     CommandDoc("programma", "Programma un evento (quiz/sondaggio/scommessa)", "🎬 Eventi",
                usage="/programma", admin_only=True),
-    CommandDoc("programmati", "Elenca/annulla gli eventi programmati", "🎬 Eventi",
+    CommandDoc("programmati", "Elenca/annulla gli eventi programmati (solo in privato)", "🎬 Eventi",
                usage="/programmati", admin_only=True),
 ]
 
@@ -334,18 +364,26 @@ def normalize(raw: str) -> str:
 
 
 def lookup(raw: str) -> CommandDoc | None:
-    return _BY_NAME.get(normalize(raw))
+    doc = _BY_NAME.get(normalize(raw))
+    return doc if doc is None or doc.enabled is None or doc.enabled() else None
+
+
+def command_enabled(raw: str) -> bool:
+    """Menu projection uses the same availability as help, not a second flag map."""
+    doc = _BY_NAME.get(normalize(raw))
+    return doc is None or doc.enabled is None or doc.enabled()
 
 
 def suggestions(raw: str, limit: int = 3) -> list[str]:
     """Closest known command names to a mistyped one (for 'comando non trovato')."""
-    return difflib.get_close_matches(normalize(raw), sorted(_BY_NAME), n=limit, cutoff=0.5)
+    names = sorted(name for name in _BY_NAME if command_enabled(name))
+    return difflib.get_close_matches(normalize(raw), names, n=limit, cutoff=0.5)
 
 
 def _by_category(categories: tuple[str, ...]) -> list[tuple[str, list[CommandDoc]]]:
     out: list[tuple[str, list[CommandDoc]]] = []
     for cat in categories:
-        cmds = [c for c in _COMMANDS if c.category == cat]
+        cmds = [c for c in _COMMANDS if c.category == cat and command_enabled(c.name)]
         if cmds:
             out.append((cat, cmds))
     return out
@@ -382,7 +420,7 @@ def render_alduino_reference() -> str:
         "Puoi spiegare queste funzioni, ma non fingere di aver eseguito comandi o azioni.",
     ]
     for command in _COMMANDS:
-        if command.admin_only:
+        if command.admin_only or not command_enabled(command.name):
             continue
         usage = command.usage or f"/{command.name}"
         details = html.unescape(re.sub(r"<[^>]+>", "", command.details)).replace("\n", " ")
@@ -417,6 +455,14 @@ def render_command(raw: str, is_admin: bool = False) -> str | None:
         parts += ["", f"📋 <b>Uso:</b> <code>{esc(doc.usage)}</code>"]
     if doc.details:
         parts += ["", doc.details]
+    if doc.name == "eventi" and settings.telephone_enabled:
+        parts += [
+            "",
+            "<b>Telefono senza fili</b>: quattro passaggi privati testo/immagine, "
+            "una persona per passaggio. Due minuti per descrivere l'ultima immagine, "
+            "massimo 150 caratteri; il gruppo scopre la catena alla fine. "
+            "Nessun premio CoInn/XP.",
+        ]
     if doc.admin_only:
         parts += ["", "<i>🔐 Comando riservato agli admin.</i>"]
     return "\n".join(parts)

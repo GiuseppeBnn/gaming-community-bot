@@ -1,4 +1,4 @@
-"""/guessTheGame and /soundQuest are user-facing for non-admins (like /quiz): a
+"""/guessTheGame and /soundQuest are user-facing for non-admins (like /trivianerd): a
 player gets a 'play' button for a running round, or a clear 'none active' message
 — never silence. Admins get the events-hub management list instead.
 """

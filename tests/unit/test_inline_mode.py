@@ -122,7 +122,7 @@ class TestArticle:
         result = (await _call("live", session))["results"][0]
 
         assert result.reply_markup.inline_keyboard[0][0].url.startswith(
-            "https://t.me/test_bot?start=quiz_"
+            "https://t.me/test_bot?start=trivianerd_"
         )
         assert "Live &lt;b&gt;" in result.input_message_content.message_text
         assert "🟢 APERTO" in result.input_message_content.message_text

@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.filters.command import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
-from handlers.callbacks import LeaderboardCb
+from handlers.callbacks import LeaderboardCb, LeaderboardPageCb
 from services import admin_service, badge_service, xp_service
 from utils import cooldown
-from utils.text import esc
+from utils.text import chunk_html_lines, esc
 
 router = Router()
 
@@ -34,15 +34,26 @@ def _name(user) -> str:
     return f"{esc(tags)} {base}" if tags else base
 
 
-def _kb(active: str):
+def _kb(active: str, page: int = 0, pages: int = 1):
     b = InlineKeyboardBuilder()
     for label, key in _TABS:
         b.button(
             text=f"• {label} •" if key == active else label,
             callback_data=LeaderboardCb(action="show", board=key).pack(),
         )
-    b.button(text="✖ Chiudi", callback_data=LeaderboardCb(action="close").pack())
-    b.adjust(3, 1)
+    b.adjust(3)
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(
+            text="⬅️ Precedenti", callback_data=LeaderboardPageCb(board=active, page=page - 1).pack(),
+        ))
+    if page + 1 < pages:
+        nav.append(InlineKeyboardButton(
+            text="Successivi ➡️", callback_data=LeaderboardPageCb(board=active, page=page + 1).pack(),
+        ))
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="✖ Chiudi", callback_data=LeaderboardCb(action="close").pack()))
     return b.as_markup()
 
 
@@ -75,13 +86,24 @@ async def render_board(db_session: AsyncSession, board: str) -> str:
     return "\n".join(lines)
 
 
+async def render_board_page(
+    db_session: AsyncSession, board: str, page: int = 0,
+) -> tuple[str, int, int]:
+    pages = chunk_html_lines(await render_board(db_session, board))
+    page = max(0, min(page, len(pages) - 1))
+    text = pages[page]
+    if len(pages) > 1:
+        text += f"\n\n📖 Pagina {page + 1}/{len(pages)} · classifica completa"
+    return text, page, len(pages)
+
+
 async def show_board_private(message: Message, db_session: AsyncSession) -> None:
     """Render the leaderboard with its inline switcher (used in private chat and
     from the ``?start=classifiche`` deep-link)."""
     if not await cooldown.guard(message, "classifiche", settings.command_cooldown_seconds):
         return
-    text = await render_board(db_session, "coins")
-    await message.answer(text, reply_markup=_kb("coins"))
+    text, page, pages = await render_board_page(db_session, "coins")
+    await message.answer(text, reply_markup=_kb("coins", page, pages))
 
 
 @router.message(Command("classifiche"))
@@ -103,9 +125,25 @@ async def cb_lead(
     if board not in _BOARDS:
         await callback.answer()
         return
-    text = await render_board(db_session, board)
+    await _show_page(callback, db_session, board)
+
+
+@router.callback_query(LeaderboardPageCb.filter())
+async def cb_lead_page(
+    callback: CallbackQuery, callback_data: LeaderboardPageCb, db_session: AsyncSession,
+) -> None:
+    if callback_data.board not in _BOARDS:
+        await callback.answer()
+        return
+    await _show_page(callback, db_session, callback_data.board, callback_data.page)
+
+
+async def _show_page(
+    callback: CallbackQuery, db_session: AsyncSession, board: str, page: int = 0,
+) -> None:
+    text, page, pages = await render_board_page(db_session, board, page)
     try:
-        await callback.message.edit_text(text, reply_markup=_kb(board))
+        await callback.message.edit_text(text, reply_markup=_kb(board, page, pages))
     except Exception:
         pass
     await callback.answer()

@@ -24,6 +24,7 @@ dato corrente, non questo indice come metrica verificabile.
 | [INDEX.md](INDEX.md) | Questo file: mappa dei file | Non sai **dove** sta una cosa |
 | [analyze_plan.md](analyze_plan.md) | Roadmap di evoluzione strutturale (Fasi 0/1a/1b **fatte**, 2–5 aperte) | Vuoi sapere cosa è pianificato e perché |
 | [docs/product-shortlist.md](docs/product-shortlist.md) | Solo direzioni di prodotto approvate; le idee non scelte restano fuori | Devi sapere cosa vale ancora come decisione futura |
+| [docs/telephone-2026-11-12.md](docs/telephone-2026-11-12.md) | Telefono senza fili: flusso, concorrenza, budget immagini e rollout test | Gestisci o modifichi la staffetta |
 | [catalogs/README.md](catalogs/README.md) | Formato dei CSV (trofei, ranghi, cosmetici, consumabili, categorie) | Devi aggiungere contenuti senza toccare codice |
 | [docs/superpowers/specs/](docs/superpowers/specs/) | Design approvati dei giochi «indovina», 20 Domande **legacy v1** e [gioco segreto di Alduino v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md) | Serve il *perché* dietro i motori di gioco |
 | [docs/superpowers/plans/](docs/superpowers/plans/) | Piano di implementazione task-by-task, incluso il [piano v2](docs/superpowers/plans/2026-08-23-gioco-segreto-alduino.md) | Ricostruire la sequenza di lavoro |
@@ -92,14 +93,16 @@ src/                                  # src-layout: i package restano top-level 
 | `admin_dashboard.py` | Dashboard a bottoni (`adm:*`) |
 | `events.py` | Hub eventi (`ev:*`): crea → avvia ora / programma. **Zero `if/elif` per tipo** |
 | `event_types/` | `base.py` (protocollo `EventType` + registro), `quiz_type`, `poll_type`, `bet_type`, `guess_type`, `twenty_questions_type` |
-| `quiz/` | Quiz: creazione FSM, editor, lifecycle, gioco in privato, dry-run admin |
+| `quiz/` | Trivia Nerd: `/trivianerd`, famiglia admin `*_trivianerd`, creazione FSM, editor, gioco privato, dry-run |
 | `guess/` | Guess The Game (immagine) e Sound Quest (audio): un motore, due giochi |
-| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2; 20 Domande è legacy v1 |
+| `twenty_questions.py` | UI collaborativa del gioco segreto di Alduino v2: `/aldusgame` e `/gestisci_aldusgame`; 20 Domande è legacy v1 |
 | `schedule.py` | `/programma`, `/programmati` + `scheduler_loop` (task in-process) |
 | `shop.py` | Locanda: tag cosmetici + consumabili |
+| `tavern.py` | Offerte private, ricevute persistenti e consumazione di scorte |
 | `badges.py` | `/trofei`, `/catalogo_trofei` |
 | `leaderboard.py` | `/classifiche` con switcher inline (monete · XP · trofei) |
 | `fun_ai.py` | Comandi comici one-shot + `/alduino` |
+| `images.py` | `/immagine` admin-only: prova del generatore condiviso, senza eventi né retry automatici |
 | `group_events.py` | Migrazioni chat, `chat_member`/`my_chat_member`, invalidazione cache admin |
 | `backup.py` | `/backup`, `/esporta` (admin) |
 | `help_content.py` | Registro comandi: sorgente unica di `/comandi` e `/spiega_comando` |
@@ -115,12 +118,14 @@ src/                                  # src-layout: i package restano top-level 
 | `badge_service.py` | `sync_trophies` `award_badge` `check_and_award_milestones` `describe_condition` `leaderboard_trophies` |
 | `progress_service.py` | `record_podium` / `record_event` + i relativi conteggi (alimentano i trofei) |
 | `quiz_service.py` | Quiz: creazione, domande, risposte, `podium`, `award_prizes`, `claim_close` |
+| `quiz_poll_service.py` | Quiz nativi privati: lease di invio, mapping opzioni, consumo atomico e scadenze persistenti |
 | `guess_service.py` | Round, sessioni per giocatore, tentativi, `standings`, `award_prizes` |
 | `guess_judge.py` | `normalize` `aliases_of` `judge` — verdetto in 4 stadi, dal più economico al più costoso |
 | `prizes.py` | `participation_floor` `consolation_amounts` — schedule premi condiviso da ogni gioco col podio |
 | `poll_service.py` | Template di sondaggio pre-creati |
 | `shop_service.py` | Cosmetici: acquisto, tag attivi multipli, `apply_cosmetic` |
 | `consumable_service.py` | Consumabili ripetibili (menu Locanda) + conteggi per i trofei |
+| `tavern_service.py` | Conferme regalo atomiche, limiti persistenti e lease annuncio |
 | `catalog_loader.py` | CSV → trofei/ranghi/cosmetici/consumabili/categorie. Letti **solo all'avvio**, fallback ai default |
 | `admin_service.py` | `set_balance` `mass_credit` `get_dossier` `search_users` warn/ban `log_action` `recent_actions` |
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |
@@ -176,11 +181,12 @@ src/                                  # src-layout: i package restano top-level 
 | `ledger` | Ogni movimento di denaro (tipo, importo, riferimento) |
 | `badges` / `user_badges` | Catalogo trofei (rarità, condizione, `condition_param`, hidden) e assegnazioni |
 | `betting_events` / `betting_options` / `user_bets` | Scommesse: evento, esiti, puntate |
-| `quizzes` / `quiz_questions` / `quiz_answers` | Quiz e partite |
+| `quizzes` / `quiz_questions` / `quiz_answers` / `quiz_polls` | Quiz, partite e sondaggi privati per domanda/giocatore |
 | `guess_rounds` / `guess_sessions` / `guess_attempts` | Giochi «indovina»: round, run per giocatore, tentativi (+cache verdetti) |
 | `poll_templates` | Sondaggi pre-creati |
 | `game_podiums` / `user_progress_events` | Metriche generiche per i trofei (podi, «fatto X volte») |
 | `shop_purchases` | Acquisti cosmetici (`tag_*`) e consumabili (`cons_*`) |
+| `tavern_items` / `tavern_offers` | Scorte consumabili reali, proprietari e ricevute regalo |
 | `warnings` / `admin_actions` | Moderazione e audit trail |
 | `scheduled_tasks` | Azioni future eseguite dallo scheduler in-process |
 | `bot_state` | Key-value di runtime (es. id gruppo effettivo) |

@@ -33,6 +33,8 @@ from utils.text import esc
 from handlers.quiz._shared import (
     _MAX_DESC,
     _MAX_EXPLANATION,
+    _explanation_error,
+    _correct_prompt,
     _MAX_OPTION,
     _MAX_OPTIONS,
     _MAX_QUESTION,
@@ -249,7 +251,7 @@ def _review_kb(question_count: int) -> InlineKeyboardMarkup:
 async def start_quiz_creation(
     message: Message, state: FSMContext, creator_id: int | None = None
 ) -> None:
-    """Deep-link create_quiz, /crea_quiz, and dashboard «Crea quiz» entry.
+    """Creation command/deep-links (including legacy links) and dashboard entry.
 
     `creator_id` lets callers that start the flow from a callback (where
     message.from_user is the bot) pass the real admin id.
@@ -261,18 +263,18 @@ async def start_quiz_creation(
     await _prompt_title(message, state)
 
 
-@router.message(Command("crea_quiz"), IsAdminFilter())
+@router.message(Command("crea_trivianerd"), IsAdminFilter())
 async def cmd_crea_quiz(message: Message, state: FSMContext) -> None:
     if message.chat.type != ChatType.PRIVATE:
         bot_info = await message.bot.get_me()
         await message.reply(
-            "🧠 Crea il quiz in chat privata:",
+            "🧠 Crea Trivia Nerd in chat privata:",
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="➡️ Crea quiz",
-                            url=f"https://t.me/{bot_info.username}?start=create_quiz",
+                            text="➡️ Crea Trivia Nerd",
+                            url=f"https://t.me/{bot_info.username}?start=create_trivianerd",
                         )
                     ]
                 ]
@@ -325,7 +327,7 @@ async def _prompt_title(message: Message, state: FSMContext) -> None:
     current = (await state.get_data()).get("title")
     hint = f"\n<i>Attuale: {esc(current)}</i>" if current else ""
     await message.answer(
-        "🧠 <b>Crea un nuovo quiz</b>\n\n"
+        "🧠 <b>Crea un nuovo Trivia Nerd</b>\n\n"
         f"<b>Step 1/3</b> — Invia il <b>titolo</b> del quiz (max {_MAX_TITLE} caratteri):" + hint,
         reply_markup=_cancel_kb(),
     )
@@ -406,7 +408,7 @@ async def _prompt_question_text(message: Message, state: FSMContext, first: bool
     await state.set_state(QuizCreationStates.waiting_question_text)
     data = await state.get_data()
     n = data.get("saved_count", 0) + 1
-    intro = "🧠 <b>Quiz creato!</b>\n\n" if first else ""
+    intro = "🧠 <b>Trivia Nerd creato!</b>\n\n" if first else ""
     kb = _back_to_review_kb() if data.get("saved_count", 0) > 0 else _cancel_kb()
     await message.answer(
         f"{intro}<b>Domanda {n}</b> — Invia il <b>testo della domanda</b> "
@@ -431,7 +433,7 @@ async def _prompt_correct(message: Message, state: FSMContext) -> None:
     await state.set_state(QuizCreationStates.waiting_correct)
     options = (await state.get_data()).get("q_options", [])
     await message.answer(
-        "Quale opzione è quella <b>corretta</b>?", reply_markup=_correct_kb(options)
+        _correct_prompt(options), reply_markup=_correct_kb(options)
     )
 
 
@@ -454,10 +456,22 @@ def _randomize_summary(randomize_questions: bool, randomize_answers: bool) -> st
     return "nessuna"
 
 
+_STALE_REVIEW_NOTICE = (
+    "Questo riepilogo non è più attivo. Usa /trivianerd per gestire Trivia Nerd "
+    "o /crea_trivianerd per crearne uno nuovo."
+)
+
+
 async def _prompt_review(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
-    await state.set_state(QuizCreationStates.reviewing)
     data = await state.get_data()
-    quiz = await quiz_service.get_quiz(db_session, data["quiz_id"])
+    quiz_id = data.get("quiz_id")
+    quiz = await quiz_service.get_quiz(db_session, quiz_id) if type(quiz_id) is int else None
+    if quiz is None or quiz.status != "draft":
+        # Old keyboards survive cleared/expired FSM data and deleted/published
+        # drafts. Do not turn missing context into a new, unusable review state.
+        await message.answer(_STALE_REVIEW_NOTICE)
+        return
+    await state.set_state(QuizCreationStates.reviewing)
     lines = ["🧠 <b>Riepilogo quiz</b>\n", f"📌 <b>{esc(quiz.title)}</b>"]
     if quiz.description:
         lines.append(f"<i>{esc(quiz.description)}</i>")
@@ -489,6 +503,14 @@ async def cb_back(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(QuizNewCb.filter(F.action == "review"), IsAdminCallbackFilter())
 async def cb_review(callback: CallbackQuery, state: FSMContext, db_session: AsyncSession) -> None:
+    if await state.get_state() not in {
+        QuizCreationStates.waiting_question_text.state,
+        QuizCreationStates.reviewing.state,
+    }:
+        # This button is intentionally stateless at router level: acknowledge
+        # stale callbacks too, without hijacking another admin/player flow.
+        await callback.answer(_STALE_REVIEW_NOTICE, show_alert=True)
+        return
     await _prompt_review(callback.message, state, db_session)
     await callback.answer()
 
@@ -781,7 +803,7 @@ async def cb_correct(callback: CallbackQuery, state: FSMContext, callback_data: 
 @router.message(QuizCreationStates.waiting_explanation, IsAdminFilter(), ~F.text.startswith("/"))
 async def fsm_explanation(message: Message, state: FSMContext, db_session: AsyncSession) -> None:
     explanation = (message.text or "").strip()
-    if err := _too_long(explanation, _MAX_EXPLANATION, "La spiegazione è troppo lunga"):
+    if err := _explanation_error(explanation):
         await message.answer(err, reply_markup=_explanation_kb())
         return
     await _save_question(message, state, db_session, explanation)
@@ -867,21 +889,21 @@ async def cb_publish(callback: CallbackQuery, state: FSMContext, db_session: Asy
     await state.clear()
     b = InlineKeyboardBuilder()
     b.button(
-        text="🧪 Prova il quiz", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack()
+        text="🧪 Prova Trivia Nerd", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack()
     )
     b.adjust(1)
     await callback.message.answer(
-        f"🎉 <b>Quiz pronto!</b>\n\n"
+        f"🎉 <b>Trivia Nerd pronto!</b>\n\n"
         f"🧠 <b>#{quiz.id} {esc(quiz.title)}</b>\n"
         f"❓ Domande: <b>{len(quiz.questions)}</b>\n"
         f"💰 Premi: {quiz_service.format_prize_summary(quiz)}\n\n"
-        f"Avvialo nel gruppo con <code>/avvia_quiz {quiz.id}</code> o <code>/quiz</code>, "
+        f"Avvialo nel gruppo con <code>/avvia_trivianerd {quiz.id}</code> o <code>/trivianerd</code>, "
         f"oppure dalla dashboard <code>/admin</code>.\n\n"
         f"<i>Prima di avviarlo puoi provarlo tu: la prova non viene salvata "
         f"e non conta in classifica.</i>",
         reply_markup=b.as_markup(),
     )
-    await callback.answer("✅ Quiz pronto!")
+    await callback.answer("✅ Trivia Nerd pronto!")
 
 
 # Maps each step's state → the prompt to re-show when the user taps «⬅️ Indietro».

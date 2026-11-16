@@ -5,18 +5,89 @@ Modifiche rilevanti al bot. Formato ispirato a
 
 ## [Unreleased]
 
+### Corretto
+- **Telefono senza fili: rollout completamente nascosto** — `TELEPHONE_ENABLED=false`
+  nasconde tipo-evento, programmazione, inline, riferimenti nei manuali e comando
+  immagini, anche per gli admin. Vecchi link/callback/reply e pubblicazione bloccati;
+  task disabilitati saltati senza notifiche o generazioni. Default spento, dati
+  conservati, sviluppo su test senza escludere file dai merge.
+- **Comandi Aldu's Game** — `/aldusgame` per giocare e consultare lo stato,
+  `/gestisci_aldusgame` per la gestione privata admin. Menu, aiuto, istruzioni e
+  documentazione allineati; link di gestione esistenti, dati e regole invariati.
+- **Trivia Nerd: comandi e presentazione coerenti** — comando pubblico `/trivianerd`
+  e famiglia admin `/crea_trivianerd`, `/avvia_trivianerd`, `/chiudi_trivianerd`.
+  Menu, manuale pubblico unico, hub, inviti e avvisi aggiornati. Nuovi deep-link
+  `*_trivianerd` e `trivianerd_<id>`; link storici ancora supportati. Identificatori
+  persistiti, callback, timer, classifica e premi invariati.
+- **Scheduler: rollback isolati per task** — discovery con soli ID e sessione nuova
+  per ogni esecuzione, evitando `MissingGreenlet` sul task successivo dopo errore,
+  skip o hook. Stato/scadenza ricontrollati prima di eseguire; cancellazioni e
+  riprogrammazioni rispettate. Retry, esiti e logica dei premi invariati.
+- **Messaggi del gioco segreto di Alduino** — scadenze nel fuso della community,
+  istruzioni condivise e avviso premi senza dettagli tecnici del pool. Comando di gioco
+  `/gioco_alduino`, richiamato in fondo a card e riepiloghi.
+  Nessuna modifica al calcolo dei premi o ai timestamp persistiti.
+- **Gioco e gestione separati** — `/gioco_alduino` mostra stato e gioco a tutti,
+  admin inclusi; `/gestisci_gioco_alduino` apre la gestione privata solo agli admin.
+  «Vedi partita» riusa la vista pubblica. Testo dei premi riscritto in italiano semplice.
+  Argomenti/reply di gioco e quote condivisi, consultazione privata senza turni o
+  pubblicazioni nel gruppo; deep-link e mutazioni di gestione sempre protetti.
+- **Vecchio riepilogo del creatore quiz** — un bottone senza più la sua FSM o
+  bozza valida viene rifiutato senza errori e senza sovrascrivere altri flussi.
+- **Fallback errori aiogram** — contesto estratto dal vero `Update`, non da un
+  attributo inesistente. Messaggi, callback e voti preservano l'errore originale
+  nei log, con ID update; regressione verificata anche nel dispatcher reale.
+- **Navigazione tra giochi privati** — Guess/Sound non intercettano più i comandi;
+  un nuovo link libera la sola modalità di risposta senza azzerare tempo o tentativi.
+  Ripresa scaduta rifiutata subito e vecchi bottoni «Esci» innocui per le nuove FSM.
+- **`/programmati` solo admin e privato** — nel gruppo soltanto il link, permessi
+  ricontrollati all'apertura; vecchi bottoni di gestione nel gruppo non operativi.
+- **Guard membership sugli update reali** — legge anche il payload del contenitore
+  `Update` ricevuto da `dp.update`, preservando l'oggetto inoltrato al dispatcher.
+  I voti dei quiz privati passano dallo stesso controllo dei messaggi privati.
+- **Staffetta e timeout immagini** — gli errori transitori non eliminano subito
+  la partita: pausa di due minuti e una sola ripresa manuale, con fence SQL nuovo
+  e massimo due job per tappa anche cambiando utente. Timeout immagini fino a
+  120s, diagnostica HTTP/tempi senza contenuti e migrazione idempotente del contatore.
+  Nessun retry automatico pagato né aumento del budget.
+
 ### Aggiunto
-- **Gioco di Alduino senza scroll** — `/gioco` (alias di `/gioco_alduino`) mostra
-  stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
+- **Locanda sociale, prima tranche** — scorte reali consumabili e `/offri` in reply:
+  scelta/conferma private, acquisto regalo o trasferimento dalla dispensa, ricevute
+  persistenti e consumazione riservata al destinatario. Storico e trofei preservati,
+  vecchie scorte compatibili senza backfill, limiti anti-spam persistenti, annuncio
+  ritentabile senza nuovi addebiti. Nessun bonus ai giochi, LLM o evento natalizio.
+- **Saga corretta in Guess/Sound** — feedback distinto per serie o capitolo diverso,
+  senza vittoria né soluzione rivelata. Un solo giudizio AI con enum strict,
+  cache condivisa e normale consumo del tentativo; alias admin ancora autorevoli.
+- **`/immagine <descrizione>` (solo admin)** — comando case-insensitive per
+  provare il generatore della staffetta senza eventi. Stesso modello/stile,
+  budget condiviso, audit senza prompt e nessun retry automatico.
+- **Telefono senza fili (opt-in test)** — quattro passaggi testo/immagine in
+  privato, staffetta aperta senza roster, prenotazioni SQL atomiche e scadenze
+  persistenti. Finale sfogliabile nella card del gruppo con una sola notifica.
+  Immagini OpenRouter con listino verificato, tetto per immagine e budget mensile
+  condiviso; niente retry pagati automatici, premi CoInn/XP o attivazione in prod.
+- **Gioco di Alduino senza scroll** — `/gioco_alduino` mostra stato e quote agli
+  utenti; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
   verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
   partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
-  *In sviluppo: `/gioco`/`/gioco_alduino` sono temporaneamente riservati agli
-  admin; il gioco resta comunque giocabile rispondendo alle card in gruppo.*
+  La gestione privata ha il comando admin dedicato `/gestisci_gioco_alduino`,
+  con «Vedi partita» per consultare lo stato pubblico; il gioco resta giocabile tramite reply.
 - **Una partita per gruppo** — avvii manuali e programmati serializzati su
   PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.
 
 ### Modificato
+- **Classifiche complete** — nessun taglio implicito ai primi dieci in ricchezza,
+  livelli, trofei e risultati Trivia/Guess/Sound. Pagine navigabili nelle viste
+  interattive, messaggi consecutivi negli annunci; HTML/emoji preservati e nomi
+  recuperati in batch. Premi e criteri di partecipazione invariati.
+- **Trivia Nerd con quiz nativi Telegram** — al posto dei bottoni a riga singola,
+  opzioni fino a 100 caratteri, spiegazioni e timer nativo. Presentazione condivisa
+  con la prova admin, senza scritture in classifica durante le prove. Mapping
+  sondaggio/giocatore persistente, deduplica SQL, ripresa senza reset del timer e
+  recupero delle scadenze con lo scheduler esistente. Premi e randomizzazione invariati.
 - **Attività nel contesto di Alduino** — scadenze dai task di chiusura/lock/expiry
   associate all'evento corretto e rese in ora locale; data corrente esplicita nel
   dossier live. I sondaggi in corso entrano nella discovery pubblica, senza link

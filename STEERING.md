@@ -129,6 +129,10 @@ quiz_questions  (id PK, quiz_id FK, position, text, options_json, correct_option
                  explanation, open_period, tg_poll_id index, sent_at)
 quiz_answers    (id PK, quiz_id index, question_id FK, user_tg_id, selected_option_id,
                  is_correct, response_ms, answered_at)  UniqueConstraint(question_id, user_tg_id)
+quiz_polls      (id PK, quiz_id FK index, question_id FK, user_tg_id, token unique,
+                 state, option_order_json, chat_id, message_id, tg_poll_id unique,
+                 shown_at, expires_at, lease_until) UniqueConstraint(question_id, user_tg_id)
+                 ← un poll nativo privato per domanda/giocatore, nuova tabella create_all
 scheduled_tasks (id PK, task_type [quiz|poll|bet], ref_id, payload_json, run_at index,
                  status, created_by_tg_id, group_id, created_at, executed_at, error)
 game_podiums    (id PK, user_tg_id BigInt index, game_key index, rank, ref_id, created_at)
@@ -233,6 +237,10 @@ dp.update.middleware(GroupContextMiddleware()) # 5. transcript locale best-effor
 - `GroupMemberMiddleware` fa una API call che richiede il bot (dal framework), non la sessione DB.
 - `GroupContextMiddleware` non deve precedere ban/group guard: apre una propria transazione breve e
   registra solo testo umano autorizzato del gruppo effettivo; comandi, bot e altre chat sono ignorati.
+
+`GroupMemberMiddleware` ispeziona sia gli eventi diretti sia il payload del contenitore
+`Update` passato da `dp.update.middleware`; inoltra sempre l'oggetto originale al dispatcher.
+I `PollAnswer` non hanno chat, quindi sono trattati come privati per il controllo membership.
 
 ---
 
@@ -342,6 +350,12 @@ per coprire tutti i ~190 handler.
 
 Cosa fa: logga con `exc_info` più `user_id`/`username`/`chat_id`/`callback_data`/testo — l'obiettivo
 è che la riga di log basti da sola ad agire — poi risponde all'utente (alert sulle callback).
+Il contesto si ricava dal vero `Update` tramite il resolver di aiogram
+(`UserContextMiddleware.resolve_event_context`), non da `update.event_from_user`:
+quest'ultimo è una chiave DI, non un attributo. Il log include anche `update_id`;
+voti/inline senza messaggio vengono registrati senza inventare chat o inviare DM.
+I test usano modelli aiogram reali e attraversano anche `Dispatcher.feed_update`,
+verificando che l'eccezione originale resti nel log e il polling possa proseguire.
 Senza di esso un'eccezione non gestita lasciava il bot **muto** e, sulle callback, il bottone con lo
 spinner appeso fino al timeout di Telegram.
 
@@ -432,13 +446,15 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `spiega_<cmd>` | `common.cmd_start` → `help_content.render_command_or_hint` | Man page del comando `<cmd>` (dal bottone di `/spiega_comando` nel gruppo) |
 | `manage_bets` | `common.cmd_start` | Apre pannello admin scommesse (`admin_betting._show_event_list`) |
 | `admin` | `common.cmd_start` → `admin.show_admin_panel` | Apre il pannello admin (dashboard) |
-| `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
+| `create_trivianerd` (anche legacy `create_quiz`) | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione Trivia Nerd (admin, re-check) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
-| `manage_quiz` / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/quiz`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
-| `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
+| `manage_trivianerd` (anche legacy `manage_quiz`) / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/trivianerd`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
+| `manage_twentyq` | `common.cmd_start` → `twenty_questions.cmd_gestisci_gioco_alduino` → `TwentyQuestionsType.render_list` | Gestione privata del gioco di Alduino, con verifica admin anche all'atterraggio |
+| `trivianerd_<id>` (anche legacy `quiz_<id>`) | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi Trivia Nerd in privato, senza riavviare timer o progressi |
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
 | `programma` | `common.cmd_start` → `schedule.start_schedule_flow` | FSM programmazione evento (admin) |
+| `programmati` | `common.cmd_start` → `schedule.cmd_programmati` | Elenco/gestione task (**admin**, re-check, solo privato) |
 | `shop_<group_id>` | `common.cmd_start` → `shop.start_shop_private` | Catalogo Locanda (cosmetici + menù) |
 | `create_bet` | `common.cmd_start` → `betting.start_bet_creation` | FSM creazione scommessa |
 | `bet_custom_<e>_<o>` | `common.cmd_start` → `betting.start_custom_amount` | FSM importo custom |
@@ -466,10 +482,10 @@ gruppo con un **ack minimale** e manda i dettagli (streak/XP/rank) via **DM best
 > e il deep-link `scommesse`.
 
 I flussi di **creazione eventi** (quiz/sondaggio/scommessa) sono **solo in privato**: nel gruppo i
-comandi (`/crea_quiz`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
+comandi (`/crea_trivianerd`, `/sondaggio`, `/crea_scommessa`) rispondono con un bottone deep-link e **non**
 avviano la FSM lì (mai prompt/input nel gruppo dove chiunque può leggere o interferire). Poiché
 `common.router` è **pubblico**, **ogni** landing deep-link admin in `cmd_start` (`admin`, `eventi`,
-`create_quiz`, `create_poll`, `programma`, `manage_bets`, `backup`/`esporta`) **ri-verifica
+`create_trivianerd`/`create_quiz`, `create_poll`, `programma`, `manage_bets`, `backup`/`esporta`) **ri-verifica
 `is_admin`**: il filtro del comando d'origine non si propaga al deep-link, che un non-admin potrebbe
 costruire a mano. (`create_bet` resta pubblico per design, §16.)
 
@@ -561,15 +577,62 @@ saldo dell'apertore). Niente item di moderazione (rimossi: erano grief).
 
 Acquisto **ripetibile** (non idempotente, a differenza dei cosmetici): spende CoInn, logga una
 riga `ShopPurchase` (`group_id=0`, `success=True`) e accumula la **dispensa** dell'utente
-(mostrata sul profilo). **Nessun permesso Telegram, nessun effetto di gioco** → puro sink +
-fuel trofei. L'inventario è **derivato** da `shop_purchases` (COUNT per `item_key`): nessuna
-colonna su `User`. Flusso: `ShopCb(action="menu").pack()` (`shop:menu:`) →
+(mostrata sul profilo). **Nessun permesso Telegram, nessun vantaggio nei giochi**.
+`purchase_counts` resta il COUNT storico per i trofei, immutabile dopo regali/consumi.
+Le scorte correnti usano `TavernItem`: una unità per `ShopPurchase.id`, proprietario e
+`consumed_at`. Una riga assente significa vecchia scorta, ancora disponibile al compratore.
+Non servono backfill massivi: primo uso/trasferimento prende un lock sulla **colonna** della
+riga acquisto, materializza l'unità se assente, poi UPDATE SQL condizionale su proprietario e
+`consumed_at IS NULL`. Tutti gli writer rispettano `purchase → item`; mai cancellare acquisti
+o assegnare trofei d'acquisto al destinatario. `stock_summary` aggrega quantità e prima unità
+in una query; UNION ALL di due insiemi disgiunti (legacy/owner corrente) usa gli indici utente,
+non un filtro COALESCE su tutti gli acquisti. Nessuna colonna su `User`.
+Flusso: `ShopCb(action="menu").pack()` (`shop:menu:`) →
 `ShopCb(action="cat", key=<key>).pack()` (`shop:cat:<key>`) → `ShopCb(action="cbuy",
 key=<key>).pack()` (`shop:cbuy:<key>`) → `ShopCb(action="cexec", key=<key>).pack()`
 (`shop:cexec:<key>`) (debit con lock wallet → `record_consumption` → **flush** → milestone check →
 commit). Il **flush prima del milestone check** è obbligatorio (autoflush off: la query dei
 conteggi non vedrebbe l'INSERT pendente). Catalogo CSV `consumables.csv` +
 `consumable_categories.csv` (§12.2).
+
+### 11.c Offerte e consumazione reale
+
+`handlers/tavern.py` e `services/tavern_service.py` aggiungono `/offri` in risposta a un
+membro del gruppo effettivo: no self, bot o identità anonime; entrambi registrati.
+`TavernOffer` conserva mittente/destinatario, token personale, scadenza, selezione congelata,
+costo, unità e ricevuta. UNIQUE `(group_id, request_message_id)` deduplica l'update.
+Deep-link `offri_<token>` riconvalida identità/gruppo; callback `TavernCb` solo riferimenti
+numerici, sotto 64 byte anche con chiavi catalogo lunghe. Scelta/conferma/cancellazione e
+dispensa sono private; il gruppo non vede mai il saldo.
+
+`draft → prepared → delivered` oppure cancellazione; selezione immutabile dopo `prepared`.
+Scadenza 10 minuti verificata all'uso (anche **dopo** l'attesa sui lock), massimo 5 pendenti,
+un'offerta consegnata al minuto per mittente, persistente e non aggirabile con altri draft.
+Conferma: membership Telegram fresca fail-closed, poi `offer → User/Wallet ordinati →
+purchase → item`. Lock root con letture di colonne, mai fidarsi della identity map.
+Regalo da scorta = trasferimento senza spesa; nuovo acquisto = debit + acquisto + trasferimento
++ trofei del compratore + stato ricevuta nella **stessa transazione**, commit dell'handler.
+Prezzo cambiato dal catalogo? Rifiuta e richiede una nuova conferma. Errori => rollback;
+nessun commit nei service. Il campo `LedgerEntry.reference_id` è FK a `betting_events`,
+quindi un ID offerta **non** va mai scritto lì: la ricevuta conserva il riferimento proprio.
+Anche i normali acquisti cosmetici/consumabili prendono `User → Wallet` prima del debit:
+update del tag e FK dei trofei non devono invertire l'ordine rispetto ai regali.
+ACK del pulsante di conferma prima delle chiamate membership; eventuali errori successivi
+arrivano in DM, senza provare a rispondere a una callback Telegram ormai scaduta.
+
+Annuncio Telegram solo post-commit; se fallisce il destinatario possiede comunque l'oggetto.
+«Le mie offerte» riprende le ultime 10 ricevute e permette di ritentare **solo l'annuncio**.
+Claim SQL con lease 60s + fence sul timestamp e `message_id`: niente publisher simultanei
+e nessun nuovo addebito. Rete con timeout 10s; crash tra send e salvataggio può lasciare una
+card duplicata dopo retry, **mai un secondo regalo** (limite Telegram già accettato altrove).
+Solo destinatario + gruppo + ID messaggio/unità corrispondenti possono usare i bottoni pubblici.
+Conservare non consuma; bere/consumare fa CAS sull'unità precisa, quindi il replay non prende
+la successiva. Scorte paginabili, nessun reset FSM e nessuna dipendenza da Redis o LLM.
+Nuove tabelle via `create_all`, incluse nell'export metadata. Nessuna modifica a premi/XP,
+salvo i normali trofei dell'acquisto effettivo. Le vecchie scorte rimangono disponibili.
+
+Questa è la prima tranche della Locanda sociale. Scene di coppia, ricette segrete e ricordi
+sono pianificati separatamente; **non** ancora attivi. Nessun evento natalizio incluso.
 
 > **Anti-collisione chiavi**: consumabili `cons_*`, cosmetici `tag_*` — condividono
 > `shop_purchases.item_key` ma i registry sono disgiunti, quindi `has_cosmetic` e
@@ -708,7 +771,7 @@ xp_to_reach_level(level) -> int        # XP cumulativi per il livello (inverso, 
 progress_bar(prog, width=6) -> str     # ▰▰▱▱ puro (no HTML), per il profilo
 rank_for_level(level) -> Rank | None   # tier = max(min_level ≤ level), registry §12.2
 rank_for_xp(xp) -> Rank | None         # tier via level_for_xp(xp).level
-leaderboard_xp(session, limit=10)
+leaderboard_xp(session, limit=None)   # tutti; limite solo se richiesto esplicitamente
 ```
 
 **Livelli (GTA-style):** la progressione mostrata all'utente è un **livello numerico**, non l'XP
@@ -755,6 +818,21 @@ sempre `.pack()` / `LeaderboardCb.filter(F.action == ...)`. `render_board` è ri
 dashboard con `AdminCb(action="lead_board", key=<board>).pack()`
 (`adm:lead_board:<board>:`). Board: 💰 `admin_service.leaderboard`, ⚡ `xp_service.leaderboard`, 🏆
 `badge_service.leaderboard_trophies`.
+
+Tutte le query di classifica hanno `limit=None` di default (un limite esplicito resta
+supportato). Nessun top 10 implicito; parità stabilizzate con `User.tg_id` come ultimo
+criterio. I trofei continuano a includere solo chi ne possiede almeno uno.
+`render_board` produce il testo completo; `render_board_page` lo suddivide solo se
+necessario per Telegram. I tab pubblici `lead:*` restano compatibili; la navigazione
+usa `LeaderboardPageCb(board, page)` (`lead_page:*`). La dashboard riusa le stesse
+pagine con `AdminCb(action="lead_board", key=board, item_id=page)`. Indici scaduti
+vengono limitati all'intervallo esistente, board sconosciute non interrogano il DB.
+Il comando admin `/classifica` e i risultati finali Trivia/Guess/Sound inviano tutte
+le parti in sequenza. `utils.text.chunk_html_lines` mantiene righe/tag HTML integri
+anche con nomi multilinea e conta unità UTF-16; il margine di 3900 lascia spazio alla
+numerazione delle pagine. Nomi delle classifiche evento risolti in batch con
+`handlers._mentions.mention_many`, non con una query per giocatore. Premi, soli
+finisher Trivia e inclusione dei non-risolutori Guess/Sound restano invariati.
 
 ---
 
@@ -822,7 +900,7 @@ illimitata con tanti utenti).
 ### Anti-flood comandi statici di gruppo (`utils/static_reply`)
 
 Oltre al rate-limit globale, i **comandi statici** che ora rispondono **in chiaro nel gruppo**
-(`/profilo`, `/saldo`, la vista non-admin di `/quiz`, il bottone-guida di `/comandi`) usano
+(`/profilo`, `/saldo`, la vista non-admin di `/trivianerd`, il bottone-guida di `/comandi`) usano
 `utils.static_reply.reply_static(message, text, bucket, **kwargs)`: strategia **"sostituisci il
 precedente"** — tiene una mappa `(chat_id, user_id, bucket) → message_id` e, prima di inviare la
 risposta nuova, **cancella** quella precedente del bot per quella chiave (best-effort) ⇒ **una sola
@@ -875,12 +953,12 @@ i commit dell'handler.
 > admin, quindi copre di fatto ogni admin attivo.
 
 ### Privato
-`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
+`/start`, `/profilo`, `/saldo`, `/storico`, `/daily`, `/trasferisci`, `/scommesse`, `/crea_scommessa`, `/trivianerd`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda` (alias `/negozio`), `/comandi`, `/spiega_comando <cmd>`
 
 ### Gruppo
-`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/quiz`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
+`/scommesse`, `/crea_scommessa`, `/daily`, `/saldo`, `/trasferisci`, `/profilo`, `/trivianerd`, `/guessTheGame`, `/soundQuest`, `/traguardi`, `/catalogo_badge`, `/classifiche`, `/locanda`, `/comandi`
 
-> **`/guessTheGame` e `/soundQuest` hanno due facce come `/quiz`** (un solo handler per kind, ramifica su
+> **`/guessTheGame` e `/soundQuest` hanno due facce come `/trivianerd`** (un solo handler per kind, ramifica su
 > `is_admin`): per i **non-admin** elencano i round `running` di quel gioco con bottoni deep-link ▶️ Gioca
 > (o «nessun evento attivo»); per gli **admin** aprono la lista di gestione `GuessType(kind).render_list`.
 > Telegram forza i nomi comando **minuscoli** nel menù «/» → registrati come `guessthegame`/`soundquest`
@@ -893,10 +971,19 @@ i commit dell'handler.
 > deep-link `?start=help`). `/comandi` e `/spiega_comando <cmd>` (man page per-comando, **solo privato**)
 > condividono il registro unico in `handlers/help_content.py` (zero drift legenda↔dettaglio).
 
-> **`/quiz` ha due facce** (un solo handler, ramifica su `is_admin` — niente filtro sul decoratore):
+> **`/trivianerd` ha due facce** (un solo handler, ramifica su `is_admin` — niente filtro sul decoratore):
 > per i **non-admin** è user-facing (bottone «▶️ Gioca» sul quiz in corso, o un messaggio chiaro
-> «Nessun quiz attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
+> «Nessun Trivia Nerd attivo» invece del silenzio); per gli **admin** è la gestione (lista quiz pronti /
 > redirect al pannello). Gli handler di gestione restano gated.
+
+> **Rinomina Trivia Nerd:** `/trivianerd`, `/crea_trivianerd`, `/avvia_trivianerd` e
+> `/chiudi_trivianerd` sono i nomi canonici di router, menu e manuale. Una sola voce
+> pubblica nel registry help (mai una seconda omonima admin che la sovrascrive).
+> Nuovi inviti `trivianerd_<id>`, creazione `create_trivianerd` e gestione
+> `manage_trivianerd`; le rispettive varianti storiche restano accettate e i due
+> ingressi admin riconfermano sempre i permessi. **Non rinominare** task type `quiz`,
+> tabelle/campi, callback, sorgenti XP, chiavi cooldown o stati FSM persistiti: il cambio
+> è di presentazione/API Telegram, non una migrazione dei dati o della logica di gioco.
 
 > **Privacy (§9):** in gruppo `/storico` · `/traguardi` · `/locanda` · `/classifiche` · `/scommesse`
 > **non rispondono in chiaro** ma mandano un bottone deep-link verso il privato (la classifica ha uno
@@ -917,7 +1004,13 @@ i commit dell'handler.
 - **Moderazione**: `/ban`, `/sban`, `/kick`, `/mute [durata]`, `/unmute`
 - **Warn**: `/warn [motivo]`, `/warns`, `/unwarn`
 - **Info & dashboard**: `/info`, `/cerca` (**solo privato**), `/classifica`, `/stats`, `/audit` (**solo privato**), `/lista_ranghi` (curva livelli + fasce tier, §12.1), `/admin` (UI a bottoni — §18.1)
-- **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_quiz`, `/quiz`, `/avvia_quiz <id>`, `/chiudi_quiz <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
+- **Eventi** (macro-categoria, §18.2): `/eventi` (hub), `/crea_trivianerd`, `/trivianerd`, `/avvia_trivianerd <id>`, `/chiudi_trivianerd <id>` (gestione quiz **solo privato**), `/sondaggio`, `/programma`, `/programmati`
+- **Test immagini**: `/immagine <descrizione>` (case-insensitive), router admin-gated
+  alla radice. 1–150 caratteri, stessa route/stile/configurazione della staffetta e
+  flag `TELEPHONE_ENABLED`, ma nessuna partita creata. Audit solo modello/lunghezza,
+  commit prima della rete, ledger feature `admin_image` nella stessa lane
+  `openrouter_other`. Una sola richiesta in corso per admin; nessun retry automatico.
+  Il risultato arriva nella chat del comando, mai un invio di prova spontaneo.
 - **Visibilità menù "/":** gli admin vedono i comandi admin nel menù grazie a uno scope dedicato
   (`BotCommandScopeChat` per ogni `settings.admin_ids` in privato + `BotCommandScopeChatAdministrators`
   sul gruppo) — i comandi restano fuori dalle liste pubbliche (§18 regola 11).
@@ -1277,7 +1370,8 @@ conta il tempo minore** (poi l'ordine di arrivo).
 **File:** `services/quiz_service.py` (DB) e il pacchetto **`handlers/quiz/`**, diviso per fase
 attorno a un unico `router` condiviso in `_shared.py`: `creation.py` (FSM di creazione),
 `editing.py` (modifica domande), `lifecycle.py` (avvio/lista/chiusura/podio), `play.py`
-(sessione privata, timer, risposte), `trying.py` (prova admin). `__init__.py` è la superficie
+(sessione privata, scadenze, risposte), `trying.py` (prova admin), `_native.py` (presentazione
+Telegram condivisa), `services/quiz_poll_service.py` (delivery/risposte persistenti). `__init__.py` è la superficie
 pubblica — `open_quiz`, `close_quiz`, `start_quiz_creation`, `start_quiz_session`,
 `start_quiz_try`, `router` — quindi chi importa continua a scrivere `from handlers.quiz import …`.
 **L'ordine degli import in `__init__.py` è l'ordine di registrazione degli handler** su quel
@@ -1288,9 +1382,9 @@ router, identico a quello che le sezioni avevano nel file unico (47 handler, ver
 FSM admin in privato (redirect dal gruppo con deep-link `create_quiz`, oppure dall'hub Eventi
 `EventCb(action="new", task_type="quiz")` (packed `ev:new:quiz:`) che passa `creator_id`
 esplicito perché lì `message.from_user` è il bot): titolo →
-descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
+descrizione → **premi** → **timer opzionale** → **mescolamento** → loop domande {testo → opzioni (una per riga, 2–10) → opzione corretta
 (inline) → spiegazione opzionale} → **riepilogo** {➕ Aggiungi · 🗑 Rimuovi ultima · ✅ Pubblica}.
-**Nessun timer.** A fine: quiz `ready`.
+A fine: quiz `ready`.
 
 - **Premi**: schermata `prize_mode` con ⚡ Consigliati (default da settings) · ✏️ Personalizza · 🚫 Nessuno.
   In personalizzato si impostano 1°/2°/3° e la **consolazione (4°)**; il `prize_min` è **derivato**
@@ -1298,14 +1392,18 @@ descrizione → **premi** → loop domande {testo → opzioni (una per riga, 2�
 - **Navigazione**: ogni step ha «⬅️ Indietro» (`QuizNewCb(action="back").pack()`,
   `quiz_new:back::`, dispatch via `_BACK_PROMPTERS` per stato);
   «⬅️ Riepilogo» quando si aggiungono altre domande. «🗑 Rimuovi ultima» → `quiz_service.delete_last_question`.
+  Il riepilogo accetta solo gli stati `waiting_question_text`/`reviewing`; un vecchio
+  pulsante fuori flusso viene risposto senza query o modifiche alla FSM corrente.
+  L'esistenza di `quiz_id` intero e della bozza `draft` viene verificata prima di
+  impostare `reviewing`, anche se Redis ha perso i dati o la bozza è stata eliminata.
 - **Hardening**: handler di input gated `IsAdminFilter()`/`IsAdminCallbackFilter()`.
 - **Limiti di lunghezza**: costanti in `handlers/quiz/_shared.py` — `_MAX_TITLE` (256), `_MAX_DESC`
-  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (30), `_MAX_EXPLANATION` (200). **Unica fonte di
+  (1024), `_MAX_QUESTION` (300), `_MAX_OPTION` (100), `_MAX_EXPLANATION` (200). **Unica fonte di
   verità**: i prompt le interpolano e i validatori le applicano, così il limite annunciato non può
-  divergere da quello imposto. `_MAX_OPTION` è basso di proposito: le opzioni sono **bottoni inline**
-  in gioco e `play._question_kb` taglia il testo del bottone **allo stesso `_MAX_OPTION`** — un cap di
-  display separato (prima `[:40]`, con validazione a 100) tagliava risposte che la creazione aveva
-  accettato. L'input oltre il limite viene **rifiutato** (`_too_long` →
+  divergere da quello imposto. Le opzioni sono poll nativi: nessun taglio di display.
+  Lunghezze in unità UTF-16 come Telegram, incluse emoji; spiegazioni con al massimo due a capo.
+  Le spiegazioni legacy con più a capo sono mostrate su una riga, senza tagli o riscritture DB.
+  L'input oltre il limite viene **rifiutato** (`_too_long` →
   `"<len>/<cap>"` + di quanto accorciare; `_options_error` per conteggio + lunghezza per-opzione,
   indica *quale* opzione sfora), **mai troncato in silenzio**: un testo tagliato si scopre a quiz
   già pubblicato. Vale sia in creazione sia in modifica (`QuizEditStates`). I `[:N]` rimasti in
@@ -1330,16 +1428,12 @@ pronto!» e «🧪 Prova» nel dettaglio dell'hub Eventi.
 
 **Invariante:** la prova è **interamente in memoria** (`_TRY: dict[(quiz_id, admin_id), _TryCtx]`) e
 **non scrive nessuna riga `quiz_answers`**. Quindi non può raggiungere podio, premi, XP o
-`game_podiums`: l'isolamento è **strutturale**, non un filtro da ricordarsi in ogni query (era
-l'alternativa scartata: colonna `is_test` + filtro in ~6 punti). Le callback usano
-`QuizTryCb(action, quiz_id, question_id=None, option_id=None)`: `start` e `stop` richiedono il
-solo `quiz_id`, mentre `answer` richiede anche `question_id` e `option_id`; i loro wire payload
-sono rispettivamente `quiz_try:start:<quiz>::`, `quiz_try:stop:<quiz>::` e
-`quiz_try:answer:<quiz>:<question>:<option>`. Il namespace resta disgiunto da `quiz_ans:*`, così
-una risposta di prova non può finire nel recorder vero. Handler gated **singolarmente**
-(`quiz.router` è misto, §8). Nessun timer in prova (il vero limite è
-comunicato a schermo). Ogni messaggio porta il marker 🧪 e il riepilogo finale dichiara
-esplicitamente che nulla è stato salvato.
+`game_podiums`: l'isolamento è **strutturale**, non un filtro nelle query. Non scrive nemmeno
+`quiz_polls` o timer persistenti: il `poll_id` della prova vive nel contesto `_TryCtx`.
+Il presenter `_native.send_question` è identico al gioco reale, senza timer; marker 🧪 nella
+descrizione. `QuizTryCb(start|stop)` resta per avvio/uscita; le risposte passano dal dispatcher
+`poll_answer` e verificano nuovamente i diritti admin. La vecchia azione `answer` è solo un
+avviso di tastiera superata, mai un ingresso al recorder. Il riepilogo conferma zero premi/XP.
 
 > **Identità dell'attore — `admin_id` esplicito.** `start_quiz_try` riceve `admin_id` come
 > parametro **obbligatorio, senza default**, e **non** lo deriva mai da `message.from_user`: il
@@ -1355,18 +1449,33 @@ esplicitamente che nulla è stato salvato.
 
 ### Avvio & gioco
 
-- `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `quiz_<id>`) **poi**
-  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_quiz`, dall'hub Eventi
+- `open_quiz(bot, session, quiz_id)`: annuncia nel gruppo (bottone deep-link `trivianerd_<id>`) **poi**
+  mette il quiz `running` (se l'annuncio fallisce resta `ready`). Usato da `/avvia_trivianerd`, dall'hub Eventi
   (`EventCb(action="start", task_type="quiz", item_id=<id>)`, con conferma `action="askstart"`)
-  e dallo scheduler. Caller committa. **`/quiz` (admin)**
+  e dallo scheduler. Caller committa. **`/trivianerd` (admin)**
   non avvia più con un tap: mostra la lista gestione dell'hub (`QuizType.render_list`).
-- Ogni utente apre `?start=quiz_<id>` → `start_quiz_session`: gioca in privato, una domanda alla
-  volta con **bottoni inline** `QuizAnswerCb(action="answer", quiz_id=<quiz>,
-  question_id=<question>, option_id=<opt>)` (`quiz_ans:answer:<quiz>:<question>:<opt>`). Il filtro
-  tipizzato accetta solo l'azione `answer` e inietta i tre identificatori interi, quindi payload
-  malformati o bottoni di un deploy precedente non raggiungono l'handler. Alla risposta: feedback
-  immediato (✅/❌ + spiegazione), poi domanda successiva. È **resumable** (riprende dalla domanda
-  non ancora risposta). `record_answer` è idempotente per (domanda, utente) — dedup + `IntegrityError` guard.
+- Ogni utente apre `?start=trivianerd_<id>` (anche il vecchio `quiz_<id>`) → `start_quiz_session`: poll **quiz nativo non anonimo**
+  individuale in privato, `allows_revoting=False`, `protect_content=True`. Domanda invariata
+  (300 caratteri); progresso nella descrizione, opzioni complete (100). Risposta corretta
+  rimappata nell'ordine casuale del giocatore; Telegram mostra feedback/spiegazione.
+- `quiz_polls` conserva token, giocatore, domanda, mapping degli indici, poll/message id,
+  istante iniziale e deadline. Claim con lease 60s, commit **prima** dell'invio, attach fenced
+  e altro commit. Un doppio start riprende il poll aperto, mai un timer nuovo. Un invio incerto
+  conserva il lease; dopo 60s una ripresa può ritentarlo. Nel raro crash fra invio e attach può
+  rimanere un poll orfano: i suoi voti sono ignorati, mai attribuiti ad altra domanda/partita.
+- Lock padre `Quiz` prima della delivery: risposta e chiusura si serializzano. Consumo condizionale
+  `open→answered` + `record_answer` nella stessa transazione. Owner, ordine, opzione singola,
+  stato running e token verificati; né duplicati né tastiere pre-deploy possono cambiare il podio.
+- Unico dispatcher `handlers/poll_vote.on_poll_answer`: quiz reale → prova admin → sondaggi
+  ricompensati, senza catch-all concorrenti che inghiottano gli update. `poll` chiuso senza voti
+  fa avanzare subito; con voti attende il `PollAnswer` autenticato. `ScheduledTask(quiz, action=expire,
+  internal=True, poll_token)` recupera la scadenza dopo 3s di grace + intervallo scheduler in caso
+  di update perso/restart. Nessuna task asyncio per domanda; timer visibile gestito da Telegram.
+  I voti non hanno timestamp del tap: il tempo è misurato alla ricezione, bounded al limite;
+  un update oltre la grace può perdere la gara col timeout. Mai dedurre correttezza dai soli conteggi.
+- Reset/delete cancellano esplicitamente le delivery (anche SQLite). Token diversi impediscono
+  ai poll della partita precedente di rispondere nella nuova. Invio/avanzamento post-commit
+  best-effort: dopo un'interruzione si riprende dal deep-link senza cancellare risposte valide.
 
 ### Podio & premi
 
@@ -1391,7 +1500,7 @@ esplicitamente che nulla è stato salvato.
   corrente, oppure `QUIZ_MISSING`). Al massimo un chiamante può ricevere `None`: è quello che rende
   sicuro pagare i premi subito dopo. **La transizione è la guardia** — controllare lo stato e
   ribaltarlo dopo sarebbe un read-then-write, e il quiz è spesso già in cache (§22).
-- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_quiz` **e** dall'hub Eventi
+- `close_quiz(bot, session, quiz_id) -> (ok, msg)`: helper condiviso da `/chiudi_trivianerd` **e** dall'hub Eventi
   (`EventCb(action="close", task_type="quiz", item_id=<id>)`, con conferma `action="askclose"`)
   → `claim_close` → `award_prizes` → annuncio podio (🎖️ per le consolazioni). Un quiz `finished`
   resta gestibile nell'hub: `action="reset"` («Riproponi») lo riporta a `ready`, `action="del"`
@@ -1401,7 +1510,7 @@ esplicitamente che nulla è stato salvato.
 ### Regole
 
 - Stati quiz: `draft → ready → running → finished`.
-- Play in **privato** (i poll di gruppo non sono usati per i quiz; `send_poll` serve solo per avviare/programmare un sondaggio, mai per i quiz).
+- Play in **privato**, con un poll diverso per ciascun giocatore; mai un quiz condiviso nel gruppo.
 - Service no-commit (§5): commit negli handler. `open_quiz` annuncia prima di flippare lo stato.
 
 ---
@@ -1460,22 +1569,29 @@ righe `unverified` **non** si mettono in cache: non sono un verdetto, sono l'ass
 riusarle renderebbe permanente un singolo outage.
 
 **Regola di sicurezza non negoziabile: l'output testuale del modello non raggiunge mai un
-giocatore.** Si estrae un booleano e si butta il resto. Lo schema JSON (`strict`, constrained
+giocatore.** Si estrae esclusivamente l'enum `correct|series|wrong`. Lo schema JSON (`strict`, constrained
 decoding su `openai/gpt-oss-*`) **non ha campi liberi apposta**: non c'è niente nella risposta
 che possa riportare indietro la soluzione a chi provi a farsela dire.
 
 `OPENROUTER_JUDGE_MODEL=openai/gpt-oss-120b` resta separato dal modello creativo.
-Il modello e i prompt del giudice non cambiano: si migra solo il trasporto.
+Il modello resta invariato; prompt `guess-equivalence-v2`, schema `game-match-v2`.
 `judge_equivalence` riutilizza `OpenRouterStructuredProvider` con temperatura 0,
-schema booleano strict, ZDR, tetti di prezzo e lane `openrouter_other`.
+schema enum strict, ZDR, tetti di prezzo e lane `openrouter_other`.
 Non crea una seconda implementazione della contabilizzazione.
+
+`series` conferma soltanto l'appartenenza alla stessa saga (serie generica o capitolo
+diverso), mai una vittoria: `Verdict.correct` resta false, il tentativo conta e il
+giocatore riceve un testo locale senza il titolo segreto. Una sola chiamata classifica
+tutti e tre gli esiti. Il verdetto `series` viene persistito e condiviso dalla cache
+del round; i vecchi `wrong` restano invariati. Gli alias admin mantengono la precedenza
+autorevole, anche su un precedente `series`. Nessuna migrazione: la colonna è già String(16).
 
 ### Il budget di token del giudice — la regressione da non rifare
 
 GPT-OSS ha reasoning obbligatorio: il limite include sia reasoning sia JSON.
 32 token per la risposta più `OPENROUTER_REASONING_TOKEN_ALLOWANCE` (default 1024),
 effort `low`, ragionamento escluso dalla risposta. Tutto il tetto è prenotato
-prima della rete. Schema/parsing rifiutano numeri, stringhe, prose o campi extra.
+prima della rete. Schema/parsing rifiutano numeri, booleani, enum sconosciuti, prose o campi extra.
 
 ### Quando il giudice non risponde
 
@@ -1508,10 +1624,13 @@ della chiave unica `(round, user, attempt_no)`. Il budget è la differenza.
   deve costare token OpenRouter. Otto test contano le chiamate al modello per tenerlo fermo — la
   mutazione che sposta il controllo tentativi dopo il giudice era passata verde prima che ci
   fossero.
-- **Un comando (testo che inizia con `/`) non è mai un tentativo**: `fsm_answer` lo **ignora**
-  in cima, prima di cooldown/giudice/registrazione. Serve al caso reale in cui un giocatore non
-  si accorge che il round è partito e ri-tocca «avvia», che rimanda `/start <deeplink>` in chat:
-  senza la guardia veniva giudicato e bruciava un tentativo.
+- **Un comando (testo che inizia con `/`) non è mai un tentativo**: il filtro di
+  `fsm_answer` lo esclude, lasciandolo ai veri handler (il return interno da solo
+  consumava l'update e bloccava `/start`). Un nuovo `/start` privato libera solo
+  `GuessPlayStates.answering` e la sua tastiera prima del dispatch del deep-link,
+  senza toccare sessione, tentativi o timer nel DB e senza scartare altre FSM admin.
+  Rientrare controlla subito la scadenza, con confine `now >= deadline`.
+  Un vecchio «Esci» risponde anche fuori stato ma non cancella una nuova FSM.
 - **La scadenza è stateless**: `started_at + time_limit_seconds`, calcolata a ogni invio.
   Niente task asyncio, niente mappa in memoria, sopravvive al restart — e rientrare **non**
   azzera l'orologio (sarebbe un timer infinito). Il quiz ha bisogno dei timer perché il suo
@@ -1773,7 +1892,10 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
 (comandi + FSM + `scheduler_loop`/`execute_task`).
 
 - `scheduler_loop(bot)` avviato in `main()` con `asyncio.create_task` prima di `start_polling`; ogni
-  `scheduler_poll_interval`s esegue i `due_tasks` (try/except per task → `mark_done`/`mark_failed`).
+  `scheduler_poll_interval`s scopre gli ID scalari con `due_task_ids`, chiude la sessione di
+  discovery e apre una **sessione indipendente per ogni task**. `get_due_task` ricontrolla
+  esistenza, stato pending e scadenza prima dell'esecuzione: task cancellati, spostati o
+  eliminati dopo la discovery vengono saltati. Ordinamento stabile per data e ID.
   > **Sta in `handlers/` di proposito, non per sbaglio.** Sembra un daemon collocato male, ma
   > `execute_task` dispatcha sul registro `handlers/event_types`, e quegli spec **importano
   > funzioni degli handler** (`handlers.quiz.open_quiz`, `handlers.betting.start_bet_creation`, …)
@@ -1781,19 +1903,19 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   > importare `handlers` da `services`, cioè un'inversione di layering vera in cambio di uno
   > smell estetico. Non farlo senza prima spostare `event_types`.
   >
-  > **L'isolamento per-task sta tutto in `_run_due_task` che non solleva mai**, non nel loop: il
-  > `for` è dentro il `try` del tick, quindi un raise lì dentro abbandona i task ancora dovuti
-  > fino al giro successivo. Coperto da `tests/unit/test_scheduler_loop.py` +
-  > `tests/integration/test_scheduler_failure_path.py` (14 test, garanzie verificate per
-  > mutazione).
-  >
-  > ⚠️ **Rischio latente, misurato.** Dopo un `rollback` che ha lavoro da annullare, leggere
-  > *qualsiasi* attributo dell'istanza ORM dà `MissingGreenlet` — e `_run_due_task` passa quella
-  > stessa istanza a `_notify_creator`, che ne legge due. Oggi funziona **solo** perché fra il
-  > rollback e la notifica ci sono `mark_failed` (che assegna soltanto: un'assegnazione non
-  > carica) e `await session.commit()`, il cui flush ricarica la riga in contesto greenlet.
-  > Quindi: **non spostare la notifica prima del commit** e non togliere quel commit dal path di
-  > errore. Provato per mutazione — il test integration lo prende.
+  > Un rollback invalida **tutti** gli oggetti ORM della sessione, anche con
+  > `expire_on_commit=False`: precaricare la lista di task e poi passarli allo stesso
+  > executor può causare `MissingGreenlet` già leggendo `task.id` del task successivo.
+  > Non basta catturare i metadati del solo task corrente. Fra task si conservano solo
+  > ID primitivi; anche gli hook post-commit restano nella sessione del rispettivo task.
+  > `_run_due_task` cattura ID/creator/retry prima del rischio, fa rollback prima degli
+  > UPDATE scalari di esito e notifica con primitivi **dopo il commit**, senza rileggere
+  > oggetti invalidati. Il loop isola anche errori inattesi di caricamento/esecuzione:
+  > conserva il task ritentabile e prosegue con gli altri ID. Nessun nuovo claim distribuito
+  > o lock del task attraverso rete; idempotenza e lock degli aggregati restano invariati.
+  > Regressioni su sessioni SQLite e PostgreSQL reali:
+  > `test_scheduler_batch_isolation.py` (errore, skip, retry, rollback dell'hook), oltre a
+  > `test_scheduler_failure_path.py` e `test_scheduler_loop.py`.
 - `parse_run_at(text)`: assoluto `AAAA-MM-GG HH:MM` o relativo `30m`/`2h`/`1d` → **UTC naive**
   (timezone `scheduler_timezone`). Rifiuta orari passati.
 - `execute_task` non ramifica per tipo: valida il `group_id`, poi **delega a
@@ -1833,12 +1955,14 @@ Telegram Bot API **non** permette di schedulare poll → scheduler in-process DB
   corso: chiuso a mano o mai avviato è comunque lo stato voluto, non un errore). `/programmati` etichetta
   ogni task «▶️ Avvio» o «🏁 Chiusura» — su un item con entrambi pendenti è la differenza fra annullare
   quello giusto e quello sbagliato.
-- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla),
+- Comandi: `/programma` (scegli un evento già creato → cosa → orario run-at), `/programmati` (lista + annulla, **solo privato**),
   `/sondaggio` (**crea** un sondaggio salvato, poi «Avvia ora / Programma» — come quiz/scommesse, mai
   pubblicato all'istante; **solo in privato**: nel gruppo manda il deep-link `create_poll`, §9;
   riusa `events.start_poll_creation`). Gating a **livello di router** (§8):
   `schedule.router` monta `IsAdminFilter`/`IsAdminCallbackFilter` alla radice, così ogni handler
   (anche quelli guidati solo dallo stato FSM) richiede l'admin.
+  `/programmati` nel gruppo mostra solo il deep-link, con nuovo check admin all'apertura;
+  i vecchi callback di lista/dettaglio/annullamento nel gruppo rispondono senza leggere o mutare task.
 - I `ScheduledTask` sono **persistiti** → sopravvivono al restart.
 
 ---
@@ -1944,7 +2068,7 @@ Il volume `./backups:/app/backups` (compose) persiste gli artefatti tra i restar
 25. **Nuovi tipi-evento solo via registro** (`handlers/event_types`, §18.2): si implementa una spec `EventType` e la si registra in `register_builtin()`. **Vietato** ramificare per tipo in `cb_start_now`/`cb_close`/`cb_type`/`execute_task` o reintrodurre dict tipo→handler (`_TYPE_LABEL`/`_RENDER`). Le spec **non committano** (§5): committa il chiamante.
     > Verificato sul campo: Guess The Game e Sound Quest sono entrati **senza toccare né `events.py` né `schedule.py`** — una spec parametrizzata (`GuessType(kind=…)`) e due righe in `register_builtin`. Quando due tipi differiscono solo per etichette e per un media, si **parametrizza la spec** invece di scriverne due: sono percorsi che pagano monete, e due copie sono due posti dove correggere lo stesso bug.
 26. **Trofei & Locanda** (§11/§12): nuove **condizioni trofeo** si aggiungono al **dispatch** di `check_and_award_milestones` + a `TROPHY_CONDITIONS` + a `describe_condition` (mai catene `if/elif` fuori dagli helper). Le condizioni scoped usano **`Badge.condition_param`** (key item/categoria/gioco o slug `;`-separati per `collection`); colonna nuova ⇒ voce in `_MIGRATIONS`. Le **`collection`** si risolvono a **punto fisso** (sblocco a catena nello stesso commit). **Chiavi disgiunte**: consumabili `cons_*`, cosmetici `tag_*` (namespace `shop_purchases.item_key` condiviso). Acquisto consumabile: **flush prima** del milestone check (autoflush off). Cataloghi (consumabili/categorie/trofei) **solo via CSV + default Python**, mai hardcode negli handler. Nuovi giochi col podio chiamano `progress_service.record_podium(game_key, rank)` — i loro trofei `podium_count`/`first_place_count` si attivano da soli.
-27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **rifiuta tutto ciò che non è esattamente un booleano**. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
+27. **Chiamate LLM che decidono qualcosa** (§19.b) non passano da `generate_completion`: quella è tarata sull'intrattenimento (temperature 0.9, testo libero). Un giudizio usa `ai_service.judge_equivalence` — temperature 0, schema `strict`, e un parse che **ammette solo l'enum `correct|series|wrong`**. Solo `correct` può vincere; `series` è un indizio. Non esiste un «forse»: un raise significa *non dimostrato corretto*, mai *corretto*. L'output testuale del modello **non raggiunge mai un utente**.
 
 ---
 
@@ -2001,7 +2125,8 @@ tests/
     ├── test_state_roundtrip.py  # export_state → import_state: valori preservati, DB non vuoto rifiutato, checksum
     ├── test_migrations_pg.py    # [pg] _MIGRATIONS: schema fresco, idempotenza, guardia dialetto,
     │                            #   colonne ri-aggiunte da un deploy vecchio, BIGINT >2^31, indici ledger
-    ├── test_scheduler_failure_path.py # path di errore su sessione reale: istanza ORM leggibile dopo il rollback
+    ├── test_scheduler_failure_path.py # path di errore su sessione reale: esiti/notifiche con primitivi dopo il rollback
+    ├── test_scheduler_batch_isolation.py # batch su SQLite/PG: sessioni indipendenti, retry/skip/hook, task cancellati/spostati
     └── test_money_concurrency_pg.py # [pg] gare su denaro/XP/bet/quiz — 16 guardie di regressione
 ```
 
@@ -2285,6 +2410,78 @@ trasformerebbe l'alert su un bug in un bug. Stessa scelta dei comandi AI (§17).
 
 ## 27. Inline eventi & giochi AI persistenti
 
+### Telefono senza fili (rollout test, opt-in)
+
+`telephone` è un tipo-evento registrato, senza ramificazioni in hub/scheduler.
+Condivide `AIGameSession` e il ledger `AIGameTurn`; le nuove tabelle
+`TelephoneGame` (snapshot modello/provider/prezzo massimo) e `TelephoneVisit`
+(esposizione, token, prompt DM e descrizione) nascono da `metadata.create_all`.
+`telephone_games.stage_attempts` viene aggiunto con DDL idempotente in
+`_MIGRATIONS` anche sulle istanze già rilasciate. Nessun premio CoInn/XP.
+
+Una sola staffetta running per gruppo (advisory lock PostgreSQL all'avvio), quattro
+partecipanti distinti, massimo quattro immagini e 30 minuti complessivi. Deep-link
+`telefono_<id>` → verifica membership fail-closed → claim SQL condizionale → commit
+→ consegna privata protetta → armo i 120 secondi per scrivere. Il lease di consegna
+è separato (30 secondi). Chi ha prenotato/può aver visto non rientra nella catena,
+anche dopo un abbandono. Nessun roster obbligatorio: la staffetta torna libera.
+
+Le descrizioni (1–150 caratteri) arrivano solo come reply al prompt DM persistito,
+con identità e token validi e nessun altro FSM attivo; comandi e altri reply non
+vengono intercettati. `begin_generation` fa CAS prima della rete: un duplicato
+non genera. Il provider riceve **solo l'ultima descrizione + stile fisso**, senza
+chat, cronologia, prompt iniziale o immagini precedenti. `image_service` usa Image
+API OpenRouter async, provider pinned, `n=1`, PNG 1K e controllo listino fresco
+che rifiuta unità sconosciute. Lo schema `ImageGenerationProviderPreferences`
+non espone `max_price`: non inviare il campo del router testuale fingendo che sia
+un vincolo immagini. Il tetto è un gate di preflight con margine; un cambio prezzo
+tra GET e POST resta un limite dichiarato. Per un hard cap esterno usare il limite
+mensile sulla key OpenRouter, non alzarlo automaticamente per le immagini.
+`ai_budget.reserve_cost` prenota il tetto immagine nella lane `openrouter_other`
+e nel cap globale già esistenti, senza aumenti. Costo assente/timeout = addebito
+conservativo del tetto; nessun retry automatico del POST pagato. Ledger senza prompt.
+
+I task `expire` interni rilasciano writer e pause scadute e chiudono generazioni
+orfane dopo 240 secondi (timeout provider fino a 120s, più margine rete/Telegram).
+Un errore transitorio gestito (timeout/rete/429/5xx) preserva la catena in pausa
+per 120s: il titolare può confermare **un solo** nuovo tentativo o lasciare il
+passaggio. `stage_attempts` ammette massimo due job per tappa, condivisi fra tutti
+i partecipanti; si azzera soltanto dopo il completamento. Retry manuale = nuovo
+token CAS, quindi doppio click e completamenti tardivi non generano/scrivono due
+volte. Nessun retry pagato automatico, neppure dopo restart. Al secondo errore o
+su errore permanente si rivela il prefisso raccolto. Il cap mensile non aumenta.
+Una generazione ammessa prima della deadline può terminare; poi si chiude.
+I log riportano stage/kind/status HTTP, durata e request-id tecnico, mai prompt,
+corpi di errore, credenziali o descrizioni.
+Una card gruppo viene editata per progresso e reveal sfogliabile (nessun invio
+ripetuto di album), con una notifica finale best-effort prenotata una volta nel DB;
+gli admin possono riprovare la presentazione dagli Eventi
+senza rigenerare immagini. La primissima `send_message` conserva il consueto limite
+Telegram send→salvataggio: un crash in quella finestra può lasciare una card orfana,
+non una seconda generazione pagata. Il contenuto privato non è inviolabile agli
+screenshot: `protect_content` riduce inoltri accidentali, non garantisce segretezza.
+
+`TELEPHONE_ENABLED=false` per default: il rilascio del codice non abilita prod.
+È un kill switch di visibilità e accesso, non solo di creazione: la capability
+opzionale `enabled` della spec nasconde il tipo in `get`/`all_types` del registro,
+quindi hub, programmazione, inline e contesto live AI non lo espongono.
+`/immagine` sparisce dai menu Telegram e dal manuale/suggerimenti; `/eventi` non
+menziona staffette. Reply, link, callback e pubblicazione delle card sono bloccati
+anche per gli admin. Gli ingressi obsoleti mostrano al massimo un errore generico,
+mai il nome della funzione. Le programmazioni disabilitate sono nascoste e, alla
+scadenza, marcate done senza esecuzione, retry o notifica: non si accodano per una
+futura riattivazione. Il dato storico rimane e nessun messaggio già inviato viene
+cancellato. Il flag si configura nell'env dell'istanza e richiede un nuovo processo;
+in Docker serve ricreare il container (`docker compose up -d --force-recreate bot`):
+un semplice restart e Watchtower conservano l'env del container precedente.
+Test `true`, produzione `false` o assente. Il codice resta identico nei branch.
+`StartResult.audit_action/audit_detail` permette alla spec di richiedere audit:
+il caller generico registra l'admin effettivo nella stessa transazione prima
+del commit, senza indovinarlo dal creatore della partita.
+Dettagli operativi e limiti: `docs/telephone-2026-11-12.md`.
+
+### Altri giochi persistenti e inline
+
 L'inline mode è esclusivamente una proiezione **read-only** di eventi aperti e
 avvii futuri. `services.event_discovery` interroga soltanto le capability
 opzionali `discover_open` / `describe_scheduled` dei tipi registrati: vietati
@@ -2312,13 +2509,39 @@ ricontrollata dopo il lock, quindi un turno tardivo non entra nel ledger né pag
 Una sola sessione `twentyq` può essere avviata per gruppo: il service serializza
 avvii manuali e programmati con advisory lock transazionale PostgreSQL sul gruppo,
 poi controlla le sessioni running (v1 e v2). Non chiude né modifica eventuali
-partite parallele preesistenti; `/gioco` ne segnala l'ambiguità senza sceglierne una.
-`/gioco` e `/gioco_alduino` accettano domande o `RISPOSTA: titolo`, usando gli stessi
-service, quote e deduplicazione dei reply. Senza argomenti mostrano stato e quota.
+partite parallele preesistenti; `/aldusgame` ne segnala l'ambiguità senza sceglierne una.
+`/aldusgame` mostra stato/quota e consente di giocare allo stesso modo a utenti
+e admin, senza controllare il ruolo né aprire pannelli di gestione. Il comando distinto
+`/gestisci_aldusgame` è admin-only e apre in privato la lista del tipo
+`TwentyQuestionsType`, già usata da `/eventi`. Filtro admin sul comando e controllo
+esplicito nel corpo per gli ingressi programmatici. Deep-link `manage_twentyq` con verifica
+admin all'atterraggio; nessun dettaglio/segredo admin nel gruppo. La callback pubblica
+`TwentyQuestionsStatusCb` («Vedi partita») è disgiunta dalle `EventCb` admin e mostra
+solo DTO pubblici: identità del clicker esplicita, mai l'autore bot del messaggio.
+In privato legge il gruppo effettivo senza pubblicare card o inviare turni; testo
+dedicato invita a giocare nel gruppo. Con argomenti nel gruppo entrambi i ruoli
+possono inviare domande o `RISPOSTA: titolo`, con gli stessi service/quote/deduplicazione
+dei reply. La consultazione senza argomenti non chiama l'AI né consuma quote; l'eventuale
+messaggio di riepilogo nel gruppo conserva soltanto la consueta mappatura reply.
+Menu e manuale del gioco pubblici, gestione solo in menu/manuale admin; mutazioni di gestione sempre
+dietro i filtri admin già presenti nell'hub.
+I nomi canonici sono `/aldusgame` e `/gestisci_aldusgame`: i precedenti comandi
+non sono alias. Restano invariati il deep-link `manage_twentyq`, le callback,
+le chiavi persistite `twentyq` e le funzioni interne; nessuna migrazione dei dati.
+Alias breve rimosso da router, menu e manuale. Le istruzioni comuni di card e help
+invitano a rispondere al messaggio con una domanda o `Risposta: titolo del gioco`;
+i reply a verdetti registrati rimangono comunque compatibili. Card, help senza partita
+attiva e riepilogo personale terminano con `Digita /aldusgame per avere le informazioni aggiornate`.
+Le scadenze visibili (anche nella conferma di creazione) usano `utils.daytime.to_local`,
+con timezone community e DST, ma persistenza e confronti restano UTC naive.
+Solo la presentazione dei premi è semplificata: avviso senza percentuali, minimi o
+«Penalità sul pool» in help/card. Policy, proiezione e settlement non cambiano.
+La spiegazione dei premi è condivisa da help e card: i CoInn si ricevono solo su
+vittoria e l'importo definitivo viene calcolato a fine partita; niente «saldo maturato».
 `AIGameMessage` associa esclusivamente `(group_id, message_id)` alla sessione:
 verdetti e riepiloghi v2 vengono registrati dopo l'invio Telegram, in una nuova
 transazione, e restano reply target dopo restart. Un errore nella registrazione
-non annulla il turno né duplica l'invio; `/gioco` permette di riprendere. Un reply
+non annulla il turno né duplica l'invio; `/aldusgame` permette di riprendere. Un reply
 a una partita conclusa non passa alla nuova e non attiva la chat normale.
 La tabella `ai_game_messages` viene creata da `Base.metadata.create_all()` allo
 startup ed è inclusa nell'export basato sui metadata; nessun backfill dei vecchi

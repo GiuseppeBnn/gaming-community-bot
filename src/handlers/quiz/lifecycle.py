@@ -18,13 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_data.config import settings
 from filters.admin_filter import IsAdminFilter, is_admin
-from handlers._mentions import mention
+from handlers._mentions import mention_many
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from services import badge_service, group_registry, progress_service, quiz_service
 from utils import cooldown
 from utils.static_reply import reply_static
-from utils.text import esc, format_seconds_short
+from utils.text import chunk_html_lines, esc, format_seconds_short
 
 from handlers.quiz._shared import (
     _QUIZ_PRIVATE_NOTICE,
@@ -61,14 +61,14 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
         bot_info = await bot.get_me()
         await group_registry.send_group_message(
             bot, db_session,
-            f"🧠 <b>QUIZ: {esc(quiz.title)}</b>\n"
+            f"🧠 <b>TRIVIA NERD: {esc(quiz.title)}</b>\n"
             f"❓ {len(quiz.questions)} domande · {tl_text} · 🏆 {quiz_service.format_prize_summary(quiz)}\n\n"
             "Gioca in <b>chat privata</b> col bot! Vince chi ne azzecca di più — "
-            "a parità conta l'ordine di arrivo. Premio garantito a tutti i finisher! 🏁"
+            "a parità conta il tempo impiegato. Premio garantito a tutti i finisher! 🏁"
             f"{desc_txt}",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
                 InlineKeyboardButton(
-                    text="▶️ Gioca", url=f"https://t.me/{bot_info.username}?start=quiz_{quiz.id}"
+                    text="▶️ Gioca", url=f"https://t.me/{bot_info.username}?start=trivianerd_{quiz.id}"
                 )
             ]]),
         )
@@ -81,16 +81,16 @@ async def open_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool, 
 
 
 async def _show_play_view(message: Message, db_session: AsyncSession) -> None:
-    """Non-admin view of /quiz: a button to play the running quiz, or a clear
+    """Non-admin view of /trivianerd: a button to play the running quiz, or a clear
     'no quiz active' message — never silence (the old admin filter just dropped
-    a non-admin's /quiz). One live reply per user in groups (anti-flood)."""
+    a non-admin's command). One live reply per user in groups (anti-flood)."""
     if not await cooldown.ready(message, "quiz", settings.command_cooldown_seconds):
         return
     running = [q for q in await quiz_service.list_ready(db_session) if q.status == "running"]
     if not running:
         await reply_static(
             message,
-            "🧠 <b>Nessun quiz attivo al momento.</b>\n"
+            "🧠 <b>Nessun Trivia Nerd attivo al momento.</b>\n"
             "Quando un admin ne avvia uno te lo segnaliamo qui nel gruppo! 🏁",
             "quiz",
         )
@@ -101,18 +101,18 @@ async def _show_play_view(message: Message, db_session: AsyncSession) -> None:
         # Button text is not HTML-parsed → raw title is fine here.
         b.button(
             text=f"▶️ Gioca: {q.title[:30]}",
-            url=f"https://t.me/{bot_info.username}?start=quiz_{q.id}",
+            url=f"https://t.me/{bot_info.username}?start=trivianerd_{q.id}",
         )
     b.adjust(1)
     await reply_static(
         message,
-        "🧠 <b>Quiz in corso!</b> Tocca per giocare in chat privata:",
+        "🧠 <b>Trivia Nerd in corso!</b> Tocca per giocare in chat privata:",
         "quiz",
         reply_markup=b.as_markup(),
     )
 
 
-@router.message(Command("quiz"))
+@router.message(Command("trivianerd"))
 async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
     # Public entry point. Non-admins get the "play" view (with a clear message
     # when no quiz is active); admins get the events-hub management list. The admin
@@ -121,7 +121,7 @@ async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
         await _show_play_view(message, db_session)
         return
     if await redirect_to_private(
-        message, "manage_quiz", "🧠 Gestisci i quiz", notice=_QUIZ_PRIVATE_NOTICE
+        message, "manage_trivianerd", "🧠 Gestisci Trivia Nerd", notice=_QUIZ_PRIVATE_NOTICE
     ):
         return
     # Management goes through the events hub: tapping a quiz opens its detail
@@ -132,13 +132,13 @@ async def cmd_quiz_list(message: Message, db_session: AsyncSession) -> None:
     await QuizType().render_list(message, db_session)
 
 
-@router.message(Command("avvia_quiz"), IsAdminFilter())
+@router.message(Command("avvia_trivianerd"), IsAdminFilter())
 async def cmd_avvia_quiz(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
     if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
         return
     raw = (command.args or "").strip()
     if not raw.isdigit():
-        await message.reply("ℹ️ Uso: <code>/avvia_quiz &lt;id&gt;</code>")
+        await message.reply("ℹ️ Uso: <code>/avvia_trivianerd &lt;id&gt;</code>")
         return
     ok, msg = await open_quiz(message.bot, db_session, int(raw))
     if ok:
@@ -209,23 +209,25 @@ async def close_quiz(bot, db_session: AsyncSession, quiz_id: int) -> tuple[bool,
     text = await _podium_text(db_session, quiz.title, ranked, awards)
     if group_registry.get_group_id() != 0:
         try:
-            await group_registry.send_group_message(bot, db_session, text)
+            for page in chunk_html_lines(text):
+                await group_registry.send_group_message(bot, db_session, page)
         except Exception:  # noqa: BLE001
             log.warning("Impossibile annunciare il podio nel gruppo.")
         return True, "🏁 Quiz chiuso. Podio pubblicato nel gruppo."
     return True, text
 
 
-@router.message(Command("chiudi_quiz"), IsAdminFilter())
+@router.message(Command("chiudi_trivianerd"), IsAdminFilter())
 async def cmd_chiudi_quiz(message: Message, command: CommandObject, db_session: AsyncSession) -> None:
     if await redirect_to_private(message, "admin", "🛠️ Apri il pannello", notice=_QUIZ_PRIVATE_NOTICE):
         return
     raw = (command.args or "").strip()
     if not raw.isdigit():
-        await message.reply("ℹ️ Uso: <code>/chiudi_quiz &lt;id&gt;</code>")
+        await message.reply("ℹ️ Uso: <code>/chiudi_trivianerd &lt;id&gt;</code>")
         return
     ok, msg = await close_quiz(message.bot, db_session, int(raw))
-    await message.reply(msg if ok else f"⚠️ {msg}")
+    for page in chunk_html_lines(msg if ok else f"⚠️ {msg}"):
+        await message.reply(page)
 
 
 async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> str:
@@ -234,9 +236,10 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
     award_by_user = {a.user_tg_id: a for a in awards}
     medals = ["🥇", "🥈", "🥉"]
     lines = [f"🏁 <b>{esc(title)} — PODIO</b>\n"]
-    for i, row in enumerate(ranked[:10]):
+    names = await mention_many(db_session, [row.user_tg_id for row in ranked])
+    for i, row in enumerate(ranked):
         rank = medals[i] if i < 3 else f"{i + 1}."
-        name = await _display_name(db_session, row.user_tg_id)
+        name = names[row.user_tg_id]
         award = award_by_user.get(row.user_tg_id)
         prize_txt = ""
         if award and award.coins:
@@ -252,8 +255,4 @@ async def _podium_text(db_session: AsyncSession, title: str, ranked, awards) -> 
             f" + {settings.quiz_xp_per_correct}/risposta giusta + bonus podio.</i>"
         )
     return "\n".join(lines)
-
-
-async def _display_name(db_session: AsyncSession, tg_id: int) -> str:
-    return await mention(db_session, tg_id)
 

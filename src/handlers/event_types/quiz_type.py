@@ -19,7 +19,7 @@ from services import quiz_service, schedule_service
 from services.public_event import PublicEvent
 from utils.text import esc
 
-from .base import StartResult, edit_or_send
+from .base import PostCommitHook, StartResult, edit_or_send
 
 # Status → (dot, human label) for the list and detail header.
 _STATUS = {
@@ -35,8 +35,8 @@ def _fmt_dt(dt) -> str:
 
 class QuizType:
     key = "quiz"
-    hub_label = "🧠 Quiz"
-    create_label = "➕ Crea quiz"
+    hub_label = "🧠 Trivia Nerd"
+    create_label = "➕ Crea Trivia Nerd"
     #: Its close publishes the podium, so it is worth scheduling on its own clock —
     #: `handlers.schedule` offers «avvio o chiusura?» only for types that say this.
     closable = True
@@ -46,7 +46,7 @@ class QuizType:
             PublicEvent(
                 key=self.key, item_id=q.id, title=q.title,
                 summary=f"{len(q.questions)} domande · gioca in privato",
-                emoji="🧠", deep_link_payload=f"quiz_{q.id}",
+                emoji="🧠", deep_link_payload=f"trivianerd_{q.id}",
             )
             for q in await quiz_service.list_ready(db_session)
             if q.status == "running"
@@ -61,7 +61,7 @@ class QuizType:
         return PublicEvent(
             key=self.key, item_id=quiz.id, title=quiz.title,
             summary=f"{len(quiz.questions)} domande", emoji="🧠",
-            deep_link_payload=f"quiz_{quiz.id}",
+            deep_link_payload=f"trivianerd_{quiz.id}",
         )
 
     async def render_list(self, message: Message, db_session: AsyncSession) -> None:
@@ -70,7 +70,7 @@ class QuizType:
         # never starts it (STEERING §18.2, no accidental launch).
         quizzes = await quiz_service.list_manageable(db_session)
         b = InlineKeyboardBuilder()
-        lines = ["🧠 <b>Quiz</b>\n"]
+        lines = ["🧠 <b>Trivia Nerd</b>\n"]
         for q in quizzes:
             dot, label = _STATUS.get(q.status, ("•", q.status))
             # Title only — no `#id` in the listing (the id still travels in the
@@ -81,8 +81,8 @@ class QuizType:
                 callback_data=EventCb(action="item", task_type="quiz", item_id=q.id).pack(),
             )
         if not quizzes:
-            lines.append("<i>Nessun quiz. Creane uno.</i>")
-        b.button(text="➕ Crea quiz", callback_data=EventCb(action="new", task_type="quiz").pack())
+            lines.append("<i>Nessun Trivia Nerd. Creane uno.</i>")
+        b.button(text=self.create_label, callback_data=EventCb(action="new", task_type="quiz").pack())
         b.button(text="⬅️ Eventi", callback_data=EventCb(action="home").pack())
         b.adjust(1)
         await edit_or_send(message, "\n".join(lines), b.as_markup())
@@ -204,9 +204,23 @@ class QuizType:
 
     async def execute_scheduled(
         self, bot, session: AsyncSession, task: ScheduledTask, group_id: int
-    ) -> None:
+    ) -> PostCommitHook | None:
         from handlers.quiz import close_quiz, open_quiz
         from services.schedule_service import TaskSkip
+
+        payload = schedule_service.task_payload(task)
+        if payload.get("action") == "expire" and payload.get("internal") is True:
+            from handlers.quiz.play import finish_expiry, prepare_expiry
+
+            token = payload.get("poll_token")
+            if not isinstance(token, str) or not token:
+                raise ValueError("Missing native quiz poll token")
+            delivery = await prepare_expiry(session, token)
+            if delivery is not None:
+                async def after_commit() -> None:
+                    await finish_expiry(bot, session, delivery)
+                return after_commit
+            return None
 
         # A scheduled close reuses this same task_type with an action payload — the
         # pattern the guess auto-close and the betting auto-lock already use. No new

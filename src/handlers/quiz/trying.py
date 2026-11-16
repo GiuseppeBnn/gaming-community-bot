@@ -1,232 +1,176 @@
-"""Admin dry-run: play a quiz without recording anything.
-
-Same questions and the same feedback as the real thing, but nothing is written and
-nothing counts towards the podium — the point is to catch a typo before an audience
-sees it. Entirely in memory, keyed per (quiz, admin)."""
+"""Admin dry-run: the real poll presenter, structurally no score writes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aiogram import F
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram import Bot, F
+from aiogram.types import CallbackQuery, Message, PollAnswer
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from filters.admin_filter import IsAdminCallbackFilter
+from filters.admin_filter import IsAdminCallbackFilter, is_admin
 from handlers.callbacks import QuizTryCb
+from handlers.quiz import _native
+from handlers.quiz._shared import router
 from services import quiz_service
 from utils.text import esc
-
-from handlers.quiz._shared import (
-    _MAX_OPTION,
-    router,
-)
-
-
-# ---------------------------------------------------------------------------
-# Test run — admin dry-run of a `ready` quiz (§19.b)
-# ---------------------------------------------------------------------------
-#
-# Lets an admin play a quiz after publishing it but before starting it, to check
-# wording, options and explanations for real. The whole flow is IN-MEMORY: it
-# never writes a `quiz_answers` row, so a test run can't reach the podium, the
-# prizes, the XP or `game_podiums` — the isolation is structural, not a filter
-# someone has to remember to apply on every query.
-#
-# Separate callback namespace (`quiz_try:*` vs `quiz_ans:*`) so a test answer can
-# never be routed into the real recorder. Admin-gated per handler: quiz.router is
-# mixed (public `quiz_ans:*`), so it cannot carry a router-level filter (§8).
 
 
 @dataclass
 class _TryCtx:
-    """One admin's test run. Lives only in memory and dies with the process — a
-    lost run costs nothing, so there is no persistence to justify."""
-
     quiz_id: int
-    order: list[int]  # question ids, in this run's display order
-    index: int = 0  # how many questions are already answered
+    order: list[int]
+    index: int = 0
     correct: int = 0
+    poll_id: str | None = None
+    message_id: int | None = None
+    option_order: tuple[int, ...] = ()
 
 
 _TRY: dict[tuple[int, int], _TryCtx] = {}
-
-_TRY_BANNER = "🧪 <b>MODALITÀ PROVA</b> — nulla viene salvato né conta in classifica."
-
-
-def _try_key(quiz_id: int, admin_tg_id: int) -> tuple[int, int]:
-    return (quiz_id, admin_tg_id)
-
-
-def _try_question_kb(
-    quiz_id: int, question_id: int, ordered_options: list[tuple[int, str]]
-) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    for real_idx, opt in ordered_options:
-        # Same slice as real play (`_MAX_OPTION`): the dry-run must show the admin
-        # exactly what players will see, truncation included.
-        b.button(
-            text=opt[:_MAX_OPTION],
-            callback_data=QuizTryCb(
-                action="answer", quiz_id=quiz_id, question_id=question_id, option_id=real_idx
-            ).pack(),
-        )
-    b.button(text="⏹ Esci dalla prova", callback_data=QuizTryCb(action="stop", quiz_id=quiz_id).pack())
-    b.adjust(1)
-    return b.as_markup()
+_TRY_BANNER = "🧪 <b>MODALITÀ PROVA</b> — nulla conta in classifica."
 
 
 async def start_quiz_try(
-    message: Message, db_session: AsyncSession, quiz_id: int, admin_id: int
+    message: Message,
+    db_session: AsyncSession,
+    quiz_id: int,
+    admin_id: int,
 ) -> None:
-    """Begin (or restart) an admin test run of a `ready` quiz.
-
-    ``admin_id`` is passed in explicitly and has NO default on purpose: every entry
-    point reaches this through a button on a message the BOT sent, so
-    ``message.from_user`` is the bot, not the admin who tapped (same trap as
-    ``ev:new:quiz`` passing ``creator_id``, §19). Deriving the identity from
-    `message` here stored the run under the bot's id while the answer handler
-    looked it up under the admin's — every answer was refused as "Prova scaduta".
-    Keep it a required parameter so a future entry point must state who is acting.
-    """
+    """admin_id is the tapping human, never message.from_user (the bot)."""
+    if message.chat.type != "private":
+        return
     quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    await db_session.commit()
     if quiz is None or not quiz.questions:
         await message.answer("⚠️ Quiz non trovato.")
         return
     if quiz.status != "ready":
         await message.answer(
-            "🧪 La prova è disponibile solo per un quiz <b>pronto</b> e non ancora avviato."
+            "🧪 La prova è disponibile solo per un quiz pronto, non ancora avviato."
         )
         return
-
-    # `started_at` is still NULL here, so the randomization seed is stable for the
-    # whole test run — the admin sees one coherent order, not a reshuffle per question.
-    order = [q.id for q in quiz_service.user_question_order(quiz, admin_id)]
-    _TRY[_try_key(quiz_id, admin_id)] = _TryCtx(quiz_id=quiz_id, order=order)
-
-    limit = quiz_service.time_limit_seconds(quiz)
-    timing = (
-        f"Nel quiz vero ogni domanda avrà <b>{limit} secondi</b>; in prova non c'è timer."
-        if limit > 0
-        else "Nessun limite di tempo, come nel quiz vero."
+    old = _TRY.pop((quiz_id, admin_id), None)
+    if old is not None and old.message_id is not None:
+        await _native.stop_question(message.bot, admin_id, old.message_id)
+    ctx = _TryCtx(
+        quiz_id=quiz.id,
+        order=[q.id for q in quiz_service.user_question_order(quiz, admin_id)],
     )
-    await message.answer(f"{_TRY_BANNER}\n\n🧠 <b>{esc(quiz.title)}</b>\n<i>{timing}</i>")
-    await _present_try_question(message, db_session, quiz, admin_id)
+    _TRY[(quiz_id, admin_id)] = ctx
+    await message.answer(
+        f"{_TRY_BANNER}\n\n🧠 <b>{esc(quiz.title)}</b>\n"
+        "In prova non c'è timer. Nessun premio o XP viene assegnato."
+    )
+    await _present(message.bot, quiz, admin_id, ctx)
 
 
-async def _present_try_question(
-    message: Message, db_session: AsyncSession, quiz, admin_id: int
-) -> None:
-    ctx = _TRY.get(_try_key(quiz.id, admin_id))
-    if ctx is None:
-        return
+async def _present(bot: Bot, quiz, admin_id: int, ctx: _TryCtx) -> None:
     question = next((q for q in quiz.questions if q.id == ctx.order[ctx.index]), None)
-    if question is None:  # question deleted mid-run
-        await _finish_try(message, quiz, admin_id)
+    if question is None:
+        await _finish(bot, admin_id, ctx)
         return
-    ordered_options = quiz_service.user_option_order(quiz, question, admin_id)
-    await message.answer(
-        f"🧪 <b>Domanda {ctx.index + 1}/{len(ctx.order)}</b>\n\n{esc(question.text)}",
-        reply_markup=_try_question_kb(quiz.id, question.id, ordered_options),
-    )
-
-
-async def _finish_try(message: Message, quiz, admin_id: int) -> None:
-    ctx = _TRY.pop(_try_key(quiz.id, admin_id), None)
-    total = len(ctx.order) if ctx else 0
-    correct = ctx.correct if ctx else 0
+    ordered = quiz_service.user_option_order(quiz, question, admin_id)
     b = InlineKeyboardBuilder()
-    b.button(text="🔁 Riprova", callback_data=QuizTryCb(action="start", quiz_id=quiz.id).pack())
-    b.adjust(1)
-    await message.answer(
-        f"🧪 <b>Prova completata</b>\n\n"
-        f"Risultato: <b>{correct}/{total}</b> corrette.\n\n"
-        f"<i>Nessun dato è stato salvato: il quiz è ancora pronto da avviare "
-        f"e la classifica è intatta.</i>",
+    b.button(
+        text="⏹ Esci dalla prova", callback_data=QuizTryCb(action="stop", quiz_id=quiz.id).pack()
+    )
+    sent = await _native.send_question(
+        bot,
+        admin_id,
+        question,
+        ordered,
+        index=ctx.index,
+        total=len(ctx.order),
+        trial=True,
         reply_markup=b.as_markup(),
     )
+    if _TRY.get((quiz.id, admin_id)) is not ctx:
+        await _native.stop_question(bot, admin_id, sent.message_id)
+        return
+    ctx.poll_id, ctx.message_id = sent.poll.id, sent.message_id
+    ctx.option_order = tuple(real_id for real_id, _ in ordered)
+
+
+async def _finish(bot: Bot, admin_id: int, ctx: _TryCtx) -> None:
+    if _TRY.get((ctx.quiz_id, admin_id)) is not ctx:
+        return
+    _TRY.pop((ctx.quiz_id, admin_id), None)
+    b = InlineKeyboardBuilder()
+    b.button(text="🔁 Riprova", callback_data=QuizTryCb(action="start", quiz_id=ctx.quiz_id).pack())
+    await bot.send_message(
+        admin_id,
+        f"🧪 <b>Prova completata</b>\n\n<b>{ctx.correct}/{len(ctx.order)}</b> corrette.\n"
+        "Nessun dato salvato in classifica, nessun premio assegnato.",
+        reply_markup=b.as_markup(),
+    )
+
+
+async def on_answer(answer: PollAnswer, bot: Bot, db_session: AsyncSession) -> bool:
+    match = next(((key, ctx) for key, ctx in _TRY.items() if ctx.poll_id == answer.poll_id), None)
+    if match is None:
+        return False
+    (quiz_id, admin_id), ctx = match
+    user = answer.user
+    if user is None or user.id != admin_id or len(answer.option_ids) != 1:
+        return True
+    option = answer.option_ids[0]
+    if not 0 <= option < len(ctx.option_order):
+        return True
+    # Consume before the first await: concurrent updates cannot advance twice.
+    ctx.poll_id = None
+    allowed = await is_admin(bot, admin_id)
+    if _TRY.get((quiz_id, admin_id)) is not ctx:
+        return True
+    if not allowed:
+        _TRY.pop((quiz_id, admin_id), None)
+        return True
+    quiz = await quiz_service.get_quiz(db_session, quiz_id)
+    if quiz is None or quiz.status != "ready":
+        _TRY.pop((quiz_id, admin_id), None)
+        await db_session.commit()
+        await _native.stop_question(bot, admin_id, ctx.message_id)
+        await bot.send_message(admin_id, "🧪 Prova terminata: il quiz non è più disponibile.")
+        return True
+    question = next((q for q in quiz.questions if q.id == ctx.order[ctx.index]), None)
+    if question is None:
+        await db_session.commit()
+        await _finish(bot, admin_id, ctx)
+        return True
+    ctx.correct += int(ctx.option_order[option] == question.correct_option_id)
+    ctx.index += 1
+    await db_session.commit()
+    if _TRY.get((quiz_id, admin_id)) is not ctx:
+        return True
+    await _native.stop_question(bot, admin_id, ctx.message_id)
+    if ctx.index == len(ctx.order):
+        await _finish(bot, admin_id, ctx)
+    else:
+        await _present(bot, quiz, admin_id, ctx)
+    return True
 
 
 @router.callback_query(QuizTryCb.filter(F.action == "start"), IsAdminCallbackFilter())
 async def cb_try_start(
     callback: CallbackQuery, callback_data: QuizTryCb, db_session: AsyncSession
 ) -> None:
-    quiz_id = callback_data.quiz_id
-    # `callback.from_user` is the admin who tapped; `callback.message.from_user`
-    # would be the bot that posted the button (see start_quiz_try's docstring).
-    await start_quiz_try(callback.message, db_session, quiz_id, callback.from_user.id)
+    await start_quiz_try(callback.message, db_session, callback_data.quiz_id, callback.from_user.id)
     await callback.answer()
 
 
 @router.callback_query(QuizTryCb.filter(F.action == "stop"), IsAdminCallbackFilter())
 async def cb_try_stop(callback: CallbackQuery, callback_data: QuizTryCb) -> None:
-    quiz_id = callback_data.quiz_id
-    _TRY.pop(_try_key(quiz_id, callback.from_user.id), None)
-    try:
-        await callback.message.edit_text("🧪 Prova interrotta. Nessun dato salvato.")
-    except Exception:  # noqa: BLE001 — message may be too old to edit
-        await callback.message.answer("🧪 Prova interrotta. Nessun dato salvato.")
+    admin_id = callback.from_user.id
+    old = _TRY.pop((callback_data.quiz_id, admin_id), None)
+    if old is not None and old.message_id is not None:
+        await _native.stop_question(callback.bot, admin_id, old.message_id)
+    await callback.message.answer("🧪 Prova interrotta. Nessun dato salvato.")
     await callback.answer()
 
 
 @router.callback_query(QuizTryCb.filter(F.action == "answer"), IsAdminCallbackFilter())
-async def cb_try_answer(
-    callback: CallbackQuery, callback_data: QuizTryCb, db_session: AsyncSession
-) -> None:
-    quiz_id = callback_data.quiz_id
-    question_id = callback_data.question_id
-    opt_idx = callback_data.option_id
-    if question_id is None or opt_idx is None:
-        await callback.answer("Dati non validi.", show_alert=True)
-        return
-
-    admin_id = callback.from_user.id
-    ctx = _TRY.get(_try_key(quiz_id, admin_id))
-    if ctx is None:
-        await callback.answer("🧪 Prova scaduta. Riavviala dal quiz.", show_alert=True)
-        return
-    if ctx.order[ctx.index] != question_id:
-        await callback.answer("Hai già risposto a questa domanda.")
-        return
-
-    quiz = await quiz_service.get_quiz(db_session, quiz_id)
-    if quiz is None or quiz.status != "ready":
-        _TRY.pop(_try_key(quiz_id, admin_id), None)
-        await callback.answer("⚠️ Il quiz non è più in prova.", show_alert=True)
-        return
-    question = next((q for q in quiz.questions if q.id == question_id), None)
-    if question is None:
-        await callback.answer("Domanda non valida.", show_alert=True)
-        return
-    options = quiz_service.question_options(question)
-    if not (0 <= opt_idx < len(options)):
-        await callback.answer("Opzione non valida.", show_alert=True)
-        return
-
-    is_correct = opt_idx == question.correct_option_id
-    ctx.index += 1
-    ctx.correct += int(is_correct)
-
-    chosen = esc(options[opt_idx])
-    if is_correct:
-        feedback = f"✅ <b>Esatto!</b> — {chosen}"
-    else:
-        feedback = (
-            f"❌ <b>Sbagliato.</b> Hai scelto: {chosen}\n"
-            f"✅ Giusta: <b>{esc(options[question.correct_option_id])}</b>"
-        )
-    if question.explanation:
-        feedback += f"\n\n💡 <i>{esc(question.explanation)}</i>"
-    else:
-        feedback += "\n\n<i>(nessuna spiegazione impostata)</i>"
-    try:
-        await callback.message.edit_text(f"🧪 ❓ {esc(question.text)}\n\n{feedback}")
-    except Exception:  # noqa: BLE001 — editing may fail if message is too old
-        await callback.message.answer(feedback)
-
-    if ctx.index >= len(ctx.order):
-        await _finish_try(callback.message, quiz, admin_id)
-    else:
-        await _present_try_question(callback.message, db_session, quiz, admin_id)
-    await callback.answer()
+async def cb_try_answer(callback: CallbackQuery, callback_data: QuizTryCb) -> None:
+    await callback.answer(
+        "Questa prova usa ora i quiz nativi. Riavviala dal pannello.", show_alert=True
+    )

@@ -240,7 +240,10 @@ async def _survived(session, needle: str) -> bool:
 # ---------------------------------------------------------------------------
 
 class TestHub:
-    async def test_the_hub_has_one_button_per_registered_type(self, session):
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_the_hub_has_one_button_per_registered_type(self, session, monkeypatch, enabled):
+        from config_data.config import settings
+        monkeypatch.setattr(settings, "telephone_enabled", enabled)
         message = _FakeMessage()
 
         await events.show_hub(message)
@@ -253,7 +256,7 @@ class TestHub:
             EventCb(action="list", task_type="bet").pack(),
             EventCb(action="list", task_type="twentyq").pack(),
             AdminCb(action="home").pack(),
-        }
+        } | ({EventCb(action="list", task_type="telephone").pack()} if enabled else set())
         assert all(len(row) == 1 for row in message.markups[0].inline_keyboard)
 
     async def test_a_newly_registered_type_appears_without_touching_the_hub(self, session):

@@ -82,6 +82,21 @@ async def test_unknown_period_has_no_snapshot(budget_db):
     assert await ai_budget.feature_snapshot("twentyq", "1999-01") is None
 
 
+@pytest.mark.parametrize("cost", [0, -1, True, 0.5])
+async def test_non_token_reservation_rejects_invalid_bounds(budget_db, cost):
+    with pytest.raises(ValueError):
+        await ai_budget.reserve_cost(feature="image", provider="openrouter", requested_model="test/image", estimated_microusd=cost)
+
+
+async def test_media_reservation_shares_text_global_and_other_lane_caps(budget_db):
+    reservation = await ai_budget.reserve_cost(feature="telephone_image", provider="openrouter", requested_model="test/image", estimated_microusd=700)
+    assert reservation.estimated_microusd == 700
+    assert reservation.budget_lane == "openrouter_other"
+    await ai_budget.settle(reservation, status="completed", actual_microusd=500)
+    state = await ai_budget.feature_snapshot("openrouter_other")
+    assert state.spent_microusd == 500
+
+
 async def test_unknown_outcome_is_charged_and_hard_cap_blocks_next_call(budget_db):
     reservation = await _reserve()
     await ai_budget.settle(reservation, status="uncertain", actual_microusd=None)

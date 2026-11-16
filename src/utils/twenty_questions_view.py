@@ -17,26 +17,33 @@ from services.ai_game_types import (
     TurnView,
     TwentyQuestionsPolicy,
 )
+from utils.daytime import to_local
 from utils.text import esc
 
 _CARD_TURN_INPUT_CHARS = 96
+GAME_INSTRUCTIONS = (
+    "Per partecipare continua a rispondere sempre e solo a questo messaggio facendo una domanda!\n"
+    "Se vuoi provare ad indovinare la risposta digita\n"
+    "<code>Risposta: titolo del gioco</code>"
+)
+GAME_STATUS_HINT = "Digita /aldusgame per avere le informazioni aggiornate"
+GAME_REWARD_HINT = (
+    "Riceverete i CoInn solo se qualcuno indovina il gioco. "
+    "Il premio mostrato è una stima: l'importo definitivo sarà calcolato a fine partita."
+)
 
 
-def _percentage(basis_points: int) -> str:
-    whole, fraction = divmod(basis_points, 100)
-    if fraction == 0:
-        return f"{whole}%"
-    return f"{whole},{f'{fraction:02d}'.rstrip('0')}%"
+def _reward_warning(policy: TwentyQuestionsPolicy) -> str:
+    if policy.max_coins_per_participant > 0 and (
+        policy.question_penalty_bps > 0 or policy.wrong_guess_penalty_bps > 0
+    ):
+        return "Delle domande o dei tentativi errati faranno diminuire il tuo premio in CoInn."
+    return ""
 
 
-def _minimum_share(view: GameView) -> int | None:
-    participants = view.projection.participant_count
-    if participants <= 0:
-        return None
-    minimum_pool = (
-        view.projection.base_amount * view.policy.minimum_bps + 9_999
-    ) // 10_000
-    return minimum_pool // participants
+def render_expiry(expires_at: datetime) -> str:
+    """Present stored naive UTC in the community timezone, including DST."""
+    return f"🗓️ Scade: <b>{to_local(expires_at).strftime('%d/%m/%Y %H:%M %Z')}</b>"
 
 
 def _quota_line(quota: PersonalQuota) -> str:
@@ -80,7 +87,7 @@ def _expiry_lines(expires_at: datetime | None) -> list[str]:
     # Absolute expiry is useful; a static countdown becomes stale immediately.
     if expires_at is None:
         return []
-    return [f"🗓️ Scade: <b>{expires_at.strftime('%d/%m/%Y %H:%M UTC')}</b>"]
+    return [render_expiry(expires_at)]
 
 
 def render_policy(policy: TwentyQuestionsPolicy) -> str:
@@ -94,14 +101,9 @@ def render_policy(policy: TwentyQuestionsPolicy) -> str:
         ),
         (
             f"Premio massimo: <b>{policy.max_coins_per_participant} CoInn</b> "
-            "per partecipante; il pool non scende sotto "
-            f"il <b>{_percentage(policy.minimum_bps)}</b> del massimo."
+            "per partecipante."
         ),
-        (
-            "Penalità sul pool: "
-            f"<b>{_percentage(policy.question_penalty_bps)}</b> per domanda valida · "
-            f"<b>{_percentage(policy.wrong_guess_penalty_bps)}</b> per tentativo errato."
-        ),
+        _reward_warning(policy),
         f"✨ Ogni partecipante valido riceve <b>{policy.xp_per_participant} XP</b> alla chiusura.",
     ))
 
@@ -113,13 +115,11 @@ def render_public_help(policy: TwentyQuestionsPolicy) -> str:
         "Indovina il videogioco segreto facendo domande: "
         "Alduino risponde solo <b>SÌ</b> o <b>NO</b>. "
         "Se mancano elementi, <b>NON LO SO</b>: domanda e premio restano intatti.",
-        "Rispondi alla card o a un verdetto. "
-        "Per tentare il titolo: <code>RISPOSTA: titolo del gioco</code>. "
-        "Una sola partita attiva per gruppo.",
+        GAME_INSTRUCTIONS,
         render_policy(policy),
-        "I CoInn si ricevono solo se il gioco viene indovinato. "
-        "La quota è una proiezione, non un saldo maturato. "
+        GAME_REWARD_HINT,
         "Duplicati, problemi tecnici e titoli senza <code>RISPOSTA:</code> non consumano nulla.",
+        GAME_STATUS_HINT,
     ))
 
 
@@ -128,15 +128,12 @@ def render_live_card(
     *,
     now: datetime,
     open_preview: bool = False,
+    personal_quota: PersonalQuota | None = None,
+    in_group: bool = True,
 ) -> str:
     """Render the shared, non-secret card from a small immutable game view."""
     policy = view.policy
     projection = view.projection
-    minimum_share = _minimum_share(view)
-    minimum_text = (
-        f"<b>{minimum_share} CoInn</b> per partecipante"
-        if minimum_share is not None else "<b>—</b> senza partecipanti"
-    )
     lines = [
         "🐲 <b>Il gioco segreto di Alduino</b>",
         f"<b>{esc(view.title)}</b>",
@@ -156,26 +153,27 @@ def render_live_card(
         "<b>NON LO SO</b> non consuma la domanda.",
         (
             f"💰 Quota stimata: <b>{projection.share} CoInn</b> a persona. "
-            f"Massimo <b>{policy.max_coins_per_participant}</b> · minimo attuale: {minimum_text}."
+            f"Massimo <b>{policy.max_coins_per_participant}</b>."
         ),
-        (
-            "📉 Penalità sul pool: "
-            f"{_percentage(policy.question_penalty_bps)} per domanda valida · "
-            f"{_percentage(policy.wrong_guess_penalty_bps)} per tentativo errato."
-        ),
-        "CoInn solo se indovinate. La quota è una proiezione, non è un saldo maturato.",
+        _reward_warning(policy),
+        GAME_REWARD_HINT,
         f"✨ Partecipare vale <b>{policy.xp_per_participant} XP</b> alla chiusura.",
     ]
     recent = view.recent_turns[-6:]
     if recent:
         lines.extend(("", "<b>Ultimi turni validi</b>"))
         lines.extend(_turn_line(turn) for turn in recent)
+    if personal_quota is not None:
+        lines.extend(("", _quota_line(personal_quota)))
     if view.status == "running" or open_preview:
         lines.extend((
             "",
-            "Rispondi a questa card o a un verdetto con una domanda.",
-            "Per tentare: <code>RISPOSTA: titolo del gioco</code>",
+            GAME_INSTRUCTIONS if in_group else (
+                "La partita si gioca nel gruppo: torna lì e rispondi al messaggio del gioco "
+                "con una domanda o <code>Risposta: titolo del gioco</code>."
+            ),
         ))
+    lines.extend(("", GAME_STATUS_HINT))
     return "\n".join(lines)
 
 
@@ -215,6 +213,7 @@ def render_terminal_card(result: TerminalResult, *, winner_html: str | None = No
         else:
             lines.append("⚪ Partita conclusa senza vincitore.")
         lines.append("💰 CoInn: 0 — gioco non indovinato")
+    lines.extend(("", GAME_STATUS_HINT))
     return "\n".join(lines)
 
 
@@ -272,6 +271,8 @@ def _reject_message(reason: TurnRejectReason | None) -> str:
     }.get(reason, "🐲 Non riesco a registrare questo turno: riprova.")
 
 
-def render_personal_status(view: GameView, quota: PersonalQuota, *, now: datetime) -> str:
+def render_personal_status(
+    view: GameView, quota: PersonalQuota, *, now: datetime, in_group: bool = True,
+) -> str:
     """Combine the public projection with the caller's own remaining quota."""
-    return f"{render_live_card(view, now=now)}\n\n{_quota_line(quota)}"
+    return render_live_card(view, now=now, personal_quota=quota, in_group=in_group)

@@ -24,6 +24,8 @@ async def create_tables() -> None:
 
 
 _MIGRATIONS: list[str] = [
+    # Telephone: bounded manual recovery, including already deployed tables.
+    "ALTER TABLE telephone_games ADD COLUMN IF NOT EXISTS stage_attempts INTEGER NOT NULL DEFAULT 0",
     # badges: columns added after initial deploy
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS condition_type VARCHAR(64)",
     "ALTER TABLE badges ADD COLUMN IF NOT EXISTS condition_value INTEGER",

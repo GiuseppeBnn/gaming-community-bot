@@ -285,7 +285,7 @@ async def airdrop_xp(session: AsyncSession, amount: int) -> int:
     return len(rows)
 
 
-async def leaderboard_xp(session: AsyncSession, limit: int = 10) -> list[tuple[User, int]]:
+async def leaderboard_xp(session: AsyncSession, limit: int | None = None) -> list[tuple[User, int]]:
     result = await session.execute(
         select(User).order_by(User.xp.desc(), User.tg_id.asc()).limit(limit)
     )

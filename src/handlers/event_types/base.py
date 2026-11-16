@@ -42,6 +42,10 @@ class StartResult:
     message: str
     alert: bool = False
     post_commit: PostCommitHook | None = None
+    # Optional audit request. The generic caller knows the acting Telegram user
+    # (unlike the spec), and records it in the same mutation transaction.
+    audit_action: str | None = None
+    audit_detail: str | None = None
 
 
 @runtime_checkable
@@ -112,6 +116,10 @@ class EventType(Protocol):
     #       Resolve a future ScheduledTask without teaching inline mode about the
     #       concrete event model. Return None when the item is no longer startable.
     #
+    #   enabled: bool (optionally a property)
+    #       False hides the type and denies registry dispatch, including stale
+    #       callbacks and persisted scheduled tasks. Missing means enabled.
+    #
     # ------------------------------------------------------------------
 
 
@@ -124,12 +132,17 @@ def register(event_type: EventType) -> None:
 
 
 def get(key: str) -> EventType | None:
-    return _REGISTRY.get(key)
+    return None if is_disabled(key) else _REGISTRY.get(key)
+
+
+def is_disabled(key: str) -> bool:
+    """Distinguish an opt-out from an unknown/corrupt persisted task type."""
+    return not getattr(_REGISTRY.get(key), "enabled", True)
 
 
 def all_types() -> list[EventType]:
     """Registered types in insertion order (drives hub/schedule menu order)."""
-    return list(_REGISTRY.values())
+    return [event_type for key, event_type in _REGISTRY.items() if not is_disabled(key)]
 
 
 def clear() -> None:

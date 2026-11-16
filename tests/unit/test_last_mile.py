@@ -398,40 +398,42 @@ def _benign() -> Exception:
 
 
 class TestErrorHandler:
-    async def test_a_benign_error_still_stops_the_button_spinner(self):
+    @staticmethod
+    def _event():
+        from aiogram.types import CallbackQuery, ErrorEvent, Update
+        from aiogram.types import User as TelegramUser
+
+        return ErrorEvent(
+            update=Update(update_id=123, callback_query=CallbackQuery(
+                id="callback-7", data="noop", chat_instance="test",
+                from_user=TelegramUser(id=USER_ID, is_bot=False, first_name="Tester"),
+            )),
+            exception=_benign(),
+        )
+
+    async def test_a_benign_error_still_stops_the_button_spinner(self, monkeypatch):
         """«message is not modified» is not worth an error to the user, but leaving
         the callback unanswered spins the client's loader forever."""
-        answered = []
+        from unittest.mock import AsyncMock
+        from aiogram.types import CallbackQuery
 
-        class _Query:
-            data = "noop"
-            message = None
+        answer = AsyncMock()
+        monkeypatch.setattr(CallbackQuery, "answer", answer)
 
-            async def answer(self):
-                answered.append(True)
+        assert await errors.on_error(self._event()) is True
+        answer.assert_awaited_once_with()
 
-        update = SimpleNamespace(message=None, callback_query=_Query(),
-                                 event_from_user=None)
-        event = SimpleNamespace(update=update, exception=_benign())
-
-        assert await errors.on_error(event) is True
-        assert answered == [True]
-
-    async def test_an_expired_query_that_cannot_be_answered_is_not_an_error(self):
+    async def test_an_expired_query_that_cannot_be_answered_is_not_an_error(self, monkeypatch):
         """The stop-the-spinner call is itself best-effort: the query may already
         be too old, and that must not turn a benign error into a real one."""
-        class _ExpiredQuery:
-            data = "noop"
-            message = None
+        from unittest.mock import AsyncMock
+        from aiogram.types import CallbackQuery
 
-            async def answer(self):
-                raise RuntimeError("query is too old and response timeout expired")
+        answer = AsyncMock(side_effect=RuntimeError("query is too old and response timeout expired"))
+        monkeypatch.setattr(CallbackQuery, "answer", answer)
 
-        update = SimpleNamespace(message=None, callback_query=_ExpiredQuery(),
-                                 event_from_user=None)
-        event = SimpleNamespace(update=update, exception=_benign())
-
-        assert await errors.on_error(event) is True
+        assert await errors.on_error(self._event()) is True
+        answer.assert_awaited_once_with()
 
 
 # ---------------------------------------------------------------------------

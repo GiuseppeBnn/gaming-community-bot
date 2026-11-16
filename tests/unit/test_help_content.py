@@ -7,6 +7,8 @@ syntax, not HTML, and must be escaped before going into a ParseMode.HTML message
 
 from __future__ import annotations
 
+import pytest
+
 from handlers import help_content
 from handlers.help_content import (
     _COMMANDS,
@@ -31,7 +33,7 @@ class TestRenderCommandIsHtmlSafe:
         # would trigger the same unknown-tag rejection. Render them all and assert
         # the literal usage angle-bracket tokens never leak unescaped.
         for doc in _COMMANDS:
-            if not doc.usage or "<" not in doc.usage:
+            if not doc.usage or "<" not in doc.usage or not help_content.command_enabled(doc.name):
                 continue
             page = render_command(doc.name, is_admin=True)
             assert page is not None, doc.name
@@ -48,6 +50,13 @@ class TestRenderCommandIsHtmlSafe:
     def test_admin_command_hidden_from_non_admin(self):
         assert render_command("credita", is_admin=False) is None
         assert render_command("credita", is_admin=True) is not None
+
+
+def test_image_manual_is_admin_only(monkeypatch):
+    monkeypatch.setattr(help_content.settings, "telephone_enabled", True)
+    assert render_command("immagine", is_admin=False) is None
+    page=render_command("immagine", is_admin=True)
+    assert "150" in page and "&lt;descrizione&gt;" in page
 
 
 class TestRenderCommandOrHint:
@@ -99,24 +108,39 @@ def test_d20_is_a_public_bare_roll_command():
     assert "/d20" in page and "1" in page and "20" in page
 
 
-def test_secret_game_manual_is_admin_only_while_in_development():
-    """Temporarily restricted: hidden from players, still fully documented for admins."""
-    assert render_command("gioco_alduino", is_admin=False) is None
-
-    page = render_command("gioco_alduino", is_admin=True)
+def test_secret_game_play_manual_is_identical_for_players_and_admins():
+    page = render_command("aldusgame", is_admin=True)
+    assert page == render_command("aldusgame", is_admin=False)
     assert page is not None
     assert "Regole e stato del gioco segreto di Alduino" in page
     assert "Il gioco segreto di Alduino" in page
     assert "10 XP" in page
     assert "RISPOSTA:" in page
+    assert "uguale per tutti, admin inclusi" in page
+    assert "non apre mai la gestione" in page
 
 
-def test_secret_game_is_discoverable_only_by_admins():
-    assert "/gioco_alduino" not in render_legend(is_admin=False)
-    assert "/gioco_alduino" in render_legend(is_admin=True)
-    assert "/gioco_alduino" not in render_command_or_hint("gioco_alduino")
-    assert "/gioco_alduino" in render_command_or_hint("gioco_alduino", is_admin=True)
-    assert "/gioco_alduino" not in render_alduino_reference()
+def test_secret_game_is_discoverable_by_everyone():
+    assert "/aldusgame" in render_legend(is_admin=False)
+    assert "/aldusgame" in render_legend(is_admin=True)
+    assert "/aldusgame" in render_command_or_hint("aldusgame")
+    assert "/aldusgame" in render_command_or_hint("aldusgame", is_admin=True)
+    assert "/aldusgame" in render_alduino_reference()
+
+
+@pytest.mark.parametrize("name", ["gioco", "gioco_alduino", "gestisci_gioco_alduino"])
+def test_removed_secret_game_alias_has_no_manual_entry(name):
+    assert render_command(name, is_admin=True) is None
+
+
+def test_secret_game_management_manual_is_hidden_from_players():
+    name = "gestisci_aldusgame"
+    assert render_command(name, is_admin=False) is None
+    assert "/" + name not in render_legend(is_admin=False)
+    assert "/" + name not in render_alduino_reference()
+    page = render_command(name, is_admin=True)
+    assert page is not None and "Vedi partita" in page
+    assert "/" + name in render_legend(is_admin=True)
 
 
 class TestAlduinoReference:

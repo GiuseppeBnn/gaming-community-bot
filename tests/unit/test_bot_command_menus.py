@@ -5,21 +5,32 @@ from __future__ import annotations
 from main import _ADMIN_EXTRA_COMMANDS, _GROUP_COMMANDS, _PRIVATE_COMMANDS
 
 
-_DESCRIPTION = "🐲 Regole e stato del gioco segreto"
+_DESCRIPTION = "🐲 Gioca con Alduino e consulta lo stato"
+
+
+def test_image_command_is_only_in_admin_menu():
+    assert not any(c.command=="immagine" for c in _PRIVATE_COMMANDS+_GROUP_COMMANDS)
+    assert sum(c.command=="immagine" for c in _ADMIN_EXTRA_COMMANDS)==1
 
 
 def _count(commands):
-    return sum(command.command == "gioco_alduino" for command in commands)
+    return sum(command.command == "aldusgame" for command in commands)
 
 
-def test_secret_game_command_is_admin_only_while_in_development():
-    """Temporarily restricted: it must not leak into the public menus, only
-    into the admin one."""
-    assert _count(_PRIVATE_COMMANDS) == 0
-    assert _count(_GROUP_COMMANDS) == 0
+def test_secret_game_play_command_is_public_for_every_role():
+    assert _count(_PRIVATE_COMMANDS) == 1
+    assert _count(_GROUP_COMMANDS) == 1
+    assert _count(_ADMIN_EXTRA_COMMANDS) == 0
+    for commands in (_PRIVATE_COMMANDS, _GROUP_COMMANDS):
+        assert next(c for c in commands if c.command == "aldusgame").description == _DESCRIPTION
 
-    admin_extra = [
-        command for command in _ADMIN_EXTRA_COMMANDS if command.command == "gioco_alduino"
-    ]
-    assert len(admin_extra) == 1
-    assert admin_extra[0].description == _DESCRIPTION
+
+def test_secret_game_commands_keep_the_removed_short_alias_disabled():
+    removed = {"gioco", "gioco_alduino", "gestisci_gioco_alduino"}
+    assert not removed.intersection(c.command for c in _PRIVATE_COMMANDS + _GROUP_COMMANDS + _ADMIN_EXTRA_COMMANDS)
+
+
+def test_secret_game_management_has_its_own_admin_only_command():
+    name = "gestisci_aldusgame"
+    assert not any(c.command == name for c in _PRIVATE_COMMANDS + _GROUP_COMMANDS)
+    assert sum(c.command == name for c in _ADMIN_EXTRA_COMMANDS) == 1
