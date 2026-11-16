@@ -245,6 +245,12 @@ class EventCb(CallbackData, prefix="ev"):
     item_id: int | None = None
 
 
+class TwentyQuestionsStatusCb(CallbackData, prefix="tqstatus"):
+    """Public status only, separate from admin event-management callbacks."""
+
+    action: str
+
+
 class TwentyQuestionsCreateCb(CallbackData, prefix="tqnew"):
     """Guided creation controls for Alduino's secret game."""
 

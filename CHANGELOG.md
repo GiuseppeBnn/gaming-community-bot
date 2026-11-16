@@ -6,6 +6,14 @@ Modifiche rilevanti al bot. Formato ispirato a
 ## [Unreleased]
 
 ### Corretto
+- **Messaggi del gioco segreto di Alduino** — scadenze nel fuso della community,
+  istruzioni condivise e avviso premi senza dettagli tecnici del pool. Unico comando
+  `/gioco_alduino`, richiamato in fondo a card e riepiloghi.
+  Nessuna modifica al calcolo dei premi o ai timestamp persistiti.
+- **Comando unico con ingresso per ruolo** — `/gioco_alduino` mostra lo stato agli
+  utenti e apre la gestione privata agli admin; «Vedi partita» riusa la vista pubblica.
+  Argomenti/reply di gioco e quote condivisi, consultazione privata senza turni o
+  pubblicazioni nel gruppo; deep-link e mutazioni di gestione sempre protetti.
 - **Vecchio riepilogo del creatore quiz** — un bottone senza più la sua FSM o
   bozza valida viene rifiutato senza errori e senza sovrascrivere altri flussi.
 - **Fallback errori aiogram** — contesto estratto dal vero `Update`, non da un
@@ -42,12 +50,12 @@ Modifiche rilevanti al bot. Formato ispirato a
   persistenti. Finale sfogliabile nella card del gruppo con una sola notifica.
   Immagini OpenRouter con listino verificato, tetto per immagine e budget mensile
   condiviso; niente retry pagati automatici, premi CoInn/XP o attivazione in prod.
-- **Gioco di Alduino senza scroll** — `/gioco` (alias di `/gioco_alduino`) mostra
-  stato e quote; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
+- **Gioco di Alduino senza scroll** — `/gioco_alduino` mostra stato e quote agli
+  utenti; accetta direttamente domande o `RISPOSTA: titolo`. Anche i nuovi
   verdetti e riepiloghi diventano messaggi a cui rispondere, con associazione alla
   partita persistita nel DB. Le vecchie partite non dirottano reply sulle nuove.
-  *In sviluppo: `/gioco`/`/gioco_alduino` sono temporaneamente riservati agli
-  admin; il gioco resta comunque giocabile rispondendo alle card in gruppo.*
+  Senza argomenti gli admin accedono alla gestione privata, con «Vedi partita»
+  per consultare lo stato pubblico; il gioco resta giocabile tramite reply.
 - **Una partita per gruppo** — avvii manuali e programmati serializzati su
   PostgreSQL. Eventuali partite parallele preesistenti restano intatte: il comando
   segnala l'ambiguità finché un admin non chiude quelle in eccesso.

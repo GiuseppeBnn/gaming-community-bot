@@ -5,7 +5,7 @@ from __future__ import annotations
 from main import _ADMIN_EXTRA_COMMANDS, _GROUP_COMMANDS, _PRIVATE_COMMANDS
 
 
-_DESCRIPTION = "🐲 Regole e stato del gioco segreto"
+_DESCRIPTION = "🐲 Gioco di Alduino: stato o gestione"
 
 
 def test_image_command_is_only_in_admin_menu():
@@ -17,14 +17,13 @@ def _count(commands):
     return sum(command.command == "gioco_alduino" for command in commands)
 
 
-def test_secret_game_command_is_admin_only_while_in_development():
-    """Temporarily restricted: it must not leak into the public menus, only
-    into the admin one."""
-    assert _count(_PRIVATE_COMMANDS) == 0
-    assert _count(_GROUP_COMMANDS) == 0
+def test_secret_game_command_is_public_with_role_based_behavior():
+    assert _count(_PRIVATE_COMMANDS) == 1
+    assert _count(_GROUP_COMMANDS) == 1
+    assert _count(_ADMIN_EXTRA_COMMANDS) == 0
+    for commands in (_PRIVATE_COMMANDS, _GROUP_COMMANDS):
+        assert next(c for c in commands if c.command == "gioco_alduino").description == _DESCRIPTION
 
-    admin_extra = [
-        command for command in _ADMIN_EXTRA_COMMANDS if command.command == "gioco_alduino"
-    ]
-    assert len(admin_extra) == 1
-    assert admin_extra[0].description == _DESCRIPTION
+
+def test_secret_game_has_only_one_command_without_the_removed_alias():
+    assert all(command.command != "gioco" for command in _PRIVATE_COMMANDS + _GROUP_COMMANDS + _ADMIN_EXTRA_COMMANDS)

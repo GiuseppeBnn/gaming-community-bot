@@ -148,6 +148,7 @@ ADMIN_PAYLOADS = [
     ("programma", "handlers.schedule.start_schedule_flow"),
     ("programmati", "handlers.schedule.cmd_programmati"),
     ("manage_bets", "handlers.admin_betting._show_event_list"),
+    ("manage_twentyq", "handlers.twenty_questions.cmd_gioco_alduino"),
     ("backup", "handlers.backup.run_backup_now"),
     ("esporta", "handlers.backup.run_export_now"),
 ]
@@ -293,16 +294,14 @@ class TestPublicDeepLinks:
 
         assert "daily" in message.said.lower()
 
-    async def test_the_secret_game_spiega_payload_is_hidden_from_non_admins(
+    async def test_the_secret_game_spiega_payload_is_public_for_members(
         self, session, onboarded
     ):
-        """Temporarily admin-only: a regular user gets the same "not found" hint
-        as for any unknown command, never the manual."""
         message = _FakeMessage()
 
         await common.cmd_start(message, _command("spiega_gioco_alduino"), _state(), session)
 
-        assert "Il gioco segreto di Alduino" not in message.said
+        assert "Il gioco segreto di Alduino" in message.said
 
     async def test_the_secret_game_spiega_payload_uses_the_public_manual_for_admins(
         self, session, onboarded, as_admin

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from html.parser import HTMLParser
 
@@ -25,6 +26,8 @@ from services.ai_game_types import (
     TwentyQuestionsPolicy,
 )
 from utils.twenty_questions_view import (
+    GAME_INSTRUCTIONS,
+    GAME_STATUS_HINT,
     render_live_card,
     render_personal_status,
     render_personal_turn,
@@ -152,9 +155,11 @@ def test_policy_and_public_help_derive_every_visible_rule_from_policy():
         assert "3 tentativi" in text
         assert "123 CoInn" in text
         assert "13 XP" in text
-        assert "4,75%" in text
-        assert "17,5%" in text
-    assert "RISPOSTA: titolo del gioco" in help_text
+        assert "Delle domande o dei tentativi errati faranno diminuire il tuo premio in CoInn" in text
+        assert "%" not in text
+        assert "pool" not in text.casefold()
+    assert GAME_INSTRUCTIONS in help_text
+    assert help_text.endswith(GAME_STATUS_HINT)
 
 
 def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
@@ -174,12 +179,15 @@ def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
 
     assert "Il gioco segreto di Alduino" in card
     assert "Serata &lt;epica&gt;" in card
-    assert "24/08/2026 14:30 UTC" in card
+    assert "24/08/2026 16:30 CEST" in card
+    assert "UTC" not in card
     assert "Tempo residuo" not in card and "2h 30min" not in card
     assert "7 domande · 3 tentativi" in card
     assert "Partecipanti: <b>2</b> · Domande: <b>4</b> · Tentativi errati: <b>1</b>" in card
     assert "Massimo <b>123</b>" in card
-    assert "minimo attuale: <b>31 CoInn</b> per partecipante" in card
+    assert "minimo attuale" not in card
+    assert "pool" not in card.casefold()
+    assert "%" not in card
     assert "Quota stimata: <b>108 CoInn</b>" in card
     assert "proiezione" in card.casefold()
     assert "non è un saldo maturato" in card
@@ -188,7 +196,8 @@ def test_live_card_escapes_data_hides_secret_and_keeps_only_last_six_turns():
     assert "turno-2 &lt;x&gt;" in card
     assert "turno-7 &lt;x&gt;" in card
     assert "Segreto" not in card
-    assert "RISPOSTA: titolo del gioco" in card
+    assert GAME_INSTRUCTIONS in card
+    assert card.endswith(GAME_STATUS_HINT)
 
 
 def test_live_card_bounds_visible_utf16_content_after_html_entity_parsing():
@@ -227,6 +236,7 @@ def test_personal_status_reuses_typed_card_and_escapes_user_visible_turns():
     assert "Per te" in status
     assert "5 domande" in status
     assert "2 tentativi" in status
+    assert status.endswith(GAME_STATUS_HINT)
 
 
 def test_terminal_victory_renders_formula_remainder_and_already_escaped_winner_once():
@@ -243,6 +253,7 @@ def test_terminal_victory_renders_formula_remainder_and_already_escaped_winner_o
     assert "resto non distribuito: 1 CoInn" in card
     assert "CoInn pagati: <b>216</b>" in card
     assert "XP partecipazione: <b>13</b>" in card
+    assert card.endswith(GAME_STATUS_HINT)
 
 
 @pytest.mark.parametrize(
@@ -266,6 +277,7 @@ def test_non_victory_terminal_never_advertises_the_computed_pool_as_prize(
     assert "CoInn: 0 — gioco non indovinato" in card
     assert "937" not in card
     assert "CoInn pagati" not in card
+    assert card.endswith(GAME_STATUS_HINT)
 
 
 @pytest.mark.parametrize(
@@ -385,3 +397,45 @@ def test_view_fallback_copy_covers_absent_verdict_and_unclassified_terminal_stat
     unknown = _terminal(FinishReason.expired, settlement_status="settled", winner_tg_id=None)
     object.__setattr__(unknown, "finish_reason", "future")
     assert "conclusa senza vincitore" in render_terminal_card(unknown)
+
+
+@pytest.mark.parametrize(("stamp", "expected"), [
+    (datetime(2026, 1, 16, 14, 30), "16/01/2026 15:30 CET"),
+    (datetime(2026, 8, 24, 14, 30), "24/08/2026 16:30 CEST"),
+    (datetime(2026, 12, 31, 23, 30), "01/01/2027 00:30 CET"),
+])
+def test_expiry_uses_italian_time_including_dst_and_date_rollover(monkeypatch, stamp, expected):
+    from config_data.config import settings
+    monkeypatch.setattr(settings, "scheduler_timezone", "Europe/Rome")
+    view = replace(_view(), expires_at=stamp)
+    card = render_live_card(view, now=NOW)
+    assert expected in card
+    assert "UTC" not in card
+    assert view.expires_at == stamp  # Storage/expiry calculations remain UTC.
+
+
+@pytest.mark.parametrize("policy", [
+    replace(POLICY, max_coins_per_participant=0),
+    replace(POLICY, question_penalty_bps=0, wrong_guess_penalty_bps=0),
+])
+def test_copy_does_not_invent_reward_reductions_for_zero_prizes_or_penalties(policy):
+    view = replace(_view(), policy=policy, expires_at=None)
+    for text in (render_policy(policy), render_public_help(policy), render_live_card(view, now=NOW)):
+        assert "faranno diminuire" not in text
+        assert "%" not in text
+
+
+def test_requested_instructions_are_shared_without_changing_reward_projection():
+    view = _view()
+    before = view.projection
+    expected = (
+        "Per partecipare continua a rispondere sempre e solo a questo messaggio facendo una domanda!\n"
+        "Se vuoi provare ad indovinare la risposta digita\n"
+        "<code>Risposta: titolo del gioco</code>"
+    )
+    for text in (render_public_help(POLICY), render_live_card(view, now=NOW),
+                 render_personal_status(view, _quota(), now=NOW)):
+        assert expected in text
+        assert text.endswith("Digita /gioco_alduino per avere le informazioni aggiornate")
+        assert "o a un verdetto" not in text
+    assert view.projection == before

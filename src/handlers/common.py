@@ -4,7 +4,7 @@ General-purpose handlers: /start (with deep-link dispatch), /profilo, /help.
 Deep-link payloads routed through /start:
   create_bet            → opens the bet-creation FSM in private chat
   create_poll           → opens the poll-creation FSM in private chat (admin only)
-  manage_quiz/guess/sound → admin management list of that event type (from /quiz etc.)
+  manage_quiz/guess/sound/twentyq → admin management list of that event type
   bet_custom_<e>_<o>   → opens the custom-amount FSM for event <e>, option <o>
   bet_<event_id>        → opens event detail in private chat
   guess_<id> / sound_<id> → plays a Guess The Game / Sound Quest round in private
@@ -161,10 +161,18 @@ async def cmd_start(
             await message.answer("⛔ Accesso non autorizzato.")
         return
 
-    # Deep-link: manage_quiz / manage_guess / manage_sound — the admin management
+    # Deep-link: manage_<type> — the admin management
     # list of that event type. This is where /quiz, /guessTheGame and /soundQuest
     # send an admin from the group: straight to the type's own list, not the whole
     # /admin dashboard.
+    if payload == "manage_twentyq":
+        if await is_bot_admin(message.bot, message.from_user.id):
+            from handlers.twenty_questions import cmd_gioco_alduino
+            await cmd_gioco_alduino(message, db_session)
+        else:
+            await message.answer("⛔ Accesso non autorizzato.")
+        return
+
     if payload in ("manage_quiz", "manage_guess", "manage_sound"):
         if await is_bot_admin(message.bot, message.from_user.id):
             if payload == "manage_quiz":

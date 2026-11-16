@@ -47,6 +47,7 @@ _PRIVATE_COMMANDS = [
     BotCommand(command="quiz", description="🧠 Quiz: gioca o gestisci"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
+    BotCommand(command="gioco_alduino", description="🐲 Gioco di Alduino: stato o gestione"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche: ricchezza, XP, trofei"),
@@ -67,6 +68,7 @@ _GROUP_COMMANDS = [
     BotCommand(command="quiz", description="🧠 Quiz attivo da giocare"),
     BotCommand(command="guessthegame", description="🖼️ Guess The Game attivi"),
     BotCommand(command="soundquest", description="🔊 Sound Quest attivi"),
+    BotCommand(command="gioco_alduino", description="🐲 Gioco di Alduino: stato o gestione"),
     BotCommand(command="trofei", description="I tuoi trofei e rango"),
     BotCommand(command="catalogo_trofei", description="Tutti i trofei"),
     BotCommand(command="classifiche", description="Classifiche della community"),
@@ -91,10 +93,6 @@ _ADMIN_EXTRA_COMMANDS = [
     BotCommand(command="gestisci_scommesse", description="🔧 Gestione scommesse"),
     BotCommand(command="eventi", description="🎬 Hub eventi"),
     BotCommand(command="immagine", description="🖼️ Prova il generatore immagini"),
-    # In sviluppo: comando temporaneamente riservato agli admin (vedi
-    # help_content.CommandDoc("gioco_alduino", admin_only=True)).
-    BotCommand(command="gioco", description="🐲 Gioca qui: stato, domande e tentativi"),
-    BotCommand(command="gioco_alduino", description="🐲 Regole e stato del gioco segreto"),
     BotCommand(command="crea_quiz", description="🎬 Crea un quiz"),
     BotCommand(command="sondaggio", description="🎬 Crea un sondaggio"),
     BotCommand(command="programma", description="🎬 Programma un evento"),

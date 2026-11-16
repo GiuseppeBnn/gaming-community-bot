@@ -26,6 +26,7 @@ class ReplyMessage(_Message):
 
 
 async def running(session, monkeypatch):
+    monkeypatch.setattr(handler, "is_admin", AsyncMock(return_value=False))
     session_id = await _v2_ready(session, monkeypatch)
     assert (await ai_game_service.start(session, session_id, group_id=-1001)).started
     await ai_game_service.move_anchor(session, session_id, 77)
@@ -38,8 +39,8 @@ async def test_status_then_reply_to_verdict_then_guess_share_the_game(session, m
     session_id = await running(session, monkeypatch)
     ai = AsyncMock(return_value=SimpleNamespace(value=QuestionVerdict.si))
     monkeypatch.setattr(ai_game_service, "classify_question", ai)
-    status = _Message("/gioco", anchor=None)
-    await handler.cmd_gioco_alduino(status, session, CommandObject(command="gioco"))
+    status = _Message("/gioco_alduino", anchor=None)
+    await handler.cmd_gioco_alduino(status, session, CommandObject(command="gioco_alduino"))
     assert (await session.get(AIGameMessage, (-1001, 999))).session_id == session_id
     await session.rollback()
 
@@ -65,8 +66,8 @@ async def test_command_plays_without_reply_or_command_text_in_ai(session, monkey
     await running(session, monkeypatch)
     ai = AsyncMock(return_value=SimpleNamespace(value=QuestionVerdict.no))
     monkeypatch.setattr(ai_game_service, "classify_question", ai)
-    message = ReplyMessage("/gioco " + args, anchor=None)
-    await handler.cmd_gioco_alduino(message, session, CommandObject(command="gioco", args=args))
+    message = ReplyMessage("/gioco_alduino " + args, anchor=None)
+    await handler.cmd_gioco_alduino(message, session, CommandObject(command="gioco_alduino", args=args))
     if is_guess:
         ai.assert_not_awaited()
         assert "Non è lui" in message.said[-1]
@@ -175,3 +176,25 @@ async def test_unknown_is_free_and_can_be_followed_by_a_question(session, monkey
         ai.return_value = SimpleNamespace(value=QuestionVerdict.si)
         await handler.play_turn(_Message("Ci sono enigmi?", anchor=1001), session)
         assert ai.await_count == 2
+
+
+@pytest.mark.parametrize("command,allowed", [
+    ("/gioco_alduino", True),
+    ("/gioco", False),
+])
+async def test_registered_command_accepts_only_the_single_public_command(command, allowed):
+    from datetime import datetime
+    from aiogram import Bot
+    from aiogram.types import Chat, Message, User
+    bot = Bot(token="1234567890:AAFtesttoken_ci")
+    message = Message(
+        message_id=1, date=datetime(2026, 11, 16), text=command,
+        chat=Chat(id=-1001, type="supergroup"),
+        from_user=User(id=42, first_name="Giocatore", is_bot=False),
+    ).as_(bot)
+    registered = next(h for h in handler.router.message.handlers if h.callback is handler.cmd_gioco_alduino)
+    try:
+        matched, _ = await registered.check(message, bot=bot)
+        assert matched is allowed
+    finally:
+        await bot.session.close()

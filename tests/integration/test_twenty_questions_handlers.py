@@ -79,7 +79,8 @@ class _Message:
         chat_type="supergroup",
     ):
         self.text = text
-        self.from_user = SimpleNamespace(id=user)
+        self.from_user = SimpleNamespace(id=user, is_bot=False)
+        self.sender_chat = None
         self.chat = SimpleNamespace(id=group, type=chat_type)
         self.reply_to_message = (
             SimpleNamespace(message_id=anchor) if anchor is not None else None
@@ -335,7 +336,9 @@ class TestCreationAndScreens:
         assert (await session.execute(select(func.count(AIGameSession.id)))).scalar_one() == 0
 
         message.text = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+        entered_expiry = datetime.strptime(message.text, "%Y-%m-%d %H:%M")
         await handler.receive_absolute_expiry(message, state)
+        stored_expiry = datetime.fromisoformat((await state.get_data())["expires_at"])
         await handler.choose_creation_coins(
             callback,
             TwentyQuestionsCreateCb(action="coins_custom"),
@@ -351,6 +354,10 @@ class TestCreationAndScreens:
         await handler.receive_custom_coins(message, state, session)
         assert state.value is None
         assert "37 CoInn" in message.said[-1]
+        assert entered_expiry.strftime("%d/%m/%Y %H:%M") in message.said[-1]
+        assert "UTC" not in message.said[-1]
+        created = (await session.execute(select(AIGameSession))).scalar_one()
+        assert created.expires_at == stored_expiry  # Only presentation changes.
 
     async def test_creation_can_be_cancelled_from_each_state(self):
         state, message = _State(), _Message()
@@ -451,6 +458,11 @@ class TestCreationAndScreens:
 
 
 class TestPublicSecretGameCommand:
+    @pytest.fixture(autouse=True)
+    def public_actor(self, monkeypatch):
+        from unittest.mock import AsyncMock
+        monkeypatch.setattr(handler, "is_admin", AsyncMock(return_value=False))
+
     async def test_private_command_only_shows_public_rules(self, session):
         message = _Message(group=42, anchor=None, chat_type="private")
 

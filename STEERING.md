@@ -449,6 +449,7 @@ Tutti i redirect gruppo → privato usano `?start=<payload>`.
 | `create_quiz` | `common.cmd_start` → `quiz.start_quiz_creation` | FSM creazione quiz (admin) |
 | `create_poll` | `common.cmd_start` → `events.start_poll_creation` | FSM creazione sondaggio (**admin**, re-check in `cmd_start`) |
 | `manage_quiz` / `manage_guess` / `manage_sound` | `common.cmd_start` → `QuizType`/`GuessType(kind).render_list` | Elenco gestione admin di quel tipo (**admin**, re-check). È la landing di `/quiz`, `/guessTheGame`, `/soundQuest` dal gruppo — **non** più `admin` (che apriva l'intera dashboard) |
+| `manage_twentyq` | `common.cmd_start` → `twenty_questions.cmd_gioco_alduino` → `TwentyQuestionsType.render_list` | Gestione privata del gioco di Alduino, con verifica admin anche all'atterraggio |
 | `quiz_<id>` | `common.cmd_start` → `quiz.start_quiz_session` | Gioca/riprendi un quiz in privato |
 | `guess_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Guess The Game in privato |
 | `sound_<id>` | `common.cmd_start` → `guess.start_guess_session` | Gioca un round Sound Quest in privato |
@@ -2482,13 +2483,32 @@ ricontrollata dopo il lock, quindi un turno tardivo non entra nel ledger né pag
 Una sola sessione `twentyq` può essere avviata per gruppo: il service serializza
 avvii manuali e programmati con advisory lock transazionale PostgreSQL sul gruppo,
 poi controlla le sessioni running (v1 e v2). Non chiude né modifica eventuali
-partite parallele preesistenti; `/gioco` ne segnala l'ambiguità senza sceglierne una.
-`/gioco` e `/gioco_alduino` accettano domande o `RISPOSTA: titolo`, usando gli stessi
-service, quote e deduplicazione dei reply. Senza argomenti mostrano stato e quota.
+partite parallele preesistenti; `/gioco_alduino` ne segnala l'ambiguità senza sceglierne una.
+L'unico comando pubblico `/gioco_alduino` ha ingresso distinto per ruolo: senza
+argomenti l'utente vede stato/quota e l'admin apre in privato la lista del tipo
+`TwentyQuestionsType`, già usata da `/eventi`. Deep-link `manage_twentyq` con verifica
+admin all'atterraggio; nessun dettaglio/segredo admin nel gruppo. La callback pubblica
+`TwentyQuestionsStatusCb` («Vedi partita») è disgiunta dalle `EventCb` admin e mostra
+solo DTO pubblici: identità del clicker esplicita, mai l'autore bot del messaggio.
+In privato legge il gruppo effettivo senza pubblicare card o inviare turni; testo
+dedicato invita a giocare nel gruppo. Con argomenti nel gruppo entrambi i ruoli
+possono inviare domande o `RISPOSTA: titolo`, con gli stessi service/quote/deduplicazione
+dei reply. La consultazione senza argomenti non chiama l'AI né consuma quote; l'eventuale
+messaggio di riepilogo nel gruppo conserva soltanto la consueta mappatura reply.
+Menu e manuale pubblici, nessun duplicato nel menu admin, mutazioni di gestione sempre
+dietro i filtri admin già presenti nell'hub.
+Alias breve rimosso da router, menu e manuale. Le istruzioni comuni di card e help
+invitano a rispondere al messaggio con una domanda o `Risposta: titolo del gioco`;
+i reply a verdetti registrati rimangono comunque compatibili. Card, help senza partita
+attiva e riepilogo personale terminano con `Digita /gioco_alduino per avere le informazioni aggiornate`.
+Le scadenze visibili (anche nella conferma di creazione) usano `utils.daytime.to_local`,
+con timezone community e DST, ma persistenza e confronti restano UTC naive.
+Solo la presentazione dei premi è semplificata: avviso senza percentuali, minimi o
+«Penalità sul pool» in help/card. Policy, proiezione e settlement non cambiano.
 `AIGameMessage` associa esclusivamente `(group_id, message_id)` alla sessione:
 verdetti e riepiloghi v2 vengono registrati dopo l'invio Telegram, in una nuova
 transazione, e restano reply target dopo restart. Un errore nella registrazione
-non annulla il turno né duplica l'invio; `/gioco` permette di riprendere. Un reply
+non annulla il turno né duplica l'invio; `/gioco_alduino` permette di riprendere. Un reply
 a una partita conclusa non passa alla nuova e non attiva la chat normale.
 La tabella `ai_game_messages` viene creata da `Base.metadata.create_all()` allo
 startup ed è inclusa nell'export basato sui metadata; nessun backfill dei vecchi

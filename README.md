@@ -189,6 +189,7 @@ accumulo di versioni). Aggiorna **solo** il `bot` (scope via label
 | `/locanda` (alias `/negozio`) | 🍺 La Locanda: tag cosmetici + 🍖 menù di consumabili (riempiono la 🎒 dispensa e sbloccano trofei) |
 | `/offri` (in reply nel gruppo) | 🎁 Compra o regala una scorta a un amico, con scelta e conferma private |
 | `/quiz` (gioco) | Partecipa ai quiz in chat privata |
+| `/gioco_alduino` | Stato del gioco per gli utenti; gestione privata per gli admin. Con argomenti, nel gruppo, domanda o tentativo per tutti |
 | `/d20` | Tira un d20: Alduino risponde soltanto con un numero da 1 a 20 |
 | AI (in gruppo, in reply): `/maestro` `/complotto` `/difendi` `/accusa` `/drama` `/dialetto` `/insulta` | Intrattenimento AI |
 | `/alduino <messaggio>` | Parla con Alduino; dopo la prima risposta basta rispondere direttamente ai suoi messaggi |
@@ -369,14 +370,26 @@ ti invita a riprovare più tardi, invece di lasciarti bruciare tentativi a vuoto
 ### Il gioco segreto di Alduino
 
 Nel gruppo puoi rispondere alla card, a un verdetto di Alduino (SÌ/NO/NON LO SO)
-o al riepilogo di `/gioco`, senza tornare al messaggio iniziale. In alternativa:
+o al riepilogo di `/gioco_alduino`, senza tornare al messaggio iniziale. Un solo comando
+per tutti, con ingresso distinto in base al ruolo:
 
-- `/gioco` mostra stato e quota personale;
-- `/gioco È multiplayer?` fa una domanda;
-- `/gioco RISPOSTA: Portal 2` tenta il titolo.
+- `/gioco_alduino` mostra stato e quota personale agli utenti; agli admin senza
+  argomenti apre la gestione privata già presente in `/eventi` (crea, avvia,
+  programma, chiudi). «Vedi partita» apre la vista pubblica anche per loro;
+- `/gioco_alduino È multiplayer?` fa una domanda;
+- `/gioco_alduino RISPOSTA: Portal 2` tenta il titolo.
 
-Resta disponibile anche `/gioco_alduino`, con gli stessi argomenti. Nei reply,
-per tentare il titolo usa `RISPOSTA: nome del gioco`.
+Gli argomenti funzionano nel gruppo per entrambi i ruoli, con le stesse quote dei reply.
+In privato si può consultare lo stato, ma non giocare o pubblicare una card nel gruppo.
+Consultare lo stato non chiama l'AI e non consuma domande o tentativi; nessuna partita
+attiva viene segnalata esplicitamente. Il link `manage_twentyq` ricontrolla i permessi
+admin, e i bottoni di gestione restano riservati agli admin.
+
+È l'unico comando dell'attività: l'alias breve è stato rimosso. Nei reply,
+per tentare il titolo usa `RISPOSTA: nome del gioco`. La card, le istruzioni senza
+partita attiva e il riepilogo terminano con «Digita /gioco_alduino per avere le
+informazioni aggiornate». Le scadenze mostrate sono nell'orario della community
+(`Europe/Rome`, con ora legale/solare), senza modificare i timestamp UTC nel DB.
 Ogni persona ha 5 domande valide e 2 tentativi validi:
 duplicati, errori tecnici e proposte di titolo senza `RISPOSTA:` non consumano nulla.
 Se il dossier non basta, Alduino risponde **NON LO SO**, senza consumare la domanda,
@@ -393,7 +406,9 @@ Con il default di 100 CoInn massimi a persona:
 Il resto della divisione non viene assegnato a nessuno. Può essere attiva una sola
 partita per gruppo, anche con avvii programmati. Le risposte a messaggi di una partita
 conclusa non vengono inoltrate a quella nuova. Dopo l'aggiornamento, i vecchi verdetti
-non sono riconosciuti retroattivamente: usa `/gioco` per un riepilogo a cui rispondere.
+non sono riconosciuti retroattivamente: usa `/gioco_alduino` per un
+riepilogo a cui rispondere. La card live e le istruzioni mostrano soltanto un avviso sulla possibile
+riduzione del premio, senza percentuali o dettagli tecnici del pool; il calcolo resta invariato.
 La chiusura amministrativa resta in `/eventi`; la durata raccomandata è 12 ore. Per il dettaglio di
 prodotto e architettura, vedi la [specifica v2](docs/superpowers/specs/2026-08-23-gioco-segreto-alduino-design.md).
 
