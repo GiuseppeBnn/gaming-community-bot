@@ -130,6 +130,44 @@ async def test_publication_has_one_live_publisher(pg_session, pg_sessions, pg_us
     assert sum(await race(*(claim() for _ in range(8)))) == 1
 
 
+@pytest.mark.parametrize("mixed_private_and_group", [False, True])
+async def test_eight_drink_clicks_generate_one_reaction_after_one_consumption(
+    pg_session, pg_sessions, pg_user_factory, monkeypatch, mixed_private_and_group,
+):
+    from handlers import tavern
+    from handlers.callbacks import TavernCb
+    from database.models import TavernOffer
+
+    row = await seed(pg_session, pg_user_factory)
+    receipt, _ = await gifts.deliver_offer(pg_session, row.id, 1, GROUP)
+    await pg_session.execute(update(TavernOffer).where(TavernOffer.id == row.id).values(message_id=900))
+    await pg_session.commit()
+    monkeypatch.setattr(tavern.group_registry, "get_group_id", lambda: GROUP)
+    ai = AsyncMock(return_value="Checkpoint dello spuntino!")
+    monkeypatch.setattr(tavern.tavern_reactions, "generate_reaction", ai)
+    bot = SimpleNamespace(edit_message_text=AsyncMock())
+    msg = SimpleNamespace(chat=SimpleNamespace(id=GROUP, type="supergroup"), message_id=900, bot=bot)
+    private_msg = SimpleNamespace(
+        chat=SimpleNamespace(id=2, type="private"), message_id=901, bot=bot,
+        edit_text=AsyncMock(), answer=AsyncMock(),
+    )
+
+    async def click(index):
+        private = mixed_private_and_group and index % 2 == 0
+        cb = SimpleNamespace(message=private_msg if private else msg, bot=bot,
+                             from_user=SimpleNamespace(id=2), answer=AsyncMock())
+        async with pg_sessions() as session:
+            await (tavern.cb_personal if private else tavern.cb_receive)(
+                cb, TavernCb(action="consume" if private else "drink", offer_id=row.id, ref=receipt.purchase_id), session,
+            )
+
+    await race(*(click(i) for i in range(8)))
+    ai.assert_awaited_once_with(KEY, 2)
+    assert await stock.consumed_by(pg_session, receipt.purchase_id) == 2
+    assert await stock.stock_counts(pg_session, 2) == {}
+    assert bot.edit_message_text.await_count == 2  # Immediate state, then one AI line.
+
+
 @pytest.mark.parametrize("cosmetic", [False, True])
 async def test_gifts_and_normal_shop_purchases_share_account_lock_order(
     pg_session, pg_sessions, pg_user_factory, cosmetic,

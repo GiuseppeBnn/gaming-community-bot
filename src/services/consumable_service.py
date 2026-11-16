@@ -218,3 +218,15 @@ async def consume_unit(session: AsyncSession, purchase_id: int, user_tg_id: int)
         ).values(consumed_at=utc_now()).execution_options(synchronize_session=False)
     )
     return key if result.rowcount else None
+
+
+async def consumed_by(session: AsyncSession, purchase_id: int | None) -> int | None:
+    """Read immutable consumption state without materializing legacy stock."""
+    if purchase_id is None:
+        return None
+    return (await session.execute(
+        select(TavernItem.owner_tg_id).where(
+            TavernItem.purchase_id == purchase_id,
+            TavernItem.consumed_at.is_not(None),
+        )
+    )).scalar_one_or_none()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import asyncio
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -26,6 +27,7 @@ def message(*, uid=1, chat_id=1, chat_type="private", target=None, bot=None, mid
         get_me=AsyncMock(return_value=SimpleNamespace(username="testbot")),
         get_chat_member=AsyncMock(return_value=SimpleNamespace(status="member")),
         send_message=AsyncMock(return_value=SimpleNamespace(message_id=900)),
+        edit_message_text=AsyncMock(),
     )
     return SimpleNamespace(
         from_user=SimpleNamespace(id=uid, is_bot=False), sender_chat=None,
@@ -317,7 +319,9 @@ async def test_only_recipient_can_consume_or_keep_the_exact_published_gift(sessi
     await call(cb, session, tavern.cb_receive)
     if kind == "drink":
         assert await stock.stock_counts(session, 2) == {}
-        msg.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
+        assert cb.answer.call_args.kwargs["show_alert"]
+        assert "Consumato da" in cb.bot.edit_message_text.call_args.kwargs["text"]
+        assert cb.bot.edit_message_text.call_args.kwargs["reply_markup"] is None
     elif kind == "keep":
         assert await stock.stock_counts(session, 2) == {KEY: 1}
         msg.edit_reply_markup.assert_awaited_once_with(reply_markup=None)
@@ -380,3 +384,114 @@ async def test_normal_purchases_lock_accounts_before_debit(session, accounts, mo
     handler = shop.cb_shop_execute if cosmetic else shop.cb_consumable_execute
     await handler(cb, data, session)
     assert events == ["accounts", "debit"]
+
+
+async def published_gift(session):
+    row = await offer(session, delivered=True)
+    await session.execute(update(TavernOffer).where(TavernOffer.id == row.id).values(message_id=900))
+    await session.commit()
+    return await gifts.get_offer(session, row.id)
+
+
+async def test_group_consumption_confirms_updates_and_calls_ai_only_after_commit(session, accounts, monkeypatch):
+    row = await published_gift(session)
+    cb = callback("drink", uid=2, offer_id=row.id, ref=row.purchase_id,
+                  msg=message(chat_id=GROUP, chat_type="supergroup", mid=900))
+    async def generate(key, user_id):
+        assert (key, user_id) == (KEY, 2)
+        assert not session.in_transaction()
+        assert cb.answer.call_args.kwargs["show_alert"]
+        assert "Consumato da" in cb.bot.edit_message_text.call_args.kwargs["text"]
+        return "<b>Checkpoint dello spuntino!</b>"
+    ai = AsyncMock(side_effect=generate)
+    monkeypatch.setattr(tavern.tavern_reactions, "generate_reaction", ai)
+    await call(cb, session, tavern.cb_receive)
+    assert cb.bot.edit_message_text.await_count == 2
+    assert "&lt;b&gt;Checkpoint" in cb.bot.edit_message_text.call_args.kwargs["text"]
+    assert await stock.consumed_by(session, row.purchase_id) == 2
+    await call(cb, session, tavern.cb_receive)
+    ai.assert_awaited_once_with(KEY, 2)
+    assert await stock.purchase_counts(session, 1) == {KEY: 1}
+
+
+async def test_private_gift_consumption_updates_only_its_existing_public_card(session, accounts, monkeypatch):
+    row = await published_gift(session)
+    ai = AsyncMock(return_value="Checkpoint raggiunto!")
+    monkeypatch.setattr(tavern.tavern_reactions, "generate_reaction", ai)
+    cb = callback("consume", uid=2, ref=row.purchase_id, msg=message(uid=2))
+    await call(cb, session, tavern.cb_personal)
+    ai.assert_awaited_once_with(KEY, 2)
+    cb.bot.send_message.assert_not_awaited()  # No new public post.
+    assert cb.bot.edit_message_text.call_args.kwargs["chat_id"] == GROUP
+    assert cb.bot.edit_message_text.call_args.kwargs["message_id"] == 900
+    assert cb.message.answer.call_args.kwargs["parse_mode"] is None
+    assert "Checkpoint" in cb.message.answer.call_args.args[0]
+    receipt = message()
+    await tavern.show_offer(receipt, session, row)
+    assert "già stato consumato" in receipt.answer.call_args.args[0]
+
+
+@pytest.mark.parametrize("failure", ["popup", "pantry", "private_message", "public_card"])
+async def test_feedback_failure_never_reverts_consumption_or_retries_ai(session, accounts, monkeypatch, failure, caplog):
+    row = await published_gift(session)
+    public = failure == "public_card"
+    cb = callback("drink" if public else "consume", uid=2, offer_id=row.id, ref=row.purchase_id,
+                  msg=message(uid=2, chat_id=GROUP if public else 2,
+                              chat_type="supergroup" if public else "private", mid=900))
+    target = {"popup": cb.answer, "pantry": cb.message.edit_text,
+              "private_message": cb.message.answer, "public_card": cb.bot.edit_message_text}[failure]
+    target.side_effect = RuntimeError("SECRET_RESPONSE")
+    ai = AsyncMock(return_value="Una battuta.")
+    monkeypatch.setattr(tavern.tavern_reactions, "generate_reaction", ai)
+    await call(cb, session, tavern.cb_receive if public else tavern.cb_personal)
+    assert await stock.consumed_by(session, row.purchase_id) == 2
+    assert ai.await_count == (0 if public else 1)
+    assert "SECRET_RESPONSE" not in caplog.text
+
+
+async def test_cancelled_reaction_keeps_commit_and_cannot_be_replayed(session, accounts, monkeypatch):
+    row = await published_gift(session)
+    ai = AsyncMock(side_effect=asyncio.CancelledError())
+    monkeypatch.setattr(tavern.tavern_reactions, "generate_reaction", ai)
+    cb = callback("drink", uid=2, offer_id=row.id, ref=row.purchase_id,
+                  msg=message(chat_id=GROUP, chat_type="supergroup", mid=900))
+    with pytest.raises(asyncio.CancelledError):
+        await call(cb, session, tavern.cb_receive)
+    assert await stock.consumed_by(session, row.purchase_id) == 2
+    await call(cb, session, tavern.cb_receive)
+    ai.assert_awaited_once()
+    assert cb.bot.edit_message_text.await_count == 1  # Fallback was rendered before cancellation.
+
+
+@pytest.mark.parametrize("during_send", [True, False])
+async def test_publication_detects_a_consumption_before_or_during_the_first_send(session, accounts, during_send):
+    row = await offer(session, delivered=True)
+    cb = callback("publish", offer_id=row.id)
+    if during_send:
+        async def send(*args, **kwargs):
+            assert not session.in_transaction()
+            await stock.consume_unit(session, row.purchase_id, 2)
+            await session.commit()
+            return SimpleNamespace(message_id=900)
+        cb.bot.send_message.side_effect = send
+    else:
+        await stock.consume_unit(session, row.purchase_id, 2)
+        await session.commit()
+    await call(cb, session)
+    assert "Consumato da" in cb.bot.edit_message_text.call_args.kwargs["text"]
+    assert cb.bot.edit_message_text.call_args.kwargs["reply_markup"] is None
+    if not during_send:
+        assert cb.bot.send_message.call_args.kwargs["reply_markup"] is None
+
+
+async def test_unit_consumption_read_and_public_receipt_lookup_are_non_mutating(session, accounts):
+    row = await offer(session, delivered=True)
+    assert await stock.consumed_by(session, None) is None
+    assert await stock.consumed_by(session, -1) is None
+    assert await stock.consumed_by(session, row.purchase_id) is None
+    assert await gifts.published_offer_for_unit(session, row.purchase_id, 2, GROUP) is None
+    await session.execute(update(TavernOffer).where(TavernOffer.id == row.id).values(message_id=900))
+    await session.commit()
+    assert (await gifts.published_offer_for_unit(session, row.purchase_id, 2, GROUP)).id == row.id
+    assert await gifts.published_offer_for_unit(session, row.purchase_id, 3, GROUP) is None
+    assert await gifts.published_offer_for_unit(session, row.purchase_id, 2, -999) is None

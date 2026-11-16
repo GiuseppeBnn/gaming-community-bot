@@ -464,7 +464,11 @@ Le **monete** (CoInn) sono spendibili e farmabili; gli **XP** sono una metrica d
   10 minuti, massimo 5 aperti e un'offerta confermata al minuto. «Le mie offerte» recupera
   le ultime 10 ricevute, anche dopo restart; se l'annuncio fallisce, il regalo resta nella
   dispensa e si può ritentare la sola pubblicazione senza comprare di nuovo.
-  **Nessun vantaggio nei giochi**, bonus economico, permesso Telegram o chiamata AI.
+  L'annuncio mette in evidenza il nome cliccabile del destinatario. Il consumo mostra
+  un popup e aggiorna la card già pubblicata; Alduino aggiunge una battuta breve con
+  il profilo AI light e budget esistente (massimo una chiamata al minuto per persona,
+  fallback locale). Le consumazioni personali restano private, senza postare nel gruppo.
+  **Nessun vantaggio nei giochi**, bonus economico o permesso Telegram.
 
 ### Personalizzare con i CSV
 

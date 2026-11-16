@@ -126,6 +126,7 @@ src/                                  # src-layout: i package restano top-level 
 | `shop_service.py` | Cosmetici: acquisto, tag attivi multipli, `apply_cosmetic` |
 | `consumable_service.py` | Consumabili ripetibili (menu Locanda) + conteggi per i trofei |
 | `tavern_service.py` | Conferme regalo atomiche, limiti persistenti e lease annuncio |
+| `tavern_reactions.py` / `utils/tavern_view.py` | Feedback post-consumo, reazioni AI light con fallback e card regalo condivisa |
 | `catalog_loader.py` | CSV → trofei/ranghi/cosmetici/consumabili/categorie. Letti **solo all'avvio**, fallback ai default |
 | `admin_service.py` | `set_balance` `mass_credit` `get_dossier` `search_users` warn/ban `log_action` `recent_actions` |
 | `moderation_service.py` | Wrapper Bot API (ban/kick/mute/`parse_duration`) — **non tocca il DB** |

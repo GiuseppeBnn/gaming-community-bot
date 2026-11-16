@@ -1,8 +1,9 @@
-"""Locanda stock and personal gifts; no FSM, gameplay buffs or AI calls."""
+"""Locanda stock and gifts; optional flavour only after a committed consumption."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
@@ -16,10 +17,14 @@ from handlers._mentions import mention_many
 from handlers._privacy import redirect_to_private
 from handlers._trophy_announce import announce_trophies
 from handlers.callbacks import ShopCb, TavernCb
-from services import badge_service, consumable_service, group_registry, tavern_service as service
+from services import (
+    badge_service, consumable_service, group_registry, tavern_reactions,
+    tavern_service as service,
+)
 from utils import cooldown
 from utils.daytime import utc_now
 from utils.text import esc
+from utils.tavern_view import public_offer_text
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -81,13 +86,15 @@ async def cmd_offri(message: Message, db_session: AsyncSession) -> None:
 
 
 async def show_offer(message: Message, db_session: AsyncSession, offer: service.Offer, *, edit: bool = False) -> None:
-    names = await mention_many(db_session, [offer.recipient_tg_id])
+    names = await mention_many(db_session, [offer.recipient_tg_id], prefer_name=True)
     target = names[offer.recipient_tg_id]
     builder = InlineKeyboardBuilder()
     if offer.status == "delivered":
         item = consumable_service.get_item(offer.item_key) if offer.item_key else None
         label = f"{item.emoji} {esc(item.name)}" if item else "un oggetto"
-        text = f"🎁 Hai offerto {label} a {target}.\nIl regalo è già nella sua dispensa."
+        consumed = await consumable_service.consumed_by(db_session, offer.purchase_id)
+        state = "Il regalo è già stato consumato." if consumed is not None else "Il regalo è già nella sua dispensa."
+        text = f"🎁 Hai offerto {label} a {target}.\n{state}"
         if offer.message_id is None:
             _button(builder, "📣 Pubblica nel gruppo", "publish", offer.id)
     elif offer.status == "cancelled" or utc_now() >= offer.expires_at:
@@ -126,6 +133,7 @@ async def start_offer_private(message: Message, db_session: AsyncSession, token:
 
 async def show_pantry(message: Message, db_session: AsyncSession, user_id: int, page: int = 0) -> None:
     summary = await consumable_service.stock_summary(db_session, user_id)
+    await db_session.commit()  # Snapshot inventory, then release the read before Telegram/AI.
     stock = {key: count for key, (count, _) in summary.items()}
     units = {key: unit for key, (_, unit) in summary.items()}
     items = [item for item in consumable_service.get_consumables().values() if stock.get(item.key)]
@@ -186,19 +194,24 @@ async def publish_offer(callback: CallbackQuery, db_session: AsyncSession, offer
         await db_session.commit()
         return False
     offer = await service.get_offer(db_session, offer.id)
-    names = await mention_many(db_session, [offer.sender_tg_id, offer.recipient_tg_id])
+    names = await mention_many(db_session, [offer.sender_tg_id, offer.recipient_tg_id], prefer_name=True)
     item = consumable_service.get_item(offer.item_key) if offer.item_key else None
-    label = f"{item.emoji} {esc(item.name)}" if item else "un oggetto"
-    text = f"🎁 {names[offer.sender_tg_id]} offre <b>{label}</b> a {names[offer.recipient_tg_id]}!"
-    text += "\nPuoi consumarlo ora o conservarlo nella tua dispensa."
+    consumer = await consumable_service.consumed_by(db_session, offer.purchase_id)
+    text = public_offer_text(
+        names[offer.sender_tg_id], names[offer.recipient_tg_id], item,
+        consumed=consumer is not None,
+        consumer=names[offer.recipient_tg_id] if consumer == offer.recipient_tg_id else None,
+    )
     builder = InlineKeyboardBuilder()
-    _button(builder, "🍻 Brindiamo!", "drink", offer.id, offer.purchase_id or 0)
+    _button(builder, "🍽 Consuma", "drink", offer.id, offer.purchase_id or 0)
     _button(builder, "🎒 Lo conservo", "keep", offer.id)
     await db_session.commit()  # No payment/inventory transaction across Telegram.
     message_id = None
     try:
         sent = await group_registry.send_group_message(
-            callback.bot, db_session, text, reply_markup=builder.adjust(1).as_markup(),
+            callback.bot, db_session, text,
+            parse_mode="HTML",
+            reply_markup=builder.adjust(1).as_markup() if consumer is None else None,
             request_timeout=10,
         )
         message_id = sent.message_id
@@ -206,7 +219,79 @@ async def publish_offer(callback: CallbackQuery, db_session: AsyncSession, offer
         log.warning("Tavern gift announcement failed offer_id=%s kind=%s", offer.id, type(exc).__name__)
     await service.finish_publication(db_session, offer.id, offer.publish_lease_until, message_id)
     await db_session.commit()
+    if message_id is not None:
+        # A pantry consumption may have won while the first send was in flight.
+        # Recheck after persisting the anchor so either publisher or consumer
+        # can render the final state. This never regenerates paid flavour.
+        consumer = await consumable_service.consumed_by(db_session, offer.purchase_id)
+        await db_session.commit()
+        if consumer is not None:
+            await _edit_consumed_card(
+                callback.bot, replace(offer, message_id=message_id), names, consumer,
+                tavern_reactions.FALLBACK_REACTION,
+            )
     return message_id is not None
+
+
+async def _edit_consumed_card(bot, offer: service.Offer, names: dict[int, str], consumer: int, reaction: str) -> bool:
+    item = consumable_service.get_item(offer.item_key) if offer.item_key else None
+    text = public_offer_text(
+        names[offer.sender_tg_id], names[offer.recipient_tg_id], item, consumed=True,
+        consumer=names[offer.recipient_tg_id] if consumer == offer.recipient_tg_id else None,
+        reaction=reaction,
+    )
+    try:
+        await bot.edit_message_text(
+            chat_id=offer.group_id, message_id=offer.message_id, text=text,
+            reply_markup=None, parse_mode="HTML", request_timeout=10,
+        )
+        return True
+    except Exception as exc:  # Feedback cannot undo a committed consumption.
+        log.warning("Tavern consumption card unavailable kind=%s", type(exc).__name__)
+        return False
+
+
+async def _consumption_feedback(
+    callback: CallbackQuery, db_session: AsyncSession, key: str, purchase_id: int,
+    *, offer: service.Offer | None = None,
+) -> None:
+    """Only the SQL consumption winner reaches this post-commit presentation."""
+    item = consumable_service.get_item(key)
+    label = " ".join(item.name.split())[:60] if item else "oggetto"
+    try:
+        await callback.answer(f"🍽 Consumato: {label}! Acquisti e trofei restano invariati.", show_alert=True)
+    except Exception as exc:
+        log.info("Tavern consumption acknowledgement unavailable kind=%s", type(exc).__name__)
+    if offer is None:
+        offer = await service.published_offer_for_unit(
+            db_session, purchase_id, callback.from_user.id, group_registry.get_group_id(),
+        )
+    names = await mention_many(
+        db_session, [offer.sender_tg_id, offer.recipient_tg_id], prefer_name=True,
+    ) if offer is not None else {}
+    await db_session.commit()  # No game transaction across Telegram or the optional AI call.
+    private = callback.message.chat.type == ChatType.PRIVATE
+    card_ready = False
+    if offer is not None:
+        card_ready = await _edit_consumed_card(
+            callback.bot, offer, names, callback.from_user.id, tavern_reactions.FALLBACK_REACTION,
+        )
+    if private:
+        try:
+            await show_pantry(callback.message, db_session, callback.from_user.id)
+        except Exception as exc:
+            await db_session.rollback()
+            log.info("Tavern pantry refresh unavailable kind=%s", type(exc).__name__)
+    if not private and not card_ready:
+        return  # No editable public card: don't pay for a line nobody can see.
+    reaction = await tavern_reactions.generate_reaction(key, callback.from_user.id)
+    if offer is not None and reaction != tavern_reactions.FALLBACK_REACTION:
+        await _edit_consumed_card(callback.bot, offer, names, callback.from_user.id, reaction)
+    if private:
+        try:
+            await callback.message.answer(f"🐲 Alduino: {reaction}", parse_mode=None, request_timeout=10)
+        except Exception as exc:
+            log.info("Tavern private reaction unavailable kind=%s", type(exc).__name__)
 
 
 @router.callback_query(TavernCb.filter(F.action.in_({"offers", "pantry", "consume"})), F.message.chat.type == ChatType.PRIVATE)
@@ -219,8 +304,7 @@ async def cb_personal(callback: CallbackQuery, callback_data: TavernCb, db_sessi
             await callback.answer("Oggetto già consumato o non più nella tua dispensa.", show_alert=True)
             return
         await db_session.commit()
-        await callback.answer("🍽 Consumato! Acquisti e trofei restano invariati.")
-        await show_pantry(callback.message, db_session, user_id)
+        await _consumption_feedback(callback, db_session, key, callback_data.ref)
         return
     if callback_data.action == "pantry":
         await show_pantry(callback.message, db_session, user_id, callback_data.ref)
@@ -322,8 +406,7 @@ async def cb_receive(callback: CallbackQuery, callback_data: TavernCb, db_sessio
         if key is None:
             raise service.TavernError("Oggetto già consumato o non più nella tua dispensa.")
         await db_session.commit()
-        await callback.answer("🍻 Alla salute!")
-        await callback.message.edit_reply_markup(reply_markup=None)
+        await _consumption_feedback(callback, db_session, key, data.ref, offer=offer)
     except service.TavernError as exc:
         await db_session.rollback()
         await callback.answer(str(exc), show_alert=True)

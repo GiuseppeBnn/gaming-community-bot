@@ -219,6 +219,22 @@ async def recent_offers(session: AsyncSession, sender_tg_id: int) -> list[Offer]
     return [Offer(**row) for row in rows]
 
 
+async def published_offer_for_unit(
+    session: AsyncSession, purchase_id: int, recipient_tg_id: int, group_id: int,
+) -> Offer | None:
+    """Latest already-public receipt for this consumer, never a private draft."""
+    row = (await session.execute(
+        select(TavernOffer.__table__).where(
+            TavernOffer.purchase_id == purchase_id,
+            TavernOffer.recipient_tg_id == recipient_tg_id,
+            TavernOffer.group_id == group_id,
+            TavernOffer.status == "delivered",
+            TavernOffer.message_id.is_not(None),
+        ).order_by(TavernOffer.id.desc()).limit(1)
+    )).mappings().first()
+    return Offer(**row) if row is not None else None
+
+
 async def claim_publication(session: AsyncSession, offer_id: int, sender_tg_id: int, group_id: int) -> bool:
     # Compute the lease AFTER waiting for the root, otherwise a blocked claim
     # could commit a lease that has already expired before the network starts.

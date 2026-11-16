@@ -636,9 +636,36 @@ e nessun nuovo addebito. Rete con timeout 10s; crash tra send e salvataggio può
 card duplicata dopo retry, **mai un secondo regalo** (limite Telegram già accettato altrove).
 Solo destinatario + gruppo + ID messaggio/unità corrispondenti possono usare i bottoni pubblici.
 Conservare non consuma; bere/consumare fa CAS sull'unità precisa, quindi il replay non prende
-la successiva. Scorte paginabili, nessun reset FSM e nessuna dipendenza da Redis o LLM.
+la successiva. Scorte paginabili, nessun reset FSM; scorte e consumi non dipendono da Redis o LLM.
 Nuove tabelle via `create_all`, incluse nell'export metadata. Nessuna modifica a premi/XP,
 salvo i normali trofei dell'acquisto effettivo. Le vecchie scorte rimangono disponibili.
+
+Gli annunci della Locanda usano `mention_many(prefer_name=True)`: nome visibile
+cliccabile, fallback a username/«giocatore» per nomi vuoti/invisibili; il rendering
+delle menzioni negli altri sottosistemi non cambia. Il destinatario è in apertura
+della card, non soltanto in fondo alla frase con il solo username.
+Solo il vincitore del CAS `consume_unit` entra nel feedback post-commit: popup
+modale, stato consumato nella card (senza bottoni) e poi reazione facoltativa.
+`consumed_by` legge colonne reali, senza materializzare scorte o mutare lo storico;
+la consumazione privata aggiorna solo l'eventuale ultima ricevuta già pubblicata
+per quell'unità/destinatario/gruppo, mai annunci privati o vecchi proprietari.
+Il publisher ricontrolla lo stato dopo aver salvato l'anchor: una consumazione
+durante il primo invio non lascia la nuova card con bottoni ormai inutilizzabili.
+Nessun consumo viene annullato se popup/edit/AI falliscono.
+
+`tavern_reactions.generate_reaction` riusa `generate_completion(tier="light")`,
+80 token di output e massimo 180 caratteri/una riga. Payload solo nome e breve
+descrizione del catalogo; mai chat, identità, saldi o storico. Stesso budget,
+prezzi/privacy/breaker del gateway, nessun retry paid. Un throttle sincrono per
+utente (60s, amministratori inclusi) ammette la chiamata prima del primo await;
+è una protezione in memoria contro spam, non un cap finanziario. Il cap durevole
+rimane nel ledger AI. Il replay perde il CAS e non entra mai nella generazione;
+una cancellazione non viene trasformata in retry. Senza key, budget o risposta
+utile, fallback locale. Stato/card locale precedono l'AI; nessun job AI viene
+recuperato dopo restart. Se la card pubblica non è modificabile non si spende.
+Il testo AI viene escapato nella card; in privato è inviato con `parse_mode=None`.
+Nessun nuovo post gruppo: si edita la card del regalo, mentre i consumi personali
+ricevono il commento solo nel proprio privato. Non è una corsia conversazionale.
 
 Questa è la prima tranche della Locanda sociale. Scene di coppia, ricette segrete e ricordi
 sono pianificati separatamente; **non** ancora attivi. Nessun evento natalizio incluso.

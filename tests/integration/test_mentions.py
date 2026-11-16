@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import handlers._mentions as m
+import pytest
 
 
 class TestMention:
@@ -38,3 +39,18 @@ async def test_batch_mentions_match_single_mentions_and_escape_html(session, use
     assert execute.await_count == 1
     assert batch == {tg_id: await m.mention(session, tg_id) for tg_id in [1, 2, 999]}
     assert await m.mention_many(session, []) == {}
+
+
+async def test_preferred_name_is_clickable_even_when_username_exists(session, user_factory):
+    await user_factory(tg_id=1, username="unrelated_handle", full_name="Anna & Mario")
+    names = await m.mention_many(session, [1, 99], prefer_name=True)
+    assert names[1] == '<a href="tg://user?id=1">Anna &amp; Mario</a>'
+    assert names[99] == '<a href="tg://user?id=99">giocatore</a>'
+    assert await m.mention(session, 1) == "@unrelated_handle"  # Other features stay unchanged.
+
+
+@pytest.mark.parametrize("name", [" ", "\u200b", "\u2800"])
+@pytest.mark.parametrize("username,expected", [("handle", "@handle"), (None, "giocatore")])
+async def test_preferred_name_never_renders_an_empty_link(session, user_factory, name, username, expected):
+    await user_factory(tg_id=1, username=username, full_name=name)
+    assert (await m.mention_many(session, [1], prefer_name=True))[1] == f'<a href="tg://user?id=1">{expected}</a>'

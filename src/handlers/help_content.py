@@ -157,6 +157,8 @@ _COMMANDS: list[CommandDoc] = [
                 "e combinabili) e 🍖 <b>Menù della Locanda</b> (cibi e bevande da acquistare "
                 "più volte, che finiscono nella tua 🎒 Dispensa e sbloccano trofei). "
                 "Dalla dispensa puoi consumare una singola unità; con /offri puoi regalarla. "
+                "Ogni consumo confermato mostra un popup e un breve commento di Alduino; "
+                "se l'AI non è disponibile viene usata una battuta locale. "
                 "Nessun vantaggio nei giochi: consumare non cancella acquisti o trofei.",
     ),
     CommandDoc(
@@ -164,8 +166,10 @@ _COMMANDS: list[CommandDoc] = [
         usage="/offri (nel gruppo, in risposta a un messaggio)",
         details="Rispondi a un membro del gruppo con /offri. Scegli e conferma in privato: "
                 "compra dal menù oppure regala una tua scorta, senza nuove spese. "
-                "Il destinatario può consumare il regalo o conservarlo. Invito personale "
-                "valido 10 minuti, massimo un'offerta confermata al minuto. "
+                "Il destinatario può consumare il regalo o conservarlo. "
+                "L'annuncio evidenzia il destinatario con il suo nome cliccabile; "
+                "quando consuma, la stessa card mostra l'esito senza nuovi messaggi nel gruppo. "
+                "Invito valido 10 minuti, massimo un'offerta confermata al minuto. "
                 "Le ultime offerte sono recuperabili da /locanda → Le mie offerte.",
     ),
     # --- 🎲 Giochi rapidi ---

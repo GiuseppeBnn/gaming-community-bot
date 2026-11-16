@@ -13,6 +13,11 @@ Modifiche rilevanti al bot. Formato ispirato a
   testi, precedenza degli errori, transazioni, configurazione e policy AI.
 
 ### Corretto
+- **Locanda: destinatario e consumazione riconoscibili** — annuncio con nome
+  cliccabile in evidenza, popup modale di conferma e card aggiornata dopo il consumo.
+  Battuta di Alduino post-commit sulla corsia AI light, payload senza dati personali,
+  throttle 60s e fallback locale. Nessun retry paid o doppia generazione sui replay;
+  consumi personali privati, senza nuovi post gruppo o modifiche a premi e acquisti.
 - **Telefono senza fili: rollout completamente nascosto** — `TELEPHONE_ENABLED=false`
   nasconde tipo-evento, programmazione, inline, riferimenti nei manuali e comando
   immagini, anche per gli admin. Vecchi link/callback/reply e pubblicazione bloccati;
