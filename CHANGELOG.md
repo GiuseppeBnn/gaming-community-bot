@@ -13,6 +13,10 @@ Modifiche rilevanti al bot. Formato ispirato a
   testi, precedenza degli errori, transazioni, configurazione e policy AI.
 
 ### Corretto
+- **Immagini: rimosso il fumetto obbligatorio** — resa cinematografica e di default
+  fotorealistica, con texture, materiali, luce e profondità curati; rispettati mezzi
+  visivi espliciti e soggetti fantastici. Stesso modello, PNG 1K, step, budget e timeout:
+  nessuna attesa artificiale o chiamata AI aggiuntiva.
 - **Aldu's Game: storico completo e titoli equivalenti** — domande/risposte numerate
   e sfogliabili senza perdere quelle vecchie, anche dopo la chiusura. Grafie sicure
   come GTA5/Grand Theft Auto V riconosciute localmente; titoli ambigui al giudice

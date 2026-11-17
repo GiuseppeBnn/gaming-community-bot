@@ -7,7 +7,7 @@ e senza premi monetari/XP. Non abilitarla in produzione durante questo rollout.
 
 Per provare **soltanto la generazione**, un admin può usare
 `/Immagine un pinguino che vende gelati sulla luna` (anche `/immagine`). Accetta
-1–150 caratteri e usa la stessa route, stile fumetto, timeout e budget, senza
+1–150 caratteri e usa la stessa route, resa cinematografica, timeout e budget, senza
 creare eventi/turni/premi. Una sola richiesta simultanea per admin, nessun retry
 automatico. L'immagine viene inviata nella chat in cui si esegue il comando;
 per un test privato, inviarlo in DM al bot. Il ledger distingue `admin_image`
@@ -71,9 +71,12 @@ partita già creata, crearne un'altra (nessun cambio silenzioso durante la caten
 ### Resa visiva (17 novembre 2026)
 
 Le immagini sono generate da **FLUX 3 Image Klein**, non dal GLM usato per il testo.
-Il prompt fisso richiede ora una scena a fumetti ricca di materiali, luce e profondità,
-leggibile da telefono, senza aggiungere nuovi protagonisti o correggere la descrizione
-del partecipante. Nessun passaggio LLM aggiuntivo: al provider arriva sempre soltanto
+Il prompt fisso richiede una scena cinematografica dettagliata, fotorealistica salvo
+un altro mezzo visivo esplicitamente descritto dal partecipante: materiali credibili,
+texture, luci, ombre e profondità, senza aggiungere nuovi protagonisti o correggere
+la descrizione. I soggetti fantastici mantengono il proprio aspetto caratteristico.
+Il precedente vincolo a fumetti è rimosso: era incompatibile con la resa realistica
+richiesta. Nessun passaggio LLM aggiuntivo: al provider arriva sempre soltanto
 l'ultima descrizione e lo stile, mai la storia della catena.
 
 Per la coppia esatta FLUX 3 Image Klein / Black Forest Labs il gateway specifica
@@ -84,6 +87,8 @@ Su altri modelli/provider o se il parametro non è più disponibile, nessun over
 Il timeout resta 120s: indica quanto attendiamo, non quanto il modello deve elaborare.
 Gli step espliciti potrebbero coincidere con il default del servizio: non promettono
 un miglioramento rispetto a ogni immagine precedente. La resa va confrontata su test.
+Una risposta in pochi secondi non dimostra che il provider stia lavorando male:
+lo stile dipende dal prompt e la qualità ha comunque i limiti del modello scelto.
 Modello, PNG 1K, tetto di prenotazione e numero di chiamate restano invariati.
 
 Listino verificato il 12 novembre 2026: FLUX 3 Image Klein, provider Black Forest

@@ -2468,7 +2468,8 @@ vengono intercettati. `begin_generation` fa CAS prima della rete: un duplicato
 non genera. Il provider riceve **solo l'ultima descrizione + stile fisso**, senza
 chat, cronologia, prompt iniziale o immagini precedenti. `image_service` usa Image
 API OpenRouter async, provider pinned, `n=1`, PNG 1K e controllo listino fresco
-che rifiuta unità sconosciute. Lo stile richiede dettagli visivi senza aggiungere
+che rifiuta unità sconosciute. Lo stile è cinematografico/fotorealistico, salvo altro
+mezzo visivo esplicito nella scena; non forza più il fumetto. Richiede dettagli visivi senza aggiungere
 protagonisti o trame alla descrizione; nessun LLM intermedio. Solo per FLUX 3 Image
 Klein / Black Forest Labs, `steps=16` viene passato nelle opzioni provider se il
 discovery fresco pubblicizza `steps` e lo slug atteso. Nessun override generico,

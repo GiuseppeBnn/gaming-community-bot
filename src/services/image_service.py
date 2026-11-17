@@ -26,8 +26,11 @@ log = logging.getLogger(__name__)
 _API = "https://openrouter.ai/api/v1"
 _MAX_RESPONSE = 12 * 1024 * 1024
 _STYLE = (
-    "Create one richly detailed, playful comic-book illustration with a square composition. "
-    "Use expressive poses, carefully rendered materials, nuanced lighting and depth, "
+    "Create one richly detailed cinematic scene with a square composition. "
+    "Unless the scene explicitly specifies another visual medium, use photorealistic rendering: "
+    "convincing surface textures, physically plausible materials, nuanced lighting and shadows, "
+    "natural proportions, atmospheric depth and deliberate foreground, middle ground and background. "
+    "Preserve fictional subjects and their defining appearance. Use expressive poses "
     "and a coherent, layered environment rather than a flat icon on an empty background. "
     "Keep the scene readable at phone size. Preserve the described subjects, actions, "
     "quantities and spatial relationships; add visual texture, not new characters, "

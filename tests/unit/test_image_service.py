@@ -151,6 +151,10 @@ async def test_quality_steps_require_known_model_and_advertised_capability(
     assert payload["resolution"] == "1K"
     assert "layered environment" in payload["prompt"]
     assert "spatial relationships" in payload["prompt"]
+    assert "photorealistic rendering" in payload["prompt"]
+    assert "physically plausible materials" in payload["prompt"]
+    assert "explicitly specifies another visual medium" in payload["prompt"]
+    assert "comic-book" not in payload["prompt"]
     assert api.reserve.call_args.kwargs["estimated_microusd"] == 12000
     assert len(api.client.calls) == 2  # no extra LLM/upsampling call
 
