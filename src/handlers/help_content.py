@@ -327,6 +327,8 @@ _COMMANDS: list[CommandDoc] = [
         details="Mostra la partita attiva e la tua quota personale. Il comportamento è "
                 "uguale per tutti, admin inclusi: non apre mai la gestione. "
                 "Si gioca nel gruppo, tramite reply o aggiungendo domanda/titolo al comando.\n\n"
+                "La card conserva lo storico sfogliabile. Sigle e grafie equivalenti del "
+                "titolo sono accettate; la sola saga o un altro capitolo non bastano.\n\n"
                 + render_public_help(v2_policy(DEFAULT_MAX_COINS_PER_PARTICIPANT)),
     ),
     CommandDoc(
@@ -464,7 +466,8 @@ def render_command(raw: str, is_admin: bool = False) -> str | None:
             "",
             "<b>Telefono senza fili</b>: quattro passaggi privati testo/immagine, "
             "una persona per passaggio. Due minuti per descrivere l'ultima immagine, "
-            "massimo 150 caratteri; il gruppo scopre la catena alla fine. "
+            "massimo 150 caratteri; alla fine il gruppo confronta prima e dopo "
+            "e può ricostruire tutti i passaggi. "
             "Nessun premio CoInn/XP.",
         ]
     if doc.admin_only:

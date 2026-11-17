@@ -13,6 +13,16 @@ Modifiche rilevanti al bot. Formato ispirato a
   testi, precedenza degli errori, transazioni, configurazione e policy AI.
 
 ### Corretto
+- **Aldu's Game: storico completo e titoli equivalenti** — domande/risposte numerate
+  e sfogliabili senza perdere quelle vecchie, anche dopo la chiusura. Grafie sicure
+  come GTA5/Grand Theft Auto V riconosciute localmente; titoli ambigui al giudice
+  strict con reasoning medio e cap invariati. Claim committato prima della rete,
+  errore senza consumo del tentativo e completamento protetto da scadenze/replay.
+- **Telefono senza fili: finale prima/dopo e resa visiva** — confronto tra prima
+  e ultima immagine e accesso alla catena completa nella stessa card. Preservati
+  risultati privati agli autori e vecchie callback. Prompt visivo più ricco e
+  16 step raccomandati su FLUX 3 Image Klein soltanto se dichiarati dall'endpoint;
+  nessun LLM aggiuntivo, cambio modello, aumento di risoluzione, cap o timeout.
 - **Locanda: destinatario e consumazione riconoscibili** — annuncio con nome
   cliccabile in evidenza, popup modale di conferma e card aggiornata dopo il consumo.
   Battuta di Alduino post-commit sulla corsia AI light, payload senza dati personali,

@@ -35,6 +35,7 @@ from services.ai_game_types import (
     FinishReason,
     GameCreationError,
     GameView,
+    GuessClaim,
     PersonalQuota,
     QuestionClaim,
     QuestionStartResult,
@@ -52,7 +53,8 @@ from services.ai_game_types import (
     TurnView,
     TwentyQuestionsPolicy,
 )
-from services.guess_judge import normalize
+from services.guess_judge import looks_like_a_title, normalize
+from services.title_matcher import matches_title
 from services.structured_ai import StructuredAIError, StructuredAIProvider
 from services.structured_ai_router import (
     RoutedStructuredResult,
@@ -731,6 +733,7 @@ def _turn_view(
 
 async def get_game_view(
     session: AsyncSession, session_id: int, *, recent_turns: int = 6,
+    history_page: int | None = None,
 ) -> GameView | None:
     """Return a small immutable presenter view without exposing a live secret."""
     row = (await session.execute(
@@ -809,10 +812,15 @@ async def get_game_view(
                 AIGameTurn.kind == TurnKind.guess.value,
                 compact_turn_output.like('%"correct":false%'),
             )),
+            func.count(AIGameTurn.id),
         ).where(AIGameTurn.session_id == root_id)
     )).one()
-    participant_count, question_count, wrong_guess_count = (int(value or 0) for value in counts)
+    participant_count, question_count, wrong_guess_count, turn_count = (
+        int(value or 0) for value in counts
+    )
     max_recent = max(0, min(recent_turns, 6))
+    pages = max(1, (turn_count + 5) // 6)
+    page = pages - 1 if history_page is None else max(0, min(history_page, pages - 1))
     recent_rows = (await session.execute(
         select(
             AIGameTurn.turn_no,
@@ -822,10 +830,11 @@ async def get_game_view(
             AIGameTurn.output_json,
         )
         .where(AIGameTurn.session_id == root_id)
-        .order_by(AIGameTurn.turn_no.desc())
+        .order_by(AIGameTurn.turn_no.asc())
+        .offset(page * 6)
         .limit(max_recent)
     )).all()
-    recent = tuple(_turn_view(*turn) for turn in reversed(recent_rows))
+    recent = tuple(_turn_view(*turn) for turn in recent_rows)
     projection: RewardProjection = compute_reward_projection(
         policy,
         participants=participant_count,
@@ -852,6 +861,9 @@ async def get_game_view(
         recent_turns=recent,
         revealed_answer=answer if status == "finished" else None,
         winner_tg_id=winner_tg_id,
+        turn_count=turn_count,
+        history_page=page,
+        history_pages=pages,
     )
 
 
@@ -1485,9 +1497,10 @@ def _guess_is_correct_values(canonical: str, aliases_json: str, answer: str) -> 
         aliases = json.loads(aliases_json)
     except (ValueError, TypeError):
         aliases = []
-    accepted = [canonical, *(aliases if isinstance(aliases, list) else [])]
-    candidate = normalize(answer)
-    return bool(candidate) and candidate in {normalize(str(value)) for value in accepted}
+    return matches_title(
+        answer, canonical,
+        (value for value in aliases if isinstance(value, str)) if isinstance(aliases, list) else (),
+    )
 
 
 async def _guess_duplicate_result(
@@ -1526,8 +1539,9 @@ async def submit_guess(
     user_tg_id: int,
     answer: str,
     now: datetime | None = None,
-) -> TurnResult:
-    """Append a locally judged v2 guess; callers never supply correctness."""
+    defer_uncertain: bool = False,
+) -> TurnResult | GuessClaim:
+    """Judge locally, or optionally return a durable lease for an ambiguous title."""
     current = _naive_utc(now) or _now()
     normalized = normalize_turn_input(answer)
     terminal = await _terminalize_if_due(session, session_id, current)
@@ -1591,7 +1605,7 @@ async def submit_guess(
         )
         return TurnResult(session_id, TurnOutcome.rejected, reason, quota, terminal=terminal)
     target = (await session.execute(select(
-        TwentyQuestionsGame.answer, TwentyQuestionsGame.aliases_json,
+        TwentyQuestionsGame.answer, TwentyQuestionsGame.aliases_json, TwentyQuestionsGame.dossier_json,
     ).where(
         TwentyQuestionsGame.session_id == session_id,
         TwentyQuestionsGame.rules_version == _V2_RULES_VERSION,
@@ -1602,26 +1616,38 @@ async def submit_guess(
             kind=TurnKind.guess,
         ))
         return TurnResult(session_id, TurnOutcome.rejected, TurnRejectReason.closed, quota)
-    canonical, aliases_json = target
+    canonical, aliases_json, dossier_json = target
     correct = _guess_is_correct_values(canonical, aliases_json, answer)
+    lease = QuestionClaim(
+        session_id, token, user_tg_id, answer, normalized, digest, dossier_json, (), kind=TurnKind.guess,
+    )
+    if defer_uncertain and not correct and looks_like_a_title(normalize(answer)):
+        return GuessClaim(lease, canonical, quota)
+    return await _record_guess_claim(session, lease, correct=correct, now=action_now)
+
+
+async def _record_guess_claim(
+    session: AsyncSession, claim: QuestionClaim, *, correct: bool, now: datetime,
+) -> TurnResult:
+    session_id, user_tg_id = claim.session_id, claim.user_tg_id
     appended = await _append_v2_turn(
         session,
         session_id=session_id,
-        token=token,
+        token=claim.token,
         user_tg_id=user_tg_id,
         kind=TurnKind.guess,
-        input_text=answer,
-        digest=digest,
+        input_text=claim.input_text,
+        digest=claim.normalized_hash,
         output_json=json.dumps({"correct": correct}),
-        now=action_now,
+        now=now,
     )
     if appended is None:
         return await _guess_duplicate_result(
             session,
             session_id=session_id,
             user_tg_id=user_tg_id,
-            normalized=normalized,
-            digest=digest,
+            normalized=claim.normalized_text,
+            digest=claim.normalized_hash,
         )
     quota = await get_personal_quota(session, session_id, user_tg_id)
     if not appended:
@@ -1637,7 +1663,7 @@ async def submit_guess(
         session_id=session_id,
         reason=FinishReason.victory,
         winner_tg_id=user_tg_id,
-        now=action_now,
+        now=now,
     )
     return TurnResult(
         session_id,
@@ -1647,6 +1673,36 @@ async def submit_guess(
         correct=True,
         terminal=terminal,
     )
+
+
+async def complete_guess(
+    session: AsyncSession, *, claim: GuessClaim, verdict: str | None,
+    now: datetime | None = None,
+) -> TurnResult:
+    """Fence a strict AI result against expiry/close/replay before recording it.
+
+    None means unavailable/uncertain: release only this lease without a turn,
+    quota, participation or reward penalty. Series-only is never a victory.
+    """
+    lease = claim.lease
+    if lease.kind is not TurnKind.guess:
+        raise ValueError("not a title claim")
+    if verdict not in (None, "correct", "series", "wrong"):
+        raise ValueError("invalid title verdict")
+    current, terminal = await _lock_v2_action(session, lease.session_id, now)
+    if terminal is not None:
+        return TurnResult(
+            lease.session_id, TurnOutcome.rejected, TurnRejectReason.expired,
+            await get_personal_quota(session, lease.session_id, lease.user_tg_id), terminal=terminal,
+        )
+    if verdict is None:
+        released = await _release_v2_claim(session, lease)
+        return TurnResult(
+            lease.session_id, TurnOutcome.rejected,
+            TurnRejectReason.providers_unavailable if released else TurnRejectReason.lost_claim,
+            await get_personal_quota(session, lease.session_id, lease.user_tg_id),
+        )
+    return await _record_guess_claim(session, lease, correct=verdict == "correct", now=current)
 
 
 async def claim_turn(session: AsyncSession, session_id: int) -> str | None:

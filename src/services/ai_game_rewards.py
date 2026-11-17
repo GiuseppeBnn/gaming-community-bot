@@ -259,6 +259,11 @@ async def _load_terminal_result(
     )
 
 
+async def get_terminal_result(session: AsyncSession, session_id: int) -> TerminalResult:
+    """Read an already settled game for history navigation; never settle or pay."""
+    return await _load_terminal_result(session, session_id, transitioned=False)
+
+
 async def terminalize(
     session: AsyncSession,
     *,

@@ -2468,7 +2468,12 @@ vengono intercettati. `begin_generation` fa CAS prima della rete: un duplicato
 non genera. Il provider riceve **solo l'ultima descrizione + stile fisso**, senza
 chat, cronologia, prompt iniziale o immagini precedenti. `image_service` usa Image
 API OpenRouter async, provider pinned, `n=1`, PNG 1K e controllo listino fresco
-che rifiuta unità sconosciute. Lo schema `ImageGenerationProviderPreferences`
+che rifiuta unità sconosciute. Lo stile richiede dettagli visivi senza aggiungere
+protagonisti o trame alla descrizione; nessun LLM intermedio. Solo per FLUX 3 Image
+Klein / Black Forest Labs, `steps=16` viene passato nelle opzioni provider se il
+discovery fresco pubblicizza `steps` e lo slug atteso. Nessun override generico,
+nessun aumento di risoluzione/cap e nessuna attesa artificiale: il timeout non è
+un controllo qualità. Lo schema `ImageGenerationProviderPreferences`
 non espone `max_price`: non inviare il campo del router testuale fingendo che sia
 un vincolo immagini. Il tetto è un gate di preflight con margine; un cambio prezzo
 tra GET e POST resta un limite dichiarato. Per un hard cap esterno usare il limite
@@ -2491,6 +2496,12 @@ I log riportano stage/kind/status HTTP, durata e request-id tecnico, mai prompt,
 corpi di errore, credenziali o descrizioni.
 Una card gruppo viene editata per progresso e reveal sfogliabile (nessun invio
 ripetuto di album), con una notifica finale best-effort prenotata una volta nel DB;
+il reveal apre l'ultima immagine con la descrizione iniziale, offre il confronto
+prima/dopo e la ricostruzione di tutti i passaggi. Con un solo passaggio non c'è
+un confronto fittizio; senza immagini resta il messaggio breve. Callback di
+confronto e galleria richiedono partita conclusa e card gruppo corretta; le vecchie
+callback `view` restano valide. Nessuna generazione per navigare. Ogni autore
+continua a ricevere in DM l'immagine prodotta dalla propria descrizione;
 gli admin possono riprovare la presentazione dagli Eventi
 senza rigenerare immagini. La primissima `send_message` conserva il consueto limite
 Telegram send→salvataggio: un crash in quella finestra può lasciare una card orfana,
@@ -2597,8 +2608,9 @@ degli oggetti e visita ricorsiva di proprietà/array, senza cambiare il sottoins
 di schema supportato. Precedenza degli errori invariata: tipo, enum, struttura
 dell'oggetto (required e campi extra), poi figli in ordine di dichiarazione.
 Il prompt riceve input utente delimitato/non attendibile;
-nessun corpo grezzo o reasoning arriva a Telegram. Vittorie e match canonici
-restano locali e deterministici. La sorgente primaria del gioco segreto v2 (20 Domande è
+nessun corpo grezzo o reasoning arriva a Telegram. I match canonici e gli alias sicuri
+restano locali e deterministici; solo i titoli plausibili non riconosciuti possono
+essere promossi dal giudice strutturato. La sorgente primaria del gioco segreto v2 (20 Domande è
 legacy v1) è IGDB, ma
 **mai nel path di creazione/gioco**: `services.igdb_catalog` sincronizza al massimo
 ogni 24 ore un set qualificato dentro `AIGameCatalogEntry`, poi gli handler leggono
@@ -2640,3 +2652,36 @@ Il factory runtime costruisce soltanto OpenRouter, anche con vecchie catene nel 
 globale e al lane cap. Budget e audit usano sessioni tecniche prompt-free: sono l'eccezione
 esplicita al normale owner handler. `scripts/eval_twenty_questions.py` è un harness opt-in
 separato dal runtime.
+
+#### Storico e grafie dei titoli (17 novembre 2026)
+
+Lo storico pubblico proviene dal ledger append-only, non dalla selezione del contesto AI.
+`get_game_view(history_page=...)` legge colonne, conta tutti i turni e restituisce al
+massimo sei voci cronologiche per pagina, numerate e con verdetto esplicito. Le pagine
+precedenti restano consultabili; un aggiornamento apre l'ultima pagina senza cancellare
+le altre. L'input lungo resta abbreviato nella card per rispettare il limite Telegram.
+Le callback pubbliche `tqhistory` richiedono sessione running/finished, indice valido,
+gruppo e anchor esatti; nessun nuovo messaggio di recupero dopo un tap obsoleto.
+Le modifiche della card condividono il lock di presentazione live/terminale, mai una
+transazione durante Telegram. Il riepilogo finale include lo storico: la sua navigazione
+ricostruisce il settlement **read-only**, senza ripagare o terminalizzare. Nessuna
+riscrittura dei turni storici, migrazione, chiamata AI o nuovo archivio per sfogliare.
+
+`title_matcher` accetta formattazione, accenti, numeri romani finali e sigle di titoli
+numerati (GTA5 / Grand Theft Auto V). Non applica distanze fuzzy o tagli di sottotitoli;
+X non diventa 10. Gli alias espliciti rimangono autorevoli. Nel path v2 il caller può
+richiedere `submit_guess(defer_uncertain=True)`: su un miss plausibile restituisce
+`GuessClaim`, da committare prima della rete. Il giudice esistente riceve titolo
+canonico, candidato e al massimo ~850 caratteri pubblici identificativi dal dossier
+(anno IGDB preservato per distinguere reboot omonimi), mai domande o chat. JSON inerte e schema strict
+`correct|series|wrong`, temperature 0 e thinking `medium` sui modelli reasoning noti;
+stesso token allowance prenotato, lane `openrouter_other` e cap globale invariati.
+Gli altri utilizzi del giudice e le domande SÌ/NO non cambiano effort. Nessun retry
+automatico. Il reasoning maggiore non certifica l'identità del gioco.
+
+`complete_guess` ricontrolla lock, scadenza, kind e token. Solo `correct` registra
+la vittoria nella stessa transazione del settlement; `series` non vince. Provider
+non disponibile/schema invalido/budget esaurito rilasciano soltanto il proprio claim:
+nessun turno, tentativo, partecipazione o penalità. Risultati tardivi, replay e chiusure
+concorrenti non possono sovrascrivere altri claim né duplicare premi. Il metodo
+`submit_guess` senza defer conserva l'adapter locale per caller legacy/test tecnici.

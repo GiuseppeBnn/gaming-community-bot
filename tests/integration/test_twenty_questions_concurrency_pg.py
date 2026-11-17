@@ -1929,3 +1929,46 @@ async def test_two_correct_aliases_create_one_winner_and_one_settlement(
             LedgerEntry.description == f"Premio gioco segreto di Alduino #{session_id}",
         ))).scalar_one()
     assert (allocation_coins, ledger_coins, allocation_xp) == (100, 100, 10)
+
+
+@pytest.mark.parametrize("other_action", ["replay", "close"])
+async def test_pg_deferred_ai_guess_races_never_double_pay(pg_sessions, monkeypatch, other_action):
+    """An AI result arrives after its claim commit; close/replay remain SQL-fenced."""
+    from services.ai_game_types import GuessClaim
+
+    session_id = await _setup_running(pg_sessions, monkeypatch, turns=())
+    async with pg_sessions() as start:
+        claim = await ai_game_service.submit_guess(
+            start, session_id=session_id, user_tg_id=10,
+            answer="Portl 2", defer_uncertain=True,
+        )
+        assert isinstance(claim, GuessClaim)
+        await start.commit()
+
+    async with pg_sessions() as first, pg_sessions() as second:
+        async def complete(db):
+            result = await ai_game_service.complete_guess(db, claim=claim, verdict="correct")
+            await db.commit()
+            return result
+
+        async def opponent():
+            if other_action == "replay":
+                return await complete(second)
+            result = await ai_game_service.terminalize(
+                second, session_id=session_id, reason=FinishReason.admin_closed,
+            )
+            await second.commit()
+            return result
+
+        results = await _run_actor_race(
+            (asyncio.create_task(complete(first)), asyncio.create_task(opponent())),
+            (first, second),
+        )
+    facts = await _settlement_facts(pg_sessions, session_id)
+    won = facts["root"][1] == "victory"
+    assert facts["turns"] == (1 if won else 0)
+    assert facts["ledger"] == (1 if won else 0)
+    assert facts["wallets"] == {10: 100 if won else 0, 20: 0}
+    if other_action == "replay":
+        assert won
+        assert sum(r.outcome is TurnOutcome.recorded for r in results) == 1

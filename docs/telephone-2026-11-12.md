@@ -18,11 +18,16 @@ da `telephone_image`, ma la lane mensile resta la stessa.
 3. Nel gruppo compare una sola card, con **Prendo la staffetta** verso il privato.
 4. La prima persona inventa una scena di 1–150 caratteri, rispondendo al prompt.
    Le altre vedono solo l'ultima immagine e la descrivono. L'AI ridisegna alla cieca.
-5. Dopo quattro immagini, o alla chiusura/scadenza, la card diventa una galleria
-   sfogliabile: ogni immagine mostra la descrizione e l'autore del suo passaggio.
+5. Ogni autore continua a ricevere in privato il risultato della propria descrizione.
+   Dopo quattro immagini, o alla chiusura/scadenza, la card mostra l'ultima immagine
+   e la scena di partenza: **Guarda l'inizio/Guarda il risultato** confronta prima e
+   dopo, **Ricostruisci la catena** apre tutti i passaggi con descrizione e autore.
+   Con un solo passaggio si mostra direttamente quello, senza un confronto fittizio.
+   Nessuna nuova generazione o messaggio gruppo per sfogliare/confrontare.
 
 La richiesta di preparazione non genera immagini. Ogni persona può vedere un
-solo passaggio nella catena; il doppio tap non rinnova il tempo. La prenotazione
+solo turno nella catena (immagine ricevuta e proprio risultato); il doppio tap
+non rinnova il tempo. La prenotazione
 vale due minuti **dalla consegna**. Se scade, chiunque altro può proseguire.
 La durata totale è 30 minuti, salvo completamento di una generazione già ammessa
 entro la scadenza. Anche una catena incompleta viene svelata; senza immagini si
@@ -63,6 +68,24 @@ esclusioni manuali di file. Non promuovere l'env di test in produzione.
 Modello/provider/prezzo sono copiati nella partita pronta: per cambiarli su una
 partita già creata, crearne un'altra (nessun cambio silenzioso durante la catena).
 
+### Resa visiva (17 novembre 2026)
+
+Le immagini sono generate da **FLUX 3 Image Klein**, non dal GLM usato per il testo.
+Il prompt fisso richiede ora una scena a fumetti ricca di materiali, luce e profondità,
+leggibile da telefono, senza aggiungere nuovi protagonisti o correggere la descrizione
+del partecipante. Nessun passaggio LLM aggiuntivo: al provider arriva sempre soltanto
+l'ultima descrizione e lo stile, mai la storia della catena.
+
+Per la coppia esatta FLUX 3 Image Klein / Black Forest Labs il gateway specifica
+`provider.options["black-forest-labs"].steps=16` **solo se** il discovery fresco
+pubblicizza `steps` e lo slug atteso. È il valore raccomandato per il modello
+distillato, non un aumento arbitrario a 40/50 step (il modello base è diverso).
+Su altri modelli/provider o se il parametro non è più disponibile, nessun override.
+Il timeout resta 120s: indica quanto attendiamo, non quanto il modello deve elaborare.
+Gli step espliciti potrebbero coincidere con il default del servizio: non promettono
+un miglioramento rispetto a ogni immagine precedente. La resa va confrontata su test.
+Modello, PNG 1K, tetto di prenotazione e numero di chiamate restano invariati.
+
 Listino verificato il 12 novembre 2026: FLUX 3 Image Klein, provider Black Forest
 Labs, 1K, **$0,009/immagine**, quindi circa **$0,036 per quattro immagini**. La
 prenotazione prudenziale è $0,012 per chiamata, $0,048 per una catena senza errori. Non
@@ -99,6 +122,7 @@ Fonti ufficiali:
 - [Listino e capability endpoint](https://openrouter.ai/api/v1/images/models/black-forest-labs/flux-3-image-klein/endpoints)
 - [Routing e max_price.image](https://openrouter.ai/docs/guides/routing/provider-selection#max-price)
 - [Schema ufficiale: ImageGenerationProviderPreferences](https://openrouter.ai/openapi.json)
+- [Black Forest Labs: modello distillato e 16 step](https://github.com/black-forest-labs/flux-3-image-klein)
 - [Deep link Telegram](https://core.telegram.org/bots/features#deep-linking)
 
 ## Invarianti tecnici e limiti onesti

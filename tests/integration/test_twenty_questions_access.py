@@ -32,6 +32,7 @@ async def running(session, monkeypatch):
     await ai_game_service.move_anchor(session, session_id, 77)
     await session.commit()
     monkeypatch.setattr(handler, "refresh_group_card", AsyncMock())
+    monkeypatch.setattr(handler, "classify_title", AsyncMock(return_value="wrong"))
     return session_id
 
 
@@ -55,6 +56,7 @@ async def test_status_then_reply_to_verdict_then_guess_share_the_game(session, m
     await handler.play_turn(guess, session)
     assert "Non è lui" in guess.said[-1]
     assert ai.await_count == 1
+    assert handler.classify_title.call_args.args == ("Portal 2", "Un altro videogioco")
     assert (await session.execute(select(func.count(AIGameTurn.id)))).scalar_one() == 2
 
 
@@ -70,6 +72,7 @@ async def test_command_plays_without_reply_or_command_text_in_ai(session, monkey
     await handler.cmd_gioco_alduino(message, session, CommandObject(command="aldusgame", args=args))
     if is_guess:
         ai.assert_not_awaited()
+        assert handler.classify_title.call_args.args == ("Portal 2", "Un altro gioco")
         assert "Non è lui" in message.said[-1]
     else:
         assert ai.call_args.args[0].input_text == args

@@ -78,9 +78,18 @@ def _turn_line(turn: TurnView) -> str:
             QuestionVerdict.usa_risposta: "🎯",
         }
         icon = icons.get(turn.verdict, "➖") if turn.verdict is not None else "➖"
-        return f"{icon} {esc(visible_input)}"
+        return f"{turn.turn_no}. {esc(visible_input)} → {icon} <b>{_verdict_label(turn.verdict)}</b>"
     icon = "🏆" if turn.correct else "💥"
-    return f"{icon} Tentativo: {esc(visible_input)}"
+    return f"{turn.turn_no}. {icon} Tentativo: {esc(visible_input)}"
+
+
+def _history_lines(view: GameView) -> list[str]:
+    if not view.recent_turns:
+        return []
+    return [
+        "", f"<b>Domande e risposte · {view.history_page + 1}/{view.history_pages}</b>",
+        *(_turn_line(turn) for turn in view.recent_turns[-6:]),
+    ]
 
 
 def _expiry_lines(expires_at: datetime | None) -> list[str]:
@@ -159,10 +168,7 @@ def render_live_card(
         GAME_REWARD_HINT,
         f"✨ Partecipare vale <b>{policy.xp_per_participant} XP</b> alla chiusura.",
     ]
-    recent = view.recent_turns[-6:]
-    if recent:
-        lines.extend(("", "<b>Ultimi turni validi</b>"))
-        lines.extend(_turn_line(turn) for turn in recent)
+    lines.extend(_history_lines(view))
     if personal_quota is not None:
         lines.extend(("", _quota_line(personal_quota)))
     if view.status == "running" or open_preview:
@@ -177,7 +183,9 @@ def render_live_card(
     return "\n".join(lines)
 
 
-def render_terminal_card(result: TerminalResult, *, winner_html: str | None = None) -> str:
+def render_terminal_card(
+    result: TerminalResult, *, winner_html: str | None = None, history: GameView | None = None,
+) -> str:
     """Render a terminal settlement without exposing raw user data or ORM rows."""
     reward = result.reward
     xp_award = result.allocations[0].xp if result.allocations else 0
@@ -213,6 +221,8 @@ def render_terminal_card(result: TerminalResult, *, winner_html: str | None = No
         else:
             lines.append("⚪ Partita conclusa senza vincitore.")
         lines.append("💰 CoInn: 0 — gioco non indovinato")
+    if history is not None:
+        lines.extend(_history_lines(history))
     lines.extend(("", GAME_STATUS_HINT))
     return "\n".join(lines)
 
@@ -259,7 +269,7 @@ def _reject_message(reason: TurnRejectReason | None) -> str:
         TurnRejectReason.invalid_input: "🐲 Tienila tra 1 e 500 caratteri, avventuriero.",
         TurnRejectReason.hash_collision: "🐲 Ho rilevato un input incoerente: riprova senza modificarlo.",
         TurnRejectReason.providers_unavailable: (
-            "🔥 Alduino ha il cervello in fumo. La domanda non è stata consumata: riprova."
+            "🔥 La verifica non è disponibile. Il turno non è stato consumato: riprova."
         ),
         TurnRejectReason.lost_claim: "🐲 Il turno non è più disponibile: riprova.",
         TurnRejectReason.answer_confirmation_required: (

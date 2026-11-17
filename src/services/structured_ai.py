@@ -876,6 +876,10 @@ class OpenRouterStructuredProvider:
         reasoning, total_tokens = ai_service.openrouter_generation_policy(
             (self.model,), request.max_output_tokens,
         )
+        if request.thinking_level in ("low", "medium", "high") and reasoning["effort"] != "none":
+            # Explicit adjudication effort, with the existing reserved token
+            # ceiling. Ordinary questions/default requests remain unchanged.
+            reasoning = {"effort": request.thinking_level, "exclude": True}
         try:
             reservation = await ai_budget.reserve(
                 feature=self._budget_feature or request.operation,

@@ -67,7 +67,8 @@ async def test_disabled_handlers_do_not_read_state_database_or_call_telegram_or_
             callback, TelephoneCb(action=action, game_id=42), object(), object()
         )
     await telephone.gallery(callback, TelephoneCb(action="view", game_id=42), object())
-    assert callback.answer.await_count == 4
+    await telephone.gallery(callback, TelephoneCb(action="compare", game_id=42), object())
+    assert callback.answer.await_count == 5
     assert all(call.args == ("Azione non disponibile.",) for call in callback.answer.call_args_list)
     await images.cmd_immagine(object(), object(), object())
     allowed, _ = await images.router.message.check_root_filters(object())

@@ -16,6 +16,7 @@ from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
     ForceReply,
+    InlineKeyboardButton,
     InputMediaPhoto,
     Message,
     ReplyParameters,
@@ -79,7 +80,7 @@ async def _member(bot, user_id: int) -> bool:
         return False
 
 
-def _gallery(view: game.View, number: int):
+def _gallery(view: game.View, number: int, *, comparison: bool = False):
     stage = view.stages[number - 1]
     ending = (
         "🏁 Catena completa!"
@@ -92,6 +93,26 @@ def _gallery(view: game.View, number: int):
         f"{esc(stage.description)}\n\nSfoglia per vedere come è cambiata la scena."
     )
     b = InlineKeyboardBuilder()
+    if comparison and len(view.stages) > 1:
+        first = number == 1
+        caption = (
+            f"📞 <b>Telefono senza fili #{view.id}</b>\n{ending}\n\n"
+            f"💭 <b>La scena di partenza:</b>\n{esc(view.stages[0].description)}\n\n"
+            + ("🖼 <b>La prima immagine.</b>" if first else "🌀 <b>Ed ecco dove siamo arrivati!</b>")
+            + "\nCome è cambiata? Confronta le immagini o ricostruisci la catena."
+        )
+        b.button(
+            text="🌀 Guarda il risultato" if first else "🖼 Guarda l'inizio",
+            callback_data=TelephoneCb(
+                action="compare", game_id=view.id, stage=len(view.stages) if first else 1
+            ).pack(),
+        )
+        b.button(
+            text="🔎 Ricostruisci la catena",
+            callback_data=TelephoneCb(action="view", game_id=view.id, stage=1).pack(),
+        )
+        b.adjust(1)
+        return InputMediaPhoto(media=stage.file_id, caption=caption, parse_mode="HTML"), b.as_markup()
     if number > 1:
         b.button(
             text="⬅️ Prima",
@@ -103,10 +124,21 @@ def _gallery(view: game.View, number: int):
             callback_data=TelephoneCb(action="view", game_id=view.id, stage=number + 1).pack(),
         )
     b.adjust(2)
+    if len(view.stages) > 1:
+        b.row(
+            InlineKeyboardButton(
+                text="🖼 Prima e dopo",
+                callback_data=TelephoneCb(
+                    action="compare", game_id=view.id, stage=len(view.stages)
+                ).pack(),
+            )
+        )
     return InputMediaPhoto(media=stage.file_id, caption=caption, parse_mode="HTML"), b.as_markup()
 
 
-async def publish_card(bot, session: AsyncSession, game_id: int, number: int = 1) -> None:
+async def publish_card(
+    bot, session: AsyncSession, game_id: int, number: int = 0, *, comparison: bool = False
+) -> None:
     if not settings.telephone_enabled:
         return
     lock = _card_locks.setdefault(game_id, asyncio.Lock())
@@ -138,13 +170,18 @@ async def publish_card(bot, session: AsyncSession, game_id: int, number: int = 1
                 "Il primo inventa una scena; gli altri vedono solo l'ultima immagine "
                 "e la descrivono in privato. L'AI ridisegna alla cieca.\n"
                 "4 persone diverse · 150 caratteri · 2 minuti per scrivere.\n"
-                "Alla fine sveliamo la catena! La partita si chiude entro 30 minuti."
+                "Alla fine confrontiamo prima e dopo e sveliamo la catena! "
+                "La partita si chiude entro 30 minuti."
             )
         else:
             text = f"📞 <b>Telefono senza fili #{game_id}</b>\nStaffetta chiusa senza immagini: riproviamo un'altra volta!"
         try:
             if view.status == "finished" and view.stages and view.anchor:
-                media, kb = _gallery(view, max(1, min(number, len(view.stages))))
+                media, kb = _gallery(
+                    view,
+                    max(1, min(number or len(view.stages), len(view.stages))),
+                    comparison=comparison or number == 0,
+                )
                 await bot.edit_message_media(
                     chat_id=view.group_id, message_id=view.anchor, media=media, reply_markup=kb
                 )
@@ -166,7 +203,7 @@ async def publish_card(bot, session: AsyncSession, game_id: int, number: int = 1
                 await session.commit()
                 anchor = message.message_id
                 if view.status == "finished" and view.stages:
-                    media, kb = _gallery(view, 1)
+                    media, kb = _gallery(view, len(view.stages), comparison=True)
                     await bot.edit_message_media(
                         chat_id=view.group_id,
                         message_id=message.message_id,
@@ -440,7 +477,7 @@ async def retry_control(
     await _run_generation(callback.message, db_session, c, view, description)
 
 
-@router.callback_query(TelephoneCb.filter(F.action == "view"))
+@router.callback_query(TelephoneCb.filter(F.action.in_({"view", "compare"})))
 async def gallery(
     callback: CallbackQuery, callback_data: TelephoneCb, db_session: AsyncSession
 ) -> None:
@@ -457,8 +494,18 @@ async def gallery(
         or callback.message.chat.id != view.group_id
         or callback.message.message_id != view.anchor
         or not 1 <= callback_data.stage <= len(view.stages)
+        or (
+            callback_data.action == "compare"
+            and callback_data.stage not in (1, len(view.stages))
+        )
     ):
         await callback.answer("Galleria non disponibile.")
         return
     await callback.answer()
-    await publish_card(callback.bot, db_session, view.id, callback_data.stage)
+    await publish_card(
+        callback.bot,
+        db_session,
+        view.id,
+        callback_data.stage,
+        comparison=callback_data.action == "compare",
+    )

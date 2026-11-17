@@ -401,7 +401,10 @@ async def test_v2_view_is_bounded_and_reveals_only_finished_answer(session, monk
     live = await ai_game_service.get_game_view(session, created.session_id, recent_turns=99)
     assert live is not None
     assert (live.participant_count, live.question_count, live.wrong_guess_count) == (2, 4, 4)
-    assert [turn.turn_no for turn in live.recent_turns] == [3, 4, 5, 6, 7, 8]
+    assert [turn.turn_no for turn in live.recent_turns] == [7, 8]
+    assert (live.turn_count, live.history_page, live.history_pages) == (8, 1, 2)
+    first_page = await ai_game_service.get_game_view(session, created.session_id, history_page=0)
+    assert [turn.turn_no for turn in first_page.recent_turns] == [1, 2, 3, 4, 5, 6]
     assert live.revealed_answer is None
 
     await session.execute(
@@ -1033,6 +1036,87 @@ async def test_v2_submit_guess_is_local_and_winning_alias_flushes_before_settlem
     assert (turn.kind, json.loads(turn.output_json), root, winner) == (
         TurnKind.guess.value, {"correct": True}, "finished", 10,
     )
+
+
+@pytest.mark.parametrize("verdict,used,won", [
+    (None, 0, False), ("wrong", 1, False), ("series", 1, False), ("correct", 1, True),
+])
+async def test_deferred_title_check_is_fenced_and_does_not_charge_outages(
+    session, monkeypatch, user_factory, verdict, used, won,
+):
+    from services.ai_game_types import GuessClaim
+
+    await user_factory(10)
+    session_id = await _running_v2(session, monkeypatch)
+    claim = await ai_game_service.submit_guess(
+        session, session_id=session_id, user_tg_id=10, answer="Portl 2", defer_uncertain=True,
+    )
+    assert isinstance(claim, GuessClaim)
+    await session.commit()
+    assert await _turn_count(session, session_id) == 0
+    busy = await ai_game_service.submit_guess(
+        session, session_id=session_id, user_tg_id=20, answer="Other game", defer_uncertain=True,
+    )
+    assert busy.reason is TurnRejectReason.busy
+    await session.commit()
+    result = await ai_game_service.complete_guess(session, claim=claim, verdict=verdict)
+    await session.commit()
+    assert result.quota.guesses_used == used
+    assert (result.terminal is not None) is won
+    assert await _turn_count(session, session_id) == used
+    if verdict is None:
+        assert result.reason is TurnRejectReason.providers_unavailable
+        assert await _pending_fields(session, session_id) == (None, None, None, None)
+    replay = await ai_game_service.complete_guess(session, claim=claim, verdict=verdict)
+    await session.commit()
+    assert replay.reason is TurnRejectReason.lost_claim
+    assert await _turn_count(session, session_id) == used
+
+
+@pytest.mark.parametrize("action", ["close", "expire", "replace"])
+async def test_late_ai_title_result_never_overwrites_close_expiry_or_another_lease(
+    session, monkeypatch, user_factory, action,
+):
+    from services.ai_game_types import FinishReason
+
+    await user_factory(10)
+    now = datetime(2030, 8, 23, 10, 0)
+    session_id = await _running_v2(session, monkeypatch, now=now)
+    claim = await ai_game_service.submit_guess(
+        session, session_id=session_id, user_tg_id=10, answer="Portl 2",
+        defer_uncertain=True, now=now,
+    )
+    await session.commit()
+    if action == "close":
+        await ai_game_service.terminalize(session, session_id=session_id, reason=FinishReason.admin_closed)
+    elif action == "replace":
+        await session.execute(update(AIGameSession).where(AIGameSession.id == session_id).values(
+            pending_token="different-worker",
+        ).execution_options(synchronize_session=False))
+    await session.commit()
+    result = await ai_game_service.complete_guess(
+        session, claim=claim, verdict="correct",
+        now=now + timedelta(days=1) if action == "expire" else now,
+    )
+    await session.commit()
+    assert result.outcome is TurnOutcome.rejected
+    assert await _turn_count(session, session_id) == 0
+    assert result.quota.guesses_used == 0
+    if action == "replace":
+        assert (await _pending_fields(session, session_id))[0] == "different-worker"
+
+
+async def test_title_verdict_validation_and_wrong_claim_kind_fail_closed(session, monkeypatch):
+    session_id = await _running_v2(session, monkeypatch)
+    claim = await ai_game_service.submit_guess(
+        session, session_id=session_id, user_tg_id=10, answer="Portl 2", defer_uncertain=True,
+    )
+    for bad in (True, "yes", "maybe"):
+        with pytest.raises(ValueError, match="verdict"):
+            await ai_game_service.complete_guess(session, claim=claim, verdict=bad)
+    bad_claim = replace(claim, lease=replace(claim.lease, kind=TurnKind.question))
+    with pytest.raises(ValueError, match="not a title claim"):
+        await ai_game_service.complete_guess(session, claim=bad_claim, verdict="correct")
 
 
 async def test_v2_question_claim_context_queries_only_recent_candidates_then_bounds_payload(

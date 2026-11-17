@@ -251,6 +251,11 @@ class TwentyQuestionsStatusCb(CallbackData, prefix="tqstatus"):
     action: str
 
 
+class TwentyQuestionsHistoryCb(CallbackData, prefix="tqhistory"):
+    session_id: int
+    page: int
+
+
 class TwentyQuestionsCreateCb(CallbackData, prefix="tqnew"):
     """Guided creation controls for Alduino's secret game."""
 

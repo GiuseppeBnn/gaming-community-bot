@@ -139,6 +139,9 @@ class GameView:
     recent_turns: tuple[TurnView, ...]
     revealed_answer: str | None
     winner_tg_id: int | None
+    turn_count: int = 0
+    history_page: int = 0
+    history_pages: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +206,8 @@ class QuestionClaim:
     normalized_hash: str
     dossier_json: str
     context: tuple[QuestionContextTurn, ...]
-    # Question claims are currently the only public claim DTO. Keeping a
-    # default preserves callers that construct historical snapshots directly
-    # while completion still verifies the persisted lease kind explicitly.
+    # Deferred title checks reuse this lease inside GuessClaim. Keeping a
+    # default preserves historical snapshots; completion always fences the kind.
     kind: TurnKind = TurnKind.question
 
 
@@ -218,6 +220,15 @@ class QuestionStartResult:
     claim: QuestionClaim | None = None
     cached_verdict: QuestionVerdict | None = None
     terminal: TerminalResult | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GuessClaim:
+    """A deferred title check; its lease must be committed before AI I/O."""
+
+    lease: QuestionClaim
+    canonical: str
+    quota: PersonalQuota
 
 
 @dataclass(frozen=True, slots=True)

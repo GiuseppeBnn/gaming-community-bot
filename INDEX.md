@@ -121,6 +121,7 @@ src/                                  # src-layout: i package restano top-level 
 | `quiz_poll_service.py` | Quiz nativi privati: lease di invio, mapping opzioni, consumo atomico e scadenze persistenti |
 | `guess_service.py` | Round, sessioni per giocatore, tentativi, `standings`, `award_prizes` |
 | `guess_judge.py` | `normalize` `aliases_of` `judge` — verdetto in 4 stadi, dal più economico al più costoso |
+| `title_matcher.py` | Varianti conservative di titoli e sigle numerate per Aldu's Game, senza fuzzy wins |
 | `prizes.py` | `participation_floor` `consolation_amounts` — schedule premi condiviso da ogni gioco col podio |
 | `poll_service.py` | Template di sondaggio pre-creati |
 | `shop_service.py` | Cosmetici: acquisto, tag attivi multipli, `apply_cosmetic` |

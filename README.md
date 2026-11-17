@@ -403,6 +403,14 @@ Se il dossier non basta, Alduino risponde **NON LO SO**, senza consumare la doma
 ridurre il premio o registrare una partecipazione. Non è una garanzia contro ogni
 errore dell'AI: il prompt chiede di astenersi quando non può concludere con affidabilità.
 
+Lo storico non si perde dopo le prime domande: nella card trovi domanda e verdetto
+numerati e, quando serve, i pulsanti per sfogliare tutte le pagine. Resta consultabile
+anche a partita conclusa. I testi lunghi sono abbreviati nella card.
+Titoli come `GTA 5`, `GTA5` e `Grand Theft Auto V` sono equivalenti: grafie sicure e alias
+vengono riconosciuti localmente; sigle meno ovvie, traduzioni e refusi plausibili passano
+al giudice AI. La sola saga o un altro capitolo non bastano. Se il giudice è indisponibile,
+il tentativo non viene consumato. Il maggiore reasoning resta entro i cap esistenti.
+
 Chi registra almeno un turno valido riceve 10 XP alla chiusura, anche se il gioco scade o viene
 chiuso da un admin. Se il gruppo indovina, tutti i partecipanti ricevono la stessa quota CoInn.
 I CoInn vengono accreditati solo in caso di vittoria. CoInn: 0 su scadenza o chiusura admin.

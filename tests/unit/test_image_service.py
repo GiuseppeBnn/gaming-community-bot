@@ -128,6 +128,40 @@ async def test_one_isolated_prompt_one_image_and_same_budget(api):
     assert api.settle.call_args.kwargs["status"] == "completed"
 
 
+@pytest.mark.parametrize(
+    "model,slug,allowed,expected",
+    [
+        (MODEL, PROVIDER, ["steps"], {"options": {PROVIDER: {"steps": 16}}}),
+        (MODEL, PROVIDER, [], {}),
+        (MODEL, "another-slug", ["steps"], {}),
+        ("other/image-model", PROVIDER, ["steps"], {}),
+    ],
+)
+async def test_quality_steps_require_known_model_and_advertised_capability(
+    api, model, slug, allowed, expected
+):
+    api.client.preflight = Response(discovery(
+        provider_slug=slug, allowed_passthrough_parameters=allowed
+    ))
+    assert await generate(model=model) == PNG
+    payload = api.client.calls[1][2]["json"]
+    assert payload["provider"] == {
+        "only": [PROVIDER], "allow_fallbacks": False, **expected
+    }
+    assert payload["resolution"] == "1K"
+    assert "layered environment" in payload["prompt"]
+    assert "spatial relationships" in payload["prompt"]
+    assert api.reserve.call_args.kwargs["estimated_microusd"] == 12000
+    assert len(api.client.calls) == 2  # no extra LLM/upsampling call
+
+
+def test_quality_steps_never_leak_to_other_providers():
+    data = discovery(provider_slug=PROVIDER, allowed_passthrough_parameters=["steps"])
+    assert image._provider_route(data, MODEL, "other-provider") == {
+        "only": ["other-provider"], "allow_fallbacks": False
+    }
+
+
 @pytest.mark.parametrize("field,value", [("telephone_enabled", False), ("openrouter_api_key", "")])
 async def test_disabled_makes_no_network_calls(api, monkeypatch, field, value):
     monkeypatch.setattr(image.settings, field, value)

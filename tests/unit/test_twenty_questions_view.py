@@ -347,7 +347,7 @@ def test_question_start_feedback_covers_cached_busy_and_personal_quota(
         ),
         (
             TurnResult(77, TurnOutcome.rejected, TurnRejectReason.providers_unavailable, _quota()),
-            "non è stata consumata",
+            "non è stato consumato",
         ),
         (
             TurnResult(77, TurnOutcome.rejected, TurnRejectReason.hash_collision, _quota()),

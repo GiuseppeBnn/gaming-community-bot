@@ -17,6 +17,41 @@ from services.twenty_questions_ai import (
 )
 
 
+async def test_title_classifier_uses_strict_existing_judge_with_medium_effort(monkeypatch):
+    from unittest.mock import AsyncMock
+    from services import twenty_questions_ai as ai
+
+    judge = AsyncMock(return_value="correct")
+    monkeypatch.setattr(ai.ai_service, "judge_equivalence", judge)
+    assert await ai.classify_title("Grand Theft Auto V", "GTA5") == "correct"
+    system, payload = judge.call_args.args
+    assert judge.call_args.kwargs == {"thinking_level": "medium"}
+    assert json.loads(payload) == {"canonical": "Grand Theft Auto V", "candidate": "GTA5"}
+    assert "series" in system and "refusi evidenti" in system
+
+
+@pytest.mark.parametrize("dossier", [None, "not-json", json.dumps({"facts": "legacy"})])
+async def test_title_identity_context_is_bounded_and_cannot_include_history(monkeypatch, dossier):
+    from unittest.mock import AsyncMock
+    from services import twenty_questions_ai as ai
+
+    judge = AsyncMock(return_value="wrong")
+    monkeypatch.setattr(ai.ai_service, "judge_equivalence", judge)
+    if dossier == "not-json":
+        with pytest.raises(ai.ai_service.AIServiceError):
+            await ai.classify_title("Doom", "Doom 2016", dossier_json=dossier)
+        judge.assert_not_awaited()
+        return
+    if dossier is None:
+        dossier = json.dumps("Descrizione: " + "x" * 3000 + "\nPrima pubblicazione: 1993.")
+    await ai.classify_title("Doom", "Doom 2016", dossier_json=dossier)
+    payload = json.loads(judge.call_args.args[1])
+    assert set(payload) <= {"canonical", "candidate", "identity_context"}
+    if "identity_context" in payload:
+        assert "1993" in payload["identity_context"]
+        assert len(payload["identity_context"]) < 850
+
+
 def _turn(
     number: int,
     question: str,

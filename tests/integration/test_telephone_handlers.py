@@ -127,7 +127,10 @@ async def test_complete_private_relay_and_public_gallery(session, setup):
     assert generator.await_count == 4
     assert sum(chat == GROUP for chat, _, _ in bot.sent) == 2  # one card + one final notification
     assert "media" in bot.edits[-1]
-    assert "&lt;10&gt;" in bot.edits[-1]["media"].caption
+    assert "scene 10" in bot.edits[-1]["media"].caption
+    assert bot.edits[-1]["media"].media == view.stages[-1].file_id
+    # Every author still receives their generated picture in private.
+    assert sum("photo" in kw for _, _, kw in bot.sent) == 7  # 4 results + 3 incoming clues
     callback = SimpleNamespace(
         message=SimpleNamespace(chat=SimpleNamespace(id=GROUP), message_id=view.anchor),
         bot=bot,
@@ -137,6 +140,19 @@ async def test_complete_private_relay_and_public_gallery(session, setup):
     assert "4/4" in bot.edits[-1]["media"].caption
     await ui.gallery(callback, TelephoneCb(action="view", game_id=game_id, stage=2), session)
     assert len(bot.edits[-1]["reply_markup"].inline_keyboard[0]) == 2
+    assert len(bot.edits[-1]["reply_markup"].inline_keyboard[1]) == 1
+    await ui.gallery(callback, TelephoneCb(action="view", game_id=game_id, stage=1), session)
+    assert "&lt;10&gt;" in bot.edits[-1]["media"].caption
+    for number in (1, 4):
+        await ui.gallery(
+            callback, TelephoneCb(action="compare", game_id=game_id, stage=number), session
+        )
+        assert bot.edits[-1]["media"].media == view.stages[number - 1].file_id
+        assert "scene 10" in bot.edits[-1]["media"].caption
+        assert "scene 13" not in bot.edits[-1]["media"].caption
+    await ui.gallery(callback, TelephoneCb(action="compare", game_id=game_id, stage=2), session)
+    assert "non disponibile" in callback.answer.call_args.args[0]
+    assert generator.await_count == 4  # comparison/gallery never generate
     await ui.gallery(callback, TelephoneCb(action="view", game_id=game_id, stage=99), session)
     assert "non disponibile" in callback.answer.call_args.args[0]
 
@@ -281,18 +297,72 @@ async def test_publisher_noops_and_errors_are_bounded(session, setup):
     assert "senza immagini" in bot.edits[-1]["text"]
 
 
-async def test_partial_reveal_recovers_when_initial_card_was_not_sent(session, setup):
+@pytest.mark.parametrize("stage_count", [1, 2])
+async def test_partial_reveal_recovers_when_initial_card_was_not_sent(session, setup, stage_count):
     bot, _, _ = setup
     game_id = await running(session)
-    c, _ = await game.claim(session, game_id, 10, "user", GROUP)
-    await game.delivered(session, c, 1)
-    await game.begin_generation(session, c, "a scene")
-    await game.complete(session, c, "file-1")
+    for number in range(1, stage_count + 1):
+        c, _ = await game.claim(session, game_id, number + 10, "user", GROUP)
+        await game.delivered(session, c, number)
+        await game.begin_generation(session, c, "a scene")
+        await game.complete(session, c, f"file-{number}")
     await game.finish(session, game_id, "image_error")
     await session.commit()
     await ui.publish_card(bot, session, game_id)
     assert "catena raccolta" in bot.edits[-1]["media"].caption
+    assert bot.edits[-1]["media"].media == f"file-{stage_count}"
+    if stage_count == 1:
+        assert not bot.edits[-1]["reply_markup"].inline_keyboard
+    else:
+        assert "scena di partenza" in bot.edits[-1]["media"].caption
     assert (await game.get_view(session, game_id)).anchor is not None
+
+
+@pytest.mark.parametrize("bad_anchor", [True, False])
+async def test_comparison_rejects_foreign_anchor_and_running_game(session, setup, bad_anchor):
+    bot, _, generator = setup
+    game_id = await running(session)
+    c, _ = await game.claim(session, game_id, 10, "user", GROUP)
+    await game.delivered(session, c, 1)
+    await game.begin_generation(session, c, "<a scene>")
+    await game.complete(session, c, "file-1")
+    if bad_anchor:
+        await game.finish(session, game_id, "admin_closed")
+    await session.commit()
+    await ui.publish_card(bot, session, game_id)
+    view = await game.get_view(session, game_id)
+    callback = SimpleNamespace(
+        message=SimpleNamespace(
+            chat=SimpleNamespace(id=GROUP), message_id=view.anchor + (1 if bad_anchor else 0)
+        ),
+        bot=bot, answer=AsyncMock(),
+    )
+    before = len(bot.edits)
+    await ui.gallery(callback, TelephoneCb(action="compare", game_id=game_id, stage=1), session)
+    assert "non disponibile" in callback.answer.call_args.args[0]
+    assert len(bot.edits) == before
+    generator.assert_not_awaited()
+
+
+def test_comparison_escapes_prompt_and_buttons_preserve_navigation():
+    view = SimpleNamespace(
+        id=42, reason="completed",
+        stages=(
+            game.Stage(1, '<b>scene & "one"</b>', "file-1", "author"),
+            game.Stage(2, "second", "file-2", "author"),
+        ),
+    )
+    for number in (1, 2):
+        media, kb = ui._gallery(view, number, comparison=True)
+        assert '&lt;b&gt;scene &amp; &quot;one&quot;&lt;/b&gt;' in media.caption
+        assert media.media == f"file-{number}"
+        switch = TelephoneCb.unpack(kb.inline_keyboard[0][0].callback_data)
+        assert switch.action == "compare" and switch.stage == 3 - number
+        chain = TelephoneCb.unpack(kb.inline_keyboard[1][0].callback_data)
+        assert chain.action == "view" and chain.stage == 1
+    media, kb = ui._gallery(view, 2)
+    assert [len(row) for row in kb.inline_keyboard] == [1, 1]
+    assert TelephoneCb.unpack(kb.inline_keyboard[-1][0].callback_data).action == "compare"
 
 
 async def test_idempotent_edit_still_emits_one_pending_final_notification(session, setup):

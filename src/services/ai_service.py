@@ -431,7 +431,10 @@ JUDGE_SCHEMA: dict = {
 }
 
 
-async def judge_equivalence(system_prompt: str, user_text: str) -> str:
+async def judge_equivalence(
+    system_prompt: str, user_text: str,
+    *, thinking_level: Literal["low", "medium", "high"] | None = None,
+) -> str:
     """Classify exact game, same series or wrong on the metered OpenRouter lane.
 
     No application retry after an ambiguous timeout: the reservation remains
@@ -458,6 +461,7 @@ async def judge_equivalence(system_prompt: str, user_text: str) -> str:
         schema_version="game-match-v2",
         max_output_tokens=32,
         temperature=0,
+        thinking_level=thinking_level,
     )
     try:
         result = await provider.generate_json(request)

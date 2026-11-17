@@ -21,14 +21,16 @@ from config_data.config import settings
 from filters.admin_filter import IsAdminCallbackFilter, IsAdminFilter, is_admin
 from handlers import _mentions
 from handlers._privacy import redirect_to_private
-from handlers.callbacks import TwentyQuestionsCreateCb, TwentyQuestionsStatusCb
-from services import ai_game_service, group_registry, schedule_service
+from handlers.callbacks import TwentyQuestionsCreateCb, TwentyQuestionsHistoryCb, TwentyQuestionsStatusCb
+from services import ai_game_service, ai_game_rewards, ai_service, group_registry, schedule_service
+from services.twenty_questions_ai import classify_title
 from services.ai_game_types import (
     DEFAULT_DURATION_SECONDS,
     DEFAULT_MAX_COINS_PER_PARTICIPANT,
     DURATION_PRESETS_SECONDS,
     GameCreationError,
     GameView,
+    GuessClaim,
     PersonalQuota,
     QuestionVerdict,
     TerminalResult,
@@ -623,6 +625,7 @@ async def _publish_rendered_card(
     anchor_message_id: int | None,
     text: str,
     strict: bool = False,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     """Edit a known card or publish-and-CAS a recovery card after a caller commit."""
     if group_id is None:
@@ -638,6 +641,7 @@ async def _publish_rendered_card(
                 message_id=anchor_message_id,
                 text=text,
                 parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
             return
         except Exception as exc:  # noqa: BLE001 — Telegram can reject a stale/deleted card
@@ -652,6 +656,7 @@ async def _publish_rendered_card(
             db_session,
             text,
             parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
         )
     except Exception as exc:  # noqa: BLE001 — card publication is post-commit best effort
         log.warning(
@@ -718,6 +723,7 @@ async def refresh_group_card(
             anchor_message_id=current.anchor_message_id,
             text=render_live_card(current, now=_presentation_now()),
             strict=strict,
+            reply_markup=_history_keyboard(current),
         )
 
 
@@ -745,6 +751,7 @@ async def publish_terminal(
         # Settlement was committed by the caller already; publish the generic
         # terminal card after rollback instead of losing the only announcement.
     async with _card_publish_lock(result.session_id):
+        current = None
         group_id = result.group_id
         anchor_message_id = result.anchor_message_id
         try:
@@ -769,9 +776,69 @@ async def publish_terminal(
             session_id=result.session_id,
             group_id=group_id,
             anchor_message_id=anchor_message_id,
-            text=render_terminal_card(result, winner_html=winner_html),
+            text=render_terminal_card(result, winner_html=winner_html, history=current),
             strict=strict,
+            reply_markup=_history_keyboard(current) if current is not None else None,
         )
+
+
+def _history_keyboard(view: GameView) -> InlineKeyboardMarkup | None:
+    if view.history_pages <= 1:
+        return None
+    buttons = []
+    if view.history_page > 0:
+        buttons.append(InlineKeyboardButton(
+            text="⬅️ Domande precedenti",
+            callback_data=TwentyQuestionsHistoryCb(
+                session_id=view.session_id, page=view.history_page - 1,
+            ).pack(),
+        ))
+    if view.history_page < view.history_pages - 1:
+        buttons.append(InlineKeyboardButton(
+            text="Domande successive ➡️",
+            callback_data=TwentyQuestionsHistoryCb(
+                session_id=view.session_id, page=view.history_page + 1,
+            ).pack(),
+        ))
+    return InlineKeyboardMarkup(inline_keyboard=[[button] for button in buttons])
+
+
+@router.callback_query(TwentyQuestionsHistoryCb.filter(), F.message.chat.type != ChatType.PRIVATE)
+async def cb_game_history(
+    callback: CallbackQuery, callback_data: TwentyQuestionsHistoryCb, db_session: AsyncSession,
+) -> None:
+    """Browse the append-only ledger on its exact group anchor, never generate or pay."""
+    async with _card_publish_lock(callback_data.session_id):
+        view = await ai_game_service.get_game_view(
+            db_session, callback_data.session_id, history_page=callback_data.page,
+        )
+        if (
+            view is None or view.status not in ("running", "finished") or view.policy.version != 2
+            or callback.message is None or callback.message.chat.id != view.group_id
+            or callback.message.message_id != view.anchor_message_id
+            or callback_data.page < 0 or callback_data.page >= view.history_pages
+        ):
+            await db_session.rollback()
+            await callback.answer("Storico non disponibile.")
+            return
+        if view.status == "finished":
+            result = await ai_game_rewards.get_terminal_result(db_session, view.session_id)
+            winner = (
+                await _mentions.mention(db_session, result.winner_tg_id)
+                if result.winner_tg_id is not None else None
+            )
+            text = render_terminal_card(result, winner_html=winner, history=view)
+        else:
+            text = render_live_card(view, now=_presentation_now())
+        await db_session.commit()
+        await callback.answer()
+        try:
+            await callback.bot.edit_message_text(
+                chat_id=view.group_id, message_id=view.anchor_message_id,
+                text=text, parse_mode=ParseMode.HTML, reply_markup=_history_keyboard(view),
+            )
+        except Exception as exc:  # noqa: BLE001 — presentation only, no replacement post on a stale tap
+            log.info("Game history edit unavailable session=%s error=%s", view.session_id, type(exc).__name__)
 
 
 def _guess(text: str) -> str | None:
@@ -865,7 +932,7 @@ async def _play_turn_v2(
     if started.claim is None:
         raise RuntimeError(f"v2 question claim missing session={session_id}")
 
-    # The short lease is durable before the configured free-first router gets
+    # The short lease is durable before the configured structured gateway gets
     # network access. ai_game_service resolves that router; no handler provider
     # object or ORM snapshot crosses this boundary.
     await _commit_or_rollback(db_session)
@@ -917,8 +984,19 @@ async def _play_v2_guess(
         session_id=session_id,
         user_tg_id=message.from_user.id,
         answer=answer,
+        defer_uncertain=True,
     )
     await _commit_or_rollback(db_session)
+    if isinstance(result, GuessClaim):
+        claim = result
+        try:
+            verdict = await classify_title(
+                claim.canonical, claim.lease.input_text, dossier_json=claim.lease.dossier_json,
+            )
+        except ai_service.AIServiceError:
+            verdict = None
+        result = await ai_game_service.complete_guess(db_session, claim=claim, verdict=verdict)
+        await _commit_or_rollback(db_session)
     await _send_game_reply(
         message, db_session, session_id=session_id, text=render_personal_turn(result),
     )

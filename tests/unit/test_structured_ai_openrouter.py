@@ -102,6 +102,22 @@ async def test_glm_structured_keeps_strict_schema_and_reserves_thinking(
     assert sent["provider"]["max_price"] == {"prompt": .25, "completion": .6}
 
 
+async def test_explicit_judging_effort_preserves_existing_token_and_cost_ceiling(
+    openrouter, structured_request, monkeypatch,
+):
+    from dataclasses import replace
+
+    monkeypatch.setattr(structured_ai.settings, "twentyq_openrouter_model", "openai/gpt-oss-120b")
+    request = replace(structured_request, thinking_level="medium")
+    with aioresponses() as mocked:
+        mocked.post(structured_ai.settings.openrouter_url, payload=_response())
+        await structured_ai.OpenRouterStructuredProvider().generate_json(request)
+    sent = next(iter(mocked.requests.values()))[0].kwargs["json"]
+    assert sent["reasoning"] == {"effort": "medium", "exclude": True}
+    assert sent["max_tokens"] == request.max_output_tokens + structured_ai.settings.openrouter_reasoning_token_allowance
+    assert openrouter.reserve_kwargs["max_output_tokens"] == sent["max_tokens"]
+
+
 async def test_openrouter_structured_is_single_model_strict_zdr_and_accounted(
     openrouter, structured_request,
 ):
